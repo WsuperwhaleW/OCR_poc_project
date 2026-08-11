@@ -37,14 +37,69 @@ An example llama.cpp launch:
 
 ## 2. Install
 
-```bash
+Use a virtual environment — the pins in `requirements.txt` have deliberate upper bounds,
+and installing them into the system Python drags every other project along with them.
+
+**Windows (PowerShell)**
+
+```powershell
+python -m venv .venv
+.venv\Scripts\Activate.ps1
 pip install -r requirements.txt
+```
+
+**Linux / macOS**
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+```
+
+The prompt shows `(.venv)` once it is active. `deactivate` leaves it; **every command in
+this README assumes it is active**, and a new terminal starts without it — a `ModuleNotFound`
+for flask usually means exactly that.
+
+If PowerShell refuses the activate script with an execution-policy error:
+
+```powershell
+Set-ExecutionPolicy -Scope Process -ExecutionPolicy RemoteSigned
 ```
 
 `pymupdf` (PDF input) and `pillow-heif` (iPhone photos) are optional — without them the
 app starts anyway and refuses those formats with a clear message.
 
-## 3. Start
+## 3. Configure (optional)
+
+Every setting has a working default, so you can skip this and come back when you need to
+move a port or point at a different model server. See [Configuration](#configuration) for
+what is worth changing.
+
+`.env.example` is the full list with defaults. Copy it and edit:
+
+```bash
+cp .env.example .env
+```
+
+**The app does not read `.env` itself** — there is no `python-dotenv` dependency, on
+purpose, so nothing loads a file the deployment did not ask for. Load it yourself before
+starting, or just set the one or two variables you need on the command line.
+
+**Windows (PowerShell)**
+
+```powershell
+Get-Content .env | ForEach-Object { if ($_ -match '^\s*([^#=]+)=(.*)$') { [Environment]::SetEnvironmentVariable($Matches[1].Trim(), $Matches[2].Trim()) } }
+```
+
+**Linux / macOS**
+
+```bash
+set -a; . ./.env; set +a
+```
+
+`.env` is gitignored and never ends up in the deployment zip.
+
+## 4. Start
 
 ```bash
 python app.py
@@ -67,7 +122,11 @@ A missing model server, a missing PDF library, an absent fixtures directory and 
 unwritable log directory each print a warning and the app **still starts**. None of them
 is fatal.
 
-To point at a model server elsewhere, or move the app's own port:
+To point at a model server elsewhere, or move the app's own port, without a `.env` at all:
+
+```powershell
+$env:LLAMA_URL="http://127.0.0.1:11434"; $env:PORT="8000"; python app.py
+```
 
 ```bash
 LLAMA_URL=http://127.0.0.1:11434 PORT=8000 python app.py
@@ -81,12 +140,12 @@ CPU/GPU control.
 ## Configuration
 
 Every setting is an environment variable, listed with its default in
-[`.env.example`](.env.example). The app does **not** read `.env` itself — there is no
-`python-dotenv` dependency — so export the values in the shell or set them in the service
-unit. `.env.example` shows one-liners for doing that on Linux and PowerShell.
+[`.env.example`](.env.example) — see [step 3](#3-configure-optional) for how to load a
+`.env`, or set them in the service unit.
 
 A malformed value prints a warning and falls back to the default rather than stopping
-startup. Settings are read once at import, so changing one needs a restart.
+startup. Settings are read **once at import**, so changing one needs a restart of
+`app.py` — including after re-loading a `.env`.
 
 The ones that matter for a deployment:
 
@@ -503,12 +562,26 @@ The file list in `package.py` is an **allow-list**: a new source file has to be 
 
 ```bash
 unzip thai-ocr-<date>.zip && cd thai-ocr-<date>
+python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 python app.py
 ```
 
 Nothing is compiled and no paths are baked in — every path is resolved from `app.py`'s own
 directory, so the archive runs wherever it is unpacked, under any account.
+
+The zip contains `.env.example` but **never a `.env`** — configure the deployment in its
+service unit, or drop a `.env` beside `app.py` and load it in the unit's `ExecStartPre`
+/ launch script. A systemd unit wants the venv's interpreter by absolute path:
+
+```ini
+WorkingDirectory=/srv/ocr
+EnvironmentFile=/srv/ocr/.env
+ExecStart=/srv/ocr/.venv/bin/python app.py
+```
+
+`EnvironmentFile` is systemd reading the file and handing the app the variables — the app
+still never parses `.env` itself.
 
 ---
 
