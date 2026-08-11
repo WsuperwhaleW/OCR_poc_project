@@ -40,12 +40,16 @@ An example llama.cpp launch:
 Use a virtual environment — the pins in `requirements.txt` have deliberate upper bounds,
 and installing them into the system Python drags every other project along with them.
 
+**Run all three lines in the folder that contains `app.py`, in this order.** A venv belongs
+to the folder it was created in: a second copy of the project needs its own, and installing
+into one does nothing for the other.
+
 **Windows (PowerShell)**
 
 ```powershell
 python -m venv .venv
 .venv\Scripts\Activate.ps1
-pip install -r requirements.txt
+python -m pip install -r requirements.txt
 ```
 
 **Linux / macOS**
@@ -53,18 +57,44 @@ pip install -r requirements.txt
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
-pip install -r requirements.txt
+python -m pip install -r requirements.txt
 ```
 
-The prompt shows `(.venv)` once it is active. `deactivate` leaves it; **every command in
-this README assumes it is active**, and a new terminal starts without it — a `ModuleNotFound`
-for flask usually means exactly that.
+`python -m pip` rather than plain `pip`, deliberately: it installs into the interpreter you
+are actually running, so it cannot silently install somewhere else.
 
-If PowerShell refuses the activate script with an execution-policy error:
+### Check the install before starting
 
 ```powershell
-Set-ExecutionPolicy -Scope Process -ExecutionPolicy RemoteSigned
+python -c "import flask, requests, PIL; print('deps ok')"
 ```
+
+Anything other than `deps ok` means the install did not land where this shell is looking,
+and `python app.py` will fail on the first import.
+
+| What you see | What it means |
+|---|---|
+| `(.venv)` missing from the prompt | the venv is not active — run the activate line again, in this folder |
+| `ModuleNotFoundError: No module named 'requests'` (or `flask`, `PIL`) | the venv is active but nothing was installed into it — the `pip install` line was skipped, or was run in a different folder or before activating. Re-run it |
+| `Activate.ps1 cannot be loaded ... execution policy` | run `Set-ExecutionPolicy -Scope Process -ExecutionPolicy RemoteSigned`, then activate again |
+| `python` not found | Python is not on PATH; use the full path to `python.exe`, or reinstall Python with "Add to PATH" ticked |
+
+To see exactly which interpreter and which pip a shell is using:
+
+```powershell
+python -c "import sys; print(sys.executable)"
+```
+
+The path it prints must end in `.venv\Scripts\python.exe` inside **this** project folder.
+If it points at a system Python or at another project's `.venv`, that is the whole problem.
+
+`deactivate` leaves the venv. **Every command in this README assumes it is active**, and a
+new terminal starts without it.
+
+A note on OneDrive: the project works fine inside a synced folder, but OneDrive can move,
+lock or de-hydrate a `.venv` in the background, which breaks it in ways that look exactly
+like the errors above. If the venv keeps going bad, delete `.venv` and rebuild it — it is
+disposable — or keep the project outside the synced tree.
 
 `pymupdf` (PDF input) and `pillow-heif` (iPhone photos) are optional — without them the
 app starts anyway and refuses those formats with a clear message.
