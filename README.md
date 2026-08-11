@@ -63,6 +63,53 @@ python -m pip install -r requirements.txt
 `python -m pip` rather than plain `pip`, deliberately: it installs into the interpreter you
 are actually running, so it cannot silently install somewhere else.
 
+### Offline install (no internet on the target)
+
+`wheelhouse/` holds every dependency as a prebuilt wheel, so a machine with no route to
+PyPI installs from disk. Same venv steps; only the install line changes:
+
+```bash
+python3.11 -m venv .venv
+source .venv/bin/activate
+python -m pip install --no-index --find-links wheelhouse -r requirements.txt
+```
+
+`--no-index` stops pip reaching for PyPI at all, so the install either succeeds from
+`wheelhouse/` or fails immediately and says which package was missing — rather than
+hanging on a network timeout on a box that has no network.
+
+**The bundled wheels are built for Linux x86_64 on CPython 3.11.** Eleven of the sixteen
+are pure Python and install anywhere; the other five are compiled and are not portable:
+
+| Wheel | Runs on |
+|---|---|
+| `pillow`, `pillow_heif`, `markupsafe`, `charset_normalizer` | Linux x86_64, CPython **3.11 only** |
+| `pymupdf` | Linux x86_64, CPython 3.9 or newer (`abi3`) |
+
+So the general "Python 3.11 or newer" in [step 1](#1-what-you-need-first) narrows to
+**exactly 3.11** on this path — a 3.12 or 3.13 venv rejects the cp311 wheels, as does
+Windows or arm64. pip reports `No matching distribution found` and names the package. That
+means the wheelhouse is wrong for the machine, not that the requirement is unavailable;
+rebuild it for the target.
+
+### Rebuilding the wheelhouse
+
+Run this on a machine that **does** have internet, then copy the folder to the target:
+
+```bash
+python -m pip download -r requirements.txt -d wheelhouse --only-binary=:all: --platform manylinux2014_x86_64 --python-version 3.11
+```
+
+`--platform` and `--python-version` describe the **target** machine, not the one running
+the command, so a Windows laptop can build a Linux server's wheelhouse. Both flags require
+`--only-binary=:all:`, which is also what guarantees no source distribution sneaks in —
+an sdist would need a compiler on the offline box.
+
+Set `--python-version` to the interpreter the target will actually run, and
+`--platform` to its architecture (`manylinux2014_aarch64` for arm64, `win_amd64` for
+64-bit Windows). Delete the old wheels first; `pip download` adds to the folder rather
+than replacing it, and two versions of the same package leave pip to pick.
+
 ### Check the install before starting
 
 ```powershell
@@ -596,6 +643,21 @@ python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 python app.py
 ```
+
+**On a server with no internet, copy `wheelhouse/` in beside `app.py` yourself** — it is
+not in the zip, because it is built for one platform and one Python version while the zip
+runs anywhere. Then install from it instead:
+
+```bash
+unzip thai-ocr-<date>.zip && cd thai-ocr-<date>
+cp -r /path/to/wheelhouse .
+python3.11 -m venv .venv && source .venv/bin/activate
+pip install --no-index --find-links wheelhouse -r requirements.txt
+python app.py
+```
+
+See [Offline install](#offline-install-no-internet-on-the-target) for what the bundled
+wheels require, and how to rebuild them for a different target.
 
 Nothing is compiled and no paths are baked in — every path is resolved from `app.py`'s own
 directory, so the archive runs wherever it is unpacked, under any account.
