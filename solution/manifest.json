@@ -1,0 +1,21 @@
+{
+  "_comment": [
+    "Maps each ground-truth file to the source PDF it was transcribed from.",
+    "Ground truth lives in solution/<id>.md -- Markdown so the tables render.",
+    "These were transcribed by reading the rendered pages, NOT copied from model",
+    "output. Correct them where you disagree; the comparison is only as",
+    "trustworthy as these files.",
+    "Table markup is normalised before scoring, so pipe tables here and HTML",
+    "tables from the model score identically. <br> inside a cell counts as a",
+    "line break, matching a real newline in an HTML cell.",
+    "sol003 is a handwritten scan; its handwritten values are best-effort and",
+    "should be verified before relying on its score."
+  ],
+  "cases": [
+    { "id": "sol001", "pdf": "Invoice_CDS_BS2603030054_F6910137421TINV_mock 1.pdf", "pages": 1, "kind": "printed statement of account" },
+    { "id": "sol002", "pdf": "Invoice_RBS_BS2502190159_F689219741TINV_mock 1.pdf", "pages": 1, "kind": "printed hotel invoice, mostly English" },
+    { "id": "sol003", "pdf": "Receipt_B2S_BS2604270279_F6910282462TINV_mock 1.pdf", "pages": 1, "kind": "handwritten receipt scan" },
+    { "id": "sol004", "pdf": "Receipt_BTM_BS2603200085_F6910191733TINV_mock 1.pdf", "pages": 2, "kind": "printed receipt, long line-item table" },
+    { "id": "sol005", "pdf": "Receipt_CDS_BS2603030054_F6910137421TINV-mock 1.pdf", "pages": 1, "kind": "printed receipt/tax invoice" }
+  ]
+}

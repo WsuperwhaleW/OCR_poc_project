@@ -1,0 +1,2239 @@
+﻿<!DOCTYPE html>
+<html lang="th">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Thai Document OCR</title>
+<style>
+  :root {
+    /* Native widgets (the option popup above all) are painted by the OS, not by
+       this stylesheet. color-scheme is what tells it which set to paint. */
+    color-scheme: dark;
+    --bg: #0f1115;
+    --panel: #171a21;
+    --border: #272b35;
+    --text: #e8eaed;
+    --muted: #949bab;
+    --accent: #4f8cff;
+    --accent-soft: rgba(79, 140, 255, 0.12);
+    --danger: #ff6b6b;
+    --code-bg: rgba(127, 140, 170, 0.14);
+  }
+  @media (prefers-color-scheme: light) {
+    :root {
+      color-scheme: light;
+      --bg: #f6f7f9; --panel: #ffffff; --border: #e2e5ea;
+      --text: #1b1f27; --muted: #667085; --accent-soft: rgba(79, 140, 255, 0.1);
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 20px 18px 40px;
+    background: var(--bg); color: var(--text);
+    font-family: "Segoe UI", "Noto Sans Thai", system-ui, sans-serif;
+    line-height: 1.55;
+  }
+  /* The result panel is the working space, so the page runs wide and the
+     controls are kept to a fixed, narrow column beside it. */
+  .wrap { max-width: 1720px; margin: 0 auto; }
+  header { margin-bottom: 16px; }
+  h1 { font-size: 1.4rem; margin: 0 0 4px; }
+  .sub { color: var(--muted); font-size: 0.9rem; }
+  .sub code { background: var(--accent-soft); padding: 2px 6px; border-radius: 5px; }
+  /* minmax(0, 1fr), not 1fr: an auto minimum lets wide cell content stretch the page. */
+  .grid { display: grid; grid-template-columns: 360px minmax(0, 1fr); gap: 18px; align-items: start; }
+  @media (max-width: 1080px) { .grid { grid-template-columns: minmax(0, 1fr); } }
+  .card {
+    background: var(--panel); border: 1px solid var(--border);
+    border-radius: 14px; padding: 18px;
+  }
+  /* The controls follow the result down the page: the queue stays in view while
+     a long transcript is being read. */
+  .side { position: sticky; top: 18px; max-height: calc(100vh - 36px); overflow-y: auto; }
+  @media (max-width: 1080px) { .side { position: static; max-height: none; } }
+  .side-tabs { display: flex; gap: 6px; margin-bottom: 14px; }
+  .side-tabs button { flex: 1; padding: 8px 10px; font-size: .84rem; border-radius: 8px; }
+  .side-tabs button.on { background: var(--accent-soft); border-color: var(--accent); font-weight: 600; }
+  .side-tabs .count {
+    display: none; margin-left: 6px; font-size: .7rem; font-weight: 700;
+    background: var(--accent); color: #fff; border-radius: 9px; padding: 0 6px;
+  }
+  .side-tabs .count.show { display: inline-block; }
+  .pane { display: none; }
+  .pane.on { display: block; }
+  #drop, #qdrop {
+    border: 2px dashed var(--border); border-radius: 12px;
+    padding: 22px 16px; text-align: center; cursor: pointer;
+    transition: border-color .15s, background .15s;
+  }
+  #drop:hover, #drop.over, #qdrop:hover, #qdrop.over {
+    border-color: var(--accent); background: var(--accent-soft);
+  }
+  #drop p, #qdrop p { margin: 5px 0; }
+  #drop .hint, #qdrop .hint { color: var(--muted); font-size: 0.82rem; }
+  /* Files waiting to be run. Dropping again adds to this list rather than
+     replacing it, so a batch can be assembled from several drops. */
+  #worklist:empty { display: none; }
+  #worklist { margin-top: 12px; }
+  .wl-head {
+    display: flex; align-items: center; gap: 8px;
+    font-size: .78rem; color: var(--muted); margin-bottom: 6px;
+  }
+  .wl-head button { margin-left: auto; }
+  .wl-item {
+    display: flex; align-items: center; gap: 8px; font-size: .8rem;
+    border: 1px solid var(--border); border-radius: 8px;
+    padding: 5px 6px 5px 10px; margin-top: 5px; background: var(--bg);
+  }
+  .wl-item .nm { flex: 1; min-width: 0; word-break: break-all; }
+  .wl-item .sz { color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .wl-item button { padding: 0 7px; font-size: .8rem; border-radius: 5px; line-height: 1.6; }
+  #preview { display: none; margin-top: 14px; width: 100%; border-radius: 10px; border: 1px solid var(--border); }
+  #filechip {
+    display: none; margin-top: 14px; padding: 18px; border-radius: 10px;
+    border: 1px solid var(--border); background: var(--accent-soft);
+    font-size: .9rem; word-break: break-all;
+  }
+  #filechip strong { display: block; font-size: 1.5rem; margin-bottom: 4px; }
+  #mapchip:empty { display: none; }
+  #mapchip {
+    margin-top: 8px; padding: 8px 11px; border-radius: 8px; font-size: .8rem;
+    border: 1px solid #3fb950; background: rgba(63, 185, 80, .10); color: #3fb950;
+  }
+  #mapchip.none { border-color: var(--border); background: transparent; color: var(--muted); }
+  #mapchip .how { opacity: .8; }
+  .row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 16px; }
+  button, select {
+    font: inherit; border-radius: 9px; padding: 9px 16px;
+    border: 1px solid var(--border); background: transparent; color: var(--text); cursor: pointer;
+  }
+  /* Long option labels (filenames) would otherwise push the select past its row. */
+  select { min-width: 0; max-width: 100%; text-overflow: ellipsis; background: var(--panel); }
+  /* The dropped-open list is a native popup: without explicit colours it takes
+     the light system background but keeps the select's near-white text, which
+     is unreadable. Both sides are stated so neither theme can end up matching. */
+  select option, select optgroup { background: var(--panel); color: var(--text); }
+  input[type=text] {
+    font: inherit; border-radius: 9px; padding: 9px 12px; min-width: 0;
+    border: 1px solid var(--border); background: transparent; color: var(--text);
+  }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
+  button:disabled { opacity: .5; cursor: not-allowed; }
+  .field { display: flex; flex-direction: column; gap: 5px; font-size: .8rem; color: var(--muted); min-width: 0; }
+  .card h2 { font-size: 0.8rem; text-transform: uppercase; letter-spacing: .07em; color: var(--muted); margin: 0 0 12px; }
+  .tabs { display: flex; gap: 6px; margin-left: auto; flex-wrap: wrap; align-items: center; }
+  .tabs button { padding: 5px 12px; font-size: .82rem; border-radius: 7px; }
+  .tabs button.on { background: var(--accent-soft); border-color: var(--accent); color: var(--text); }
+  /* The tab strip reads as a pipeline: each step consumes the previous one. */
+  .tabs.flow { gap: 2px; }
+  .tabs.flow button b {
+    display: inline-block; margin-right: 6px; font-size: .7rem; opacity: .6;
+    border: 1px solid currentColor; border-radius: 50%; width: 15px; height: 15px;
+    line-height: 13px; text-align: center; font-weight: 700;
+  }
+  .tabs.flow button.on b { opacity: 1; }
+  .tabs.flow button:disabled b { opacity: .35; }
+  .flow-arrow { color: var(--muted); opacity: .5; font-size: .9rem; padding: 0 1px; }
+  #render, #raw { min-height: 420px; max-height: calc(100vh - 230px); overflow: auto; margin: 0; }
+  #raw { display: none; white-space: pre-wrap; word-break: break-word; font-family: ui-monospace, Consolas, monospace; font-size: .86rem; }
+  #render.empty, #raw.empty { color: var(--muted); font-size: .92rem; font-family: inherit; }
+  #render table { border-collapse: collapse; margin: 12px 0; font-size: .9rem; }
+  #render th, #render td { border: 1px solid var(--border); padding: 6px 10px; text-align: left; }
+  #render th { background: var(--accent-soft); }
+  /* Verbatim text: keep the document's own line breaks and column spacing. */
+  #render .txt, #cmpRender .txt {
+    white-space: pre-wrap; word-break: break-word; margin: 8px 0;
+    font-family: "Segoe UI", "Noto Sans Thai", system-ui, sans-serif;
+    tab-size: 4;
+  }
+  #render table, #cmpRender table { table-layout: auto; }
+  /* Scoped to [hidden] on purpose: the toggle works by setting the attribute,
+     and a bare `display: none` here outranks removing it, so the panel could
+     never open. */
+  #compare[hidden] { display: none; }
+  .cmp-bar {
+    display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+    font-size: .82rem; color: var(--muted); margin-bottom: 10px;
+  }
+  .cmp-bar #cmpLabel { min-width: 92px; text-align: center; }
+  .cmp-opt { display: flex; align-items: center; gap: 5px; cursor: pointer; }
+  /* Matches button.ghost-sm exactly -- these sit side by side in the same bars,
+     so the anchor must not render a size larger than the buttons beside it. The
+     right-alignment is per use site, not baked in here: the run-log bar already
+     pushes its own button, and a second auto margin would split the gap. */
+  a.ghost-sm {
+    text-decoration: none; color: var(--text); font-size: .78rem;
+    border: 1px solid var(--border); border-radius: 6px; padding: 4px 10px;
+  }
+  .cmp-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 12px; }
+  @media (max-width: 900px) { .cmp-grid { grid-template-columns: minmax(0, 1fr); } }
+  .cmp-pane {
+    border: 1px solid var(--border); border-radius: 10px; padding: 10px;
+    height: 68vh; overflow: auto; background: var(--bg);
+  }
+  #cmpImg { width: 100%; display: block; border-radius: 6px; }
+  #cmpRawText {
+    white-space: pre-wrap; word-break: break-word; margin: 0;
+    font-family: ui-monospace, Consolas, monospace; font-size: .82rem;
+  }
+  #cmpRender table { border-collapse: collapse; margin: 10px 0; font-size: .82rem; }
+  #cmpRender th, #cmpRender td { border: 1px solid var(--border); padding: 5px 8px; }
+  #cmpRender figure {
+    margin: 10px 0; padding: 10px; border-left: 3px solid var(--accent);
+    background: var(--accent-soft); border-radius: 0 8px 8px 0; font-size: .85rem;
+  }
+  #fields { display: none; }
+  .fld-bar { display: flex; align-items: center; gap: 10px; margin-bottom: 12px;
+             font-size: .82rem; color: var(--muted); }
+  .fld-bar #fldStatus { flex: 1; }
+  .fld-grid { display: grid; grid-template-columns: 200px minmax(0, 1fr); gap: 2px 14px; font-size: .88rem; }
+  @media (max-width: 620px) { .fld-grid { grid-template-columns: minmax(0, 1fr); } }
+  .fld-grid dt { color: var(--muted); padding: 6px 0; font-size: .82rem; }
+  .fld-grid dd { margin: 0; padding: 6px 0; word-break: break-word; }
+  .fld-grid dd.empty { color: var(--muted); opacity: .55; }
+  .fld-grid dd.money { font-variant-numeric: tabular-nums; font-weight: 600; }
+  /* Grounding: a value the transcript does not carry must not read like one it
+     does, so it is marked at the value rather than only in a summary above. */
+  .fld-grid dd.ungrounded, .fld-grid dd.computed { color: var(--danger); }
+  .fld-grid dd.computed { color: #d9a441; }
+  .fld-tag { font-size: .68rem; font-weight: 700; padding: 1px 6px; border-radius: 4px;
+             margin-left: 7px; white-space: nowrap; vertical-align: 1px;
+             text-transform: uppercase; letter-spacing: .04em; }
+  .fld-tag.missing { background: var(--border); color: var(--muted); margin-left: 0; }
+  .fld-tag.ungrounded { background: rgba(255,107,107,.18); color: var(--danger); }
+  /* Tier marks. Muted on purpose: which delivery tier a field belongs to is
+     context for the label, never a verdict on the value beside it. */
+  .tier { font-size: .6rem; font-weight: 700; letter-spacing: .03em;
+          padding: .05rem .28rem; border-radius: 3px; margin-left: .35rem;
+          vertical-align: .08rem; }
+  .tier.p1 { background: rgba(110,168,254,.18); color: #6ea8fe; }
+  .tier.p2 { background: rgba(255,255,255,.08); color: var(--muted); }
+  .tier-note { display: flex; align-items: center; gap: .9rem; flex-wrap: wrap; }
+  .tier-stat { display: inline-flex; align-items: center; gap: .3rem;
+               font-variant-numeric: tabular-nums; }
+  .tier-bar { display: inline-block; width: 54px; height: 5px; border-radius: 3px;
+              background: rgba(255,255,255,.1); overflow: hidden; }
+  .tier-bar i { display: block; height: 100%; background: #6ea8fe; }
+  .fld-tag.computed { background: rgba(217,164,65,.18); color: #d9a441; }
+  #fields td.ungrounded { color: var(--danger); text-decoration: underline wavy var(--danger); }
+  .ground-note { font-size: .8rem; border-radius: 8px; padding: 9px 12px; margin: 0 0 4px;
+                 border: 1px solid var(--border); background: var(--accent-soft); }
+  .ground-note.bad { border-color: var(--danger); background: rgba(255,107,107,.1); }
+  .ground-note ul { margin: 6px 0 0; padding-left: 18px; }
+  .ground-note li { margin: 2px 0; }
+  .ground-note code { background: var(--code-bg); padding: 1px 5px; border-radius: 4px; }
+  .fld-sec { font-size: .78rem; text-transform: uppercase; letter-spacing: .07em;
+             color: var(--muted); margin: 22px 0 8px; }
+  #fields table { width: 100%; border-collapse: collapse; font-size: .82rem; }
+  #fields th, #fields td { border: 1px solid var(--border); padding: 6px 9px; text-align: left; }
+  #fields th { background: var(--accent-soft); font-weight: 600; }
+  #fields td.num { text-align: right; font-variant-numeric: tabular-nums; }
+  .seg { display: flex; gap: 6px; }
+  .seg button { flex: 1; padding: 8px 10px; font-size: .84rem; border-radius: 8px; }
+  .seg button.on { background: var(--accent-soft); border-color: var(--accent); font-weight: 600; }
+  .seg button:disabled { opacity: .45; cursor: not-allowed; }
+
+  #compareCard { margin-top: 20px; }
+  #runlogCard { margin-top: 20px; }
+  #queueBody:empty::after {
+    content: 'Nothing queued.'; color: var(--muted); font-size: .85rem;
+    display: block; padding: 10px 0;
+  }
+  /* The queue lives in the narrow column now, so its rows are stacked cards
+     rather than the six-column table the run log still uses. */
+  .qi {
+    border: 1px solid var(--border); border-radius: 9px; padding: 8px 10px;
+    margin-top: 7px; background: var(--bg); font-size: .8rem;
+  }
+  .qi.q-running { border-color: var(--accent); background: var(--accent-soft); }
+  .qi.q-failed { border-color: var(--danger); background: rgba(255,107,107,.07); }
+  .qi.q-cancelled { opacity: .55; }
+  .qi-top { display: flex; align-items: center; gap: 7px; }
+  .qi-name { flex: 1; min-width: 0; word-break: break-all; font-weight: 600; }
+  .qi-sub { color: var(--muted); font-size: .74rem; margin-top: 3px; word-break: break-word; }
+  .qi-foot {
+    display: flex; align-items: center; gap: 8px; margin-top: 6px;
+    color: var(--muted); font-size: .74rem;
+  }
+  .qi-foot .sp { flex: 1; }
+  .qi-foot button { padding: 1px 8px; font-size: .72rem; border-radius: 5px; }
+  .qi .qbar { margin-top: 6px; }
+  #runBody:empty::after {
+    content: 'Nothing logged yet — the first read writes a row.';
+    color: var(--muted); font-size: .85rem; display: block; padding: 10px 0;
+  }
+  #runBody { overflow-x: auto; }
+  #runBody table.queue { min-width: 900px; }
+  #runBody td.acc { font-weight: 600; }
+  #runPath { word-break: break-all; }
+  table.queue { width: 100%; border-collapse: collapse; font-size: .82rem; margin-top: 10px; }
+  table.queue th, table.queue td {
+    border-bottom: 1px solid var(--border); padding: 7px 9px; text-align: left; }
+  table.queue th { color: var(--muted); font-weight: 500; font-size: .76rem;
+    text-transform: uppercase; letter-spacing: .05em; }
+  table.queue td.n { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  table.queue tr.q-running { background: var(--accent-soft); }
+  table.queue tr.q-failed { background: rgba(255,107,107,.07); }
+  table.queue tr.q-cancelled { opacity: .5; }
+  .qbadge { font-size: .7rem; font-weight: 700; padding: 2px 8px; border-radius: 5px;
+            text-transform: uppercase; letter-spacing: .04em; }
+  .qbadge.queued { background: var(--border); color: var(--muted); }
+  .qbadge.running { background: rgba(79,140,255,.2); color: var(--accent); }
+  .qbadge.done { background: rgba(63,185,80,.18); color: #3fb950; }
+  .qbadge.failed { background: rgba(255,107,107,.18); color: var(--danger); }
+  .qbadge.cancelled { background: var(--border); color: var(--muted); }
+  .qbar { height: 5px; border-radius: 4px; background: var(--border); overflow: hidden; min-width: 70px; }
+  .qbar span { display: block; height: 100%; background: var(--accent); transition: width .3s; }
+  #numbers { display: none; }
+  .verdict { display: inline-block; padding: 3px 12px; border-radius: 20px;
+             font-weight: 600; font-size: .82rem; }
+  .verdict.pass { background: rgba(63,185,80,.15); color: #3fb950; border: 1px solid #3fb950; }
+  .verdict.fail { background: rgba(255,107,107,.13); color: var(--danger); border: 1px solid var(--danger); }
+  .verdict.warn { background: rgba(217,164,65,.13); color: #d9a441; border: 1px solid #d9a441; }
+  .verdict.skip { background: transparent; color: var(--muted); border: 1px solid var(--border); }
+  #numbers table.checks { width: 100%; border-collapse: collapse; font-size: .82rem; margin-top: 4px; }
+  #numbers table.checks th, #numbers table.checks td {
+    border-bottom: 1px solid var(--border); padding: 7px 9px; text-align: left; vertical-align: top; }
+  #numbers table.checks th { color: var(--muted); font-weight: 500; font-size: .78rem;
+    text-transform: uppercase; letter-spacing: .05em; }
+  #numbers table.checks td.n { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  /* The working. Monospaced and tabular so the addends line up as figures
+     rather than reading as prose, and set apart from the detail line above it
+     because one says what was compared and the other says with what. */
+  #numbers .work { display: inline-block; margin-top: 3px; font-size: .78rem;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-variant-numeric: tabular-nums; color: var(--text); opacity: .72; }
+  #numbers tr.st-fail { background: rgba(255,107,107,.07); }
+  #numbers tr.st-warn { background: rgba(217,164,65,.07); }
+  #numbers tr.st-skip { opacity: .55; }
+  .badge { font-size: .72rem; font-weight: 700; padding: 2px 7px; border-radius: 5px; }
+  .badge.pass { background: rgba(63,185,80,.18); color: #3fb950; }
+  .badge.fail { background: rgba(255,107,107,.18); color: var(--danger); }
+  .badge.warn { background: rgba(217,164,65,.18); color: #d9a441; }
+  .badge.skip { background: var(--border); color: var(--muted); }
+  .issue { border-left: 3px solid var(--border); padding: 8px 12px; margin: 8px 0;
+           font-size: .84rem; background: var(--accent-soft); border-radius: 0 8px 8px 0; }
+  .issue.error { border-left-color: var(--danger); }
+  .issue.warning { border-left-color: #d9a441; }
+  .issue .who { font-weight: 600; }
+  #accuracy { display: none; }
+  #accHead { font-size: .88rem; margin-bottom: 14px; }
+  #accHead .case { font-weight: 600; font-size: 1rem; }
+  #accHead .kind { color: var(--muted); }
+  .acc-row { display: grid; grid-template-columns: 190px 1fr 64px; align-items: center;
+             gap: 10px; margin: 7px 0; font-size: .84rem; }
+  .acc-row .label { color: var(--muted); }
+  .acc-track { height: 10px; border-radius: 6px; background: var(--border); overflow: hidden; }
+  .acc-fill { height: 100%; border-radius: 6px; transition: width .3s; }
+  .acc-val { text-align: right; font-variant-numeric: tabular-nums; font-weight: 600; }
+  .acc-note { font-size: .78rem; color: var(--muted); margin-top: 12px; line-height: 1.5; }
+  .acc-sub { font-size: .78rem; text-transform: uppercase; letter-spacing: .07em;
+             color: var(--muted); margin: 20px 0 8px; }
+  #accDiff {
+    margin: 0; max-height: 46vh; overflow: auto; font-size: .8rem; line-height: 1.5;
+    font-family: ui-monospace, Consolas, monospace; white-space: pre-wrap;
+    word-break: break-word;
+  }
+  /* Verbatim model output for the Fields and Numbers passes. Same treatment as
+     the accuracy diff: monospace, wrapped, and capped so a 4k-token reply does
+     not push the rest of the card off screen. */
+  .raw-pane pre {
+    margin: 0; max-height: 46vh; overflow: auto; font-size: .8rem; line-height: 1.5;
+    font-family: ui-monospace, Consolas, monospace; white-space: pre-wrap;
+    word-break: break-word;
+  }
+  .raw-pane .fld-sec:first-child { margin-top: 4px; }
+  #accDiff .add { color: #3fb950; }
+  #accDiff .del { color: var(--danger); }
+  #accDiff .hunk { color: var(--accent); }
+  .pagebar { font-size: .8rem; color: var(--muted); margin: 10px 0 0; }
+  .serverbar {
+    display: flex; align-items: center; gap: 9px; margin-top: 14px;
+    padding: 9px 12px; border: 1px solid var(--border); border-radius: 9px;
+    font-size: .82rem; color: var(--muted);
+  }
+  .serverbar #serverText { flex: 1; word-break: break-word; }
+  .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--muted); flex: none; }
+  .dot.ok { background: #3fb950; }
+  .dot.bad { background: var(--danger); }
+  button.ghost-sm { padding: 4px 10px; font-size: .78rem; border-radius: 6px; }
+  #serverReason:empty { display: none; }
+  #stats { width: 100%; border-collapse: collapse; font-size: .8rem; margin-top: 12px; }
+  #stats:empty { display: none; }
+  #stats th, #stats td { border-bottom: 1px solid var(--border); padding: 5px 8px; text-align: right; }
+  #stats th { color: var(--muted); font-weight: 500; text-align: right; }
+  #stats th:first-child, #stats td:first-child { text-align: left; }
+  #stats tfoot td { font-weight: 600; border-bottom: 0; }
+  .warn:empty { display: none; }
+  .warn {
+    margin: 10px 0 0; padding: 9px 12px; border-radius: 8px; font-size: .82rem;
+    border: 1px solid #d9a441; background: rgba(217, 164, 65, .12); color: #d9a441;
+  }
+  #meta { color: var(--muted); font-size: .82rem; margin-top: 14px; min-height: 1.2em; }
+  .err { color: var(--danger); }
+  .spin {
+    width: 14px; height: 14px; border: 2px solid var(--border); border-top-color: var(--accent);
+    border-radius: 50%; display: inline-block; animation: sp .7s linear infinite; vertical-align: -2px;
+  }
+  @keyframes sp { to { transform: rotate(360deg); } }
+  .note { font-size: .78rem; color: var(--muted); margin-top: 12px; line-height: 1.45; }
+  .note.err { color: #d9a441; border-left: 3px solid #d9a441; padding-left: 10px; }
+  .muted-inline { color: var(--muted); font-weight: 400; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>Thai Document OCR</h1>
+    <p class="sub">Full-page transcription via <span id="subKind">{{ server.kind or 'no server' }}</span> ·
+      <code id="subUrl">{{ server.url }}</code></p>
+  </header>
+
+  <div class="grid">
+    <div class="card side">
+      <div class="side-tabs" id="sideTabs">
+        <button type="button" data-pane="source" class="on">Workspace</button>
+        <button type="button" data-pane="queue">Queue<span class="count" id="qCount">0</span></button>
+      </div>
+
+      <div class="pane on" id="paneSource">
+      <div id="drop">
+        <p><strong>Drop files here</strong></p>
+        <p class="hint">or click to browse · or paste with Ctrl+V</p>
+        <p class="hint">Drop again to add more — then Run does the whole list</p>
+        <p class="hint">JPG · PNG · WEBP · BMP · GIF · TIFF · HEIC · PDF</p>
+      </div>
+      <input id="file" type="file" multiple
+             accept="image/*,application/pdf,.pdf,.heic,.heif,.tif,.tiff,.webp,.bmp" hidden>
+      <img id="preview" alt="preview">
+      <div id="filechip"><strong>📄</strong><span id="filechipname"></span></div>
+      <div id="worklist"></div>
+      <div id="mapchip"></div>
+
+      <div class="row">
+        <label class="field" style="flex:1;min-width:200px">
+          Model server
+          <select id="endpointSel">
+            {% for e in endpoints %}
+            <option value="{{ e }}" {% if e == server.url %}selected{% endif %}>{{ e }}</option>
+            {% endfor %}
+            <option value="__custom__">Other address…</option>
+          </select>
+        </label>
+        <label class="field" id="modelField" style="flex:1;min-width:200px;display:none">
+          Model
+          <select id="modelSel"></select>
+        </label>
+      </div>
+      <div class="row" id="customRow" style="display:none">
+        <input id="endpointCustom" type="text" placeholder="http://127.0.0.1:8081" style="flex:1">
+        <button id="endpointUse" class="ghost-sm">Use</button>
+      </div>
+
+      <div class="serverbar">
+        <span class="dot" id="dot"></span>
+        <span id="serverText"></span>
+        <button id="recheck" class="ghost-sm">Re-check</button>
+      </div>
+      <p class="note err" id="serverReason"></p>
+      <p class="note" id="serverNote"></p>
+
+      <div class="row">
+        <label class="field">
+          Detail
+          <select id="detail">
+            {% for d in details %}
+            <option value="{{ d }}" {% if d == default_detail %}selected{% endif %}>{{ d }}</option>
+            {% endfor %}
+          </select>
+        </label>
+        <label class="field" style="flex:1;min-width:150px">
+          Context
+          <select id="ctxSel">
+            {% for c in ctx_choices %}
+            <option value="{{ c }}" {% if c == num_ctx %}selected{% endif %}>{{ c }} tokens</option>
+            {% endfor %}
+          </select>
+        </label>
+      </div>
+      <p class="note" id="ctxNote"></p>
+      {% if mock_files %}
+      <div class="row">
+        <label class="field" style="flex:1">
+          From mockOcr folder
+          <select id="mockFile">
+            <option value="">— none —</option>
+            {% for f in mock_files %}
+            <option value="{{ f.name }}">{{ f.name }}{% if f.case %} · {{ f.case }}{% endif %} · {{ f.size_mb }} MB</option>
+            {% endfor %}
+          </select>
+        </label>
+      </div>
+      {% endif %}
+      {% if cases %}
+      <div class="row">
+        <label class="field" style="flex:1">
+          Benchmark case <span class="muted-inline">(scored against ground truth)</span>
+          <select id="benchCase">
+            <option value="">— none, use uploaded file —</option>
+            {% for c in cases %}
+            <option value="{{ c.id }}">{{ c.id }} · {{ c.kind }}</option>
+            {% endfor %}
+          </select>
+        </label>
+      </div>
+      {% endif %}
+      <div class="row">
+        <button id="run" class="primary" disabled>Read document</button>
+        <button id="stop" disabled>Stop</button>
+        <button id="clear">Clear</button>
+      </div>
+      <p class="note" id="runNote"></p>
+      <div class="row">
+        <button id="queueAdd" class="ghost-sm">Add to queue</button>
+        <button id="queueAll" class="ghost-sm">Queue all cases</button>
+        <button id="queueFolder" class="ghost-sm">Queue whole folder</button>
+      </div>
+      <p class="note" id="detailNote"></p>
+      <p class="note">One document at a time, streamed in as it is generated.
+      Drop in more than one and they go to the <b>Queue</b> tab, which decides
+      how many run at once. Device placement belongs to the model server
+      (llama-server's <code>-ngl</code>, Ollama's own scheduler), not to this app.</p>
+      </div><!-- /paneSource -->
+
+      <div class="pane" id="paneQueue">
+        <div id="qdrop">
+          <p><strong>Drop files straight into the queue</strong></p>
+          <p class="hint">or click to browse</p>
+          <p class="hint">Queued as one batch — a worker picks up the first
+            only once the whole batch is listed</p>
+        </div>
+        <input id="qfile" type="file" multiple
+               accept="image/*,application/pdf,.pdf,.heic,.heif,.tif,.tiff,.webp,.bmp" hidden>
+
+        <div class="row">
+          <label class="field" style="flex:1">
+            Run mode
+            <div class="seg" id="modeSeg">
+              <button type="button" data-mode="sequential" class="on">Sequential</button>
+              <button type="button" data-mode="concurrent">Concurrent</button>
+            </div>
+          </label>
+          <label class="field">
+            Workers
+            <input id="workers" type="number" min="1" max="64" value="1" style="width:66px">
+          </label>
+        </div>
+        <p class="note" id="workerNote"></p>
+
+        <div class="row" style="margin-top:12px">
+          <span id="queueStats" class="muted-inline" style="font-size:.78rem;flex:1"></span>
+          <button id="queueClear" class="ghost-sm">Clear finished</button>
+        </div>
+        <div id="queueBody"></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div style="display:flex;align-items:center">
+        <h2 style="margin:0">Result</h2>
+        <div class="tabs flow">
+          <button id="tabRaw" class="on"><b>1</b> Markdown</button>
+          <span class="flow-arrow">›</span>
+          <button id="tabRendered"><b>2</b> Rendered</button>
+          <span class="flow-arrow">›</span>
+          <button id="tabAccuracy" disabled><b>3</b> Accuracy</button>
+          <span class="flow-arrow">›</span>
+          <button id="tabFields" disabled><b>4</b> Fields</button>
+          <span class="flow-arrow">›</span>
+          <button id="tabNumbers" disabled><b>5</b> Numbers</button>
+          <button id="copy" disabled style="margin-left:10px">Copy</button>
+        </div>
+      </div>
+      <div class="pagebar" id="pagebar"></div>
+      <div class="warn" id="warn"></div>
+      <div id="render" class="empty">Nothing yet.</div>
+      <pre id="raw" class="empty">Nothing yet.</pre>
+
+      <div id="fields">
+        <div class="fld-bar">
+          <span id="fldStatus"></span>
+          <label class="cmp-opt"><input type="checkbox" id="fldRawChk"> Raw output</label>
+          <button id="fldRerun" class="ghost-sm">Re-extract</button>
+          <button id="fldCopy" class="ghost-sm">Copy JSON</button>
+        </div>
+        <div id="fldBody"></div>
+        <div id="fldRaw" class="raw-pane" hidden></div>
+      </div>
+
+      <div id="numbers">
+        <div class="fld-bar">
+          <span id="numStatus"></span>
+          <label class="cmp-opt"><input type="checkbox" id="numRawChk"> Raw output</label>
+          <button id="numRerun" class="ghost-sm">Re-verify</button>
+        </div>
+        <div id="numBody"></div>
+        <div id="numRaw" class="raw-pane" hidden></div>
+      </div>
+
+      <div id="accuracy">
+        <div id="accHead"></div>
+        <div id="accBars"></div>
+        <h3 class="acc-sub">Differences vs ground truth</h3>
+        <pre id="accDiff"></pre>
+      </div>
+
+      <table id="stats"></table>
+      <div id="meta"></div>
+    </div>
+  </div>
+
+  <div class="card" id="compareCard">
+    <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+      <h2 style="margin:0">Compare with source</h2>
+      <span id="cmpHint" class="muted-inline" style="font-size:.8rem"></span>
+      <button id="cmpToggle" class="ghost-sm" style="margin-left:auto" disabled>Show</button>
+    </div>
+    <div id="compare" hidden>
+      <div class="cmp-bar">
+        <button id="cmpPrev" class="ghost-sm">‹</button>
+        <span id="cmpLabel">Page 1</span>
+        <button id="cmpNext" class="ghost-sm">›</button>
+        <label class="cmp-opt"><input type="checkbox" id="cmpRaw"> Markdown</label>
+        <label class="cmp-opt"><input type="checkbox" id="cmpSync" checked> Sync scroll</label>
+        <a id="cmpOpen" class="ghost-sm" style="margin-left:auto" target="_blank" rel="noopener">Open image</a>
+      </div>
+      <div class="cmp-grid">
+        <div class="cmp-pane" id="cmpImgPane">
+          <img id="cmpImg" alt="source page">
+        </div>
+        <div class="cmp-pane" id="cmpTextPane">
+          <div id="cmpRender"></div>
+          <pre id="cmpRawText"></pre>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="card" id="runlogCard">
+    <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+      <h2 style="margin:0">Run log</h2>
+      <span id="runStats" class="muted-inline" style="font-size:.8rem"></span>
+      <button id="runRefresh" class="ghost-sm" style="margin-left:auto">Refresh</button>
+      <a id="runDownload" class="ghost-sm" href="/api/runs.csv" download>Download CSV</a>
+    </div>
+    <div id="runBody"></div>
+    <p class="note" id="runPath"></p>
+  </div>
+</div>
+
+<script>
+const drop = document.getElementById('drop');
+const fileInput = document.getElementById('file');
+const preview = document.getElementById('preview');
+const chip = document.getElementById('filechip');
+const chipName = document.getElementById('filechipname');
+const runBtn = document.getElementById('run');
+const stopBtn = document.getElementById('stop');
+const clearBtn = document.getElementById('clear');
+const copyBtn = document.getElementById('copy');
+const detailSel = document.getElementById('detail');
+const renderEl = document.getElementById('render');
+const rawEl = document.getElementById('raw');
+const pagebar = document.getElementById('pagebar');
+const warn = document.getElementById('warn');
+const detailNote = document.getElementById('detailNote');
+const meta = document.getElementById('meta');
+const statsEl = document.getElementById('stats');
+const dot = document.getElementById('dot');
+const serverText = document.getElementById('serverText');
+const serverReason = document.getElementById('serverReason');
+const recheckBtn = document.getElementById('recheck');
+let server = {{ server | tojson }};
+let pageStats = [], ticker = null, runStart = 0, liveTokens = 0, curPage = -1;
+const tabRendered = document.getElementById('tabRendered');
+const tabRaw = document.getElementById('tabRaw');
+const cmpToggle = document.getElementById('cmpToggle');
+const cmpHint = document.getElementById('cmpHint');
+const tabNumbers = document.getElementById('tabNumbers');
+const numbersEl = document.getElementById('numbers');
+const numStatus = document.getElementById('numStatus');
+const numBody = document.getElementById('numBody');
+const numRerun = document.getElementById('numRerun');
+const numRawChk = document.getElementById('numRawChk');
+const numRaw = document.getElementById('numRaw');
+let verified = null;
+const tabFields = document.getElementById('tabFields');
+const fieldsEl = document.getElementById('fields');
+const fldStatus = document.getElementById('fldStatus');
+const fldBody = document.getElementById('fldBody');
+const fldRerun = document.getElementById('fldRerun');
+const fldCopy = document.getElementById('fldCopy');
+const fldRawChk = document.getElementById('fldRawChk');
+const fldRaw = document.getElementById('fldRaw');
+let extracted = null;
+const tabAccuracy = document.getElementById('tabAccuracy');
+const accuracyEl = document.getElementById('accuracy');
+const accHead = document.getElementById('accHead');
+const accBars = document.getElementById('accBars');
+const accDiff = document.getElementById('accDiff');
+const benchCase = document.getElementById('benchCase');
+const mockFile = document.getElementById('mockFile');
+const MOCK_CASE_OF = {{ mock_files | map(attribute='name') | list | tojson }}
+  .reduce((acc, name, i) => (acc[name] = {{ mock_files | map(attribute='case') | list | tojson }}[i], acc), {});
+const BENCH_IDS = {{ cases | map(attribute='id') | list | tojson }};
+const mapChip = document.getElementById('mapchip');
+let truth = null, matchedCase = null;
+const compareEl = document.getElementById('compare');
+const cmpImg = document.getElementById('cmpImg');
+const cmpImgPane = document.getElementById('cmpImgPane');
+const cmpTextPane = document.getElementById('cmpTextPane');
+const cmpRender = document.getElementById('cmpRender');
+const cmpRawText = document.getElementById('cmpRawText');
+const cmpRawChk = document.getElementById('cmpRaw');
+const cmpSync = document.getElementById('cmpSync');
+const cmpLabel = document.getElementById('cmpLabel');
+const cmpPrev = document.getElementById('cmpPrev');
+const cmpNext = document.getElementById('cmpNext');
+const cmpOpen = document.getElementById('cmpOpen');
+let job = null, pageTexts = [], cmpPage = 0;
+let current = null, controller = null, text = '';
+// The workspace: files dropped but not yet run. One file streams live into the
+// result panel as before; several go to the queue and are worked by the pool.
+let staged = [];
+
+/* ---------- left-hand panes ---------- */
+const sideTabs = document.getElementById('sideTabs');
+const qCount = document.getElementById('qCount');
+const worklist = document.getElementById('worklist');
+const runNote = document.getElementById('runNote');
+function showPane(name) {
+  [...sideTabs.querySelectorAll('button[data-pane]')].forEach(b =>
+    b.classList.toggle('on', b.dataset.pane === name));
+  ['source', 'queue'].forEach(p =>
+    document.getElementById('pane' + p[0].toUpperCase() + p.slice(1))
+      .classList.toggle('on', p === name));
+}
+sideTabs.addEventListener('click', e => {
+  const btn = e.target.closest('button[data-pane]');
+  if (btn) showPane(btn.dataset.pane);
+});
+
+/* ---------- output renderer (offline, no CDN) ----------
+   The model is prompted for a verbatim transcript: plain text plus HTML tables.
+   Text runs are shown with white-space:pre-wrap so the original line breaks,
+   indentation and column spacing survive; Markdown is deliberately NOT
+   interpreted, because '*' and '#' in a document are literal characters. */
+function esc(s) {
+  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+// Fallback: the prompt asks for HTML tables, but the model sometimes emits a
+// Markdown pipe table anyway. Render those as real tables rather than as
+// literal pipe characters.
+function pipeTables(chunk) {
+  const lines = chunk.split('\n');
+  const out = [];
+  let i = 0;
+  const isRow = l => /^\s*\|.*\|\s*$/.test(l);
+  const isRule = l => /^\s*\|[\s:|-]+\|\s*$/.test(l);
+  const cells = l => l.trim().replace(/^\||\|$/g, '').split('|').map(c => c.trim());
+  while (i < lines.length) {
+    if (isRow(lines[i]) && i + 1 < lines.length && isRule(lines[i + 1])) {
+      const head = cells(lines[i]);
+      i += 2;
+      const body = [];
+      while (i < lines.length && isRow(lines[i])) body.push(cells(lines[i++]));
+      out.push('<table><tr>' + head.map(c => '<th>' + esc(c) + '</th>').join('') + '</tr>'
+        + body.map(r => '<tr>' + r.map(c => '<td>' + esc(c) + '</td>').join('') + '</tr>').join('')
+        + '</table>');
+    } else {
+      out.push({ text: lines[i++] });
+    }
+  }
+  // Re-group consecutive plain lines so pre-wrap spacing survives.
+  const merged = [];
+  let buf = [];
+  const flush = () => {
+    if (!buf.length) return;
+    const body = buf.join('\n').replace(/^\n+|\n+$/g, '');
+    if (body.trim()) merged.push('<div class="txt">' + esc(body) + '</div>');
+    buf = [];
+  };
+  for (const part of out) {
+    if (typeof part === 'string') { flush(); merged.push(part); }
+    else buf.push(part.text);
+  }
+  flush();
+  return merged.join('\n');
+}
+function renderOutput(src) {
+  const out = [];
+  const re = /<table[\s\S]*?<\/table>/gi;
+  let last = 0, m;
+  while ((m = re.exec(src)) !== null) {
+    out.push(pipeTables(src.slice(last, m.index)));
+    out.push(m[0]);
+    last = re.lastIndex;
+  }
+  out.push(pipeTables(src.slice(last)));
+  return out.filter(Boolean).join('\n');
+}
+function sanitize(html) {
+  const doc = new DOMParser().parseFromString(html, 'text/html');
+  doc.body.querySelectorAll('script,style,iframe,object,embed,link,meta').forEach(n => n.remove());
+  doc.body.querySelectorAll('*').forEach(el => {
+    for (const attr of [...el.attributes]) {
+      const n = attr.name.toLowerCase();
+      if (n.startsWith('on') || (['href', 'src'].includes(n) && /^\s*javascript:/i.test(attr.value))) {
+        el.removeAttribute(attr.name);
+      }
+    }
+  });
+  return doc.body.innerHTML;
+}
+function paint() {
+  rawEl.textContent = text || 'Nothing yet.';
+  rawEl.classList.toggle('empty', !text);
+  if (text) {
+    renderEl.innerHTML = sanitize(renderOutput(text));
+    renderEl.classList.remove('empty');
+  } else {
+    renderEl.textContent = 'Nothing yet.';
+    renderEl.classList.add('empty');
+  }
+}
+
+/* ---------- tabs ---------- */
+function showTab(mode) {
+  renderEl.style.display = mode === 'rendered' ? 'block' : 'none';
+  rawEl.style.display = mode === 'raw' ? 'block' : 'none';
+  accuracyEl.style.display = mode === 'accuracy' ? 'block' : 'none';
+  fieldsEl.style.display = mode === 'fields' ? 'block' : 'none';
+  numbersEl.style.display = mode === 'numbers' ? 'block' : 'none';
+  statsEl.style.display = ['accuracy', 'fields', 'numbers'].includes(mode) ? 'none' : '';
+  tabRendered.classList.toggle('on', mode === 'rendered');
+  tabRaw.classList.toggle('on', mode === 'raw');
+  tabAccuracy.classList.toggle('on', mode === 'accuracy');
+  tabFields.classList.toggle('on', mode === 'fields');
+  tabNumbers.classList.toggle('on', mode === 'numbers');
+  if (mode === 'accuracy') paintAccuracy();
+  if (mode === 'fields') paintFields();
+  if (mode === 'numbers') paintNumbers();
+}
+tabRendered.addEventListener('click', () => showTab('rendered'));
+tabRaw.addEventListener('click', () => showTab('raw'));
+tabAccuracy.addEventListener('click', () => { if (!tabAccuracy.disabled) showTab('accuracy'); });
+tabFields.addEventListener('click', () => { if (!tabFields.disabled) showTab('fields'); });
+tabNumbers.addEventListener('click', () => { if (!tabNumbers.disabled) showTab('numbers'); });
+
+/* ---------- extracted fields (second LLM pass) ---------- */
+const FIELD_LABELS = {
+  document_type: 'Document type', document_number: 'Document number',
+  issue_date: 'Issue date', due_date: 'Due date',
+  service_period: 'Service period', currency: 'Currency', vat_rate: 'VAT rate',
+  reference_document: 'Reference document', po_number: 'PO number',
+  original_invoice_number: 'Original invoice', contract_number: 'Contract no.',
+  customer_code: 'Customer code', location_code: 'Location code',
+  seller_name: 'Seller', seller_tax_id: 'Seller tax ID',
+  seller_branch: 'Seller branch', seller_address: 'Seller address',
+  buyer_name: 'Buyer', buyer_tax_id: 'Buyer tax ID',
+  buyer_branch: 'Buyer branch', buyer_address: 'Buyer address',
+  subtotal: 'Amount ex VAT', vat_total: 'VAT',
+  amount_incl_vat: 'Amount incl. VAT',
+  withholding_tax_total: 'Withholding tax', net_payable: 'Net payable',
+  amount_in_words: 'Amount in words',
+  payment_method: 'Payment method', payment_reference: 'Payment reference'
+};
+/* Twenty-nine scalars is past what one flat list reads as, so they are grouped
+   the way the page itself is laid out: what the document is, what it points at,
+   who the parties are, what it comes to, how it is paid. */
+const FIELD_SECTIONS = [
+  ['Document', ['document_type', 'document_number', 'issue_date', 'due_date',
+                'service_period', 'currency', 'vat_rate']],
+  // Every key here is one a real document may simply not have, and the server
+  // does not demand any of them. When none came back there is nothing to say,
+  // so the whole section drops rather than printing six "missing" tags.
+  ['References', ['reference_document', 'po_number', 'original_invoice_number',
+                  'contract_number', 'customer_code', 'location_code'], true],
+  ['Seller', ['seller_name', 'seller_tax_id', 'seller_branch', 'seller_address']],
+  ['Buyer', ['buyer_name', 'buyer_tax_id', 'buyer_branch', 'buyer_address']],
+  ['Totals', ['subtotal', 'vat_total', 'amount_incl_vat',
+              'withholding_tax_total', 'net_payable', 'amount_in_words']],
+  ['Payment', ['payment_method', 'payment_reference']]
+];
+const MONEY_KEYS = new Set(['subtotal', 'vat_total', 'amount_incl_vat',
+                            'withholding_tax_total', 'net_payable']);
+
+/* Delivery tier per key, mirroring grounding.PRIORITY_1/PRIORITY_2. Shown as a
+   tag beside each label because the sections above group by where a value sits
+   on the page, which is the right way to READ a document and the wrong way to
+   see how much of the MVP set came back. amount_in_words is tier 3 and untagged. */
+const FIELD_TIER = {};
+[['p1', ['document_type', 'document_number', 'issue_date', 'seller_name',
+         'buyer_name', 'seller_tax_id', 'buyer_tax_id', 'seller_branch',
+         'buyer_branch', 'subtotal', 'vat_total', 'amount_incl_vat', 'currency',
+         'reference_document']],
+ ['p2', ['seller_address', 'buyer_address', 'due_date', 'po_number',
+         'original_invoice_number', 'withholding_tax_total', 'net_payable',
+         'vat_rate', 'service_period', 'customer_code', 'contract_number',
+         'location_code', 'payment_method', 'payment_reference']]
+].forEach(([tier, keys]) => keys.forEach(k => { FIELD_TIER[k] = tier; }));
+const ITEM_COLS = [
+  ['description', 'Description'], ['period', 'Period'], ['quantity', 'Qty'],
+  ['unit_price', 'Unit price'], ['amount', 'Amount'], ['vat', 'VAT'],
+  ['withholding_tax', 'W/T'], ['net_amount', 'Net amount']
+];
+
+/* A value is only worth reading if it came off the page. `status` is the
+   server's grounding verdict for that field; without one the list renders
+   exactly as it used to. */
+const GROUND_TAG = {
+  // "missing" says what the extractor did, not what the page contains: it came
+  // back empty. Whether the page was silent or the extractor missed it is not
+  // something this check can tell, so it does not claim to.
+  missing: ['missing', 'left empty by the extractor — nothing was invented for it. Check the page: it is either not stated there, or it was missed'],
+  ungrounded: ['not on page', 'this text does not appear in the transcript — treat it as invented'],
+  computed: ['computed', 'not printed on the page; it is the sum of the other extracted figures']
+};
+
+function defList(pairs) {
+  if (!pairs.length) return '';
+  return '<dl class="fld-grid">' + pairs.map(([label, value, money, status, key]) => {
+    const blank = (value === null || value === undefined || value === '');
+    const tag = GROUND_TAG[status];
+    const tier = FIELD_TIER[key];
+    const cls = [blank ? 'empty' : '', money ? 'money' : '',
+                 status === 'ungrounded' || status === 'computed' ? status : ''].join(' ');
+    let body;
+    if (blank || status === 'missing') {
+      body = tag ? '<span class="fld-tag missing" title="' + esc(tag[1]) + '">'
+                   + esc(tag[0]) + '</span>' : '—';
+    } else {
+      body = esc(String(value))
+        + (tag ? '<span class="fld-tag ' + status + '" title="' + esc(tag[1]) + '">'
+                 + esc(tag[0]) + '</span>' : '');
+    }
+    return '<dt>' + esc(label)
+      + (tier ? '<span class="tier ' + tier + '" title="Priority '
+                + tier.slice(1) + ' field">' + tier.toUpperCase() + '</span>' : '')
+      + '</dt><dd class="' + cls.trim() + '">' + body + '</dd>';
+  }).join('') + '</dl>';
+}
+
+/* Coverage by delivery tier. Sits above the grounding note deliberately: this
+   one says how much came back, that one says how much of it is real, and reading
+   them in the other order invites treating 28/28 as a result. */
+function tierNote(t) {
+  if (!t) return '';
+  const bar = (tier, present, absent) => {
+    const total = present + absent;
+    const pct = total ? Math.round(present / total * 100) : 0;
+    return '<span class="tier-stat"><span class="tier ' + tier + '">'
+      + tier.toUpperCase() + '</span> ' + present + '/' + total
+      + '<span class="tier-bar"><i style="width:' + pct + '%"></i></span></span>';
+  };
+  return '<p class="ground-note tier-note">Fields returned: '
+    + bar('p1', t.p1_present, t.p1_absent)
+    + bar('p2', t.p2_present, t.p2_absent)
+    + '<span class="how">— how many keys came back filled, not how many are right.</span></p>';
+}
+
+/* Which figures below carry tax. Two documents can print identical numbers and
+   mean different things by them, and nothing else on this tab would say so —
+   the amounts are copied verbatim from the page either way, which is right, and
+   silent. */
+function basisNote(b) {
+  if (!b) return '';
+  const how = esc(b.evidence || b.source || '');
+  return '<p class="ground-note basis-note">'
+    + (b.inclusive
+        ? '<strong>The line amounts on this page already include VAT.</strong> They are '
+          + 'meant to reach the VAT-inclusive total, not the goods total, and the VAT '
+          + 'figure is contained within them rather than added to them.'
+        : '<strong>The line amounts on this page are before VAT</strong>, which is added '
+          + 'below them.')
+    + (b.subtotal_includes_vat
+        ? ' The subtotal carries VAT too — it is the same figure as the inclusive total, '
+          + 'not a pre-tax one.' : '')
+    + ' <span class="how">— ' + how + '</span></p>';
+}
+
+/* The headline the tab opens with: how much of what follows is actually
+   traceable to the transcript. */
+function groundingNote(g) {
+  if (!g || g.error) return '';
+  const flagged = g.flagged || [];
+  const missing = g.missing || [];
+  if (!flagged.length && !missing.length) {
+    return '<p class="ground-note">All ' + g.checked
+      + ' extracted value(s) were found in the transcript. Nothing below was invented.</p>';
+  }
+  let html = '<p class="ground-note' + (flagged.length ? ' bad' : '') + '">';
+  html += flagged.length
+    ? '<strong>' + flagged.length + ' value(s) could not be found in the transcript.</strong> '
+      + 'The model produced them rather than reading them — check each against the page '
+      + 'before using it.'
+    : '<strong>Every extracted value was found in the transcript.</strong>';
+  if (missing.length) {
+    html += ' ' + missing.length + ' field(s) came back empty and are flagged missing '
+      + 'rather than filled in — check the page for each: not stated, or missed.';
+  }
+  if (flagged.length) {
+    html += '<ul>' + flagged.map(f =>
+      '<li><code>' + esc(f.path) + '</code> = “' + esc(f.value) + '” — ' + esc(f.why) + '</li>'
+    ).join('') + '</ul>';
+  }
+  return html + '</p>';
+}
+
+/* ---------- raw pass output ---------- */
+// Both later passes ask the model for JSON and then parse it, so when a value on
+// screen looks wrong the question is which of those two steps lost it. Showing
+// the verbatim reply beside the parsed response answers that without a server
+// log: if the value is in the reply but not the response, the parse dropped it.
+function paintRaw(target, result, reply) {
+  target.innerHTML =
+    (reply ? '<div class="fld-sec">Model reply (verbatim)</div><pre>'
+             + esc(reply) + '</pre>' : '')
+    + '<div class="fld-sec">Parsed response</div><pre>'
+    + esc(JSON.stringify(result, null, 2)) + '</pre>';
+}
+
+function paintFields() {
+  paintFieldBody();
+  // Left on the normal body until there is a reply to show: an empty pane while
+  // the pass is still running reads as "the model returned nothing", when the
+  // body underneath is saying it has not been asked yet.
+  const raw = fldRawChk.checked && !!extracted && !extracted.pending;
+  fldBody.hidden = raw;
+  fldRaw.hidden = !raw;
+  if (raw) paintRaw(fldRaw, extracted, extracted.raw);
+}
+function paintFieldBody() {
+  if (!extracted) {
+    fldStatus.textContent = 'Not extracted yet.';
+    fldBody.innerHTML = '';
+    return;
+  }
+  if (extracted.pending) {
+    fldStatus.innerHTML = '<span class="spin"></span> Asking the model for structured fields…';
+    fldBody.innerHTML = '';
+    return;
+  }
+  if (extracted.error) {
+    fldStatus.textContent = '';
+    fldBody.innerHTML = '<p class="acc-note err">' + esc(extracted.error) + '</p>'
+      + (extracted.raw ? '<pre id="accDiff">' + esc(extracted.raw) + '</pre>' : '');
+    return;
+  }
+
+  const f = extracted.fields || {};
+  const g = extracted.grounding || {};
+  const st = g.statuses || {};
+  const ratio = g.grounded_ratio;
+  fldStatus.textContent = `${extracted.seconds}s · ${extracted.tokens} tokens · ${extracted.model || ''}`
+    + (ratio === null || ratio === undefined ? ''
+       : ` · ${(ratio * 100).toFixed(0)}% grounded`);
+
+  // Which figures below already carry tax. The labels are built from it rather
+  // than fixed, because `subtotal` is only "Amount ex VAT" on a page that
+  // prices VAT-exclusive, and calling it that on an inclusive one invites
+  // reading a figure that contains ฿672.30 of VAT as if it did not.
+  const basis = extracted.vat_basis;
+  const label = k => (basis && basis.inclusive && k === 'subtotal'
+                        && basis.subtotal_includes_vat) ? 'Amount (VAT included)'
+                   : FIELD_LABELS[k];
+
+  let html = tierNote(extracted.tiers) + groundingNote(g) + basisNote(basis);
+  for (const [title, keys, hideWhenEmpty] of FIELD_SECTIONS) {
+    if (hideWhenEmpty && keys.every(k => !f[k])) continue;
+    html += '<div class="fld-sec">' + title + '</div>'
+      + defList(keys.map(k => [label(k), f[k], MONEY_KEYS.has(k), st[k], k]));
+  }
+
+  // Filtered exactly as the grounding pass filters it, so the row index in
+  // `line_items[i].key` addresses the same row on both sides.
+  const items = (Array.isArray(f.line_items) ? f.line_items : [])
+    .filter(it => it && typeof it === 'object' && !Array.isArray(it));
+  if (items.length) {
+    // Only show columns that at least one row actually fills.
+    const cols = ITEM_COLS.filter(([k]) => items.some(it => it && it[k]));
+    // The Amount header says which basis its column is on, because that is
+    // where the difference actually lives — every figure under it either
+    // carries the tax or does not, and they look identical.
+    const colHead = (k, text) => (k === 'amount' && basis)
+      ? text + (basis.inclusive ? ' (incl. VAT)' : ' (ex VAT)') : text;
+    html += '<div class="fld-sec">Line items (' + items.length + ')</div>'
+      + '<div style="overflow-x:auto"><table><tr>'
+      + cols.map(([k, label]) => '<th>' + esc(colHead(k, label)) + '</th>').join('') + '</tr>'
+      + items.map((it, i) => '<tr>' + cols.map(([k]) => {
+          const v = it && it[k] ? String(it[k]) : '';
+          const num = /^[\d.,\- ]+$/.test(v) && v.trim() !== '';
+          const s = st['line_items[' + i + '].' + k];
+          const bad = s === 'ungrounded' || s === 'computed';
+          return '<td class="' + (num ? 'num ' : '') + (bad ? 'ungrounded' : '') + '"'
+            + (bad ? ' title="' + esc(GROUND_TAG[s][1]) + '"' : '') + '>' + esc(v) + '</td>';
+        }).join('') + '</tr>').join('') + '</table></div>';
+  }
+
+  // Paired with its original index for the same reason as the line items above.
+  const other = (Array.isArray(f.other_fields) ? f.other_fields : [])
+    .map((o, i) => [o, i]).filter(([o]) => o && (o.label || o.value));
+  if (other.length) {
+    html += '<div class="fld-sec">Other fields the model found (' + other.length + ')</div>'
+      + defList(other.map(([o, i]) => [o.label || '—', o.value, false,
+                                       st['other_fields[' + i + '].value']]));
+  }
+  fldBody.innerHTML = html;
+}
+
+async function runExtract() {
+  if (!text.trim()) return;
+  extracted = { pending: true };
+  tabFields.disabled = false;
+  paintFields();
+  try {
+    const res = await fetch('/api/extract', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text })
+    });
+    extracted = await res.json();
+  } catch (err) {
+    extracted = { error: err.message };
+  }
+  paintFields();
+}
+fldRerun.addEventListener('click', runExtract);
+fldRawChk.addEventListener('change', paintFields);
+fldCopy.addEventListener('click', async () => {
+  if (!extracted || !extracted.fields) return;
+  await navigator.clipboard.writeText(JSON.stringify(extracted.fields, null, 2));
+  fldCopy.textContent = 'Copied';
+  setTimeout(() => fldCopy.textContent = 'Copy JSON', 1200);
+});
+
+/* ---------- compare card ---------- */
+cmpToggle.addEventListener('click', () => {
+  compareEl.hidden = !compareEl.hidden;
+  cmpToggle.textContent = compareEl.hidden ? 'Show' : 'Hide';
+  if (!compareEl.hidden) paintCompare();
+});
+
+/* ---------- job queue ---------- */
+const queueBody = document.getElementById('queueBody');
+const queueStats = document.getElementById('queueStats');
+const queueAddBtn = document.getElementById('queueAdd');
+const queueAllBtn = document.getElementById('queueAll');
+const queueClearBtn = document.getElementById('queueClear');
+const workersInput = document.getElementById('workers');
+const workerNote = document.getElementById('workerNote');
+let queuePoll = null;
+
+/* One stacked card per job: the queue sits in the narrow column, where the old
+   six-column table had nowhere to put its cells. */
+function qcell(job) {
+  const pct = job.pages_total ? Math.round(job.pages_done / job.pages_total * 100)
+            : (job.status === 'done' ? 100 : 0);
+  const s = job.summary || {};
+  const bits = [];
+  if (s.tokens) bits.push(s.tokens + ' tok');
+  if (s.char_accuracy !== undefined && s.char_accuracy !== null)
+    bits.push((s.char_accuracy * 100).toFixed(1) + '% acc');
+  if (s.verdict) bits.push('numbers: ' + s.verdict);
+  if (s.looped) bits.push('LOOPED');
+  if (s.truncated) bits.push('TRUNCATED');
+  // A failed job keeps the stage it died in, so the stage must not win here --
+  // otherwise every failure reads "preparing" and the reason is never shown.
+  const why = job.status === 'failed' ? (job.error || job.stage) : (job.stage || job.error);
+  const sub = [why || '', bits.join(' · ')].filter(Boolean).join(' · ');
+  const live = ['queued', 'running'].includes(job.status);
+  return '<div class="qi q-' + job.status + '">'
+    + '<div class="qi-top"><span class="qbadge ' + job.status + '">' + job.status + '</span>'
+      + '<span class="qi-name">' + esc(job.name) + '</span></div>'
+    + (sub ? '<div class="qi-sub">' + esc(sub) + '</div>' : '')
+    + (job.status === 'running' || job.pages_total
+        ? '<div class="qbar"><span style="width:' + pct + '%"></span></div>' : '')
+    + '<div class="qi-foot"><span>' + esc(job.detail)
+      + (job.pages_total ? ' · ' + job.pages_done + '/' + job.pages_total + ' pages' : '')
+      + (job.elapsed !== null && job.elapsed !== undefined ? ' · ' + job.elapsed + 's' : '')
+      + '</span><span class="sp"></span>'
+      + (live ? '<button class="ghost-sm" data-cancel="' + job.id + '">Cancel</button>' : '')
+      + (job.status === 'done'
+          ? '<button class="ghost-sm" data-load="' + job.id + '">Open</button>' : '')
+      + '</div></div>';
+}
+
+async function refreshQueue() {
+  let data;
+  try { data = await (await fetch('/api/queue')).json(); } catch { return; }
+  const c = data.counts || {};
+  queueStats.textContent = `${c.queued || 0} queued · ${c.running || 0} running · `
+    + `${c.done || 0} done · ${c.failed || 0} failed · ${data.workers} worker(s)`;
+  if (document.activeElement !== workersInput) workersInput.value = data.workers;
+
+  // The tab badge counts only unfinished work -- that is what "still to do" means.
+  const outstanding = (c.queued || 0) + (c.running || 0);
+  qCount.textContent = outstanding;
+  qCount.classList.toggle('show', outstanding > 0);
+
+  queueBody.innerHTML = data.jobs.map(qcell).join('');
+
+  // Poll only while something is moving; idle pages should not chatter.
+  const active = (c.queued || 0) + (c.running || 0) > 0;
+  if (active && !queuePoll) queuePoll = setInterval(refreshQueue, 1500);
+  if (!active && queuePoll) {
+    clearInterval(queuePoll); queuePoll = null;
+    refreshRuns();   // the queue just drained: its rows are now in the log
+  }
+}
+
+queueBody.addEventListener('click', async e => {
+  const cancel = e.target.closest('[data-cancel]');
+  const load = e.target.closest('[data-load]');
+  if (cancel) {
+    await fetch('/api/queue/' + cancel.dataset.cancel, { method: 'DELETE' });
+    refreshQueue();
+  } else if (load) {
+    const job = await (await fetch('/api/queue/' + load.dataset.load)).json();
+    const r = job.result;
+    if (!r) return;
+    // Drop a finished job's output into the result panel.
+    text = r.text || '';
+    pageTexts = r.pages || [];
+    job_id_from_result(r);
+    pageStats = r.page_stats || [];
+    truth = r.truth || null;
+    extracted = r.extracted || null;
+    verified = r.verified || null;
+    tabAccuracy.disabled = !truth;
+    tabFields.disabled = !extracted;
+    tabNumbers.disabled = !verified;
+    paint(); renderStats(r);
+    meta.textContent = `${r.page_count} page(s) · ${r.detail} · ${r.tokens} tokens · ${r.seconds}s`
+      + (truth && !truth.error ? ` · ${(truth.char_accuracy * 100).toFixed(1)}% vs ${truth.case}` : '');
+    showTab('rendered');
+  }
+});
+function job_id_from_result(r) { job = r.job || null; enableCompare(); }
+
+/* One POST per batch. The server queues everything in it before releasing any
+   of it to a worker, so what lands in the list is what starts together. */
+async function postQueue(body) {
+  let data;
+  try {
+    const res = await fetch('/api/queue', { method: 'POST', body });
+    data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Could not queue.');
+  } catch (err) {
+    meta.textContent = err.message; meta.classList.add('err');
+    return null;
+  }
+  const added = (data.added || []).length;
+  meta.textContent = `${added} document(s) queued · ${data.workers} worker(s)`;
+  meta.classList.remove('err');
+  refreshQueue();
+  showPane('queue');
+  return data;
+}
+
+async function enqueue(cases) {
+  const body = new FormData();
+  body.append('detail', detailSel.value);
+  if (cases) cases.forEach(c => body.append('cases', c));
+  else if (benchCase && benchCase.value) body.append('cases', benchCase.value);
+  else if (mockFile && mockFile.value) body.append('files', mockFile.value);
+  else if (staged.length) staged.forEach(f => body.append('image', f));
+  else return null;
+  const data = await postQueue(body);
+  // Once queued, the workspace copy is redundant -- and leaving it there would
+  // let a second click queue the same files again.
+  if (data && staged.length && !cases) { staged = []; paintWorkspace(); }
+  return data;
+}
+queueAddBtn.addEventListener('click', () => enqueue(null));
+queueAllBtn.addEventListener('click', () => enqueue(BENCH_IDS));
+// Nothing to queue means nothing to click: both of these would otherwise post an
+// empty batch and come back with an error the user could do nothing about.
+if (!BENCH_IDS.length) {
+  queueAllBtn.disabled = true;
+  queueAllBtn.title = 'No benchmark cases in solution/';
+}
+const queueFolderBtn = document.getElementById('queueFolder');
+if (!mockFile) {
+  queueFolderBtn.disabled = true;
+  queueFolderBtn.title = 'No files in mockOcr/';
+} else {
+  queueFolderBtn.addEventListener('click', async () => {
+    const listing = await (await fetch('/api/files')).json();
+    if (!listing.files.length) return;
+    const body = new FormData();
+    body.append('detail', detailSel.value);
+    listing.files.forEach(f => body.append('files', f.name));
+    postQueue(body);
+  });
+}
+
+/* ---------- queue pane: files dropped here skip the workspace ---------- */
+const qdrop = document.getElementById('qdrop');
+const qFileInput = document.getElementById('qfile');
+function queueDirect(list) {
+  const files = [...(list || [])].filter(Boolean);
+  if (!files.length) return;
+  const body = new FormData();
+  body.append('detail', detailSel.value);
+  files.forEach(f => body.append('image', f));
+  postQueue(body);
+}
+qdrop.addEventListener('click', () => qFileInput.click());
+qFileInput.addEventListener('change', e => { queueDirect(e.target.files); qFileInput.value = ''; });
+['dragenter', 'dragover'].forEach(ev =>
+  qdrop.addEventListener(ev, e => { e.preventDefault(); qdrop.classList.add('over'); }));
+['dragleave', 'drop'].forEach(ev =>
+  qdrop.addEventListener(ev, e => { e.preventDefault(); qdrop.classList.remove('over'); }));
+qdrop.addEventListener('drop', e => queueDirect(e.dataTransfer.files));
+
+/* ---------- run log ----------
+   Measurements only: the CSV behind this holds no transcript, no extracted
+   fields and no page images, so it stays small and is safe to keep around. */
+const runBody = document.getElementById('runBody');
+const runStats = document.getElementById('runStats');
+const runPath = document.getElementById('runPath');
+const runRefresh = document.getElementById('runRefresh');
+
+function runRow(r) {
+  const acc = r.char_accuracy ? Number(r.char_accuracy) : null;
+  const when = (r.timestamp || '').replace('T', ' ').slice(5);   // drop the year
+  const size = r.file_size_mb ? Number(r.file_size_mb).toFixed(2) + ' MB' : '—';
+  const cls = r.status === 'error' ? 'q-failed'
+            : r.status === 'cancelled' ? 'q-cancelled' : '';
+  return '<tr class="' + cls + '">'
+    + '<td class="n">' + esc(when) + '</td>'
+    + '<td>' + esc(r.file || '—')
+      + '<br><span style="color:var(--muted);font-size:.74rem">' + esc(size)
+      + (r.pages ? ' · ' + esc(r.pages) + 'p' : '') + ' · ' + esc(r.detail || '')
+      + (r.source ? ' · ' + esc(r.source) : '') + '</span></td>'
+    + '<td>' + esc(r.model || '—')
+      + '<br><span style="color:var(--muted);font-size:.74rem">'
+      + esc(r.backend || '') + ' ' + esc(r.server || '') + '</span></td>'
+    + '<td class="n">' + esc(r.tokens || '—') + '</td>'
+    + '<td class="n">' + (r.seconds ? Number(r.seconds).toFixed(1) + 's' : '—')
+      + '<br><span style="color:var(--muted);font-size:.74rem">'
+      + (r.tokens_per_second ? Number(r.tokens_per_second).toFixed(1) + ' tok/s' : '')
+      + '</span></td>'
+    // Blank, not 0/14, when the run never got as far as extracting: an
+    // unmeasured tier is not a tier measured at zero, and the CSV keeps them
+    // apart for the same reason.
+    + '<td class="n">' + (r.p1_present === '' || r.p1_present === undefined ? '—'
+        : '<span class="tier p1">P1</span> ' + esc(r.p1_present) + '/'
+          + (Number(r.p1_present) + Number(r.p1_absent))
+          + '<br><span class="tier p2">P2</span> ' + esc(r.p2_present) + '/'
+          + (Number(r.p2_present) + Number(r.p2_absent))) + '</td>'
+    + '<td class="n acc" style="' + (acc === null ? '' : 'color:' + accColour(acc / 100))
+      + '">' + (acc === null ? '—' : acc.toFixed(1) + '%')
+      + (r.case ? '<br><span style="color:var(--muted);font-size:.74rem;font-weight:400">'
+                  + esc(r.case) + '</span>' : '') + '</td>'
+    + '<td>' + (r.verdict ? '<span class="badge ' + (r.verdict === 'insufficient data' ? 'skip' : esc(r.verdict))
+        + '">' + esc(r.verdict) + '</span>' : '—')
+      // Arithmetic can pass on figures that were never on the page, so the
+      // grounding count sits beside the verdict rather than out of sight.
+      + (Number(r.ungrounded) > 0
+         ? '<br><span style="color:var(--danger);font-size:.72rem">'
+           + esc(r.ungrounded) + ' ungrounded</span>'
+         : (r.grounded_pct !== '' && r.grounded_pct !== undefined
+            ? '<br><span style="color:var(--muted);font-size:.72rem">grounded</span>' : ''))
+      + '</td>'
+    + '<td><span class="qbadge ' + (r.status === 'ok' ? 'done' : esc(r.status || '')) + '">'
+      + esc(r.status || '') + '</span>'
+      + (r.error ? '<br><span style="color:var(--danger);font-size:.72rem">'
+                   + esc(r.error) + '</span>' : '') + '</td>'
+    + '</tr>';
+}
+
+async function refreshRuns() {
+  let data;
+  try { data = await (await fetch('/api/runs?limit=50')).json(); } catch { return; }
+  const rows = data.runs || [];
+  const t = data.totals || {};
+  runStats.textContent = [
+    t.runs + ' run(s) logged',
+    rows.length < t.runs ? 'showing ' + rows.length : null,
+    t.scored ? t.scored + ' scored' : null,
+    t.mean_accuracy !== null && t.mean_accuracy !== undefined
+      ? 'mean ' + Number(t.mean_accuracy).toFixed(1) + '%' : null,
+    t.seconds ? Math.round(t.seconds) + 's total' : null,
+    t.tokens ? t.tokens + ' tokens' : null
+  ].filter(Boolean).join(' · ');
+  runPath.textContent = t.path ? 'Written to ' + t.path
+    + ' — time, tokens, model, runtime, file name, file size and accuracy. No document text.' : '';
+  runBody.innerHTML = rows.length
+    ? '<table class="queue"><tr><th>When</th><th>Document</th><th>Model</th>'
+      + '<th>Tokens</th><th>Time</th><th>Fields</th><th>Accuracy</th><th>Numbers</th>'
+      + '<th>Status</th></tr>'
+      + rows.map(runRow).join('') + '</table>'
+    : '';
+}
+runRefresh.addEventListener('click', refreshRuns);
+
+/* ---------- run mode ---------- */
+const modeSeg = document.getElementById('modeSeg');
+// How many documents can genuinely run at once depends on the server:
+// llama-server states its slot count, Ollama's parallelism is an environment
+// variable it does not expose, so nothing is claimed about it.
+function workerAdvice(data) {
+  const mode = data.mode || (data.workers > 1 ? 'concurrent' : 'sequential');
+  if (mode === 'sequential') {
+    return 'One document at a time, whatever is queued.';
+  }
+  // The pool grows to fit the batch, so the worker box is a floor, not a cap.
+  const head = `Queue N documents and N requests go out at once (worker count is `
+    + `a minimum of ${data.workers}, raised to fit the batch).`;
+  if (data.llama_slots && data.workers > data.llama_slots) {
+    return head + ` The server advertises ${data.llama_slots} slot(s), so beyond `
+      + `that the wait moves inside it — restart llama-server with a larger -np `
+      + `to overlap them for real.`;
+  }
+  if (data.llama_slots) {
+    return head + ` The server advertises ${data.llama_slots} slot(s).`;
+  }
+  return head + ' Ollama does not report a slot count; its parallelism comes '
+    + 'from OLLAMA_NUM_PARALLEL.';
+}
+async function applyMode(mode, workers) {
+  const res = await fetch('/api/queue/mode', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(workers ? { mode, workers } : { mode })
+  });
+  const data = await res.json();
+  if (!res.ok) { workerNote.textContent = data.error || ''; return; }
+  [...modeSeg.querySelectorAll('button')].forEach(b =>
+    b.classList.toggle('on', b.dataset.mode === data.mode));
+  workersInput.value = data.workers;
+  workersInput.disabled = data.mode === 'sequential';
+  workerNote.textContent = workerAdvice(data);
+  paintRun();      // the Run note quotes the mode and the worker count
+  refreshQueue();
+}
+modeSeg.addEventListener('click', e => {
+  const btn = e.target.closest('button[data-mode]');
+  if (btn && !btn.classList.contains('on')) applyMode(btn.dataset.mode);
+});
+
+// Reflect the pool the server already has, without POSTing on page load.
+async function initMode() {
+  let data;
+  try { data = await (await fetch('/api/queue')).json(); } catch { return; }
+  const mode = data.workers > 1 ? 'concurrent' : 'sequential';
+  [...modeSeg.querySelectorAll('button')].forEach(b =>
+    b.classList.toggle('on', b.dataset.mode === mode));
+  workersInput.value = data.workers;
+  workersInput.disabled = mode === 'sequential';
+  workerNote.textContent = workerAdvice({ mode, workers: data.workers,
+                                          llama_slots: server.slots });
+  paintRun();
+}
+queueClearBtn.addEventListener('click', async () => {
+  await fetch('/api/queue/clear', { method: 'POST' });
+  refreshQueue();
+});
+workersInput.addEventListener('change', () =>
+  applyMode('concurrent', Number(workersInput.value)));
+
+/* ---------- number verification ---------- */
+function money(v) {
+  if (v === null || v === undefined) return '—';
+  return Number(v).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+function paintNumbers() {
+  paintNumberBody();
+  const raw = numRawChk.checked && !!verified && !verified.pending;
+  numBody.hidden = raw;
+  numRaw.hidden = !raw;
+  // Only the review comes from the model here -- the checks above it are
+  // computed locally, so there is no verbatim reply behind them to show.
+  if (raw) paintRaw(numRaw, verified, (verified.review || {}).raw);
+}
+function paintNumberBody() {
+  if (!verified) {
+    numStatus.textContent = 'Not verified yet.';
+    numBody.innerHTML = '';
+    return;
+  }
+  if (verified.pending) {
+    numStatus.innerHTML = '<span class="spin"></span> Checking the numbers…';
+    numBody.innerHTML = '';
+    return;
+  }
+  const c = verified.counts || {};
+  numStatus.innerHTML = '<span class="verdict ' + (verified.verdict === 'insufficient data' ? 'skip' : verified.verdict) + '">'
+    + esc((verified.verdict || '').toUpperCase()) + '</span> &nbsp;'
+    + (c.pass || 0) + ' passed · ' + (c.fail || 0) + ' failed · '
+    + (c.warn || 0) + ' warning · ' + (c.skip || 0) + ' not testable'
+    + (verified.vat_rate === undefined || verified.vat_rate === null ? ''
+       : ' &nbsp;·&nbsp; VAT ' + verified.vat_rate + '% <span class="how">('
+         + esc(verified.vat_rate_source || '') + ')</span>')
+    // Which basis the checks above were run on. Two documents with identical
+    // figures verify differently depending on it, so it belongs beside the
+    // verdict rather than buried in a check detail.
+    + (!verified.vat_basis ? ''
+       : ' &nbsp;·&nbsp; ' + esc(verified.vat_basis.summary || '') + ' <span class="how">('
+         + esc(verified.vat_basis.evidence || verified.vat_basis.source || '') + ')</span>');
+
+  const checks = verified.checks || [];
+  let html = '<table class="checks"><tr><th></th><th>Check</th><th>Expected</th>'
+    + '<th>Found</th><th>Difference</th></tr>'
+    + checks.map(ch => '<tr class="st-' + ch.status + '">'
+        + '<td><span class="badge ' + ch.status + '">' + ch.status.toUpperCase() + '</span></td>'
+        + '<td>' + esc(ch.name) + '<br><span class="kind" style="color:var(--muted);font-size:.78rem">'
+          + esc(ch.detail || '') + '</span>'
+          // The sum itself. Expected-vs-found says a check failed; this says
+          // which figures went into it, which is what you need to find the row
+          // that caused it.
+          + (ch.working ? '<br><span class="work">' + esc(ch.working) + '</span>' : '')
+          + '</td>'
+        + '<td class="n">' + money(ch.expected) + '</td>'
+        + '<td class="n">' + money(ch.actual) + '</td>'
+        + '<td class="n">' + (ch.difference === null || ch.difference === undefined ? '—'
+            : (ch.difference > 0 ? '+' : '') + money(ch.difference)) + '</td>'
+        + '</tr>').join('') + '</table>';
+
+  // The model's review is advisory; arithmetic above is authoritative.
+  const rev = verified.review;
+  html += '<div class="fld-sec">Model review <span class="muted-inline">(advisory — the '
+        + 'arithmetic above is computed exactly, not by the model)</span></div>';
+  if (!rev) html += '<p class="acc-note">Not requested.</p>';
+  else if (rev.error) html += '<p class="acc-note err">' + esc(rev.error) + '</p>';
+  else if (!rev.issues || !rev.issues.length)
+    html += '<p class="acc-note">No further issues raised' + (rev.notes ? ': ' + esc(rev.notes) : '.') + '</p>';
+  else html += rev.issues.map(i => '<div class="issue ' + esc(i.severity || 'info') + '">'
+        + '<span class="who">' + esc(i.field || 'general') + '</span> — ' + esc(i.problem || '')
+        + '</div>').join('') + (rev.notes ? '<p class="acc-note">' + esc(rev.notes) + '</p>' : '');
+
+  numBody.innerHTML = html;
+}
+async function runVerify() {
+  if (!extracted || !extracted.fields) return;
+  verified = { pending: true };
+  tabNumbers.disabled = false;
+  paintNumbers();
+  try {
+    const res = await fetch('/api/verify', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      // Send the transcript too: a VAT rate the extractor missed can still be
+      // recovered from the document text.
+      body: JSON.stringify({ fields: extracted.fields, text })
+    });
+    verified = await res.json();
+  } catch (err) {
+    verified = { error: err.message, checks: [], counts: {}, verdict: 'error' };
+  }
+  paintNumbers();
+}
+numRerun.addEventListener('click', runVerify);
+numRawChk.addEventListener('change', paintNumbers);
+
+/* ---------- accuracy vs ground truth ---------- */
+function accColour(v) {
+  // red below 80%, amber to 95%, green above — matches how these read in practice.
+  if (v >= 0.95) return '#3fb950';
+  if (v >= 0.80) return '#d9a441';
+  return '#ff6b6b';
+}
+function accRow(label, value, hint) {
+  return '<div class="acc-row">'
+    + '<span class="label" title="' + (hint || '') + '">' + label + '</span>'
+    + '<span class="acc-track"><span class="acc-fill" style="width:'
+    + (value * 100).toFixed(1) + '%;background:' + accColour(value) + '"></span></span>'
+    + '<span class="acc-val">' + (value * 100).toFixed(1) + '%</span></div>';
+}
+function paintAccuracy() {
+  if (!truth) { accHead.innerHTML = ''; accBars.innerHTML = ''; accDiff.textContent = ''; return; }
+  if (truth.error) {
+    accHead.innerHTML = '<span class="case">Scoring unavailable</span>';
+    accBars.innerHTML = '<p class="acc-note">' + esc(truth.error) + '</p>';
+    accDiff.textContent = '';
+    return;
+  }
+  accHead.innerHTML = '<span class="case">' + esc(truth.case) + '</span> '
+    + '<span class="kind">· ' + esc(truth.pdf) + (truth.kind ? ' · ' + esc(truth.kind) : '') + '</span>';
+
+  const marksGain = truth.char_accuracy_no_marks - truth.char_accuracy;
+  accBars.innerHTML =
+      accRow('Character accuracy', truth.char_accuracy, 'Edit distance over characters')
+    + accRow('Word accuracy', truth.word_accuracy, 'Word-sequence overlap')
+    + accRow('Characters, marks ignored', truth.char_accuracy_no_marks,
+             'Thai tone marks and upper/lower vowels stripped')
+    + '<p class="acc-note">Expected ' + truth.expected_words + ' words / '
+    + truth.expected_chars + ' chars · got ' + truth.actual_words + ' / '
+    + truth.actual_chars + ' chars.'
+    + (marksGain > 0.01
+        ? ' Ignoring Thai marks gains ' + (marksGain * 100).toFixed(1)
+          + ' points — the letters are largely right and the tone marks are what is being lost.'
+        : ' Ignoring Thai marks changes little, so errors are whole-word rather than diacritic.')
+    + ' Table markup is normalised before scoring, so HTML vs pipe tables do not count against it.</p>';
+
+  if (!truth.diff || !truth.diff.length) {
+    accDiff.innerHTML = '<span class="add">Exact match.</span>';
+    return;
+  }
+  accDiff.innerHTML = truth.diff.map(line => {
+    const cls = line.startsWith('+') && !line.startsWith('+++') ? 'add'
+      : line.startsWith('-') && !line.startsWith('---') ? 'del'
+      : line.startsWith('@@') ? 'hunk' : '';
+    return cls ? '<span class="' + cls + '">' + esc(line) + '</span>' : esc(line);
+  }).join('\n');
+}
+
+/* ---------- compare view ---------- */
+function paintCompare() {
+  const total = pageTexts.length;
+  if (!job || !total) return;
+  cmpPage = Math.max(0, Math.min(cmpPage, total - 1));
+  cmpLabel.textContent = total > 1 ? `Page ${cmpPage + 1} of ${total}` : 'Page 1';
+  cmpPrev.disabled = cmpPage === 0;
+  cmpNext.disabled = cmpPage >= total - 1;
+
+  const src = `/api/page/${job}/${cmpPage}`;
+  if (cmpImg.getAttribute('src') !== src) cmpImg.src = src;
+  cmpOpen.href = src;
+
+  const body = pageTexts[cmpPage] || '';
+  const raw = cmpRawChk.checked;
+  cmpRender.style.display = raw ? 'none' : 'block';
+  cmpRawText.style.display = raw ? 'block' : 'none';
+  if (raw) cmpRawText.textContent = body;
+  else cmpRender.innerHTML = body ? sanitize(renderOutput(body)) : '<em>No text.</em>';
+}
+function enableCompare() {
+  const ready = !!(job && pageTexts.length);
+  cmpToggle.disabled = !ready;
+  cmpHint.textContent = ready ? 'Source page beside the transcript.' : 'Run a document first.';
+  if (!ready) { compareEl.hidden = true; cmpToggle.textContent = 'Show'; }
+}
+cmpPrev.addEventListener('click', () => { cmpPage--; paintCompare(); });
+cmpNext.addEventListener('click', () => { cmpPage++; paintCompare(); });
+cmpRawChk.addEventListener('change', paintCompare);
+
+// Proportional scroll linking: the panes have different natural heights, so
+// match by fraction of scrollable distance rather than by pixel offset.
+//
+// Echoes are suppressed by remembering the exact offset we wrote and ignoring
+// the scroll event that reports it back. A time- or frame-based guard would
+// also swallow a real user scroll that lands in the same frame as a
+// programmatic one, which silently breaks syncing in one direction.
+const echo = new WeakMap();
+function applySync(from, to) {
+  if (!cmpSync.checked) return 'off';
+  const expected = echo.get(from);
+  if (expected !== undefined) {
+    // Consume unconditionally: a stale entry must never block a later scroll.
+    echo.delete(from);
+    if (Math.abs(from.scrollTop - expected) < 2) return 'echo';
+  }
+  const fromMax = from.scrollHeight - from.clientHeight;
+  const toMax = to.scrollHeight - to.clientHeight;
+  if (fromMax <= 0 || toMax <= 0) return 'nothing-to-scroll';
+  const target = (from.scrollTop / fromMax) * toMax;
+  echo.set(to, target);
+  to.scrollTop = target;
+  return 'synced';
+}
+function linkScroll(from, to) {
+  from.addEventListener('scroll', () => applySync(from, to));
+}
+linkScroll(cmpImgPane, cmpTextPane);
+linkScroll(cmpTextPane, cmpImgPane);
+
+/* ---------- model server: status and switching ----------
+   Two server kinds are supported and they are not interchangeable in one
+   respect: Ollama holds many models and needs one named per request, while
+   llama-server holds exactly one and ignores the name. So the model picker is
+   shown only when the active endpoint actually offers a choice. */
+const endpointSel = document.getElementById('endpointSel');
+const modelSel = document.getElementById('modelSel');
+const modelField = document.getElementById('modelField');
+const customRow = document.getElementById('customRow');
+const endpointCustom = document.getElementById('endpointCustom');
+const endpointUse = document.getElementById('endpointUse');
+const serverNote = document.getElementById('serverNote');
+const subKind = document.getElementById('subKind');
+const subUrl = document.getElementById('subUrl');
+
+function paintEndpoint() {
+  subKind.textContent = server.kind || 'no server';
+  subUrl.textContent = server.url || '';
+  // Add the active URL to the list if it was typed in rather than configured.
+  if (server.url && ![...endpointSel.options].some(o => o.value === server.url)) {
+    endpointSel.insertBefore(new Option(server.url, server.url),
+                             endpointSel.options[endpointSel.options.length - 1]);
+  }
+  if (endpointSel.value !== '__custom__') endpointSel.value = server.url || '';
+
+  const models = server.models || [];
+  // One model is not a choice, it is a fact — shown in the status line instead.
+  modelField.style.display = models.length > 1 ? 'flex' : 'none';
+  if (models.length > 1) {
+    modelSel.innerHTML = models.map(m =>
+      '<option value="' + esc(m.name) + '"' + (m.name === server.model ? ' selected' : '') + '>'
+      + esc(m.name) + (m.vision === false ? ' · no vision' : '')
+      + (m.size_gb ? ' · ' + m.size_gb + ' GB' : '') + '</option>').join('');
+    modelSel.value = server.model || '';
+  }
+}
+
+async function switchServer(url, model) {
+  serverNote.textContent = 'Switching…';
+  runBtn.disabled = true;
+  try {
+    const res = await fetch('/api/servers', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url: url || '', model: model || '' })
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      serverNote.textContent = data.error || 'Could not switch server.';
+      serverNote.classList.add('err');
+      // Put the dropdown back on whatever is really active.
+      paintEndpoint();
+      paintServer();
+      return;
+    }
+    serverNote.classList.remove('err');
+    server = data.server;
+    serverNote.textContent = 'Now using ' + server.url
+      + (server.model ? ' · ' + server.model : '');
+    customRow.style.display = 'none';
+    paintEndpoint();
+    paintServer();
+    initMode();
+  } catch (err) {
+    serverNote.textContent = err.message;
+    serverNote.classList.add('err');
+    paintServer();
+  }
+}
+
+endpointSel.addEventListener('change', () => {
+  if (endpointSel.value === '__custom__') {
+    customRow.style.display = 'flex';
+    endpointCustom.focus();
+    return;
+  }
+  customRow.style.display = 'none';
+  switchServer(endpointSel.value);
+});
+endpointUse.addEventListener('click', () => {
+  const url = endpointCustom.value.trim();
+  if (url) switchServer(url);
+});
+endpointCustom.addEventListener('keydown', e => {
+  if (e.key === 'Enter') { e.preventDefault(); endpointUse.click(); }
+});
+modelSel.addEventListener('change', () => switchServer(null, modelSel.value));
+
+function paintServer() {
+  const ok = !!server.available;
+  const kind = server.kind || 'server';
+  dot.className = 'dot ' + (ok ? 'ok' : 'bad');
+  serverText.textContent = ok
+    ? (server.model || kind) + ' · ' + kind
+      + (server.vision ? ' · vision ready'
+                       : (server.vision_known ? ' · no vision' : ' · vision not reported'))
+    : (server.model ? server.model + ' · unusable' : 'No model server at ' + server.url);
+  serverReason.textContent = ok ? '' : ('⚠ ' + (server.reason || ''));
+  // Uploading is pointless while the server can't read images. A selected
+  // benchmark case is its own input, so no upload is needed for that.
+  runBtn.disabled = !ok || !(current || (benchCase && benchCase.value) || (mockFile && mockFile.value));
+  // Whether the context picker does anything depends on which kind is active.
+  paintCtx();
+}
+if (mockFile) {
+  mockFile.addEventListener('change', () => {
+    // Picking from the folder replaces any upload or benchmark selection.
+    if (mockFile.value) {
+      current = null; staged = []; fileInput.value = '';
+      paintWorklist(); paintRun();
+      dropPreview();
+      if (benchCase) benchCase.value = '';
+      showChip(mockFile.value);
+      const mapped = MOCK_CASE_OF[mockFile.value];
+      matchedCase = mapped || null;
+      mapChip.className = mapped ? '' : 'none';
+      mapChip.innerHTML = mapped
+        ? '✓ Ground truth <strong>' + esc(mapped) + '</strong> — will be scored'
+          + ' <span class="how">(from mockOcr folder)</span>'
+        : 'No matching solution file — this run will not be scored.';
+    } else {
+      matchedCase = null; mapChip.textContent = ''; mapChip.className = '';
+    }
+    paintServer();
+  });
+}
+if (benchCase) {
+  benchCase.addEventListener('change', () => {
+    // The server reads the case PDF from disk, so any attached file is ignored.
+    if (benchCase.value) {
+      current = null; staged = []; fileInput.value = '';
+      paintWorklist(); paintRun();
+      dropPreview();
+      showChip(benchCase.options[benchCase.selectedIndex].text);
+      matchedCase = benchCase.value;
+      mapChip.className = '';
+      mapChip.innerHTML = '✓ Ground truth <strong>' + esc(benchCase.value)
+        + '</strong> — will be scored <span class="how">(benchmark case)</span>';
+    } else {
+      matchedCase = null;
+      mapChip.className = 'none';
+      mapChip.textContent = '';
+    }
+    paintServer();
+  });
+}
+async function refreshServer() {
+  recheckBtn.disabled = true;
+  const was = serverText.textContent;
+  serverText.textContent = 'Checking…';
+  try {
+    // probe=1 bypasses the status cache and re-reads the model list too, which
+    // is what "Re-check" is for after starting or stopping a server.
+    const data = await (await fetch('/api/servers?probe=1')).json();
+    server = data.server;
+    paintEndpoint();
+  } catch {
+    serverText.textContent = was;
+  } finally {
+    recheckBtn.disabled = false;
+    paintServer();
+  }
+}
+recheckBtn.addEventListener('click', refreshServer);
+
+/* ---------- live run counters ---------- */
+function startTicker() {
+  runStart = Date.now();
+  liveTokens = 0;
+  clearInterval(ticker);
+  ticker = setInterval(() => {
+    const s = ((Date.now() - runStart) / 1000).toFixed(1);
+    const rate = liveTokens > 0 ? ' · ' + (liveTokens / ((Date.now() - runStart) / 1000)).toFixed(2) + ' tok/s' : '';
+    meta.textContent = `${s}s · ${liveTokens} tokens${rate}`;
+  }, 200);
+}
+function stopTicker() { clearInterval(ticker); ticker = null; }
+
+function renderStats(summary) {
+  if (!pageStats.length) { statsEl.innerHTML = ''; return; }
+  const head = '<thead><tr><th>Page</th><th>Resolution</th><th>Tokens</th>'
+    + '<th>Prefill</th><th>Decode</th><th>tok/s</th></tr></thead>';
+  const body = pageStats.map((s, i) =>
+    `<tr><td>${i + 1}</td><td>${s.resolution || '—'}</td><td>${s.new_tokens ?? 0}</td>`
+    + `<td>${(s.prefill_seconds ?? 0).toFixed(1)}s</td>`
+    + `<td>${(s.decode_seconds ?? 0).toFixed(1)}s</td>`
+    + `<td>${(s.tokens_per_second ?? 0).toFixed(2)}</td></tr>`).join('');
+  const f = summary || {};
+  const foot = pageStats.length > 1 || summary
+    ? `<tfoot><tr><td>Total</td><td>${f.model || server.model || ''}</td>`
+      + `<td>${f.tokens ?? ''}</td><td>${(f.prefill_seconds ?? 0).toFixed(1)}s</td>`
+      + `<td>${(f.decode_seconds ?? 0).toFixed(1)}s</td>`
+      + `<td>${(f.tokens_per_second ?? 0).toFixed(2)}</td></tr></tfoot>` : '';
+  statsEl.innerHTML = head + '<tbody>' + body + '</tbody>' + foot;
+}
+
+/* ---------- detail hint ---------- */
+const DETAIL_NOTE = {
+  fast: 'Caps pages at ~1.0 MP. Fastest, but small tone marks may be lost.',
+  balanced: 'Caps pages at ~2.0 MP.',
+  accurate: 'Caps pages at ~4.0 MP. Good for dense or small print.',
+  max: 'No downscaling — native resolution, highest accuracy. A 300 DPI A4 page '
+     + 'is ~8.7 MP and can take 10+ minutes.'
+};
+function updateNote() { detailNote.textContent = DETAIL_NOTE[detailSel.value] || ''; }
+detailSel.addEventListener('change', updateNote);
+updateNote();
+
+/* ---------- context window ----------
+   Sent with every request, to whichever server is active: Ollama reads it as
+   options.num_ctx, llama-server as n_ctx. Changeable at any time, including
+   mid-queue -- jobs already in flight keep the window they started on. */
+const ctxSel = document.getElementById('ctxSel');
+const ctxNote = document.getElementById('ctxNote');
+function paintCtx() {
+  if (server.num_ctx) ctxSel.value = String(server.num_ctx);
+  ctxNote.textContent = server.kind === 'ollama'
+    ? 'Sent as options.num_ctx on every request. Bigger holds a longer transcript '
+      + 'for passes 2 and 3, but costs KV-cache memory whether or not it is used.'
+    : 'Sent as n_ctx on every request. A build that does not accept it keeps the '
+      + 'window from its own -c instead.';
+}
+ctxSel.addEventListener('change', async () => {
+  const want = ctxSel.value;
+  try {
+    const res = await fetch('/api/context', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ num_ctx: Number(want) })
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Could not set the context size.');
+    server = data.server;
+    meta.textContent = `Context window set to ${data.num_ctx} tokens.`;
+    meta.classList.remove('err');
+  } catch (err) {
+    // Put the picker back on what the server is really using.
+    if (server.num_ctx) ctxSel.value = String(server.num_ctx);
+    meta.textContent = err.message;
+    meta.classList.add('err');
+  } finally {
+    paintCtx();
+  }
+});
+
+/* ---------- file intake ---------- */
+function showChip(name) {
+  preview.style.display = 'none';
+  chipName.textContent = name;
+  chip.style.display = 'block';
+}
+/* ---------- auto-map an upload to its ground-truth case ---------- */
+async function sha256Hex(file) {
+  if (!crypto.subtle) return '';           // needs a secure context; name-match still works
+  const buf = await crypto.subtle.digest('SHA-256', await file.arrayBuffer());
+  return [...new Uint8Array(buf)].map(b => b.toString(16).padStart(2, '0')).join('');
+}
+async function mapFile(file) {
+  mapChip.className = '';
+  mapChip.textContent = 'Looking for a matching solution…';
+  try {
+    const sha256 = await sha256Hex(file);
+    const res = await fetch('/api/match', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ filename: file.name, sha256 })
+    });
+    const m = await res.json();
+    // A stale reply from a previously selected file must not overwrite this one.
+    if (current !== file) return;
+    if (m.case) {
+      matchedCase = m.case;
+      mapChip.className = '';
+      mapChip.innerHTML = '✓ Ground truth <strong>' + esc(m.case) + '</strong> — will be scored'
+        + ' <span class="how">(matched by ' + esc(m.matched_by) + ')</span>';
+    } else {
+      matchedCase = null;
+      mapChip.className = 'none';
+      mapChip.textContent = 'No matching solution file — this run will not be scored.';
+    }
+  } catch {
+    if (current !== file) return;
+    matchedCase = null;
+    mapChip.className = 'none';
+    mapChip.textContent = '';
+  }
+}
+
+/* A single file gets the preview and the ground-truth lookup, exactly as before.
+   A batch cannot be streamed into one result panel, so it goes to the queue
+   instead -- listed in full first, then worked by however many workers there
+   are. That is what makes a concurrency measurement mean anything. */
+// Each preview holds a blob URL alive until it is released; the workspace can be
+// repainted many times before a run, so the previous one goes first.
+let previewUrl = null;
+function dropPreview() {
+  if (previewUrl) { URL.revokeObjectURL(previewUrl); previewUrl = null; }
+  preview.style.display = 'none'; preview.removeAttribute('src');
+}
+function previewOne(file) {
+  mapFile(file);
+  chip.style.display = 'none';
+  preview.onerror = () => showChip(file.name);
+  preview.onload = () => { chip.style.display = 'none'; preview.style.display = 'block'; };
+  if (file.type === 'application/pdf' || /\.(pdf|heic|heif)$/i.test(file.name)) {
+    dropPreview();
+    showChip(file.name);
+  } else {
+    dropPreview();
+    previewUrl = URL.createObjectURL(file);
+    preview.src = previewUrl;
+  }
+  meta.textContent = file.name + ' · ' + (file.size / 1024 / 1024).toFixed(2) + ' MB';
+  meta.classList.remove('err');
+}
+function previewMany(files) {
+  dropPreview();
+  chip.style.display = 'none';
+  const mb = files.reduce((sum, f) => sum + f.size, 0) / 1024 / 1024;
+  meta.textContent = `${files.length} files · ${mb.toFixed(2)} MB total`;
+  meta.classList.remove('err');
+  // Ground truth is matched per file, by the worker that runs it.
+  matchedCase = null;
+  mapChip.className = 'none';
+  mapChip.textContent = 'Each file is matched to its own solution when it runs.';
+}
+
+const sameFile = (a, b) =>
+  a.name === b.name && a.size === b.size && a.lastModified === b.lastModified;
+
+function addFiles(list) {
+  const incoming = [...(list || [])].filter(Boolean);
+  if (!incoming.length) return;
+  // Adds rather than replaces: a batch is usually assembled over several drops.
+  for (const f of incoming) if (!staged.some(s => sameFile(s, f))) staged.push(f);
+  // Hand-picked files override the folder and benchmark pickers.
+  if (benchCase && benchCase.value) benchCase.value = '';
+  if (mockFile && mockFile.value) mockFile.value = '';
+  paintWorkspace();
+}
+function removeStaged(i) {
+  staged.splice(i, 1);
+  paintWorkspace();
+}
+function paintWorkspace() {
+  current = staged[0] || null;
+  if (staged.length === 1) previewOne(staged[0]);
+  else if (staged.length > 1) previewMany(staged);
+  else {
+    dropPreview();
+    chip.style.display = 'none';
+    mapChip.textContent = ''; mapChip.className = '';
+    matchedCase = null;
+  }
+  paintWorklist();
+  paintRun();
+  paintServer();
+}
+function paintWorklist() {
+  if (staged.length < 2) { worklist.innerHTML = ''; return; }
+  worklist.innerHTML =
+    '<div class="wl-head"><span>' + staged.length + ' files in the workspace</span>'
+    + '<button class="ghost-sm" data-rm="all">Remove all</button></div>'
+    + staged.map((f, i) =>
+        '<div class="wl-item"><span class="nm">' + esc(f.name) + '</span>'
+        + '<span class="sz">' + (f.size / 1024 / 1024).toFixed(2) + ' MB</span>'
+        + '<button data-rm="' + i + '" title="Remove">✕</button></div>').join('');
+}
+worklist.addEventListener('click', e => {
+  const btn = e.target.closest('[data-rm]');
+  if (!btn) return;
+  if (btn.dataset.rm === 'all') { staged = []; paintWorkspace(); }
+  else removeStaged(Number(btn.dataset.rm));
+});
+
+/* One file streams live; several are queued. The button says which, and the
+   note says what the current pool will actually do with them. */
+function paintRun() {
+  const many = staged.length > 1;
+  runBtn.textContent = many ? `Queue ${staged.length} files & run` : 'Read document';
+  if (!many) { runNote.textContent = ''; return; }
+  const on = modeSeg.querySelector('button.on');
+  runNote.textContent = on && on.dataset.mode === 'concurrent'
+    ? `All ${staged.length} are queued first, then all ${staged.length} go out at once.`
+    : `Queued and run one after another. Switch the Queue tab to Concurrent to `
+      + `send all ${staged.length} at the same time.`;
+}
+
+drop.addEventListener('click', () => fileInput.click());
+fileInput.addEventListener('change', e => { addFiles(e.target.files); fileInput.value = ''; });
+['dragenter', 'dragover'].forEach(ev =>
+  drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.add('over'); }));
+['dragleave', 'drop'].forEach(ev =>
+  drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.remove('over'); }));
+drop.addEventListener('drop', e => addFiles(e.dataTransfer.files));
+window.addEventListener('paste', e => {
+  if (e.clipboardData.files.length) return addFiles(e.clipboardData.files);
+  const item = [...e.clipboardData.items].find(i => i.type.startsWith('image/'));
+  if (item) addFiles([item.getAsFile()]);
+});
+// A file dropped anywhere else would otherwise be opened by the browser, which
+// navigates away from the page and loses whatever is on screen.
+['dragover', 'drop'].forEach(ev => window.addEventListener(ev, e => {
+  if (e.target && e.target.closest && e.target.closest('#drop, #qdrop')) return;
+  e.preventDefault();
+}));
+
+clearBtn.addEventListener('click', () => {
+  if (controller) controller.abort();
+  staged = []; text = ''; fileInput.value = '';
+  // The folder picker was left selected here, so a "cleared" page would still
+  // run whatever was chosen in it.
+  if (benchCase) benchCase.value = '';
+  if (mockFile) mockFile.value = '';
+  paintWorkspace();
+  copyBtn.disabled = true;
+  pagebar.textContent = ''; warn.textContent = '';
+  meta.textContent = ''; meta.classList.remove('err');
+  stopTicker(); pageStats = []; renderStats();
+  extracted = null; tabFields.disabled = true;
+  verified = null; tabNumbers.disabled = true;
+  job = null; pageTexts = []; curPage = -1; cmpPage = 0;
+  cmpImg.removeAttribute('src');
+  enableCompare();
+  paint();
+});
+copyBtn.addEventListener('click', async () => {
+  await navigator.clipboard.writeText(text);
+  copyBtn.textContent = 'Copied';
+  setTimeout(() => copyBtn.textContent = 'Copy', 1200);
+});
+stopBtn.addEventListener('click', () => { if (controller) controller.abort(); });
+
+/* ---------- streaming run ---------- */
+runBtn.addEventListener('click', async () => {
+  // A batch has no single transcript to stream into the result panel, so Run
+  // means "queue the whole list and let the pool work it".
+  if (staged.length > 1) {
+    pagebar.textContent = ''; warn.textContent = '';
+    await enqueue(null);
+    return;
+  }
+  if (!current && !(benchCase && benchCase.value) && !(mockFile && mockFile.value)) return;
+  runBtn.disabled = true; stopBtn.disabled = false; copyBtn.disabled = true;
+  text = ''; pageStats = []; pageTexts = []; curPage = -1; cmpPage = 0;
+  truth = null; tabAccuracy.disabled = true;
+  extracted = null; tabFields.disabled = true;
+  verified = null; tabNumbers.disabled = true;
+  if (['accuracy','fields','numbers'].some(m => document.querySelector('#tab' + m[0].toUpperCase() + m.slice(1)).classList.contains('on'))) showTab('rendered');
+  paint(); renderStats();
+  pagebar.innerHTML = '<span class="spin"></span> Starting…';
+  warn.textContent = ''; meta.textContent = ''; meta.classList.remove('err');
+  startTicker();
+
+  const body = new FormData();
+  const caseId = benchCase ? benchCase.value : '';
+  const fileName = mockFile ? mockFile.value : '';
+  if (caseId) body.append('case', caseId);        // server loads the PDF itself
+  else if (fileName) body.append('file', fileName); // ditto, from mockOcr/
+  else body.append('image', current);
+  body.append('detail', detailSel.value);
+  controller = new AbortController();
+
+  try {
+    const res = await fetch('/api/ocr/stream', {
+      method: 'POST', body, signal: controller.signal
+    });
+    if (!res.ok) {
+      const e = await res.json().catch(() => ({}));
+      throw new Error(e.error || ('Request failed (' + res.status + ')'));
+    }
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '', painted = 0;
+
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split('\n');
+      buffer = lines.pop();
+      for (const line of lines) {
+        if (!line.trim()) continue;
+        const msg = JSON.parse(line);
+        if (msg.event === 'page') {
+          pagebar.innerHTML = '<span class="spin"></span> Reading page ' + msg.page
+            + ' of ' + msg.total + ' (' + msg.resolution + ')…';
+          if (msg.page > 1) text += '\n\n--- page ' + msg.page + ' ---\n';
+          job = msg.job;
+          curPage = msg.page - 1;
+          pageTexts[curPage] = '';
+          cmpPage = curPage;
+          enableCompare();
+          if (!compareEl.hidden) paintCompare();
+        } else if (msg.event === 'page_done') {
+          pageStats.push(msg);
+          renderStats();
+        } else if (msg.event === 'truncated') {
+          warn.textContent = 'Page ' + msg.page + ' hit the output limit and may be cut off. '
+            + 'Raise MAX_NEW_TOKENS in app.py, or split the page.';
+        } else if (msg.event === 'looped') {
+          warn.textContent = 'Page ' + msg.page + ' started repeating itself and was stopped early — '
+            + 'the transcript is incomplete. Try a lower Detail, or a stronger model.';
+        } else if (msg.event === 'token') {
+          liveTokens++;
+          text += msg.text;
+          if (curPage >= 0) pageTexts[curPage] = (pageTexts[curPage] || '') + msg.text;
+          // Repainting the rendered view every token is wasteful; throttle it.
+          if (text.length - painted > 120) { painted = text.length; paint(); }
+          else { rawEl.textContent = text; rawEl.classList.remove('empty'); }
+        } else if (msg.event === 'done') {
+          text = msg.text;
+          stopTicker();
+          pagebar.textContent = '';
+          // Authoritative per-page text: fence-stripped server-side.
+          if (msg.pages && msg.pages.length) pageTexts = msg.pages;
+          if (msg.job) job = msg.job;
+          enableCompare();
+          if (!compareEl.hidden) paintCompare();
+          pageStats = msg.page_stats || pageStats;
+          renderStats(msg);
+          truth = msg.truth || null;
+          tabAccuracy.disabled = !truth;
+          if (truth && !truth.error) {
+            // Surface the headline number without needing a tab switch.
+            meta.textContent += ` · ${(truth.char_accuracy * 100).toFixed(1)}% vs ${truth.case}`;
+          }
+          if (tabAccuracy.classList.contains('on')) paintAccuracy();
+          meta.textContent = `${msg.page_count} page(s) · ${msg.detail} · `
+            + `${msg.tokens} tokens · ${msg.seconds}s total `
+            + `(${msg.prefill_seconds}s prefill + ${msg.decode_seconds}s decode) · `
+            + `${msg.tokens_per_second} tok/s · ${msg.model}`;
+          copyBtn.disabled = !text;
+        } else if (msg.event === 'extracting') {
+          // OCR is finished and on screen; the second pass runs after it.
+          extracted = { pending: true };
+          tabFields.disabled = false;
+          pagebar.innerHTML = '<span class="spin"></span> Extracting fields…';
+          if (tabFields.classList.contains('on')) paintFields();
+        } else if (msg.event === 'fields') {
+          const { event, ...rest } = msg;
+          extracted = rest;
+          tabFields.disabled = false;
+          pagebar.textContent = '';
+          if (tabFields.classList.contains('on')) paintFields();
+        } else if (msg.event === 'verifying') {
+          verified = { pending: true };
+          tabNumbers.disabled = false;
+          pagebar.innerHTML = '<span class="spin"></span> Verifying numbers…';
+          if (tabNumbers.classList.contains('on')) paintNumbers();
+        } else if (msg.event === 'verified') {
+          const { event, ...rest } = msg;
+          verified = rest;
+          tabNumbers.disabled = false;
+          pagebar.textContent = '';
+          // A failed sum is worth surfacing without needing a tab switch.
+          if (verified.counts && verified.counts.fail) {
+            warn.textContent = verified.counts.fail + ' number check(s) failed — see the Numbers tab.';
+          }
+          if (tabNumbers.classList.contains('on')) paintNumbers();
+        } else if (msg.event === 'logged') {
+          // The row for this run is on disk; show it without waiting.
+          refreshRuns();
+        } else if (msg.event === 'error') {
+          throw new Error(msg.error);
+        }
+      }
+    }
+    paint();
+  } catch (err) {
+    stopTicker();
+    pagebar.textContent = '';
+    if (err.name === 'AbortError') {
+      const s = ((Date.now() - runStart) / 1000).toFixed(1);
+      meta.textContent = `Stopped after ${s}s · ${liveTokens} tokens · partial result kept.`;
+      copyBtn.disabled = !text;
+    } else {
+      meta.textContent = err.message;
+      meta.classList.add('err');
+    }
+    paint();
+  } finally {
+    paintServer();
+    stopBtn.disabled = true; controller = null;
+  }
+});
+
+paint();
+showTab('raw');
+paintEndpoint();
+paintServer();
+refreshQueue();
+refreshRuns();
+initMode();
+</script>
+</body>
+</html>

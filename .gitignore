@@ -1,0 +1,38 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Local configuration. .env.example is the template and IS tracked; every other
+# variant is ignored, because a per-deployment file (.env.prod, .env.local) is
+# exactly the one that carries a real endpoint.
+.env
+.env.*
+!.env.example
+
+# Run data. The logs directory itself is kept (see logs/.gitkeep); its contents
+# are per-deployment measurements, not source.
+logs/*.csv
+logs/*.csv.tmp
+
+# Saved OCR output from compare.py -- regenerated on every run.
+solution/out/
+
+# Build output from package.py.
+dist/
+
+# Editor and local tooling state -- developer machine, not deployment.
+.claude/
+.vscode/
+.idea/
+
+# Agent guidance. README.md is the tracked, human-facing document; this one is
+# working notes for Claude Code on this machine and does not ship.
+CLAUDE.md
+
+.DS_Store
+Thumbs.db

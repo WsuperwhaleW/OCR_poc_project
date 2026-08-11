@@ -1,0 +1,17 @@
+# Python 3.11+ (developed and tested on 3.13).
+#
+# Upper bounds are deliberate: this is pinned to major versions so that a
+# deployment installed six months from now gets what was tested, not whatever
+# released since. Widen them on purpose, after running compare.py.
+
+flask>=3.0,<4.0
+requests>=2.31,<3.0
+pillow>=10.0,<12.0
+
+# Optional inputs. Both are import-guarded in app.py -- without them the app runs
+# and rejects that format with a clear message rather than failing to start.
+pymupdf>=1.24,<2.0        # optional: PDF input   (without it, PDFs are refused)
+pillow-heif>=0.16,<1.0    # optional: HEIC/HEIF input
+
+# No torch / transformers / accelerate / numpy.
+# All inference happens in llama-server or Ollama; this app only decodes images.
