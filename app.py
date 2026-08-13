@@ -33,6 +33,43 @@ import runlog
 import scoring
 import verify
 
+# Prompt text and tunables live outside this file so either can be read, edited
+# and diffed without the request-assembly code around them. `prompts.py` holds
+# the four prompts; `settings.py` holds every value the app runs with, and the
+# comment beside each one says what was measured to arrive at it.
+from prompts import EXTRACT_PROMPT, EXTRACT_REMINDER, PROMPT, VERIFY_PROMPT
+from settings import (
+    ACCEPTED_SUFFIXES,
+    DEFAULT_DETAIL,
+    DETAIL_PRESETS,
+    EXTRACT,
+    EXTRACT_LOOP_MIN_REPEATS,
+    EXTRACT_LOOP_TAIL_CHARS,
+    EXTRACT_MAX_TOKENS,
+    EXTRACT_REPEAT_THRESHOLD,
+    GEN_CONNECT_TIMEOUT,
+    GEN_TIMEOUT,
+    LOOP_CHECK_EVERY,
+    LOOP_COUNTER_MAX_UNIT,
+    LOOP_COUNTER_MIN_LINE,
+    LOOP_COUNTER_MIN_REPEATS,
+    LOOP_MIN_REPEATS,
+    LOOP_TAIL_CHARS,
+    MAX_JOBS,
+    MAX_NEW_TOKENS,
+    MAX_PAGES,
+    MAX_UPLOAD_MB,
+    PDF_DPI,
+    PROMPT_FIRST,
+    PROMPT_FIRST_OLLAMA,
+    TRIM_MARGINS,
+    TRIM_PAD,
+    TRIM_TOLERANCE,
+    VERIFY_MAX_TOKENS,
+    WORKERS_OVERRIDE,
+    sampler_extras,
+)
+
 from PIL import Image, ImageChops, ImageOps, ImageSequence, UnidentifiedImageError
 
 try:
@@ -50,338 +87,13 @@ try:
 except ImportError:  # pragma: no cover - optional dependency
     PDF_OK = False
 
-# Intake limits. All four are per-request costs paid by the model server, so a
-# deployment sharing one server between several users will want them lower than
-# these single-user defaults.
-MAX_UPLOAD_MB = config.env_int("MAX_UPLOAD_MB", 32, minimum=1, maximum=512)
-MAX_PAGES = config.env_int("MAX_PAGES", 10, minimum=1, maximum=200)
-# Render PDFs above the pixel cap so the downscale resamples from real detail
-# rather than the model reading a coarsely rasterised page.
-PDF_DPI = config.env_int("PDF_DPI", 300, minimum=72, maximum=600)
-MAX_NEW_TOKENS = config.env_int("MAX_NEW_TOKENS", 4096, minimum=256)
-
-# (connect, read) for a generation request. The read timeout is the one that
-# matters: a CPU-only server reading a dense page at `max` detail can legitimately
-# take many minutes, and a timeout that fires mid-generation throws away work the
-# server is still doing. Raise it rather than lower it on slow hardware.
-GEN_CONNECT_TIMEOUT = config.env_float("GEN_CONNECT_TIMEOUT", 10.0, minimum=1.0)
-GEN_READ_TIMEOUT = config.env_float("GEN_READ_TIMEOUT", 1800.0, minimum=30.0)
-GEN_TIMEOUT = (GEN_CONNECT_TIMEOUT, GEN_READ_TIMEOUT)
-
-# Repetition control. DRY only penalises a sequence once it repeats for longer than
-# DRY_ALLOWED_LENGTH tokens, so identical table cells and repeated amounts survive
-# while a runaway loop gets broken. Set DRY_MULTIPLIER to 0 to disable entirely.
-# Put the static instruction before the image so llama.cpp can cache it across
-# requests. Set false to restore the conventional image-first ordering.
-#
-# llama.cpp ONLY. Measured against Ollama 0.32.6 serving typhoon-ocr1.5-3b, the
-# same ordering makes the model ignore the image completely and emit its own
-# built-in instruction text instead of a transcript -- 228 tokens of prompt echo,
-# 6.7% accuracy, on a page that reads at 90%+ with the image first. So the
-# ordering is decided per backend in `stream_page`, and this flag only reaches
-# llama.cpp. Set PROMPT_FIRST_OLLAMA=1 to opt Ollama in and re-measure.
-PROMPT_FIRST = config.env_bool("PROMPT_FIRST", True)
-PROMPT_FIRST_OLLAMA = config.env_bool("PROMPT_FIRST_OLLAMA", False)
-
-# Crop blank scan margins before applying the resolution cap. Set TRIM_MARGINS=0 to
-# send pages exactly as rasterised.
-TRIM_MARGINS = config.env_bool("TRIM_MARGINS", True)
-
-# DRY is a llama.cpp sampler. Ollama's OpenAI-compatible endpoint silently drops
-# dry_*, top_k, min_p and repeat_penalty -- verified by sending repeat_penalty 5.0
-# to both: /v1 returned clean output, the native /api/chat returned garbage. So
-# leaving DRY on means llama.cpp runs with loop suppression that Ollama cannot
-# receive, which flatters llama.cpp on exactly the documents where a small model
-# loops. Set DRY_MULTIPLIER=0 to take it off both sides and compare bare.
-DRY_MULTIPLIER = config.env_float("DRY_MULTIPLIER", 0.8, minimum=0.0)
-DRY_ALLOWED_LENGTH = config.env_int("DRY_ALLOWED_LENGTH", 32, minimum=1)
-
-
-def sampler_extras():
-    """llama.cpp-only sampling controls, omitted entirely when DRY is disabled.
-
-    Omitted rather than sent as no-ops so that with DRY_MULTIPLIER=0 both backends
-    receive a byte-identical request body apart from Ollama's "model" field --
-    there is then nothing left to explain a difference in the results except the
-    server itself.
-    """
-    if DRY_MULTIPLIER <= 0:
-        return {}
-    return {
-        # repeat_penalty stays OFF: documents legitimately repeat values (0.00,
-        # currency codes, identical cells) and a flat penalty corrupts them.
-        "repeat_penalty": 1.0,
-        # DRY instead. It penalises *sequence* repetition, and allowed_length lets
-        # short legitimate repeats through while breaking runaway loops -- which
-        # greedy decoding on a 2B model is prone to.
-        "dry_multiplier": DRY_MULTIPLIER,
-        "dry_base": 1.75,
-        "dry_allowed_length": DRY_ALLOWED_LENGTH,
-        "dry_penalty_last_n": -1,
-    }
-
-# Belt and braces: even with DRY a model can lock into a loop, burning the full
-# token budget and minutes of wall clock. Stop the stream when the tail is clearly
-# cycling.
-LOOP_TAIL_CHARS = 600
-LOOP_MIN_REPEATS = 4
-# Counter loops ("ปี 1 ปี 2 ปี 3 ...") never repeat exactly, so they are caught by
-# normalising digit runs first. That is only applied *within a single line* with a
-# short unit -- a table whose rows differ only by their numbers is legitimate, and
-# its rows are newline separated, so this cannot mistake one for a loop.
-LOOP_COUNTER_MIN_REPEATS = 6
-LOOP_COUNTER_MAX_UNIT = 40
-LOOP_COUNTER_MIN_LINE = 160
-
-# Qwen3-VL turns roughly every 3136 pixels into one visual token, and prefill --
-# the dominant cost -- scales with that. Small Thai glyphs and tone marks are the
-# first thing lost when the cap is too low.
-DETAIL_PRESETS = {
-    "fast": 1_000_000,
-    "balanced": 2_000_000,
-    "accurate": 4_000_000,
-    "max": 0,  # 0 = no downscaling, feed the page at native resolution
-}
-# Measured, not assumed: on a real 300 DPI receipt, "max" (2550x3300) sent the model
-# into a counter loop and hit the 4096-token cap after 636 s, while "accurate"
-# (1758x2275) finished clean in 303 s. Past ~4 MP the extra visual tokens degrade this
-# model rather than helping, so accuracy-first means "accurate", not "max".
-DEFAULT_DETAIL = "accurate"
-
-# Verbatim transcription. Deliberately NOT typhoon-ocr's prompt: that one asks the
-# model to *describe* figures in Thai, which produces invented prose and translated
-# content instead of a faithful transcript.
-PROMPT = """Transcribe every piece of text in this document image, exactly as it appears.
-
-LANGUAGE
-- Do NOT translate anything. Reproduce each word in the language it is printed in.
-- Thai text stays Thai. English text stays English. The document contains only Thai
-  and English -- never output any other language or script.
-- Do NOT transliterate, romanise, correct spelling, or modernise wording.
-
-CONTENT
-- Output ONLY text that is actually visible in the image. Invent nothing.
-- Do NOT summarise, paraphrase, explain, comment, or add headings of your own.
-- Do NOT describe logos, photos, charts, stamps, signatures or diagrams. Skip them.
-- Copy numbers, dates, codes and amounts exactly as printed, keeping the original
-  digits, separators and punctuation.
-- If a character is genuinely illegible, transcribe your closest reading of it.
-  Never guess at whole words that are not there.
-
-ORDER -- this matters
-- Transcribe in the order the text physically appears on the page: strictly top to
-  bottom, and left to right within the same line or band.
-- Text positioned higher on the page MUST appear earlier in your output. Never move a
-  heading, title, total or page number away from where it sits on the page.
-- For multi-column layouts, finish the left column before starting the right one.
-
-FORMATTING -- keep it minimal
-- Output plain text. Preserve the original line breaks, and the spacing or indentation
-  that separates columns and aligns values.
-- Do NOT use Markdown: no #, *, -, backticks, code fences, bold or italics.
-- Do NOT wrap anything in <figure>, <page_number>, or any other tag.
-- Tables are the ONE structure to preserve, and they must be HTML. Never use Markdown
-  pipe tables.
-- If the page has an itemised grid -- rows of entries under column headings, such as
-  description / period / amount / VAT / total on an invoice or receipt -- you MUST
-  output it as a <table>. Never flatten a grid into one value per line.
-- Each row of the grid is ONE <tr>, with one <td> per column, in left-to-right order.
-  Where a heading stacks Thai above English (จํานวนเงิน over Gross Amount), that is a
-  single cell: put both in one <td>.
-- Do NOT put headings, addresses, phone numbers, customer details, totals in words,
-  signatures or free-standing paragraphs inside a table. Those are plain text.
-- Never wrap the whole page in a table. Never use <caption>, <thead> or <tbody>.
-  A page normally reads: plain text, then the table, then more plain text.
-- Write tables in exactly this shape, with no styles, classes or attributes:
-  <table>
-  <tr><td>ไตรมาส</td><td>ยอดขาย</td></tr>
-  <tr><td>Q1</td><td>1,200,000</td></tr>
-  </table>
-  Keep every cell in its original row and column. Preserve blank cells as <td></td> so
-  the columns stay aligned. Use colspan/rowspan only where cells are genuinely merged.
-- Checkboxes are text: ☐ for unchecked, ☑ for checked."""
-
-# Second pass: feed the finished transcript back to the model as text and ask for
-# structured fields. Text-only, so there is no image to prefill and it costs a
-# fraction of the OCR run.
-EXTRACT = config.env_bool("EXTRACT", True)
-# A 2-page receipt with a dozen line items needs ~2500 tokens of JSON at eight
-# sub-fields per item; 1536 cut those documents off mid-value, which surfaced as
-# a JSON parse error rather than as the budget problem it was.
-EXTRACT_MAX_TOKENS = config.env_int("EXTRACT_MAX_TOKENS", 4096, minimum=256)
-
-EXTRACT_PROMPT = """You are reading the text of a Thai/English business document that has
-already been transcribed. Extract its key business fields as JSON.
-
-Return ONLY a JSON object, no prose and no code fence. Use exactly these keys:
-
-{
-  "document_type": "",        // as printed at the head of the page
-  "document_number": "",
-  "issue_date": "",
-  "due_date": "",
-  "reference_document": "",   // another document this one cites
-  "po_number": "",
-  "original_invoice_number": "",   // the invoice a credit/debit note corrects
-  "contract_number": "",
-  "customer_code": "",
-  "location_code": "",        // site / branch / meter code the charge belongs to
-  "service_period": "",       // the period the whole document covers
-  "seller_name": "",          // the company name only
-  "seller_tax_id": "",
-  "seller_branch": "",        // the branch shown beside the seller's tax ID
-  "seller_address": "",
-  "buyer_name": "",           // the company name only
-  "buyer_tax_id": "",
-  "buyer_branch": "",
-  "buyer_address": "",
-  "currency": "",
-  "vat_rate": "",             // just the number the document states
-  "line_items": [
-    { "description": "", "period": "", "quantity": "",
-      "unit_price": "", "amount": "", "vat": "",
-      "withholding_tax": "", "net_amount": "" }
-  ],
-  "subtotal": "",             // the total BEFORE VAT
-  "vat_total": "",
-  "amount_incl_vat": "",      // the total INCLUDING VAT, before withholding
-  "withholding_tax_total": "",
-  "net_payable": "",          // what is left to pay after withholding is deducted
-  "amount_in_words": "",
-  "payment_method": "",
-  "payment_reference": "",    // cheque or transfer number for the payment
-  "other_fields": [ { "label": "", "value": "" } ]
-}
-
-Work through the document once, in this order, and fill the keys as you reach them:
-its heading and number, the block naming who issued it, the block naming who receives
-it, the charges table, then the totals and payment lines at the foot.
-
-General rules:
-- Copy values EXACTLY as they appear. Do not reformat, do not translate, and do not
-  convert Thai text to English.
-- Every value you write must appear, character for character, in the document text
-  below. If you cannot point at it there, the field is not yours to fill.
-- Use "" for anything the document does not state. Never guess or invent a value.
-  An empty field is correct and useful; a plausible invented one is not.
-- Never fill a field with a placeholder -- not a row of zeros, not a dash, not a repeat
-  of a value you already used elsewhere. If the page does not state it, the answer is "".
-- Output exactly the keys listed above and no others. Nothing written in these
-  instructions is itself a key or a value: where a rule below names a label to look for,
-  that is a hint for finding the figure on the page, never something to emit.
-- The skeleton above is the shape of the answer, not the answer. Returning it unchanged,
-  with every value still "", is wrong for any document that states anything at all.
-- Do not fill a field by inference from the others: not the buyer's tax ID from the
-  buyer's name, not a due date from an issue date, not a currency the page never
-  names. Leave it "".
-- Put every remaining fact that matters -- meter readings, page numbers, order numbers
-  the keys above do not cover -- into "other_fields" with the document's own label.
-- "line_items" holds only the rows of the charges table. Summary rows such as Total: VAT,
-  Total: Non VAT or รวมเงิน are NOT line items; their figures belong in the totals fields
-  below.
-
-Buyer and seller -- four separate fields per party, and each holds one thing only:
-- The name field takes the company name and nothing else, on ONE line. Stop at the end of
-  the name. If what you are about to write contains a street, a postcode, a telephone
-  number, a tax ID, a date or a line break, you have taken too much of the block -- cut
-  it back to the name alone.
-- The tax ID field takes only the digits printed after เลขประจำตัวผู้เสียภาษี or Tax ID.
-- The branch field takes what is printed beside that tax ID -- the Thai word for head
-  office, or a branch number. Copy it as printed; do not translate it and do not turn a
-  word into a number.
-- The address field takes the street lines and postcode, without the name, the tax ID or
-  the branch repeated inside it.
-- Never write the same text into two of these fields. The seller's block is usually the
-  letterhead at the top; the buyer's is the block labelled ลูกค้า or ผู้ซื้อ.
-
-References -- each key takes ONE identifier, and only when the page labels it as that:
-- These keys are empty on most documents, and that is the expected answer. Do not reuse
-  the document's own number to fill them, and never write one value into several of them.
-  A page that prints only an invoice number gives document_number that number and leaves
-  po_number, contract_number, customer_code and the rest "".
-- A bare number with no label is not a PO number. If a reference is labelled with
-  something these keys do not cover, it belongs in "other_fields", not forced into one
-  of these.
-- service_period is the period the document as a whole covers, printed once near the head
-  of the page. A period printed on one row of the charges table is that row's period and
-  belongs in that row instead.
-
-Reading numbers -- take particular care here:
-- Keep the digits exactly as printed, including thousands separators and both decimal
-  places. Do not round, re-space or "tidy" them.
-- Read across the row. A figure belongs to the column it sits under; never shift a
-  value into a neighbouring column to make a row look complete.
-- A cell showing "-", "–" or blank means nil. Write it as "-" or "", not as "0",
-  unless the document actually prints 0.00.
-- Some Thai forms rule the money column into baht and satang. "9,741 60" under such a
-  column is ONE amount, 9,741.60 -- write it as "9,741.60". Two figures separated by a
-  wide gap in DIFFERENT columns are two separate amounts; keep them apart.
-- A figure in brackets, or with a leading "-", is negative. Preserve the sign.
-- Some pages price VAT-inclusive: the money column is headed จำนวนเงิน (รวมภาษี) or
-  ราคารวมภาษีมูลค่าเพิ่ม or Amount (incl. VAT), and every figure under it already
-  contains the tax. Others price VAT-exclusive and add the tax below. Either way,
-  copy each figure exactly as printed. Never take VAT out of an inclusive figure and
-  never add it to an exclusive one, and do not adjust any figure to make a column
-  add up. Where the page states which basis it uses -- in that column heading or in a
-  note such as ราคานี้รวมภาษีมูลค่าเพิ่มแล้ว -- copy that wording into "other_fields"
-  under its own label, so the reader knows which figures carry tax.
-- Do not compute anything. If the document does not print a subtotal, leave it "";
-  never add the rows up yourself.
-- Copy every line of the charges table once, including rows whose amount is nil. A
-  missing row is the most damaging error you can make here -- and a row written twice
-  is the second most damaging, so do not revisit a row you have already written.
-
-The totals -- four separate figures, each read off its own printed line:
-- subtotal is the figure before VAT, labelled รวมเป็นเงิน or มูลค่าสินค้า/บริการ or
-  รวมราคาสินค้า or Sub Total.
-- amount_incl_vat is the figure after VAT is added, labelled จำนวนเงินรวมทั้งสิ้น or
-  รวมเงินทั้งสิ้น or Total Amount. It is the one the amount in words normally spells out.
-- Take each of these from its own label, not from its position. A VAT-inclusive page
-  often prints them in the opposite order -- the grand total first, then the VAT, then
-  the goods total below both -- and the top line there is amount_incl_vat, not subtotal.
-- net_payable is what remains after withholding is deducted, labelled ยอดชำระสุทธิ or
-  คงเหลือ or Net Payable or Amount Due. On a document with no withholding this line is
-  often absent -- then leave net_payable "".
-- Fill only the lines the page actually prints. If it shows a single grand total, decide
-  from its label and from whether withholding was deducted which of the two it is, and put
-  it there alone. Do not copy one figure into both fields, and never subtract or add to
-  produce the other.
-
-VAT rate:
-- Look for a stated rate, printed after อัตราภาษีมูลค่าเพิ่ม or อัตราร้อยละ or VAT.
-- Put just the number in vat_rate, written the way the page writes it: a page showing 7%
-  gives 7, and a page showing 7.00% gives 7.00. Never convert it to a fraction such as
-  0.07, and never keep the per-cent sign.
-- If the document is zero-rated, that is 0. If no rate is stated anywhere, leave it ""
-  -- do not assume one, and do not derive it by dividing the totals.
-
-Document text:
-"""
-
-# Repeated after the transcript, and this is load-bearing rather than belt and
-# braces. typhoon-ocr is an OCR fine-tune first: once a long transcript sits
-# between the instructions and the point of generation, its training wins and it
-# answers with its own {"natural_text": "<the whole page>"} envelope instead of
-# the requested fields -- which then overruns the token cap mid-string and
-# arrives as "Unterminated string starting at ... (char 17)", char 17 being the
-# opening quote of that envelope. Measured on a 3,694-token prompt: instructions
-# first alone gave the envelope every time; closing with this reminder gave the
-# right schema every time. Short documents never showed it, so this only ever
-# reproduced on the longer multi-page ones.
-EXTRACT_REMINDER = """
-
-Now return the JSON object described above, using exactly the keys listed.
-Do NOT transcribe the document and do NOT return a "natural_text" field."""
 
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = MAX_UPLOAD_MB * 1024 * 1024
 
-# Rendered page images are kept so the browser can show the source side by side
-# with the extracted text. These are the *prepared* pages -- post-rasterisation
-# and post-downscale -- so the comparison shows exactly what the model saw.
-# Held in memory, so this is a RAM ceiling as much as a history depth: a 10-page
-# document at `accurate` is ~40 MB of PNG. Lower it on a small server.
-MAX_JOBS = config.env_int("MAX_JOBS", 5, minimum=1, maximum=100)
+# Prepared page images, kept so the browser can show the source beside the text.
+# In memory, so MAX_JOBS is a RAM ceiling rather than a history depth -- see
+# settings.py.
 _jobs = OrderedDict()
 _jobs_lock = threading.Lock()
 
@@ -582,7 +294,8 @@ def stream_page(image: Image.Image, stats: dict | None = None):
                 collected.append(piece)
                 yield piece
                 # Check periodically, not per token -- the scan is O(tail^2).
-                if pieces % 24 == 0 and looks_repetitive("".join(collected)):
+                if (pieces % LOOP_CHECK_EVERY == 0
+                        and looks_repetitive("".join(collected))):
                     looped = True
                     break
 
@@ -645,7 +358,7 @@ def _first_json_object(text: str):
     return None
 
 
-def _repeated_line_items(raw: str, threshold: int = 3) -> bool:
+def _repeated_line_items(raw: str, threshold: int = EXTRACT_REPEAT_THRESHOLD) -> bool:
     """True when the same line item was emitted over and over.
 
     `looks_repetitive` misses this: the model cycles over a *set* of items rather
@@ -721,7 +434,8 @@ def extract_fields(text: str) -> dict:
         # Wider window than the OCR stream uses: an extraction loop repeats a
         # whole clause inside one JSON string, so the repeating unit is long and
         # a 600-character tail cannot hold enough repeats of it to be recognised.
-        if looks_repetitive(raw, tail_chars=1600, min_repeats=3):
+        if looks_repetitive(raw, tail_chars=EXTRACT_LOOP_TAIL_CHARS,
+                            min_repeats=EXTRACT_LOOP_MIN_REPEATS):
             return {"error": "The model repeated itself while extracting and never "
                              "closed the JSON. Try Re-extract; if it persists the "
                              "transcript is probably too noisy to parse.",
@@ -798,42 +512,6 @@ def extract_fields(text: str) -> dict:
     }
 
 
-VERIFY_PROMPT = """You are auditing fields extracted from a Thai/English business document.
-The arithmetic has ALREADY been checked by an exact calculator, and its results are given
-to you below. Do not redo the sums and do not contradict them -- they are authoritative.
-
-Your job is only what arithmetic cannot decide. Look for:
-- values that landed in the wrong field (a date in a document number, an address in a name)
-- identifiers with an implausible shape (a Thai tax ID is 13 digits, dates should be real dates)
-- a line item whose description does not match its amount's magnitude
-- a field left empty that the other fields contradict (a VAT total with no rate)
-- anything that looks transcribed wrong rather than calculated wrong
-
-An empty field is not itself a problem: it means the document does not state that
-value, which is the correct answer. Report problems only -- never supply a value,
-and never suggest what an empty field "should" contain. You cannot see the page.
-
-Some documents price VAT-inclusive and some price VAT-exclusive; which one this is
-appears below the fields, and it has already been taken into account by the
-calculator. Do not raise an issue that assumes the other basis -- on a VAT-inclusive
-document the line amounts are SUPPOSED to exceed the goods total and to add up to the
-grand total instead, and that is not an error.
-
-Return ONLY a JSON object, no prose and no code fence:
-
-{
-  "issues": [ { "field": "", "problem": "", "severity": "error" } ],
-  "notes": ""
-}
-
-severity is "error" (certainly wrong), "warning" (suspicious) or "info".
-Return an empty issues list if the fields look sound. Never invent a problem to
-have something to report.
-
-Extracted fields:
-"""
-
-
 def verify_with_llm(fields: dict, checks: list, basis: dict = None) -> dict:
     """Ask the model to review fields the calculator cannot judge.
 
@@ -876,7 +554,7 @@ def verify_with_llm(fields: dict, checks: list, basis: dict = None) -> dict:
 
     payload = {
         "messages": [{"role": "user", "content": content}],
-        "max_tokens": 768,
+        "max_tokens": VERIFY_MAX_TOKENS,
         "temperature": 0,
         "top_k": 1,
         "top_p": 1.0,
@@ -1035,7 +713,8 @@ def load_pages(data: bytes):
     return frames
 
 
-def trim_margins(image: Image.Image, tolerance: int = 12, pad: int = 10) -> Image.Image:
+def trim_margins(image: Image.Image, tolerance: int = TRIM_TOLERANCE,
+                 pad: int = TRIM_PAD) -> Image.Image:
     """Crop uniform blank borders.
 
     Measured on real 300 DPI invoices this removes 0-18% of the page. Note what that
@@ -1305,9 +984,8 @@ def server_slots():
 
 def default_workers():
     """One worker per server slot: more just hides the wait inside the server."""
-    override = config.env_int("OCR_WORKERS", 0, minimum=0, maximum=jobs.MAX_WORKERS)
-    if override:
-        return override
+    if WORKERS_OVERRIDE:
+        return WORKERS_OVERRIDE
     return max(1, int(server_slots() or 1))
 
 
@@ -1413,8 +1091,6 @@ def extract_endpoint():
 
 
 MOCK_DIR = scoring.MOCK
-_ACCEPTED = {".pdf", ".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif",
-             ".tif", ".tiff", ".heic", ".heif"}
 
 
 def mock_files():
@@ -1423,7 +1099,7 @@ def mock_files():
         return []
     listing = []
     for path in sorted(MOCK_DIR.iterdir()):
-        if not path.is_file() or path.suffix.lower() not in _ACCEPTED:
+        if not path.is_file() or path.suffix.lower() not in ACCEPTED_SUFFIXES:
             continue
         case, how = scoring.case_for_upload(filename=path.name)
         listing.append({
@@ -1445,7 +1121,7 @@ def resolve_mock(name: str):
         raise ValueError("File is outside the mockOcr folder.")
     if not candidate.is_file():
         raise ValueError(f"No such file: {name}")
-    if candidate.suffix.lower() not in _ACCEPTED:
+    if candidate.suffix.lower() not in ACCEPTED_SUFFIXES:
         raise ValueError(f"Unsupported file type: {candidate.suffix}")
     data = candidate.read_bytes()
     case, _how = scoring.case_for_upload(filename=candidate.name, data=data)

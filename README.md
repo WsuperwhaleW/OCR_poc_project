@@ -224,6 +224,10 @@ A malformed value prints a warning and falls back to the default rather than sto
 startup. Settings are read **once at import**, so changing one needs a restart of
 `app.py` — including after re-loading a `.env`.
 
+Every default lives in [`settings.py`](settings.py), which is also where the handful of
+tunables with no environment variable of their own are kept; the prompts are in
+[`prompts.py`](prompts.py). Edit either without going near the request code in `app.py`.
+
 The ones that matter for a deployment:
 
 | Variable | Default | Why you would change it |
@@ -681,7 +685,9 @@ still never parses `.env` itself.
 
 | File | What it owns |
 |---|---|
-| `app.py` | Flask routes, image preparation, the three passes, streaming, prompts |
+| `app.py` | Flask routes, image preparation, the three passes, streaming |
+| `settings.py` | Every tunable the app runs with — limits, timeouts, detail presets, sampling, loop thresholds |
+| `prompts.py` | The four prompts, and nothing else |
 | `config.py` | Every path and the typed environment readers. The only place that knows where anything lives |
 | `backends.py` | Endpoint probing and switching; every llama.cpp-vs-Ollama difference |
 | `grounding.py` | Checking extracted fields against the transcript they came from |

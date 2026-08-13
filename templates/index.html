@@ -2139,7 +2139,7 @@ runBtn.addEventListener('click', async () => {
           renderStats();
         } else if (msg.event === 'truncated') {
           warn.textContent = 'Page ' + msg.page + ' hit the output limit and may be cut off. '
-            + 'Raise MAX_NEW_TOKENS in app.py, or split the page.';
+            + 'Raise MAX_NEW_TOKENS in settings.py, or split the page.';
         } else if (msg.event === 'looped') {
           warn.textContent = 'Page ' + msg.page + ' started repeating itself and was stopped early — '
             + 'the transcript is incomplete. Try a lower Detail, or a stronger model.';

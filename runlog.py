@@ -19,6 +19,7 @@ from datetime import datetime
 
 import config
 import grounding
+import settings
 
 ROOT = config.BASE_DIR
 LOG_DIR = config.LOG_DIR
@@ -75,9 +76,12 @@ COLUMNS = [
     "dry",
 ]
 
-# Mirrors app.DRY_MULTIPLIER. Read from the environment rather than imported so
-# that runlog stays free of an app import (app imports runlog).
-_DRY = config.env_float("DRY_MULTIPLIER", 0.8, minimum=0.0)
+# The value the run was actually made with, taken from `settings` rather than
+# re-read here: two independent reads of one environment variable can disagree
+# after a clamp or a typo, and this column would then describe a run that never
+# happened. `settings` imports nothing but `config`, so there is no import cycle
+# (app imports runlog).
+_DRY = settings.DRY_MULTIPLIER
 
 _lock = threading.Lock()
 

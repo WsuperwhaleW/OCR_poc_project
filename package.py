@@ -36,6 +36,8 @@ FILES = [
     ".gitignore",
     "app.py",
     "config.py",
+    "settings.py",
+    "prompts.py",
     "backends.py",
     "grounding.py",
     "jobs.py",
