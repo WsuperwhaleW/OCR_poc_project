@@ -113,6 +113,32 @@ TRIM_PAD = 10
 PROMPT_FIRST = config.env_bool("PROMPT_FIRST", True)
 PROMPT_FIRST_OLLAMA = config.env_bool("PROMPT_FIRST_OLLAMA", False)
 
+# The system message sent to Ollama, and the reason it exists at all: the app was
+# already sending one without knowing it.
+#
+# `app.py` builds every request as a single user message. Ollama fills the empty
+# system slot from the served model's own Modelfile, and scb10x/typhoon-ocr1.5-3b
+# ships `SYSTEM You are a helpful assistant.`, so that text has been part of every
+# OCR request this app has ever sent to Ollama. Measured on sol005 at `balanced`:
+# sending it explicitly is byte-identical to sending nothing (2854 prompt tokens
+# either way), which is what makes this default a no-op rather than a change.
+#
+# It is also mildly load-bearing, which is why it is reproduced rather than
+# dropped. Suppressing the system block entirely costs 2.42 points of mean
+# character accuracy across the five fixtures (76.58 -> 74.16). The words do not
+# appear to matter -- an OCR-specific persona scored identically to the generic
+# one -- so what is being held here is the slot, not its content.
+#
+# Ollama only. llama-server has no Modelfile and is currently sent no system
+# message at all; every llama.cpp baseline in CLAUDE.md was measured that way, so
+# `backends.system_prefix` deliberately does not send this there.
+#
+# OLLAMA_SYSTEM= (explicitly empty) sends no system message, which is the shape to
+# use when comparing the two backends bare -- the same reasoning as DRY_MULTIPLIER=0
+# below. It is a measurably worse setting for ordinary use.
+OLLAMA_SYSTEM = config.env_str("OLLAMA_SYSTEM", "You are a helpful assistant.",
+                               allow_empty=True)
+
 # Repetition control. DRY only penalises a sequence once it repeats for longer than
 # DRY_ALLOWED_LENGTH tokens, so identical table cells and repeated amounts survive
 # while a runaway loop gets broken. Set DRY_MULTIPLIER to 0 to disable entirely.
@@ -194,6 +220,28 @@ EXTRACT = config.env_bool("EXTRACT", True)
 # sub-fields per item; 1536 cut those documents off mid-value, which surfaced as
 # a JSON parse error rather than as the budget problem it was.
 EXTRACT_MAX_TOKENS = config.env_int("EXTRACT_MAX_TOKENS", 4096, minimum=256)
+
+# Which shape the second pass runs in when nothing has switched it at runtime.
+# The page's Extraction button switches it per server, so this is only the mode a
+# fresh process starts in.
+#
+# "single" asks for all 29 scalars and both lists in one request. "agentic" walks
+# `prompts.EXTRACT_STEPS`, asking for one to three fields per request against the
+# same transcript. Agentic costs more requests and more wall clock; what it buys
+# is that a field can only be filled from the handful of labels its own step names,
+# which is what stops a nearby code landing in buyer_name -- and that one step
+# failing to parse costs that step's fields rather than the whole extraction.
+AGENTIC_EXTRACT = config.env_bool("AGENTIC_EXTRACT", False)
+
+# How many times a step may be asked again after it returned a value that is not
+# in the transcript. The retry quotes the rejected values back, so it is a
+# different question rather than the same one repeated; asking again in identical
+# words returns the identical answer under greedy decoding. 0 disables the retry.
+#
+# One is the measured sweet spot: the document is already prefilled by then, so a
+# retry costs a short question and a short answer, and a second retry almost never
+# changed an answer the first had not.
+AGENTIC_RETRIES = config.env_int("AGENTIC_RETRIES", 1, minimum=0, maximum=3)
 
 # Third pass. Much smaller: the reply is a short list of issues, not a document.
 VERIFY_MAX_TOKENS = 768

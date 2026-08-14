@@ -37,9 +37,20 @@ import verify
 # and diffed without the request-assembly code around them. `prompts.py` holds
 # the four prompts; `settings.py` holds every value the app runs with, and the
 # comment beside each one says what was measured to arrive at it.
-from prompts import EXTRACT_PROMPT, EXTRACT_REMINDER, PROMPT, VERIFY_PROMPT
+from prompts import (
+    EXTRACT_PROMPT,
+    EXTRACT_REMINDER,
+    EXTRACT_STEP_PREFIX,
+    EXTRACT_STEP_RETRY,
+    EXTRACT_STEP_TASK,
+    EXTRACT_STEPS,
+    PROMPT,
+    VERIFY_PROMPT,
+)
 from settings import (
     ACCEPTED_SUFFIXES,
+    AGENTIC_EXTRACT,
+    AGENTIC_RETRIES,
     DEFAULT_DETAIL,
     DETAIL_PRESETS,
     EXTRACT,
@@ -217,7 +228,11 @@ def stream_page(image: Image.Image, stats: dict | None = None):
     content = [text_part, image_part] if prompt_first else [image_part, text_part]
 
     payload = {
-        "messages": [{"role": "user", "content": content}],
+        # Ollama gets an explicit system message here; llama.cpp gets none. See
+        # backends.system_prefix -- this reproduces what Ollama was injecting from
+        # the Modelfile by itself, rather than adding anything new.
+        "messages": backends.system_prefix(status)
+                    + [{"role": "user", "content": content}],
         "max_tokens": MAX_NEW_TOKENS,
         # Fully deterministic decoding. temperature 0 should already force greedy,
         # but llama-server's defaults (top_k 40, top_p 0.95, min_p 0.05) are pinned
@@ -383,22 +398,17 @@ def _is_ocr_envelope(raw: str) -> bool:
     return raw.lstrip().lstrip("`json \n").startswith('{"natural_text"')
 
 
-def extract_fields(text: str) -> dict:
-    """Ask the model to turn a finished transcript into structured JSON.
+def _extract_single(text: str, status: dict) -> dict:
+    """The whole schema in one request: all 29 scalars and both lists at once.
 
-    A separate text-only request rather than part of the OCR prompt: mixing
-    transcription and interpretation in one pass measurably degrades the
-    transcript, and this way the extraction can be re-run without re-reading
-    the page.
+    The cheaper of the two shapes, and the one a fresh process starts in.
+    `_extract_agentic` below asks for the same schema a few fields at a time;
+    `extract_fields` picks between them.
     """
-    if not text.strip():
-        return {"error": "Nothing to extract from."}
-    status = llama_status()
-    if not status["available"]:
-        return {"error": status["reason"]}
     payload = {
-        "messages": [{"role": "user",
-                      "content": EXTRACT_PROMPT + text + EXTRACT_REMINDER}],
+        "messages": backends.system_prefix(status)
+                    + [{"role": "user",
+                        "content": EXTRACT_PROMPT + text + EXTRACT_REMINDER}],
         "max_tokens": EXTRACT_MAX_TOKENS,
         "temperature": 0,
         "top_k": 1,
@@ -509,7 +519,299 @@ def extract_fields(text: str) -> dict:
         "tokens": tokens,
         "model": status["model"],
         "backend": status["kind"],
+        # Which shape produced this. On screen and in the run log, because the two
+        # cost very different amounts of wall clock and fill the schema in
+        # different ways -- a row without it cannot be compared with one beside it.
+        "mode": "single",
     }
+
+
+# --------------------------------------------------------------------------
+# pass 2, agentic: the same schema, one to three fields per request
+# --------------------------------------------------------------------------
+#
+# One request for 31 keys asks a 2B model to hold the whole page and the whole
+# form in mind at once, and what it does under that load is fill a key from
+# whatever is nearest rather than from the label that names it -- sol005's
+# Location Code arriving as buyer_name. A step names two or three labels and asks
+# for two or three keys, so there is much less for a value to land in by mistake.
+#
+# Three things fall out of doing it this way, and they are the reason it exists
+# rather than side effects:
+#
+# * The transcript leads every step's message and only the question at the end
+#   changes, so llama.cpp prefills the document once and reuses it. The steps
+#   after the first cost their question and their answer.
+# * A step that comes back with a value which is not in the transcript can be
+#   asked again with that value quoted back at it, for the price of a short
+#   question -- see EXTRACT_STEP_RETRY. Grounding stops being a report at the end
+#   and becomes something the extraction can act on while it is running.
+# * A step that fails to parse costs that step's fields. In single mode the same
+#   failure costs the whole extraction.
+#
+# It is not free: ~15 requests instead of 1, and the schema-wide instructions
+# ("never write one value into two of these fields") can only be enforced within a
+# step, not across them. Which is why the mode is a switch rather than the default.
+
+
+def _chat(content: str, max_tokens: int, status: dict):
+    """One non-streaming text request. Returns (raw reply, truncated, tokens).
+
+    Sampling is set exactly as the single-shot pass sets it -- greedy, JSON
+    response format, no DRY -- so the two modes differ in the shape of the prompt
+    and in nothing else, which is what makes a comparison between them mean
+    anything. Raises on transport failure and on a non-200, so a step can record
+    why it produced nothing instead of silently contributing empty fields.
+    """
+    payload = {
+        "messages": backends.system_prefix(status)
+                    + [{"role": "user", "content": content}],
+        "max_tokens": max_tokens,
+        "temperature": 0,
+        "top_k": 1,
+        "top_p": 1.0,
+        "min_p": 0.0,
+        "response_format": {"type": "json_object"},
+        "stream": False,
+        **backends.request_extras(status),
+    }
+    res = requests.post(chat_url(), json=payload, timeout=GEN_TIMEOUT)
+    if res.status_code != 200:
+        raise ValueError(f"{status['kind'] or 'model server'} HTTP "
+                         f"{res.status_code}: {res.text[:200]}")
+    body = res.json()
+    choice = body["choices"][0]
+    raw = (choice["message"].get("content") or "").strip()
+    timings = body.get("timings") or {}
+    usage = body.get("usage") or {}
+    tokens = int(timings.get("predicted_n") or usage.get("completion_tokens") or 0)
+    return raw, choice.get("finish_reason") == "length", tokens
+
+
+def _step_message(text: str, step: dict) -> str:
+    """The message for one step: prefix, transcript, then this step's question.
+
+    Assembled in that order on purpose. The transcript first is what makes the
+    prefix shared across every step and therefore cacheable; the instructions last
+    is what keeps an OCR fine-tune from answering with its own transcript envelope,
+    which is the same thing EXTRACT_REMINDER buys the single-shot prompt.
+    """
+    return (EXTRACT_STEP_PREFIX + text
+            + EXTRACT_STEP_TASK.format(title=step["title"],
+                                       skeleton=step["skeleton"],
+                                       rules=step["rules"]))
+
+
+def _step_values(step: dict, raw: str):
+    """The keys this step owns, pulled out of its reply. Raises on unusable JSON.
+
+    Only the step's own keys are taken. A step that answers with keys belonging to
+    another step has guessed at fields it was not shown the rules for, and taking
+    those would put back exactly the cross-contamination the split is here to stop.
+    """
+    parsed = json.loads(_first_json_object(strip_fence(raw)) or raw)
+    if not isinstance(parsed, dict):
+        raise ValueError("reply was JSON but not an object")
+    values = {}
+    for key in step["keys"]:
+        if key not in parsed:
+            continue
+        value = parsed[key]
+        if key in ("line_items", "other_fields"):
+            values[key] = [v for v in value if isinstance(v, dict)] \
+                if isinstance(value, list) else []
+        elif isinstance(value, (str, int, float)):
+            values[key] = value
+    return values
+
+
+def _ungrounded_in(values: dict, source) -> list:
+    """The step's scalar answers that are not in the transcript, as label = value.
+
+    Blank and nil answers are skipped for the same reason `grounding.check` skips
+    them: neither is a claim about the page. Line items are skipped too -- a table
+    row is checked cell by cell at the end, and quoting a whole row back at the
+    model is a worse question than not asking one.
+    """
+    bad = []
+    for key, value in values.items():
+        if isinstance(value, list):
+            continue
+        if grounding.is_blank(value) or grounding.is_nil(value):
+            continue
+        if not source.holds(value):
+            bad.append(f"- {key} = {str(value)[:120]}")
+    return bad
+
+
+def _extract_agentic(text: str, status: dict):
+    """Walk the step table, yielding progress, and return the merged result.
+
+    A generator so that both the browser and the run stream can show which step is
+    running without a callback that cannot yield: iterate it for the events, and
+    take the finished result from StopIteration.value (`_drain` does this).
+    """
+    source = grounding.Source(text)
+    started = time.perf_counter()
+    fields, steps, replies = {}, [], []
+    total_tokens = 0
+
+    yield {"event": "extract_steps", "total": len(EXTRACT_STEPS),
+           "steps": [{"id": s["id"], "title": s["title"], "keys": list(s["keys"])}
+                     for s in EXTRACT_STEPS]}
+
+    for index, step in enumerate(EXTRACT_STEPS, 1):
+        yield {"event": "extract_step", "step": index, "total": len(EXTRACT_STEPS),
+               "id": step["id"], "title": step["title"], "status": "running"}
+
+        message = _step_message(text, step)
+        record = {"id": step["id"], "title": step["title"],
+                  "keys": list(step["keys"]), "attempts": 0, "retried": False}
+        values, elapsed = {}, 0.0
+        best_bad = None
+
+        for attempt in range(AGENTIC_RETRIES + 1):
+            content = message
+            if attempt:
+                content += EXTRACT_STEP_RETRY.format(rejected="\n".join(best_bad))
+            record["attempts"] = attempt + 1
+            at = time.perf_counter()
+            truncated = False
+            try:
+                raw, truncated, tokens = _chat(content, step["max_tokens"], status)
+                replies.append(f"--- {step['id']}"
+                               + (" (retry)" if attempt else "") + " ---\n" + raw)
+                total_tokens += tokens
+                attempt_values = _step_values(step, raw)
+            except Exception as err:
+                elapsed += time.perf_counter() - at
+                # Recorded against the step and then dropped: the remaining steps
+                # do not depend on this one, and the rest of the form is a better
+                # answer than none of it. A cut-off reply is named as one, because
+                # that step wants a bigger cap rather than another attempt.
+                why = (f"the reply hit this step's {step['max_tokens']}-token cap "
+                       "and the JSON never closed" if truncated else str(err))
+                # A retry that fails leaves the answer it was meant to correct
+                # standing, so the step has fields and is not a failed step. Saying
+                # it failed would send someone looking for keys that are there.
+                record["error" if best_bad is None else "retry_error"] = why
+                break
+            elapsed += time.perf_counter() - at
+
+            bad = _ungrounded_in(attempt_values, source)
+            # Keep whichever attempt invents least. A retry that comes back worse
+            # than the answer it was meant to correct is not an improvement, and
+            # under greedy decoding that happens whenever the model has nothing
+            # better to offer than what it already said.
+            if best_bad is None or len(bad) < len(best_bad):
+                values, best_bad = attempt_values, bad
+            if not bad or attempt >= AGENTIC_RETRIES:
+                break
+            record["retried"] = True
+
+        fields.update(values)
+        record["seconds"] = round(elapsed, 2)
+        record["values"] = {k: v for k, v in values.items() if not isinstance(v, list)}
+        record["items"] = sum(len(v) for v in values.values() if isinstance(v, list))
+        record["ungrounded"] = len(best_bad or [])
+        steps.append(record)
+        yield {"event": "extract_step", "step": index, "total": len(EXTRACT_STEPS),
+               "id": step["id"], "title": step["title"], "status": "done", **record}
+
+    elapsed = round(time.perf_counter() - started, 2)
+    failed = [s for s in steps if s.get("error")]
+    if len(failed) == len(steps):
+        return {"error": "Every extraction step failed. First: "
+                         + failed[0]["error"],
+                "mode": "agentic", "steps": steps, "seconds": elapsed,
+                "raw": "\n\n".join(replies)[:4000]}
+
+    # Ordered the way the schema lists the keys rather than the way the steps
+    # filled them, so the JSON on screen and the JSON a script copies are the same
+    # shape in both modes.
+    ordered = {k: fields[k] for k in grounding.SCALAR_FIELDS if k in fields}
+    for key in ("line_items", "other_fields"):
+        ordered[key] = fields.get(key) or []
+
+    return {
+        "fields": ordered,
+        "raw": "\n\n".join(replies),
+        "grounding": grounding.check(ordered, text),
+        "tiers": grounding.tier_counts(ordered),
+        "vat_basis": verify.vat_basis(ordered, text),
+        "seconds": elapsed,
+        "tokens": total_tokens,
+        "model": status["model"],
+        "backend": status["kind"],
+        "mode": "agentic",
+        "steps": steps,
+        # Named separately from the per-step errors because a partial answer is
+        # the normal outcome here rather than a failure: the page says which parts
+        # of the form were not filled instead of showing them as simply empty.
+        "steps_failed": [{"id": s["id"], "title": s["title"], "error": s["error"]}
+                         for s in failed],
+    }
+
+
+# --------------------------------------------------------------------------
+# pass 2: which shape runs
+# --------------------------------------------------------------------------
+
+# Switched from the page rather than read from the environment per run, because it
+# is a thing you flip while looking at a document that came out wrong. Held for the
+# process, not per request: a batch queued now and a Re-extract clicked during it
+# both extract the same way, and every result carries the mode it actually ran in
+# so a log row is still attributable when it is switched mid-batch.
+_extract_mode = "agentic" if AGENTIC_EXTRACT else "single"
+_mode_lock = threading.Lock()
+
+
+def extract_mode() -> str:
+    with _mode_lock:
+        return _extract_mode
+
+
+def set_extract_mode(mode: str) -> str:
+    if mode not in ("single", "agentic"):
+        raise ValueError("mode must be 'single' or 'agentic'.")
+    global _extract_mode
+    with _mode_lock:
+        _extract_mode = mode
+    return mode
+
+
+def extract_fields_stream(text: str, mode: str = None):
+    """Turn a finished transcript into structured JSON, yielding progress.
+
+    A separate text-only pass rather than part of the OCR prompt: mixing
+    transcription and interpretation in one request measurably degrades the
+    transcript, and this way extraction can be re-run without re-reading the page.
+
+    Single mode has no progress to report and yields nothing. Both shapes return
+    the same result dict, plus `mode` saying which one ran.
+    """
+    if not text.strip():
+        return {"error": "Nothing to extract from."}
+    status = llama_status()
+    if not status["available"]:
+        return {"error": status["reason"]}
+    if (mode or extract_mode()) == "agentic":
+        return (yield from _extract_agentic(text, status))
+    return _extract_single(text, status)
+
+
+def _drain(generator):
+    """Run a generator that returns a value, discarding what it yields."""
+    while True:
+        try:
+            next(generator)
+        except StopIteration as stop:
+            return stop.value
+
+
+def extract_fields(text: str, mode: str = None) -> dict:
+    """`extract_fields_stream` for callers with nowhere to show progress."""
+    return _drain(extract_fields_stream(text, mode))
 
 
 def verify_with_llm(fields: dict, checks: list, basis: dict = None) -> dict:
@@ -553,7 +855,8 @@ def verify_with_llm(fields: dict, checks: list, basis: dict = None) -> dict:
     )
 
     payload = {
-        "messages": [{"role": "user", "content": content}],
+        "messages": backends.system_prefix(status)
+                    + [{"role": "user", "content": content}],
         "max_tokens": VERIFY_MAX_TOKENS,
         "temperature": 0,
         "top_k": 1,
@@ -950,7 +1253,21 @@ def run_job(job):
         if EXTRACT and text.strip():
             job.check_cancelled()
             job.stage = "extracting fields"
-            payload["extracted"] = extract_fields(text)
+            # Stepped through rather than called, so agentic mode can name the
+            # step in the queue row and can be cancelled between steps. Single
+            # mode yields nothing, so this is the plain call it used to be.
+            stream = extract_fields_stream(text)
+            while True:
+                try:
+                    event = next(stream)
+                except StopIteration as stop:
+                    payload["extracted"] = stop.value
+                    break
+                if event.get("event") == "extract_step" \
+                        and event.get("status") == "running":
+                    job.stage = (f"extracting {event['step']}/{event['total']}:"
+                                 f" {event['title']}")
+                    job.check_cancelled()
             if payload["extracted"].get("fields"):
                 job.check_cancelled()
                 job.stage = "verifying numbers"
@@ -1005,6 +1322,8 @@ def index():
         endpoints=backends.endpoints(),
         ctx_choices=backends.NUM_CTX_CHOICES,
         num_ctx=backends.num_ctx(),
+        extract_mode=extract_mode(),
+        extract_steps=len(EXTRACT_STEPS),
     )
 
 
@@ -1080,14 +1399,84 @@ def cases():
     ])
 
 
+def _requested_mode(body):
+    """The extraction shape for one request: what it asked for, or the current one."""
+    mode = (body.get("mode") or "").strip().lower() or None
+    if mode and mode not in ("single", "agentic"):
+        raise ValueError("mode must be 'single' or 'agentic'.")
+    return mode
+
+
 @app.post("/api/extract")
 def extract_endpoint():
-    """Re-run field extraction on text, without re-reading the page."""
+    """Re-run field extraction on text, without re-reading the page.
+
+    Blocking. Agentic mode is ~15 requests, so the page uses the streaming
+    endpoint below and this stays for scripts, which have nowhere to show a step.
+    """
     body = request.get_json(silent=True) or {}
     text = body.get("text", "")
     if not text.strip():
         return jsonify(error="No text supplied."), 400
-    return jsonify(extract_fields(text))
+    try:
+        mode = _requested_mode(body)
+    except ValueError as err:
+        return jsonify(error=str(err)), 400
+    return jsonify(extract_fields(text, mode))
+
+
+@app.post("/api/extract/stream")
+def extract_stream_endpoint():
+    """The same, as NDJSON, so agentic mode can say which step it is on.
+
+    Single mode emits no step events and one `fields` event, so the browser reads
+    both modes the same way.
+    """
+    body = request.get_json(silent=True) or {}
+    text = body.get("text", "")
+    if not text.strip():
+        return jsonify(error="No text supplied."), 400
+    try:
+        mode = _requested_mode(body)
+    except ValueError as err:
+        return jsonify(error=str(err)), 400
+
+    def generate():
+        try:
+            stream = extract_fields_stream(text, mode)
+            while True:
+                try:
+                    yield json.dumps(next(stream)) + "\n"
+                except StopIteration as stop:
+                    yield json.dumps({"event": "fields", **stop.value}) + "\n"
+                    return
+        except Exception as err:  # surface failures inside the stream body
+            yield json.dumps({"event": "error", "error": str(err)}) + "\n"
+
+    return Response(generate(), mimetype="application/x-ndjson")
+
+
+@app.get("/api/extract/mode")
+def extract_mode_get():
+    return jsonify(mode=extract_mode(), steps=len(EXTRACT_STEPS))
+
+
+@app.post("/api/extract/mode")
+def extract_mode_set():
+    """Switch the shape of pass 2 for everything this process extracts next.
+
+    Unlike switching server, this is NOT refused while the queue is busy. Mixing
+    the two within a batch costs nothing to interpret, because each result and
+    each log row carries the mode that produced it -- what the server-switch 409
+    protects against is a row that cannot say which server ran it, and there is no
+    equivalent here.
+    """
+    body = request.get_json(silent=True) or {}
+    try:
+        mode = set_extract_mode((body.get("mode") or "").strip().lower())
+    except ValueError as err:
+        return jsonify(error=str(err)), 400
+    return jsonify(mode=mode, steps=len(EXTRACT_STEPS))
 
 
 MOCK_DIR = scoring.MOCK
@@ -1390,7 +1779,16 @@ def ocr_stream():
             # this runs.
             if EXTRACT and want_extract and text.strip():
                 yield json.dumps({"event": "extracting"}) + "\n"
-                result = extract_fields(text)
+                # Agentic mode yields a step at a time on the way through; single
+                # mode yields nothing and the loop runs once. Either way the
+                # result arrives as the same "fields" event.
+                stream = extract_fields_stream(text)
+                while True:
+                    try:
+                        yield json.dumps(next(stream)) + "\n"
+                    except StopIteration as stop:
+                        result = stop.value
+                        break
                 summary["extracted"] = result
                 yield json.dumps({"event": "fields", **result}) + "\n"
 

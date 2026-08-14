@@ -357,6 +357,22 @@
   .dot.ok { background: #3fb950; }
   .dot.bad { background: var(--danger); }
   button.ghost-sm { padding: 4px 10px; font-size: .78rem; border-radius: 6px; }
+  button.ghost-sm.on { background: var(--accent-soft); border-color: var(--accent); }
+  /* One row per extraction step, live while the steps run and kept afterwards.
+     The list is the only place that says which part of the form a value came
+     from, which is what makes a wrong field traceable to the question that
+     produced it rather than to "the extractor". */
+  .step-list { list-style: none; margin: 0; padding: 0; font-size: .82rem; }
+  .step-list li { display: flex; align-items: center; gap: 10px; padding: 5px 0;
+                  border-bottom: 1px solid var(--border); }
+  .step-list li:last-child { border-bottom: 0; }
+  .step-list .n { color: var(--muted); font-variant-numeric: tabular-nums;
+                  min-width: 38px; font-size: .76rem; }
+  .step-list .t { flex: 1; min-width: 0; }
+  .step-list .s { color: var(--muted); font-size: .76rem; text-align: right; }
+  .step-list li.waiting { opacity: .45; }
+  .step-list li.bad .s { color: var(--danger); }
+  .step-list li.flagged .s { color: #d9a441; }
   #serverReason:empty { display: none; }
   #stats { width: 100%; border-collapse: collapse; font-size: .8rem; margin-top: 12px; }
   #stats:empty { display: none; }
@@ -457,6 +473,16 @@
         </label>
       </div>
       <p class="note" id="ctxNote"></p>
+      <div class="row">
+        <label class="field" style="flex:1;min-width:200px">
+          Field extraction
+          <select id="extractSel">
+            <option value="single" {% if extract_mode == 'single' %}selected{% endif %}>one request for the whole form</option>
+            <option value="agentic" {% if extract_mode == 'agentic' %}selected{% endif %}>agentic · {{ extract_steps }} steps, 1-3 fields each</option>
+          </select>
+        </label>
+      </div>
+      <p class="note" id="extractNote"></p>
       {% if mock_files %}
       <div class="row">
         <label class="field" style="flex:1">
@@ -559,6 +585,7 @@
         <div class="fld-bar">
           <span id="fldStatus"></span>
           <label class="cmp-opt"><input type="checkbox" id="fldRawChk"> Raw output</label>
+          <button id="fldMode" class="ghost-sm"></button>
           <button id="fldRerun" class="ghost-sm">Re-extract</button>
           <button id="fldCopy" class="ghost-sm">Copy JSON</button>
         </div>
@@ -668,6 +695,9 @@ const fieldsEl = document.getElementById('fields');
 const fldStatus = document.getElementById('fldStatus');
 const fldBody = document.getElementById('fldBody');
 const fldRerun = document.getElementById('fldRerun');
+const fldMode = document.getElementById('fldMode');
+const extractSel = document.getElementById('extractSel');
+const extractNote = document.getElementById('extractNote');
 const fldCopy = document.getElementById('fldCopy');
 const fldRawChk = document.getElementById('fldRawChk');
 const fldRaw = document.getElementById('fldRaw');
@@ -999,6 +1029,136 @@ function paintRaw(target, result, reply) {
     + esc(JSON.stringify(result, null, 2)) + '</pre>';
 }
 
+/* ---------- extraction mode: one shot, or a few fields at a time ----------
+   The switch lives on the server, not in this page: it applies to the queue and
+   to a run started from another tab as well as to Re-extract here, and every
+   result says which mode produced it, so the button and the result cannot
+   disagree about what just happened. */
+let extractMode = {{ extract_mode | tojson }};
+const EXTRACT_STEP_COUNT = {{ extract_steps }};
+let extractSteps = null;
+
+/* Two controls for one switch: the picker in the sidebar, where a run is set up
+   before it starts, and the button beside Re-extract, where you are standing when
+   a document comes back with a value in the wrong field. Both paint from the same
+   variable, so they cannot show different things. */
+function paintMode() {
+  const on = extractMode === 'agentic';
+  fldMode.textContent = on ? 'Agentic · ' + EXTRACT_STEP_COUNT + ' steps' : 'Agentic · off';
+  fldMode.classList.toggle('on', on);
+  fldMode.title = on
+    ? 'Extraction asks for one to three fields at a time, ' + EXTRACT_STEP_COUNT
+      + ' requests against the same transcript, and re-asks a step that returns a '
+      + 'value the page does not contain. Click for one request for the whole form.'
+    : 'Extraction asks for the whole form in one request. Click to extract field by '
+      + 'field instead.';
+  if (extractSel.value !== extractMode) extractSel.value = extractMode;
+  extractNote.textContent = on
+    ? 'One to three fields per request, against the same transcript. A field can only '
+      + 'be filled from the labels its own step names, and a step that answers with '
+      + 'something that is not on the page is asked again. Slower than one request.'
+    : 'The whole form in one request. Fast, and the shape in which a value can land '
+      + 'in a nearby field it does not belong to.';
+}
+
+/* The server owns the setting -- it applies to the queue and to a run started
+   from another tab as well as to Re-extract here -- so the controls only ever
+   show what came back from it. */
+async function setMode(next) {
+  fldMode.disabled = extractSel.disabled = true;
+  try {
+    const res = await fetch('/api/extract/mode', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ mode: next })
+    });
+    const body = await res.json();
+    if (body.mode) extractMode = body.mode;
+  } catch (err) { /* leave it where it was */ }
+  fldMode.disabled = extractSel.disabled = false;
+  paintMode();
+}
+
+fldMode.addEventListener('click',
+  () => setMode(extractMode === 'agentic' ? 'single' : 'agentic'));
+extractSel.addEventListener('change', () => setMode(extractSel.value));
+paintMode();
+
+/* Step progress, from either the Re-extract stream or a full run's stream.
+   Returns true when the message was a step message and has been consumed. */
+function stepEvent(msg) {
+  if (msg.event === 'extract_steps') {
+    extractSteps = msg.steps.map(s => Object.assign({}, s, { status: 'waiting' }));
+  } else if (msg.event === 'extract_step') {
+    if (!extractSteps) extractSteps = [];
+    const i = msg.step - 1;
+    extractSteps[i] = Object.assign({}, extractSteps[i] || {}, msg);
+  } else {
+    return false;
+  }
+  if (tabFields.classList.contains('on')) paintFields();
+  return true;
+}
+
+function stepList(steps) {
+  if (!steps || !steps.length) return '';
+  return '<div class="fld-sec">Extraction steps</div><ul class="step-list">'
+    + steps.map((s, i) => {
+        const keys = s.keys || [];
+        // The live events carry a status; the finished record does not, because
+        // by the time it is in the result every step it lists has run.
+        const status = s.status || 'done';
+        let note = '', cls = '';
+        if (s.error) {
+          note = esc(s.error);
+          cls = 'bad';
+        } else if (status === 'done') {
+          const filled = Object.values(s.values || {})
+            .filter(v => v !== '' && v !== null && v !== undefined).length;
+          const bits = [];
+          // A step that owns a list reports its length; one that owns scalars
+          // reports how many of its own keys the page filled, which is not a
+          // score -- most documents leave whole steps legitimately empty.
+          if (s.items) bits.push(s.items + (s.items === 1 ? ' row' : ' rows'));
+          else bits.push(filled + '/' + keys.length);
+          if (s.retry_error) bits.push('re-ask failed');
+          else if (s.retried) bits.push('re-asked');
+          if (s.ungrounded) { bits.push(s.ungrounded + ' not on page'); cls = 'flagged'; }
+          if (s.seconds) bits.push(s.seconds + 's');
+          note = esc(bits.join(' · '));
+        } else if (status === 'running') {
+          note = '<span class="spin"></span>';
+        } else {
+          cls = 'waiting';
+        }
+        return '<li class="' + cls + '"><span class="n">' + (i + 1) + '/' + steps.length
+          + '</span><span class="t">' + esc(s.title || s.id || '') + '</span>'
+          + '<span class="s">' + note + '</span></li>';
+      }).join('') + '</ul>';
+}
+
+/* Said above the fields rather than only in the step list, because a step that
+   failed leaves its keys empty and they are otherwise indistinguishable from
+   fields the document does not state -- which is the one distinction the
+   grounding note below is careful to make. */
+function stepNote(r) {
+  const failed = (r && r.steps_failed) || [];
+  const retried = ((r && r.steps) || []).filter(s => s.retried).length;
+  if (!r || r.mode !== 'agentic' || !r.steps) return '';
+  let html = '<p class="ground-note' + (failed.length ? ' bad' : '') + '">Extracted in '
+    + r.steps.length + ' steps of one to three fields.';
+  if (retried) {
+    html += ' ' + retried + ' step(s) returned a value that is not on the page and were '
+      + 'asked again.';
+  }
+  if (failed.length) {
+    html += ' <strong>' + failed.length + ' step(s) failed</strong>, so their fields are '
+      + 'empty because they were never answered — not because the document is silent:'
+      + '<ul>' + failed.map(f =>
+          '<li>' + esc(f.title) + ' — ' + esc(f.error) + '</li>').join('') + '</ul>';
+  }
+  return html + '</p>';
+}
+
 function paintFields() {
   paintFieldBody();
   // Left on the normal body until there is a reply to show: an empty pane while
@@ -1016,13 +1176,18 @@ function paintFieldBody() {
     return;
   }
   if (extracted.pending) {
-    fldStatus.innerHTML = '<span class="spin"></span> Asking the model for structured fields…';
-    fldBody.innerHTML = '';
+    const steps = extractSteps || [];
+    const done = steps.filter(s => s.status === 'done').length;
+    fldStatus.innerHTML = '<span class="spin"></span> ' + (steps.length
+      ? 'Extracting field by field — ' + done + ' of ' + steps.length + ' steps done…'
+      : 'Asking the model for structured fields…');
+    fldBody.innerHTML = stepList(steps);
     return;
   }
   if (extracted.error) {
     fldStatus.textContent = '';
     fldBody.innerHTML = '<p class="acc-note err">' + esc(extracted.error) + '</p>'
+      + stepList(extracted.steps || extractSteps)
       + (extracted.raw ? '<pre id="accDiff">' + esc(extracted.raw) + '</pre>' : '');
     return;
   }
@@ -1044,7 +1209,8 @@ function paintFieldBody() {
                         && basis.subtotal_includes_vat) ? 'Amount (VAT included)'
                    : FIELD_LABELS[k];
 
-  let html = tierNote(extracted.tiers) + groundingNote(g) + basisNote(basis);
+  let html = stepNote(extracted) + tierNote(extracted.tiers)
+    + groundingNote(g) + basisNote(basis);
   for (const [title, keys, hideWhenEmpty] of FIELD_SECTIONS) {
     if (hideWhenEmpty && keys.every(k => !f[k])) continue;
     html += '<div class="fld-sec">' + title + '</div>'
@@ -1084,20 +1250,55 @@ function paintFieldBody() {
       + defList(other.map(([o, i]) => [o.label || '—', o.value, false,
                                        st['other_fields[' + i + '].value']]));
   }
+
+  // Last, not first: which question produced a value matters when one looks
+  // wrong, which is after the fields have been read rather than before.
+  html += stepList(extracted.steps);
   fldBody.innerHTML = html;
 }
 
+/* NDJSON rather than a plain POST: agentic mode is a request per step, and a
+   button that sits silent for two minutes is indistinguishable from one that has
+   hung. Single mode sends no step events and this reads it exactly as before. */
 async function runExtract() {
   if (!text.trim()) return;
   extracted = { pending: true };
+  extractSteps = null;
   tabFields.disabled = false;
   paintFields();
   try {
-    const res = await fetch('/api/extract', {
+    const res = await fetch('/api/extract/stream', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ text })
     });
-    extracted = await res.json();
+    if (!res.ok) {
+      extracted = await res.json();
+      paintFields();
+      return;
+    }
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split('\n');
+      buffer = lines.pop();
+      for (const line of lines) {
+        if (!line.trim()) continue;
+        const msg = JSON.parse(line);
+        if (msg.event === 'fields') {
+          const { event, ...rest } = msg;
+          extracted = rest;
+        } else if (msg.event === 'error') {
+          extracted = { error: msg.error };
+        } else {
+          stepEvent(msg);
+        }
+      }
+      paintFields();
+    }
   } catch (err) {
     extracted = { error: err.message };
   }
@@ -1203,7 +1404,10 @@ queueBody.addEventListener('click', async e => {
     job_id_from_result(r);
     pageStats = r.page_stats || [];
     truth = r.truth || null;
+    // The stored result carries its own step records; the live list belongs to
+    // whatever ran in this tab and would otherwise be shown against this one.
     extracted = r.extracted || null;
+    extractSteps = null;
     verified = r.verified || null;
     tabAccuracy.disabled = !truth;
     tabFields.disabled = !extracted;
@@ -2059,7 +2263,7 @@ clearBtn.addEventListener('click', () => {
   pagebar.textContent = ''; warn.textContent = '';
   meta.textContent = ''; meta.classList.remove('err');
   stopTicker(); pageStats = []; renderStats();
-  extracted = null; tabFields.disabled = true;
+  extracted = null; extractSteps = null; tabFields.disabled = true;
   verified = null; tabNumbers.disabled = true;
   job = null; pageTexts = []; curPage = -1; cmpPage = 0;
   cmpImg.removeAttribute('src');
@@ -2086,7 +2290,7 @@ runBtn.addEventListener('click', async () => {
   runBtn.disabled = true; stopBtn.disabled = false; copyBtn.disabled = true;
   text = ''; pageStats = []; pageTexts = []; curPage = -1; cmpPage = 0;
   truth = null; tabAccuracy.disabled = true;
-  extracted = null; tabFields.disabled = true;
+  extracted = null; extractSteps = null; tabFields.disabled = true;
   verified = null; tabNumbers.disabled = true;
   if (['accuracy','fields','numbers'].some(m => document.querySelector('#tab' + m[0].toUpperCase() + m.slice(1)).classList.contains('on'))) showTab('rendered');
   paint(); renderStats();
@@ -2176,9 +2380,18 @@ runBtn.addEventListener('click', async () => {
         } else if (msg.event === 'extracting') {
           // OCR is finished and on screen; the second pass runs after it.
           extracted = { pending: true };
+          extractSteps = null;
           tabFields.disabled = false;
           pagebar.innerHTML = '<span class="spin"></span> Extracting fields…';
           if (tabFields.classList.contains('on')) paintFields();
+        } else if (msg.event === 'extract_steps' || msg.event === 'extract_step') {
+          // Agentic mode only. The bar names the step because 15 requests with
+          // one label between them is the same silence as no progress at all.
+          stepEvent(msg);
+          if (msg.event === 'extract_step' && msg.status === 'running') {
+            pagebar.innerHTML = '<span class="spin"></span> Extracting fields — step '
+              + msg.step + ' of ' + msg.total + ': ' + esc(msg.title);
+          }
         } else if (msg.event === 'fields') {
           const { event, ...rest } = msg;
           extracted = rest;

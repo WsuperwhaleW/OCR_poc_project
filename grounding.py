@@ -129,6 +129,20 @@ def _is_nil(value):
     return str(value or "").strip().lower() in _NIL
 
 
+# Public because the agentic extractor grounds each step's answer as the step
+# comes back, rather than only grounding the finished set at the end, and it has
+# to skip the same two states this module skips. Two copies of what counts as a
+# nil cell would drift apart, and the copy in `app.py` would be the wrong one.
+def is_blank(value):
+    """True when a value is absent -- the field came back empty."""
+    return _is_blank(value)
+
+
+def is_nil(value):
+    """True when the document printed a dash where a figure would go."""
+    return _is_nil(value)
+
+
 def _transcript_numbers(transcript):
     """Every number the page prints, as floats, for value-wise comparison."""
     text = (transcript or "").translate(_THAI_DIGITS)

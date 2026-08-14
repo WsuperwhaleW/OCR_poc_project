@@ -46,6 +46,10 @@ COLUMNS = [
     "tokens_per_second",
     "extract_seconds",
     "extract_tokens",
+    # single | agentic. Taken from the result rather than from the current
+    # setting, so a mode switched during a batch still labels each row with the
+    # shape that actually produced it. Blank when the run never extracted.
+    "extract_mode",
     "verify_seconds",
     # Grounding of the extracted fields against the transcript: the share of
     # values found on the page, and how many were not. Logged because an
@@ -183,6 +187,7 @@ def record(summary: dict, source: dict = None, extras: dict = None) -> dict:
         "tokens_per_second": summary.get("tokens_per_second", ""),
         "extract_seconds": extracted.get("seconds", ""),
         "extract_tokens": extracted.get("tokens", ""),
+        "extract_mode": extracted.get("mode", ""),
         "verify_seconds": (verified.get("review") or {}).get("seconds", ""),
         "grounded_pct": _pct(grounded.get("grounded_ratio")),
         "ungrounded": len(grounded.get("flagged") or []) if grounded else "",

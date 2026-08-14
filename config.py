@@ -102,6 +102,25 @@ def env_float(name: str, default: float, minimum: float = None,
     return value
 
 
+def env_str(name: str, default: str, allow_empty: bool = False) -> str:
+    """A plain text setting, stripped of surrounding whitespace.
+
+    `allow_empty` is the whole reason this differs from its siblings above. They
+    treat an empty value as unset and fall back, which is right for a number; for
+    a string that is *sent to the model*, "set to nothing" and "not set" are
+    different requests, and a setting whose off switch is an empty value needs to
+    be able to say so. With it False an empty value still falls back, matching
+    env_bool/env_int.
+    """
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    value = raw.strip()
+    if not value and not allow_empty:
+        return default
+    return value
+
+
 def env_path(name: str, default: Path) -> Path:
     """A directory setting, expanded and made absolute.
 

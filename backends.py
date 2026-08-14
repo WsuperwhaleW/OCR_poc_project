@@ -23,6 +23,7 @@ import time
 import requests
 
 import config
+import settings  # for OLLAMA_SYSTEM only; imports just config and jobs, so no cycle
 
 # (connect, read). A local server accepts a connection immediately, so a short
 # connect timeout is what keeps a dead port cheap: an endpoint that is not there
@@ -334,6 +335,27 @@ def set_num_ctx(value) -> int:
     with _lock:
         _num_ctx = value
     return value
+
+
+def system_prefix(info: dict = None) -> list:
+    """Messages to put before the user message, for the active server.
+
+    Ollama fills an empty system slot from the served model's Modelfile --
+    typhoon-ocr1.5-3b ships `SYSTEM You are a helpful assistant.` -- so a request
+    with no system message is not a request without a system prompt. This sends
+    that text explicitly, which measured byte-identical to letting Ollama inject
+    it, so the app no longer depends on a default it does not control: a
+    re-`ollama create` with a different Modelfile can no longer move accuracy
+    without anything here changing. `settings.OLLAMA_SYSTEM` has the numbers.
+
+    llama-server has no Modelfile and no injected default, and every llama.cpp
+    baseline was measured with no system message, so it is still sent none.
+    Returned as a list so a call site can splice it in without a conditional.
+    """
+    info = info or status()
+    if info["kind"] != "ollama" or not settings.OLLAMA_SYSTEM:
+        return []
+    return [{"role": "system", "content": settings.OLLAMA_SYSTEM}]
 
 
 def request_extras(info: dict = None) -> dict:

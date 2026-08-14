@@ -236,6 +236,7 @@ The ones that matter for a deployment:
 | `PORT` | `5000` | Port to bind. |
 | `LLAMA_URL` | `http://127.0.0.1:8080` | Where the model server is listening. |
 | `OCR_ENDPOINTS` | *(unset)* | Comma-separated list offered in the server picker. |
+| `OLLAMA_SYSTEM` | `You are a helpful assistant.` | System message sent with every Ollama request; it reproduces what Ollama otherwise injects from the served model's Modelfile. Ollama only — llama-server is sent none. Set it empty to send no system message. |
 | `OCR_LOG_DIR` | `./logs` | The only directory written to. Point it elsewhere to mount the app directory read-only. |
 | `OCR_MOCK_DIR` | `./mockOcr` | Source documents for the folder picker. Absent ⇒ upload-only. |
 | `OCR_SOLUTION_DIR` | `./solution` | Ground truth. Absent ⇒ accuracy scoring switches off and the page hides its controls. |
@@ -244,6 +245,8 @@ The ones that matter for a deployment:
 | `MAX_JOBS` | `5` | Rendered documents held in memory for the compare view. A 10-page document at `accurate` is ~40 MB, so this is a RAM ceiling. |
 | `GEN_READ_TIMEOUT` | `1800` | Raise on slow hardware; a timeout firing mid-generation throws away work the model server is still doing. |
 | `EXTRACT` | `1` | Set `0` to run the OCR pass only. |
+| `AGENTIC_EXTRACT` | `0` | Start with field extraction in agentic mode. Switchable from the page at any time; this only sets what a fresh process starts in. |
+| `AGENTIC_RETRIES` | `1` | How many times an agentic step may be re-asked after returning a value that is not in the transcript. `0` turns the retry off. |
 
 ## Security
 
@@ -347,6 +350,38 @@ VAT)*, with a note saying which basis the page is on and what said so.
 
 The **References** group hides itself when it comes back empty; a cash receipt legitimately
 has none of those fields.
+
+### Field extraction: one request, or field by field
+
+Pass 2 runs in one of two shapes, chosen by **Field extraction** in the sidebar or by the
+**Agentic** button beside Re-extract. The two controls are the same switch.
+
+| | one request | agentic |
+|---|---|---|
+| Requests per document | 1 | 15 |
+| Fields asked for at once | all 31 | 1–3 |
+| A step that returns something not on the page | — | asked again once |
+| A reply that will not parse | costs the whole extraction | costs that step's fields |
+| Speed | fast | slower |
+
+Agentic mode walks fifteen steps — the heading, the dates, the references, the codes, the
+seller, its address, the buyer, its address, currency and VAT rate, the charges table, the
+two groups of totals, the amount in words, payment, and whatever is left over — asking for
+one to three fields each against the same transcript. Use it when a value keeps landing in
+the wrong field; the single request is faster and is what a fresh process starts in.
+
+While it runs, the Fields tab lists the steps and marks each one done, re-asked or failed.
+The list stays after the run, under the fields, so a value can be traced back to the step
+that produced it. A step that failed is called out above the fields: its keys are empty
+because the question was never answered, which is not the same as the document being silent.
+
+The switch is server-side and takes effect on the next extraction — including queued
+documents and the run log's `extract_mode` column, which records the shape each row actually
+ran in. It is **not** refused while the queue is busy, unlike switching model server.
+
+`AGENTIC_EXTRACT=1` starts in agentic mode; `AGENTIC_RETRIES` sets how many times a step may
+be re-asked (default 1, `0` to turn the retry off). Over HTTP, send `{"mode": "agentic"}` to
+`POST /api/extract`, or `POST /api/extract/mode` to change the setting.
 
 ### Compare with source
 
@@ -563,6 +598,7 @@ recent rows and links the CSV.
 | `seconds`, `prefill_seconds`, `decode_seconds` | runtime, split into prompt processing and generation |
 | `tokens`, `tokens_per_second` | OCR output tokens; the rate is decode-only |
 | `extract_seconds`, `extract_tokens`, `verify_seconds` | passes 2 and 3 |
+| `extract_mode` | `single` or `agentic` — the shape pass 2 ran in, taken from the result, so a mode switched mid-batch still labels each row correctly. Blank on a run that never extracted |
 | `grounded_pct`, `ungrounded`, `fields_missing` | share of extracted values found in the transcript, how many were not, and how many fields the document does not state |
 | `p1_present`, `p1_absent`, `p2_present`, `p2_absent` | field coverage by delivery tier — how many of the 14 priority-1 and 14 priority-2 keys came back filled. Blank on a run that extracted nothing, which is not the same as zero |
 | `case`, `char_accuracy`, `word_accuracy`, `char_accuracy_no_marks` | percentages, blank when the input has no ground truth |
@@ -604,7 +640,9 @@ same cases on each and compare the columns.
 | Route | |
 |---|---|
 | `POST /api/ocr` | same fields as the stream, blocking, whole JSON at once. Drains the same generator internally, so timings are measured identically |
-| `POST /api/extract` · `POST /api/verify` | re-run pass 2 or pass 3 on a transcript the app already has |
+| `POST /api/extract` · `POST /api/verify` | re-run pass 2 or pass 3 on a transcript the app already has. `/api/extract` takes an optional `mode` (`single`/`agentic`) for that one call |
+| `POST /api/extract/stream` | the same as `/api/extract`, as NDJSON: `extract_steps` once, then an `extract_step` per step as it starts and finishes, then `fields`. Agentic mode only emits the step events; single mode emits `fields` alone |
+| `GET` · `POST /api/extract/mode` | read or set the extraction shape for everything this process extracts next. Body `{"mode": "single"}` or `{"mode": "agentic"}` |
 | `GET /api/page/<job>/<n>` | PNG of prepared page `n` (0-based). `job` is returned on the `page` and `done` events. 404s once the upload falls out of the cache |
 | `GET /api/health` | active server status (reachable, kind, model, vision) and whether the PDF/HEIF decoders are available |
 | `GET /api/servers` | every configured endpoint, what each one is, and which is active. `?probe=1` bypasses the status cache |
@@ -687,7 +725,7 @@ still never parses `.env` itself.
 |---|---|
 | `app.py` | Flask routes, image preparation, the three passes, streaming |
 | `settings.py` | Every tunable the app runs with — limits, timeouts, detail presets, sampling, loop thresholds |
-| `prompts.py` | The four prompts, and nothing else |
+| `prompts.py` | The prompts, and nothing else — the four the passes send, plus the step table agentic extraction walks |
 | `config.py` | Every path and the typed environment readers. The only place that knows where anything lives |
 | `backends.py` | Endpoint probing and switching; every llama.cpp-vs-Ollama difference |
 | `grounding.py` | Checking extracted fields against the transcript they came from |
