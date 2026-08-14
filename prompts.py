@@ -5,10 +5,10 @@ request-assembly code around it. There is no logic here: these are string
 constants, imported by `app.py` and interpolated into request bodies exactly as
 written.
 
-Each one was arrived at by measurement rather than by taste, and the comments
-say what was measured -- a prompt that looks redundant or oddly worded is
-usually the fix for a failure that shows up as HTTP 200 with quietly wrong
-output. Re-run the benchmark (`python compare.py`) after editing any of them.
+A prompt that looks redundant or oddly worded is usually the fix for a failure
+that shows up as HTTP 200 with quietly wrong output. What was measured, and why
+each one is worded as it is, is in CLAUDE.md -- not repeated here. Re-run the
+benchmark (`python compare.py`) after editing any of them.
 
 * `PROMPT`            -- pass 1, page image in, verbatim transcript out.
 * `EXTRACT_PROMPT`    -- pass 2, transcript in as text, structured JSON out.
@@ -25,60 +25,16 @@ output. Re-run the benchmark (`python compare.py`) after editing any of them.
 # pass 1: OCR
 # --------------------------------------------------------------------------
 
-# typhoon-ocr1.5's OWN training prompt, plus one block of ours.
+# Page image in, verbatim transcript out. Extracts no fields -- it produces the
+# page as Markdown, with tables as <table> HTML, and that transcript is what
+# passes 2 and 3 read.
 #
-# This was a hand-written prompt that deliberately contradicted typhoon's, on the
-# grounds that typhoon's asks the model to *describe* figures in Thai. The
-# observation was right -- that rule is real, see the <figure> block below -- but
-# the conclusion was not. Measured, the hand-written prompt cost 5.7 points of
-# character accuracy.
+# The text is typhoon-ocr1.5's OWN training prompt, recovered from the model, with
+# our ORDER block appended. The <figure> and <page_number> rules are typhoon's and
+# are left alone; `app.normalise_output` strips what they produce.
 #
-# The text below the ORDER block is not a guess at typhoon's prompt: it was
-# recovered from the model itself. Send the page image with no text part at all,
-# with an empty text part, or with a weak instruction ("Transcribe this
-# document."), and typhoon-ocr1.5-2b replies with its finetuning prompt verbatim
-# instead of reading the page -- 224 tokens, 6.7% accuracy, byte-identical output
-# for all three. That echo is not an Ollama quirk and not a prompt-ordering bug,
-# which is what it was previously filed as; it is what this model does whenever
-# the instruction is not strong enough to beat its training.
-#
-# Measured on sol005 at `balanced` (2 MP), llama.cpp, typhoon-ocr1.5-2b F16:
-#
-# | prompt                       | char% | word% | prompt tokens |
-# |------------------------------|-------|-------|---------------|
-# | native + ORDER (this one)    | 99.0  | 95.0  | 2283          |
-# | native alone                 | 98.9  | 94.5  | 2194          |
-# | the old hand-written prompt  | 93.3  | 92.9  | 2667          |
-# | that prompt minus ORDER      | 93.3  | 92.9  | 2578          |
-#
-# Both more accurate and ~380 tokens per page cheaper.
-#
-# Two things this is deliberately shaped by:
-#
-# * The ORDER block is the one part of the old prompt that measurably helped. On
-#   top of the native text it fixed a totals row the model had split across two
-#   lines, and a customer code it had read a digit short. It does NOTHING on top
-#   of the old prompt -- adding and removing it there produced byte-identical
-#   output -- so its value is context-dependent. Do not move it or reword it
-#   without re-measuring.
-# * Everything else the old prompt added made things worse and is gone. The two
-#   that cost the 5.7 points on sol005: "Do NOT use Markdown", which fought the
-#   native text's own "return the clean Markdown", and the rule to skip logos,
-#   stamps and signatures, which the model read as licence to drop `*A01$TX*` --
-#   real printed page content, not a description of a stamp.
-#
-# The <figure> and <page_number> rules are left exactly as typhoon trained them
-# rather than argued with, because `app.normalise_output` already strips both.
-# Telling the model not to emit them never worked and cost accuracy; letting it
-# emit them and removing them in Python does.
-#
-# CAVEAT, and it matters: this is ONE document at one detail level. The old
-# prompt's table rules ("never wrap the whole page in a table", no
-# <caption>/<thead>, one <tr> per printed row, Thai-over-English headings in a
-# single <td>) are dropped on evidence that never tested them -- sol005's table
-# came out right under every variant. If table structure regresses on another
-# fixture, those rules are the first thing to put back. Run `python compare.py`
-# over all five cases before trusting this widely.
+# Do not move or reword the ORDER block, and do not add rules back, without
+# re-measuring -- CLAUDE.md has the table.
 PROMPT = """Extract all text from the image.
 
 Instructions:
@@ -110,28 +66,27 @@ ORDER -- this matters
 # pass 2: field extraction
 # --------------------------------------------------------------------------
 
-# Fed the finished transcript back as text, so there is no image to prefill and
+# Transcript in as text, one JSON object out, in a single request. No image, so
 # it costs a fraction of the OCR run.
 #
-# This prompt is a LOOKUP. It maps printed values onto keys and does no
-# reasoning about them: there is no VAT inclusive-versus-exclusive explanation
-# here, nothing about which of two printed totals a single total must be, and no
-# catalogue of Thai label wordings. All of that was here and was removed. Every
-# judgement about what the figures mean belongs to `verify.py`, which makes it in
-# Python from values copied verbatim -- a model asked to reason about tax while
-# reading starts adjusting what it reads to fit the reasoning, and a conclusion,
-# unlike a copied value, is something `grounding.py` cannot check.
+# Extracts 29 scalars and two lists:
+#   what it is    document_type, document_number, issue_date, due_date
+#   references    reference_document, po_number, original_invoice_number
+#   codes         contract_number, customer_code, location_code, service_period
+#   the issuer    seller_name, seller_tax_id, seller_branch, seller_address
+#   the customer  buyer_name, buyer_tax_id, buyer_branch, buyer_address
+#   basis         currency, vat_rate
+#   totals        subtotal, vat_total, amount_incl_vat, withholding_tax_total,
+#                 net_payable, amount_in_words
+#   payment       payment_method, payment_reference
+#   lists         line_items[], other_fields[]
 #
-# Two rules in here are load-bearing and look like style until they are removed:
+# It is a LOOKUP: it copies printed values onto keys and reasons about none of
+# them. Every judgement about what the figures mean belongs to `verify.py`.
 #
-# * No example value anywhere is written in quotes. A quoted illustration reads
-#   as JSON to a small model -- with `// e.g. "INVOICE"` in the skeleton
-#   comments, replies came back carrying a literal "INVOICE": "" key alongside
-#   the real document_type. Every illustration is unquoted prose, and one rule
-#   says outright that nothing in the instructions is itself a key or a value.
-# * The skeleton stays a JSON skeleton. Listing the keys as prose instead was
-#   tried and is worse -- the model answered {"keys": "document_type", ...} and
-#   then looped.
+# Three things here are load-bearing and look like style until removed -- no
+# example value is written in quotes, the skeleton stays a JSON skeleton, and no
+# Thai label wording is named. CLAUDE.md says what each one costs.
 EXTRACT_PROMPT = """You are reading the text of a Thai/English business document that has
 already been transcribed. Map what it prints onto the keys below.
 
@@ -265,16 +220,10 @@ The totals and the rate:
 Document text:
 """
 
-# Repeated after the transcript, and this is load-bearing rather than belt and
-# braces. typhoon-ocr is an OCR fine-tune first: once a long transcript sits
-# between the instructions and the point of generation, its training wins and it
-# answers with its own {"natural_text": "<the whole page>"} envelope instead of
-# the requested fields -- which then overruns the token cap mid-string and
-# arrives as "Unterminated string starting at ... (char 17)", char 17 being the
-# opening quote of that envelope. Measured on a 3,694-token prompt: instructions
-# first alone gave the envelope every time; closing with this reminder gave the
-# right schema every time. Short documents never showed it, so this only ever
-# reproduced on the longer multi-page ones.
+# Closes pass 2's message, after the transcript. Extracts nothing itself: it
+# restates the schema so the OCR fine-tune answers with the fields rather than
+# with its own {"natural_text": "<the whole page>"} envelope. Load-bearing on
+# long documents, and not belt and braces -- see CLAUDE.md.
 EXTRACT_REMINDER = """
 
 Now return the JSON object described above, using exactly the keys listed.
@@ -284,20 +233,23 @@ Do NOT transcribe the document and do NOT return a "natural_text" field."""
 # pass 2, agentic mode: one small group of fields per request
 # --------------------------------------------------------------------------
 
-# The same 29 scalars and two lists, asked for one to three at a time instead of
-# all at once. Everything below is still constants -- `EXTRACT_STEPS` is a table
-# of prompt text, and the loop that walks it lives in `app.py`.
+# The same 29 scalars and two lists as EXTRACT_PROMPT, asked one to three at a
+# time: 15 requests against the same transcript, merged in `app._extract_agentic`.
+# One message per step, assembled as PREFIX + transcript + TASK.format(...) from
+# the step's own row of EXTRACT_STEPS.
 #
-# Why the transcript comes FIRST here, when the single-shot prompt puts it last:
+# The transcript comes FIRST here, the opposite way round from EXTRACT_PROMPT, so
+# that every step shares a prefix llama.cpp can prefill once. Reverse it and all
+# 15 steps become a cache miss.
 #
-# * Every step sends the identical prefix + transcript and differs only in the
-#   question at the end, so llama.cpp's longest-common-prefix cache prefills the
-#   document once and reuses it for every remaining step. Instructions first
-#   would put the varying text at the front and make every step a cache miss.
-# * It also satisfies the rule EXTRACT_REMINDER exists for, structurally rather
-#   than by repetition: in this shape *all* the instructions already sit after
-#   the transcript, so there is nothing between them and the point of generation
-#   for the model's OCR finetuning to win against.
+# Two things to know before editing anything below:
+#
+# * EXTRACT_STEP_TASK is shared by all 15 steps -- a clause added here changes
+#   every answer, including the 14 that were already right. Fix a step in its own
+#   `rules` instead.
+# * On Ollama, 3 of the 15 steps currently die by transcribing the page into their
+#   own first key. Bounding the answer's length was tried and made it worse.
+#   CLAUDE.md has the measurements and the one untested hypothesis left.
 #
 # Each step's skeleton is written out rather than generated, so the exact bytes
 # the model is asked for can be read here.
@@ -339,11 +291,10 @@ Rules for every answer:
 - Do NOT transcribe the document, and do NOT return a natural_text field. Answer with the
   JSON object above and nothing else."""
 
-# Sent when a step came back with values that are not in the transcript. Cheap
-# because a step is small: the document is already prefilled, so a retry costs the
-# question and the answer rather than the page. The rejected values are quoted
-# back because naming them is what makes the second attempt different from the
-# first -- asking again in the same words reliably returns the same answer.
+# Appended to a step's message when its answer held values that are not in the
+# transcript, to ask that step's question a second time. The rejected values are
+# quoted back because naming them is what makes it a different question -- under
+# greedy decoding, asking again in the same words returns the same answer.
 EXTRACT_STEP_RETRY = """
 
 Your previous answer to this question contained values that do not appear anywhere in the
@@ -353,14 +304,31 @@ Each of those was invented, or copied out of a different field. Answer the quest
 For each of those fields either find the value the page actually prints under that field's
 own label, or return "" for it. Return the same JSON object as before."""
 
-# id, title, keys, skeleton, rules, max_tokens.
+# One row per step: id, title, keys, skeleton, rules, max_tokens. `keys` is the
+# only thing the merge takes from that step's reply -- anything else the model
+# returns is dropped rather than trusted.
 #
-# The grouping is not arbitrary: fields that compete for the same value are asked
-# together (a name, its tax ID and its branch come out of one block of the page)
-# and fields that are mistaken for one another are kept apart (the codes step runs
-# separately from the buyer step, which is where location_code was landing in
-# buyer_name). `keys` is what the merge takes from the reply -- anything else the
-# model returns in a step is dropped rather than trusted.
+# The 15 steps, and the fields each extracts:
+#
+#   document        document_type, document_number, issue_date
+#   dates           due_date, service_period
+#   references      reference_document, po_number, original_invoice_number
+#   codes           contract_number, customer_code, location_code
+#   seller          seller_name, seller_tax_id, seller_branch
+#   seller_address  seller_address
+#   buyer           buyer_name, buyer_tax_id, buyer_branch
+#   buyer_address   buyer_address
+#   basis           currency, vat_rate
+#   line_items      line_items[]
+#   totals_goods    subtotal, vat_total
+#   totals_pay      amount_incl_vat, withholding_tax_total, net_payable
+#   words           amount_in_words
+#   payment         payment_method, payment_reference
+#   other           other_fields[]
+#
+# The grouping is not arbitrary: fields competing for the same value are asked
+# together, and fields mistaken for one another are kept apart -- codes runs
+# separately from buyer, which is where location_code was landing in buyer_name.
 EXTRACT_STEPS = (
     {
         "id": "document",
@@ -465,8 +433,14 @@ party being billed -- NOT the letterhead at the top of the page, which is the is
 - A name is TEXT. A value that is mostly digits, or that reads as a code -- a site
   reference, a meter number, a customer number -- is NOT a name, however close to this block
   it is printed. Where the block gives you a code and no name, buyer_name is "".
+- The customer's block is found by its LABELS -- lines labelled with words meaning customer,
+  name, buyer or the party billed. The block printed at the very top of the page, above this
+  document's own heading, is the issuer's letterhead and is never the customer, however
+  complete it looks. If the only name you can find is that one, buyer_name is "".
 - buyer_tax_id is only the digits printed as that party's tax identification number, and
   buyer_branch is what is printed beside that tax ID to say which office or branch it is.
+- buyer_branch says which office or branch, and nothing else. A street, a postcode or a
+  telephone number is an address, not a branch, and does not belong in it.
 - None of these three may repeat the issuer's name, tax ID or branch from the letterhead.""",
     },
     {
@@ -607,11 +581,12 @@ party being billed -- NOT the letterhead at the top of the page, which is the is
 # pass 3: advisory review
 # --------------------------------------------------------------------------
 
-# The arithmetic is done in Python before this is sent, and the results go into
-# the message with it. A 2B model is poor at addition, so letting it 'check' the
-# sums would add noise and occasionally contradict a correct calculation; it is
-# asked only for the judgements arithmetic cannot make, and its answer is
-# advisory.
+# Extracted fields in, a list of issues out: {"issues": [{field, problem,
+# severity}], "notes": ""}. Extracts no document values of its own.
+#
+# `verify.py` has already checked the arithmetic and its results go into the
+# message, so this is asked only for the judgements arithmetic cannot make -- a
+# value in the wrong field, an identifier of implausible shape. Advisory.
 VERIFY_PROMPT = """You are auditing fields extracted from a Thai/English business document.
 The arithmetic has ALREADY been checked by an exact calculator, and its results are given
 to you below. Do not redo the sums and do not contradict them -- they are authoritative.
