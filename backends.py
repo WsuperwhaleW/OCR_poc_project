@@ -377,3 +377,94 @@ def request_extras(info: dict = None) -> dict:
             extras["options"] = {"num_ctx": chosen}
         return extras
     return {"n_ctx": chosen} if chosen > 0 else {}
+
+
+def structured_request(messages: list, schema: dict, max_tokens: int,
+                       info: dict = None):
+    """URL and body for one non-streaming request whose reply must be JSON.
+
+    Two shapes, and which one you get depends on `schema` rather than on the
+    backend:
+
+    * `schema` None -- the plain request, byte for byte what this app has always
+      sent: OpenAI-compatible `/v1/chat/completions`, greedy, `response_format:
+      {"type": "json_object"}`, DRY where the server takes it. **Every
+      measurement in CLAUDE.md was taken on this**, which is why it is still the
+      first thing asked.
+    * `schema` given -- decoding constrained to those keys. On llama-server that
+      is the same endpoint with `response_format.json_schema`. **On Ollama it is
+      the native `/api/chat`**, because its `/v1` shim drops everything that
+      would hold a small OCR fine-tune to the schema: `json_object` means "valid
+      JSON" and nothing about *which* JSON, so the model answers with its own
+      {"natural_text": "<the whole page>"} envelope and the shim also drops
+      `repeat_penalty`, the one repetition defence Ollama can receive -- `dry_*`
+      being a llama.cpp sampler it drops as well.
+
+    So the constrained shape changes two things at once on Ollama, deliberately:
+    the grammar stops the envelope, and the penalty stops the degeneration a
+    grammar cannot reach, which is repetition *inside* a string value.
+    `settings.OLLAMA_REPEAT_PENALTY` has both measurements.
+
+    `schema` is sent as-is, so it must stay inside the JSON Schema subset
+    Ollama's grammar runtime accepts: object, array, string, number, properties,
+    items, required, enum. No nullable unions, no length or range constraints.
+
+    Returns (url, body). `structured_reply` reads whichever shape comes back.
+    """
+    info = info or status()
+    chosen = num_ctx()
+    if schema and info["kind"] == "ollama" and info["model"]:
+        options = {
+            "num_predict": max_tokens,
+            "temperature": 0,
+            # Deliberately no top_k. Greedy is already guaranteed by temperature
+            # 0, and a single-candidate filter applied before the penalty would
+            # make the penalty a no-op -- and the penalty is the load-bearing
+            # part. top_p is moot at temperature 0 and is left at the value the
+            # measurement was taken with.
+            "top_p": 0.5,
+            "repeat_penalty": settings.OLLAMA_REPEAT_PENALTY,
+        }
+        if chosen > 0:
+            options["num_ctx"] = chosen
+        return f"{active_url()}/api/chat", {
+            "model": info["model"], "messages": messages, "format": schema,
+            "options": options, "stream": False,
+        }
+
+    return f"{active_url()}/v1/chat/completions", {
+        "messages": messages,
+        "max_tokens": max_tokens,
+        "temperature": 0,
+        "top_k": 1,
+        "top_p": 1.0,
+        "min_p": 0.0,
+        # llama-server takes a schema here; without one this is the plain
+        # "return some JSON object" the baselines were measured with.
+        "response_format": ({"type": "json_schema",
+                             "json_schema": {"name": "fields", "schema": schema}}
+                            if schema else {"type": "json_object"}),
+        "stream": False,
+        **settings.sampler_extras(),
+        **request_extras(info),
+    }
+
+
+def structured_reply(body: dict, info: dict = None):
+    """(text, truncated, tokens) from either server's reply to the above.
+
+    The two shapes differ in every field: llama-server answers OpenAI-style with
+    `choices[0].message.content`, a `finish_reason` and either a `timings` or a
+    `usage` block; Ollama's native endpoint answers with `message.content`, a
+    `done_reason` and `eval_count`. Read here so the callers stay uniform.
+    """
+    info = info or status()
+    if "choices" in body:
+        choice = (body.get("choices") or [{}])[0]
+        text = ((choice.get("message") or {}).get("content") or "").strip()
+        timings = body.get("timings") or {}
+        usage = body.get("usage") or {}
+        tokens = int(timings.get("predicted_n") or usage.get("completion_tokens") or 0)
+        return text, choice.get("finish_reason") == "length", tokens
+    text = ((body.get("message") or {}).get("content") or "").strip()
+    return text, body.get("done_reason") == "length", int(body.get("eval_count") or 0)

@@ -284,37 +284,6 @@
   .qbadge.cancelled { background: var(--border); color: var(--muted); }
   .qbar { height: 5px; border-radius: 4px; background: var(--border); overflow: hidden; min-width: 70px; }
   .qbar span { display: block; height: 100%; background: var(--accent); transition: width .3s; }
-  #numbers { display: none; }
-  .verdict { display: inline-block; padding: 3px 12px; border-radius: 20px;
-             font-weight: 600; font-size: .82rem; }
-  .verdict.pass { background: rgba(63,185,80,.15); color: #3fb950; border: 1px solid #3fb950; }
-  .verdict.fail { background: rgba(255,107,107,.13); color: var(--danger); border: 1px solid var(--danger); }
-  .verdict.warn { background: rgba(217,164,65,.13); color: #d9a441; border: 1px solid #d9a441; }
-  .verdict.skip { background: transparent; color: var(--muted); border: 1px solid var(--border); }
-  #numbers table.checks { width: 100%; border-collapse: collapse; font-size: .82rem; margin-top: 4px; }
-  #numbers table.checks th, #numbers table.checks td {
-    border-bottom: 1px solid var(--border); padding: 7px 9px; text-align: left; vertical-align: top; }
-  #numbers table.checks th { color: var(--muted); font-weight: 500; font-size: .78rem;
-    text-transform: uppercase; letter-spacing: .05em; }
-  #numbers table.checks td.n { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
-  /* The working. Monospaced and tabular so the addends line up as figures
-     rather than reading as prose, and set apart from the detail line above it
-     because one says what was compared and the other says with what. */
-  #numbers .work { display: inline-block; margin-top: 3px; font-size: .78rem;
-    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-    font-variant-numeric: tabular-nums; color: var(--text); opacity: .72; }
-  #numbers tr.st-fail { background: rgba(255,107,107,.07); }
-  #numbers tr.st-warn { background: rgba(217,164,65,.07); }
-  #numbers tr.st-skip { opacity: .55; }
-  .badge { font-size: .72rem; font-weight: 700; padding: 2px 7px; border-radius: 5px; }
-  .badge.pass { background: rgba(63,185,80,.18); color: #3fb950; }
-  .badge.fail { background: rgba(255,107,107,.18); color: var(--danger); }
-  .badge.warn { background: rgba(217,164,65,.18); color: #d9a441; }
-  .badge.skip { background: var(--border); color: var(--muted); }
-  .issue { border-left: 3px solid var(--border); padding: 8px 12px; margin: 8px 0;
-           font-size: .84rem; background: var(--accent-soft); border-radius: 0 8px 8px 0; }
-  .issue.error { border-left-color: var(--danger); }
-  .issue.warning { border-left-color: #d9a441; }
   .issue .who { font-weight: 600; }
   #accuracy { display: none; }
   #accHead { font-size: .88rem; margin-bottom: 14px; }
@@ -571,8 +540,6 @@
           <button id="tabAccuracy" disabled><b>3</b> Accuracy</button>
           <span class="flow-arrow">›</span>
           <button id="tabFields" disabled><b>4</b> Fields</button>
-          <span class="flow-arrow">›</span>
-          <button id="tabNumbers" disabled><b>5</b> Numbers</button>
           <button id="copy" disabled style="margin-left:10px">Copy</button>
         </div>
       </div>
@@ -591,16 +558,6 @@
         </div>
         <div id="fldBody"></div>
         <div id="fldRaw" class="raw-pane" hidden></div>
-      </div>
-
-      <div id="numbers">
-        <div class="fld-bar">
-          <span id="numStatus"></span>
-          <label class="cmp-opt"><input type="checkbox" id="numRawChk"> Raw output</label>
-          <button id="numRerun" class="ghost-sm">Re-verify</button>
-        </div>
-        <div id="numBody"></div>
-        <div id="numRaw" class="raw-pane" hidden></div>
       </div>
 
       <div id="accuracy">
@@ -682,14 +639,6 @@ const tabRendered = document.getElementById('tabRendered');
 const tabRaw = document.getElementById('tabRaw');
 const cmpToggle = document.getElementById('cmpToggle');
 const cmpHint = document.getElementById('cmpHint');
-const tabNumbers = document.getElementById('tabNumbers');
-const numbersEl = document.getElementById('numbers');
-const numStatus = document.getElementById('numStatus');
-const numBody = document.getElementById('numBody');
-const numRerun = document.getElementById('numRerun');
-const numRawChk = document.getElementById('numRawChk');
-const numRaw = document.getElementById('numRaw');
-let verified = null;
 const tabFields = document.getElementById('tabFields');
 const fieldsEl = document.getElementById('fields');
 const fldStatus = document.getElementById('fldStatus');
@@ -839,22 +788,18 @@ function showTab(mode) {
   rawEl.style.display = mode === 'raw' ? 'block' : 'none';
   accuracyEl.style.display = mode === 'accuracy' ? 'block' : 'none';
   fieldsEl.style.display = mode === 'fields' ? 'block' : 'none';
-  numbersEl.style.display = mode === 'numbers' ? 'block' : 'none';
-  statsEl.style.display = ['accuracy', 'fields', 'numbers'].includes(mode) ? 'none' : '';
+  statsEl.style.display = ['accuracy', 'fields'].includes(mode) ? 'none' : '';
   tabRendered.classList.toggle('on', mode === 'rendered');
   tabRaw.classList.toggle('on', mode === 'raw');
   tabAccuracy.classList.toggle('on', mode === 'accuracy');
   tabFields.classList.toggle('on', mode === 'fields');
-  tabNumbers.classList.toggle('on', mode === 'numbers');
   if (mode === 'accuracy') paintAccuracy();
   if (mode === 'fields') paintFields();
-  if (mode === 'numbers') paintNumbers();
 }
 tabRendered.addEventListener('click', () => showTab('rendered'));
 tabRaw.addEventListener('click', () => showTab('raw'));
 tabAccuracy.addEventListener('click', () => { if (!tabAccuracy.disabled) showTab('accuracy'); });
 tabFields.addEventListener('click', () => { if (!tabFields.disabled) showTab('fields'); });
-tabNumbers.addEventListener('click', () => { if (!tabNumbers.disabled) showTab('numbers'); });
 
 /* ---------- extracted fields (second LLM pass) ---------- */
 const FIELD_LABELS = {
@@ -1209,7 +1154,14 @@ function paintFieldBody() {
                         && basis.subtotal_includes_vat) ? 'Amount (VAT included)'
                    : FIELD_LABELS[k];
 
-  let html = stepNote(extracted) + tierNote(extracted.tiers)
+  /* Said first, and before the counts, because everything under it is measured
+     over keys the reply never reached: an empty field here means the model
+     stopped, not that the page is silent, and the grounding note below is
+     careful to make exactly that distinction the other way round. */
+  let html = (extracted.partial
+      ? '<p class="ground-note bad"><strong>Partial extraction.</strong> '
+        + esc(extracted.partial) + '</p>' : '')
+    + stepNote(extracted) + tierNote(extracted.tiers)
     + groundingNote(g) + basisNote(basis);
   for (const [title, keys, hideWhenEmpty] of FIELD_SECTIONS) {
     if (hideWhenEmpty && keys.every(k => !f[k])) continue;
@@ -1340,7 +1292,6 @@ function qcell(job) {
   if (s.tokens) bits.push(s.tokens + ' tok');
   if (s.char_accuracy !== undefined && s.char_accuracy !== null)
     bits.push((s.char_accuracy * 100).toFixed(1) + '% acc');
-  if (s.verdict) bits.push('numbers: ' + s.verdict);
   if (s.looped) bits.push('LOOPED');
   if (s.truncated) bits.push('TRUNCATED');
   // A failed job keeps the stage it died in, so the stage must not win here --
@@ -1408,10 +1359,8 @@ queueBody.addEventListener('click', async e => {
     // whatever ran in this tab and would otherwise be shown against this one.
     extracted = r.extracted || null;
     extractSteps = null;
-    verified = r.verified || null;
     tabAccuracy.disabled = !truth;
     tabFields.disabled = !extracted;
-    tabNumbers.disabled = !verified;
     paint(); renderStats(r);
     meta.textContent = `${r.page_count} page(s) · ${r.detail} · ${r.tokens} tokens · ${r.seconds}s`
       + (truth && !truth.error ? ` · ${(truth.char_accuracy * 100).toFixed(1)}% vs ${truth.case}` : '');
@@ -1536,15 +1485,14 @@ function runRow(r) {
       + '">' + (acc === null ? '—' : acc.toFixed(1) + '%')
       + (r.case ? '<br><span style="color:var(--muted);font-size:.74rem;font-weight:400">'
                   + esc(r.case) + '</span>' : '') + '</td>'
-    + '<td>' + (r.verdict ? '<span class="badge ' + (r.verdict === 'insufficient data' ? 'skip' : esc(r.verdict))
-        + '">' + esc(r.verdict) + '</span>' : '—')
-      // Arithmetic can pass on figures that were never on the page, so the
-      // grounding count sits beside the verdict rather than out of sight.
+    // How much of what was extracted was actually found on the page. An
+    // invented field costs no time and no tokens, so it shows up in no other
+    // column: a run can look fast, clean and wrong.
+    + '<td class="n">' + (r.grounded_pct === '' || r.grounded_pct === undefined ? '—'
+        : Number(r.grounded_pct).toFixed(0) + '%')
       + (Number(r.ungrounded) > 0
          ? '<br><span style="color:var(--danger);font-size:.72rem">'
-           + esc(r.ungrounded) + ' ungrounded</span>'
-         : (r.grounded_pct !== '' && r.grounded_pct !== undefined
-            ? '<br><span style="color:var(--muted);font-size:.72rem">grounded</span>' : ''))
+           + esc(r.ungrounded) + ' ungrounded</span>' : '')
       + '</td>'
     + '<td><span class="qbadge ' + (r.status === 'ok' ? 'done' : esc(r.status || '')) + '">'
       + esc(r.status || '') + '</span>'
@@ -1571,7 +1519,7 @@ async function refreshRuns() {
     + ' — time, tokens, model, runtime, file name, file size and accuracy. No document text.' : '';
   runBody.innerHTML = rows.length
     ? '<table class="queue"><tr><th>When</th><th>Document</th><th>Model</th>'
-      + '<th>Tokens</th><th>Time</th><th>Fields</th><th>Accuracy</th><th>Numbers</th>'
+      + '<th>Tokens</th><th>Time</th><th>Fields</th><th>Accuracy</th><th>Grounded</th>'
       + '<th>Status</th></tr>'
       + rows.map(runRow).join('') + '</table>'
     : '';
@@ -1641,99 +1589,6 @@ queueClearBtn.addEventListener('click', async () => {
 });
 workersInput.addEventListener('change', () =>
   applyMode('concurrent', Number(workersInput.value)));
-
-/* ---------- number verification ---------- */
-function money(v) {
-  if (v === null || v === undefined) return '—';
-  return Number(v).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-}
-function paintNumbers() {
-  paintNumberBody();
-  const raw = numRawChk.checked && !!verified && !verified.pending;
-  numBody.hidden = raw;
-  numRaw.hidden = !raw;
-  // Only the review comes from the model here -- the checks above it are
-  // computed locally, so there is no verbatim reply behind them to show.
-  if (raw) paintRaw(numRaw, verified, (verified.review || {}).raw);
-}
-function paintNumberBody() {
-  if (!verified) {
-    numStatus.textContent = 'Not verified yet.';
-    numBody.innerHTML = '';
-    return;
-  }
-  if (verified.pending) {
-    numStatus.innerHTML = '<span class="spin"></span> Checking the numbers…';
-    numBody.innerHTML = '';
-    return;
-  }
-  const c = verified.counts || {};
-  numStatus.innerHTML = '<span class="verdict ' + (verified.verdict === 'insufficient data' ? 'skip' : verified.verdict) + '">'
-    + esc((verified.verdict || '').toUpperCase()) + '</span> &nbsp;'
-    + (c.pass || 0) + ' passed · ' + (c.fail || 0) + ' failed · '
-    + (c.warn || 0) + ' warning · ' + (c.skip || 0) + ' not testable'
-    + (verified.vat_rate === undefined || verified.vat_rate === null ? ''
-       : ' &nbsp;·&nbsp; VAT ' + verified.vat_rate + '% <span class="how">('
-         + esc(verified.vat_rate_source || '') + ')</span>')
-    // Which basis the checks above were run on. Two documents with identical
-    // figures verify differently depending on it, so it belongs beside the
-    // verdict rather than buried in a check detail.
-    + (!verified.vat_basis ? ''
-       : ' &nbsp;·&nbsp; ' + esc(verified.vat_basis.summary || '') + ' <span class="how">('
-         + esc(verified.vat_basis.evidence || verified.vat_basis.source || '') + ')</span>');
-
-  const checks = verified.checks || [];
-  let html = '<table class="checks"><tr><th></th><th>Check</th><th>Expected</th>'
-    + '<th>Found</th><th>Difference</th></tr>'
-    + checks.map(ch => '<tr class="st-' + ch.status + '">'
-        + '<td><span class="badge ' + ch.status + '">' + ch.status.toUpperCase() + '</span></td>'
-        + '<td>' + esc(ch.name) + '<br><span class="kind" style="color:var(--muted);font-size:.78rem">'
-          + esc(ch.detail || '') + '</span>'
-          // The sum itself. Expected-vs-found says a check failed; this says
-          // which figures went into it, which is what you need to find the row
-          // that caused it.
-          + (ch.working ? '<br><span class="work">' + esc(ch.working) + '</span>' : '')
-          + '</td>'
-        + '<td class="n">' + money(ch.expected) + '</td>'
-        + '<td class="n">' + money(ch.actual) + '</td>'
-        + '<td class="n">' + (ch.difference === null || ch.difference === undefined ? '—'
-            : (ch.difference > 0 ? '+' : '') + money(ch.difference)) + '</td>'
-        + '</tr>').join('') + '</table>';
-
-  // The model's review is advisory; arithmetic above is authoritative.
-  const rev = verified.review;
-  html += '<div class="fld-sec">Model review <span class="muted-inline">(advisory — the '
-        + 'arithmetic above is computed exactly, not by the model)</span></div>';
-  if (!rev) html += '<p class="acc-note">Not requested.</p>';
-  else if (rev.error) html += '<p class="acc-note err">' + esc(rev.error) + '</p>';
-  else if (!rev.issues || !rev.issues.length)
-    html += '<p class="acc-note">No further issues raised' + (rev.notes ? ': ' + esc(rev.notes) : '.') + '</p>';
-  else html += rev.issues.map(i => '<div class="issue ' + esc(i.severity || 'info') + '">'
-        + '<span class="who">' + esc(i.field || 'general') + '</span> — ' + esc(i.problem || '')
-        + '</div>').join('') + (rev.notes ? '<p class="acc-note">' + esc(rev.notes) + '</p>' : '');
-
-  numBody.innerHTML = html;
-}
-async function runVerify() {
-  if (!extracted || !extracted.fields) return;
-  verified = { pending: true };
-  tabNumbers.disabled = false;
-  paintNumbers();
-  try {
-    const res = await fetch('/api/verify', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      // Send the transcript too: a VAT rate the extractor missed can still be
-      // recovered from the document text.
-      body: JSON.stringify({ fields: extracted.fields, text })
-    });
-    verified = await res.json();
-  } catch (err) {
-    verified = { error: err.message, checks: [], counts: {}, verdict: 'error' };
-  }
-  paintNumbers();
-}
-numRerun.addEventListener('click', runVerify);
-numRawChk.addEventListener('change', paintNumbers);
 
 /* ---------- accuracy vs ground truth ---------- */
 function accColour(v) {
@@ -2264,7 +2119,6 @@ clearBtn.addEventListener('click', () => {
   meta.textContent = ''; meta.classList.remove('err');
   stopTicker(); pageStats = []; renderStats();
   extracted = null; extractSteps = null; tabFields.disabled = true;
-  verified = null; tabNumbers.disabled = true;
   job = null; pageTexts = []; curPage = -1; cmpPage = 0;
   cmpImg.removeAttribute('src');
   enableCompare();
@@ -2291,8 +2145,7 @@ runBtn.addEventListener('click', async () => {
   text = ''; pageStats = []; pageTexts = []; curPage = -1; cmpPage = 0;
   truth = null; tabAccuracy.disabled = true;
   extracted = null; extractSteps = null; tabFields.disabled = true;
-  verified = null; tabNumbers.disabled = true;
-  if (['accuracy','fields','numbers'].some(m => document.querySelector('#tab' + m[0].toUpperCase() + m.slice(1)).classList.contains('on'))) showTab('rendered');
+  if (['accuracy','fields'].some(m => document.querySelector('#tab' + m[0].toUpperCase() + m.slice(1)).classList.contains('on'))) showTab('rendered');
   paint(); renderStats();
   pagebar.innerHTML = '<span class="spin"></span> Starting…';
   warn.textContent = ''; meta.textContent = ''; meta.classList.remove('err');
@@ -2398,21 +2251,6 @@ runBtn.addEventListener('click', async () => {
           tabFields.disabled = false;
           pagebar.textContent = '';
           if (tabFields.classList.contains('on')) paintFields();
-        } else if (msg.event === 'verifying') {
-          verified = { pending: true };
-          tabNumbers.disabled = false;
-          pagebar.innerHTML = '<span class="spin"></span> Verifying numbers…';
-          if (tabNumbers.classList.contains('on')) paintNumbers();
-        } else if (msg.event === 'verified') {
-          const { event, ...rest } = msg;
-          verified = rest;
-          tabNumbers.disabled = false;
-          pagebar.textContent = '';
-          // A failed sum is worth surfacing without needing a tab switch.
-          if (verified.counts && verified.counts.fail) {
-            warn.textContent = verified.counts.fail + ' number check(s) failed — see the Numbers tab.';
-          }
-          if (tabNumbers.classList.contains('on')) paintNumbers();
         } else if (msg.event === 'logged') {
           // The row for this run is on disk; show it without waiting.
           refreshRuns();

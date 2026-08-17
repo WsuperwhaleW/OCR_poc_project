@@ -1,7 +1,7 @@
 # Thai Document OCR
 
-Upload a Thai/English document, get back a verbatim transcript, the fields extracted from
-it, and an arithmetic check on its numbers.
+Upload a Thai/English document, get back a verbatim transcript and the fields extracted
+from it, each value traced back to the text it came from.
 
 This app holds no model weights and imports no torch, transformers, accelerate or numpy.
 It decodes uploads into page images, caps their resolution, and streams the result back
@@ -237,6 +237,8 @@ The ones that matter for a deployment:
 | `LLAMA_URL` | `http://127.0.0.1:8080` | Where the model server is listening. |
 | `OCR_ENDPOINTS` | *(unset)* | Comma-separated list offered in the server picker. |
 | `OLLAMA_SYSTEM` | `You are a helpful assistant.` | System message sent with every Ollama request; it reproduces what Ollama otherwise injects from the served model's Modelfile. Ollama only — llama-server is sent none. Set it empty to send no system message. |
+| `EXTRACT_SCHEMA` | `1` | Whether a field-extraction reply that cannot be parsed is asked again with decoding constrained to the field schema. The first request is unconstrained either way. `0` turns the retry off, so an unusable reply is reported instead. |
+| `OLLAMA_REPEAT_PENALTY` | `1.1` | Repetition penalty on the constrained retry above. Ollama only, and the only place this app sets one above `1.0`. `1.0` turns it off. |
 | `OCR_LOG_DIR` | `./logs` | The only directory written to. Point it elsewhere to mount the app directory read-only. |
 | `OCR_MOCK_DIR` | `./mockOcr` | Source documents for the folder picker. Absent ⇒ upload-only. |
 | `OCR_SOLUTION_DIR` | `./solution` | Ground truth. Absent ⇒ accuracy scoring switches off and the page hides its controls. |
@@ -302,21 +304,18 @@ the bundled cases — score a case yourself before moving off it.
 
 ### What a run does
 
-Each run is up to three passes against the model server:
+Each run is up to two passes against the model server:
 
 1. **OCR** — the page image in, a verbatim transcript out, streamed to the browser as it
    arrives. Shown in **Markdown** (raw) and **Rendered**.
 2. **Extract** — the transcript back in as *text*, structured JSON out. Every returned
    value is then traced back to the transcript **in Python**; a value that is not in the
    text is flagged rather than displayed as data. Shown in **Fields**.
-3. **Verify** — the numbers are checked, again **in Python**: column sums, per-line
-   arithmetic, VAT rate, and the Thai amount-in-words against the numeral. Shown in
-   **Numbers**.
 
-Passes 2 and 3 are deterministic on purpose — the arithmetic and the grounding check are
-done by this app, not asked of the model. Turn them off with `EXTRACT=0`, or send
-`extract=0` with the request. Either can be re-run on its own from the page without
-re-reading the image, or via `POST /api/extract` and `POST /api/verify`.
+The grounding check in pass 2 is deterministic on purpose — it is done by this app, not
+asked of the model. Turn extraction off with `EXTRACT=0`, or send `extract=0` with the
+request. It can be re-run on its own from the page without re-reading the image, or via
+`POST /api/extract`.
 
 Nothing flagged is deleted or rewritten. A flagged value stays visible with its flag.
 
@@ -344,9 +343,9 @@ figures).
 once withholding comes off. Only the lines the page actually prints get filled; the rest
 stay empty rather than being derived.
 
-Whether the printed figures already carry VAT is decided before anything is checked, and
-the tab labels itself from it — the money column reads *Amount (incl. VAT)* or *Amount (ex
-VAT)*, with a note saying which basis the page is on and what said so.
+Whether the printed figures already carry VAT is decided in Python from the figures
+themselves, and the tab labels itself from it — the money column reads *Amount (incl. VAT)*
+or *Amount (ex VAT)*, with a note saying which basis the page is on and what said so.
 
 The **References** group hides itself when it comes back empty; a cash receipt legitimately
 has none of those fields.
@@ -597,12 +596,11 @@ recent rows and links the CSV.
 | `server`, `backend`, `model` | which endpoint and model actually ran it |
 | `seconds`, `prefill_seconds`, `decode_seconds` | runtime, split into prompt processing and generation |
 | `tokens`, `tokens_per_second` | OCR output tokens; the rate is decode-only |
-| `extract_seconds`, `extract_tokens`, `verify_seconds` | passes 2 and 3 |
+| `extract_seconds`, `extract_tokens` | pass 2 |
 | `extract_mode` | `single` or `agentic` — the shape pass 2 ran in, taken from the result, so a mode switched mid-batch still labels each row correctly. Blank on a run that never extracted |
 | `grounded_pct`, `ungrounded`, `fields_missing` | share of extracted values found in the transcript, how many were not, and how many fields the document does not state |
 | `p1_present`, `p1_absent`, `p2_present`, `p2_absent` | field coverage by delivery tier — how many of the 14 priority-1 and 14 priority-2 keys came back filled. Blank on a run that extracted nothing, which is not the same as zero |
 | `case`, `char_accuracy`, `word_accuracy`, `char_accuracy_no_marks` | percentages, blank when the input has no ground truth |
-| `verdict` | the number-check result |
 | `status`, `error` | `ok` / `truncated` / `looped` / `cancelled` / `error` |
 
 Coverage is not correctness. `p1_present` counts what came back filled, not what came back
@@ -640,7 +638,7 @@ same cases on each and compare the columns.
 | Route | |
 |---|---|
 | `POST /api/ocr` | same fields as the stream, blocking, whole JSON at once. Drains the same generator internally, so timings are measured identically |
-| `POST /api/extract` · `POST /api/verify` | re-run pass 2 or pass 3 on a transcript the app already has. `/api/extract` takes an optional `mode` (`single`/`agentic`) for that one call |
+| `POST /api/extract` | re-run pass 2 on a transcript the app already has. Takes an optional `mode` (`single`/`agentic`) for that one call |
 | `POST /api/extract/stream` | the same as `/api/extract`, as NDJSON: `extract_steps` once, then an `extract_step` per step as it starts and finishes, then `fields`. Agentic mode only emits the step events; single mode emits `fields` alone |
 | `GET` · `POST /api/extract/mode` | read or set the extraction shape for everything this process extracts next. Body `{"mode": "single"}` or `{"mode": "agentic"}` |
 | `GET /api/page/<job>/<n>` | PNG of prepared page `n` (0-based). `job` is returned on the `page` and `done` events. 404s once the upload falls out of the cache |
@@ -723,13 +721,13 @@ still never parses `.env` itself.
 
 | File | What it owns |
 |---|---|
-| `app.py` | Flask routes, image preparation, the three passes, streaming |
+| `app.py` | Flask routes, image preparation, both passes, streaming |
 | `settings.py` | Every tunable the app runs with — limits, timeouts, detail presets, sampling, loop thresholds |
-| `prompts.py` | The prompts, and nothing else — the four the passes send, plus the step table agentic extraction walks |
+| `prompts.py` | The prompts, and nothing else — the ones the passes send, plus the step table agentic extraction walks |
 | `config.py` | Every path and the typed environment readers. The only place that knows where anything lives |
 | `backends.py` | Endpoint probing and switching; every llama.cpp-vs-Ollama difference |
 | `grounding.py` | Checking extracted fields against the transcript they came from |
-| `verify.py` | Arithmetic and VAT checks on the extracted numbers |
+| `verify.py` | Reads document amounts, and decides whether the extracted figures already carry VAT |
 | `scoring.py` | Ground-truth lookup and accuracy scoring, shared by page and CLI |
 | `runlog.py` | The CSV run log |
 | `jobs.py` | The in-process queue and its worker pool |

@@ -35,17 +35,19 @@ import verify
 
 # Prompt text and tunables live outside this file so either can be read, edited
 # and diffed without the request-assembly code around them. `prompts.py` holds
-# the four prompts; `settings.py` holds every value the app runs with, and the
+# the prompts; `settings.py` holds every value the app runs with, and the
 # comment beside each one says what was measured to arrive at it.
 from prompts import (
+    EXTRACT_JSON_SCHEMA,
     EXTRACT_PROMPT,
     EXTRACT_REMINDER,
     EXTRACT_STEP_PREFIX,
     EXTRACT_STEP_RETRY,
     EXTRACT_STEP_TASK,
     EXTRACT_STEPS,
+    LINE_ITEM_SCHEMA,
+    OTHER_FIELDS_SCHEMA,
     PROMPT,
-    VERIFY_PROMPT,
 )
 from settings import (
     ACCEPTED_SUFFIXES,
@@ -58,6 +60,7 @@ from settings import (
     EXTRACT_LOOP_TAIL_CHARS,
     EXTRACT_MAX_TOKENS,
     EXTRACT_REPEAT_THRESHOLD,
+    EXTRACT_SCHEMA,
     GEN_CONNECT_TIMEOUT,
     GEN_TIMEOUT,
     LOOP_CHECK_EVERY,
@@ -76,7 +79,6 @@ from settings import (
     TRIM_MARGINS,
     TRIM_PAD,
     TRIM_TOLERANCE,
-    VERIFY_MAX_TOKENS,
     WORKERS_OVERRIDE,
     sampler_extras,
 )
@@ -373,18 +375,110 @@ def _first_json_object(text: str):
     return None
 
 
-def _repeated_line_items(raw: str, threshold: int = EXTRACT_REPEAT_THRESHOLD) -> bool:
-    """True when the same line item was emitted over and over.
+def _why_unparsable(raw: str, err: Exception, truncated: bool, status: dict):
+    """(message, flags) for a reply that would not parse.
 
-    `looks_repetitive` misses this: the model cycles over a *set* of items rather
-    than one block, so no single repeating unit spans the tail. Comparing the
-    descriptions catches it, and a genuine document never lists one description
-    three times over.
+    Split out so the same diagnosis serves both outcomes: it is the error when
+    nothing could be kept, and the warning printed above the fields when
+    `_salvage_json` rescued part of the reply. A parse error here is nearly
+    always a reply that was cut off rather than malformed syntax, and "invalid
+    JSON" sends you looking at the parser instead of at the model.
+    """
+    # Wider window than the OCR stream uses: an extraction loop repeats a whole
+    # clause inside one JSON string, so the repeating unit is long and a
+    # 600-character tail cannot hold enough repeats of it to be recognised.
+    if looks_repetitive(raw, tail_chars=EXTRACT_LOOP_TAIL_CHARS,
+                        min_repeats=EXTRACT_LOOP_MIN_REPEATS):
+        return ("The model repeated itself while extracting and never closed the "
+                "JSON.", {"looped": True})
+    if _is_ocr_envelope(raw):
+        return (f"'{status['model']}' ignored the extraction prompt and transcribed "
+                'the document instead, returning its OCR {"natural_text": ...} '
+                "envelope. The transcript is long enough to drown the instructions. "
+                "Re-extract; if it persists, extract one page at a time.",
+                {"envelope": True})
+    if _repeated_list(raw):
+        return ("The model cycled over the same rows until it hit the "
+                f"{EXTRACT_MAX_TOKENS}-token cap, so the JSON never closed. Raising "
+                "the cap will not help -- it buys more of the loop. Try Re-extract, "
+                "or extract one page at a time.", {"looped": True})
+    if truncated:
+        return (f"The JSON was cut off mid-value at the {EXTRACT_MAX_TOKENS}-token "
+                "cap. Raise EXTRACT_MAX_TOKENS if the document really has this many "
+                "line items.", {"truncated": True})
+    return (f"model did not return valid JSON ({err})", {})
+
+
+def _salvage_json(raw: str):
+    """Parse a reply that was cut off mid-value, keeping what completed.
+
+    A looping extraction is not a wasted request. sol005 fills twenty scalars
+    and the first rows of the table correctly and *then* cycles inside
+    `other_fields` until the token cap, and the whole reply is currently thrown
+    away for want of a closing brace. This rewinds to the last element that
+    finished, closes the containers still open there, and parses that.
+
+    What it deliberately does not do is guess: nothing is invented to fill the
+    tail, the caller marks the result partial, and the verbatim reply is kept so
+    the drop is visible. Same rule as grounding -- say less, never make it up.
+
+    Returns the parsed object, or None when there is nothing whole to keep.
+    """
+    start = raw.find("{")
+    if start < 0:
+        return None
+    stack, cut, cut_stack = [], None, None
+    in_str = escaped = False
+    for i, ch in enumerate(raw[start:], start):
+        if in_str:
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif ch == '"':
+                in_str = False
+            continue
+        if ch == '"':
+            in_str = True
+        elif ch in "{[":
+            stack.append("}" if ch == "{" else "]")
+        elif ch in "}]":
+            if not stack:
+                break
+            stack.pop()
+            # A container just closed, so everything up to here is whole. Cut
+            # AFTER it, keeping the element that finished.
+            cut, cut_stack = i + 1, list(stack)
+        elif ch == "," and stack:
+            # A comma separates two elements, so everything before it is whole.
+            # Cut BEFORE it: what follows is the fragment that never finished.
+            cut, cut_stack = i, list(stack)
+    if not stack or cut is None or not cut_stack:
+        return None
+    try:
+        parsed = json.loads(raw[start:cut] + "".join(reversed(cut_stack)))
+    except json.JSONDecodeError:
+        return None
+    return parsed if isinstance(parsed, dict) else None
+
+
+def _repeated_list(raw: str, threshold: int = EXTRACT_REPEAT_THRESHOLD) -> bool:
+    """True when the same list entry was emitted over and over.
+
+    `looks_repetitive` misses this: the model cycles over a *set* of entries
+    rather than one block, so no single repeating unit spans the tail. Comparing
+    the entries catches it, and a genuine document never lists one of them three
+    times over.
+
+    Both lists in the schema are checked, not just the table. sol005 cycles a
+    seven-entry block through `other_fields` -- with only "description" counted
+    nothing fired, and the reply was reported as "cut off at the token cap, raise
+    EXTRACT_MAX_TOKENS", which is advice that buys more loop.
     """
     seen = {}
-    for desc in re.findall(r'"description"\s*:\s*"([^"]{12,})"', raw):
-        seen[desc] = seen.get(desc, 0) + 1
-        if seen[desc] >= threshold:
+    for text in re.findall(r'"(?:description|label)"\s*:\s*"([^"]{12,})"', raw):
+        seen[text] = seen.get(text, 0) + 1
+        if seen[text] >= threshold:
             return True
     return False
 
@@ -404,80 +498,79 @@ def _extract_single(text: str, status: dict) -> dict:
     The cheaper of the two shapes, and the one a fresh process starts in.
     `_extract_agentic` below asks for the same schema a few fields at a time;
     `extract_fields` picks between them.
+
+    Asked twice at most, and the second time is a different question rather than
+    the same one repeated: the retry constrains decoding to `EXTRACT_JSON_SCHEMA`
+    instead of to "any valid JSON", which makes the model's own transcript
+    envelope unreachable rather than merely discouraged.
+
+    **The retry only runs when the first attempt yielded nothing at all**, and
+    that restraint is measured, not caution. Constraining every request costs
+    accuracy where the plain one already worked: on sol002 it took grounded
+    values from 28 to 19 and invented a table row; on sol003 it filled five rows
+    of unit prices the page never printed. Every baseline in CLAUDE.md was taken
+    on the unconstrained request, and it stays the first thing asked.
     """
-    payload = {
-        "messages": backends.system_prefix(status)
-                    + [{"role": "user",
-                        "content": EXTRACT_PROMPT + text + EXTRACT_REMINDER}],
-        "max_tokens": EXTRACT_MAX_TOKENS,
-        "temperature": 0,
-        "top_k": 1,
-        "top_p": 1.0,
-        "min_p": 0.0,
-        # Ask the server to constrain decoding to valid JSON where it supports
-        # it; the parser below still copes if it does not.
-        "response_format": {"type": "json_object"},
-        "stream": False,
-        **backends.request_extras(status),
-    }
+    result = _extract_once(text, status, None)
+    if "fields" in result or not EXTRACT_SCHEMA:
+        return result
+    retry = _extract_once(text, status, EXTRACT_JSON_SCHEMA)
+    retry["seconds"] = round(result.get("seconds", 0) + retry.get("seconds", 0), 2)
+    if "fields" not in retry:
+        # Both failed. The first reply is the one to report -- it is the one the
+        # baselines were measured on -- but say the constrained retry failed too,
+        # so the next person does not spend an hour re-inventing it.
+        result["error"] += (" A retry constrained to the field schema failed as "
+                            f"well: {retry['error']}")
+        result["seconds"] = retry["seconds"]
+        return result
+    retry["schema_retry"] = True
+    return retry
+
+
+def _extract_once(text: str, status: dict, schema) -> dict:
+    """One extraction request, parsed, salvaged if it was cut off, and grounded.
+
+    `schema` constrains decoding to those keys where the server supports it and
+    is None for the plain "return some JSON object" request. Everything else --
+    the prompt, the sampler, the diagnosis of an unusable reply -- is the same
+    either way, which is what makes the two attempts comparable.
+    """
+    url, payload = backends.structured_request(
+        backends.system_prefix(status)
+        + [{"role": "user", "content": EXTRACT_PROMPT + text + EXTRACT_REMINDER}],
+        schema, EXTRACT_MAX_TOKENS, status)
 
     started = time.perf_counter()
     try:
-        res = requests.post(chat_url(), json=payload, timeout=GEN_TIMEOUT)
+        res = requests.post(url, json=payload, timeout=GEN_TIMEOUT)
         if res.status_code != 200:
             return {"error": f"{status['kind'] or 'model server'} HTTP "
                              f"{res.status_code}: {res.text[:200]}"}
         body = res.json()
-        choice = body["choices"][0]
-        raw = (choice["message"].get("content") or "").strip()
-        truncated = choice.get("finish_reason") == "length"
+        raw, truncated, _ = backends.structured_reply(body, status)
     except Exception as err:
         return {"error": f"extraction request failed: {err}"}
 
     elapsed = round(time.perf_counter() - started, 2)
     candidate = _first_json_object(strip_fence(raw)) or raw
+    partial = None
     try:
         fields = json.loads(candidate)
     except json.JSONDecodeError as err:
-        # A looping model produces JSON that is merely *unfinished*; say so,
-        # because "invalid JSON" sends you looking in the wrong place.
-        # Wider window than the OCR stream uses: an extraction loop repeats a
-        # whole clause inside one JSON string, so the repeating unit is long and
-        # a 600-character tail cannot hold enough repeats of it to be recognised.
-        if looks_repetitive(raw, tail_chars=EXTRACT_LOOP_TAIL_CHARS,
-                            min_repeats=EXTRACT_LOOP_MIN_REPEATS):
-            return {"error": "The model repeated itself while extracting and never "
-                             "closed the JSON. Try Re-extract; if it persists the "
-                             "transcript is probably too noisy to parse.",
-                    "looped": True, "raw": raw[:2000], "seconds": elapsed}
-        # A parse error here is nearly always a cut-off reply rather than
-        # malformed syntax, and "invalid JSON" sends you looking at the parser
-        # instead of at the token budget or the model.
-        if _is_ocr_envelope(raw):
-            return {"error": f"'{status['model']}' ignored the extraction prompt and "
-                             "transcribed the document instead, returning its OCR "
-                             '{"natural_text": ...} envelope. The transcript is long '
-                             "enough to drown the instructions. Re-extract; if it "
-                             "persists, extract one page at a time.",
-                    "envelope": True, "raw": raw[:2000], "seconds": elapsed}
-        if _repeated_line_items(raw):
-            return {"error": "The model cycled over the same line items until it hit "
-                             f"the {EXTRACT_MAX_TOKENS}-token cap, so the JSON never "
-                             "closed. Raising the cap will not help. Try Re-extract, "
-                             "or extract one page at a time -- a long transcript with "
-                             "repeated rows is what triggers this.",
-                    "looped": True, "raw": raw[:2000], "seconds": elapsed}
-        # A parse error here is nearly always a cut-off reply rather than malformed
-        # syntax, and "invalid JSON" sends you looking at the parser instead of at
-        # the token budget.
-        if truncated:
-            return {"error": f"The JSON was cut off mid-value at the "
-                             f"{EXTRACT_MAX_TOKENS}-token cap. Raise "
-                             "EXTRACT_MAX_TOKENS if the document really has this "
-                             "many line items.",
-                    "truncated": True, "raw": raw[:2000], "seconds": elapsed}
-        return {"error": f"model did not return valid JSON ({err})",
-                "raw": raw[:2000], "seconds": elapsed}
+        why, flags = _why_unparsable(raw, err, truncated, status)
+        # A cut-off reply is not a wasted request. The model usually fills the
+        # scalars correctly and only *then* starts cycling inside a list, and
+        # returning nothing throws away twenty right answers to punish the tail.
+        # Not attempted for the OCR envelope: what completed there is a
+        # transcript, and salvaging it would put a page of prose into a field.
+        salvaged = None if flags.get("envelope") else _salvage_json(raw)
+        if not salvaged or all(grounding.is_blank(v) for v in salvaged.values()):
+            return {"error": why, **flags, "raw": raw[:2000], "seconds": elapsed}
+        fields = salvaged
+        partial = (why + " The fields below are what the reply had finished "
+                         "before it stopped; the rest are empty because it never "
+                         "got to them, not because the page is silent.")
     if not isinstance(fields, dict):
         return {"error": "model returned JSON that is not an object",
                 "raw": raw[:2000], "seconds": elapsed}
@@ -489,12 +582,15 @@ def _extract_single(text: str, status: dict) -> dict:
                          "Re-extract; if it persists, extract one page at a time.",
                 "envelope": True, "raw": raw[:2000], "seconds": elapsed}
 
-    timings = body.get("timings") or {}
-    usage = body.get("usage") or {}
-    # llama.cpp reports `timings`, Ollama reports OpenAI-style `usage`.
-    tokens = int(timings.get("predicted_n") or usage.get("completion_tokens") or 0)
+    _, _, tokens = backends.structured_reply(body, status)
     return {
         "fields": fields,
+        # Set when the reply was rescued from a cut-off body rather than parsed
+        # whole. Carried as its own key, not folded into the fields: every count
+        # on the page -- missing, tiers, grounded ratio -- is computed over keys
+        # the model never reached, and reading those as "the document does not
+        # state this" is exactly the mistake this string exists to prevent.
+        "partial": partial,
         # The reply exactly as it arrived, kept on the success path too and not
         # only on the error paths below. A field can be missing because the model
         # never wrote it or because the fence-stripping and first-object salvage
@@ -509,11 +605,11 @@ def _extract_single(text: str, status: dict) -> dict:
         # rows; it is deliberately NOT part of the grounding dict, because how
         # many fields came back is a different question from whether they are real.
         "tiers": grounding.tier_counts(fields),
-        # Which of these figures already carry tax, decided the same way the
-        # number checks decide it. It belongs on the extraction result and not
-        # only on the verification one, because the Fields tab labels the totals
-        # from it: "Amount ex VAT" is a plain lie on a VAT-inclusive page, and a
-        # reader taking `subtotal` for a pre-tax figure would be out by the VAT.
+        # Which of these figures already carry tax, decided in Python from the
+        # figures just extracted. It rides on the extraction result because the
+        # Fields tab labels the totals from it: "Amount ex VAT" is a plain lie on
+        # a VAT-inclusive page, and a reader taking `subtotal` for a pre-tax
+        # figure would be out by the VAT.
         "vat_basis": verify.vat_basis(fields, text),
         "seconds": elapsed,
         "tokens": tokens,
@@ -554,38 +650,44 @@ def _extract_single(text: str, status: dict) -> dict:
 # step, not across them. Which is why the mode is a switch rather than the default.
 
 
-def _chat(content: str, max_tokens: int, status: dict):
+def _step_schema(step: dict) -> dict:
+    """The JSON schema for one step: its own keys and nothing else.
+
+    Derived from the step's `keys` rather than written out beside its skeleton,
+    because a schema that disagreed with the skeleton would be a silent bug and
+    there is no way to keep fifteen hand-written pairs honest. The step's
+    skeleton stays the readable statement of what is asked for; this is the same
+    thing in the form the sampler can be held to.
+    """
+    return {
+        "type": "object",
+        "properties": {
+            key: (LINE_ITEM_SCHEMA if key == "line_items"
+                  else OTHER_FIELDS_SCHEMA if key == "other_fields"
+                  else {"type": "string"})
+            for key in step["keys"]
+        },
+        "required": list(step["keys"]),
+    }
+
+
+def _chat(content: str, max_tokens: int, status: dict, schema: dict = None):
     """One non-streaming text request. Returns (raw reply, truncated, tokens).
 
-    Sampling is set exactly as the single-shot pass sets it -- greedy, JSON
-    response format, no DRY -- so the two modes differ in the shape of the prompt
-    and in nothing else, which is what makes a comparison between them mean
-    anything. Raises on transport failure and on a non-200, so a step can record
-    why it produced nothing instead of silently contributing empty fields.
+    Sampling is set exactly as the single-shot pass sets it -- greedy, the reply
+    constrained to `schema`, no DRY -- so the two modes differ in the shape of
+    the prompt and in nothing else, which is what makes a comparison between them
+    mean anything. Raises on transport failure and on a non-200, so a step can
+    record why it produced nothing instead of silently contributing empty fields.
     """
-    payload = {
-        "messages": backends.system_prefix(status)
-                    + [{"role": "user", "content": content}],
-        "max_tokens": max_tokens,
-        "temperature": 0,
-        "top_k": 1,
-        "top_p": 1.0,
-        "min_p": 0.0,
-        "response_format": {"type": "json_object"},
-        "stream": False,
-        **backends.request_extras(status),
-    }
-    res = requests.post(chat_url(), json=payload, timeout=GEN_TIMEOUT)
+    url, payload = backends.structured_request(
+        backends.system_prefix(status) + [{"role": "user", "content": content}],
+        schema, max_tokens, status)
+    res = requests.post(url, json=payload, timeout=GEN_TIMEOUT)
     if res.status_code != 200:
         raise ValueError(f"{status['kind'] or 'model server'} HTTP "
                          f"{res.status_code}: {res.text[:200]}")
-    body = res.json()
-    choice = body["choices"][0]
-    raw = (choice["message"].get("content") or "").strip()
-    timings = body.get("timings") or {}
-    usage = body.get("usage") or {}
-    tokens = int(timings.get("predicted_n") or usage.get("completion_tokens") or 0)
-    return raw, choice.get("finish_reason") == "length", tokens
+    return backends.structured_reply(res.json(), status)
 
 
 def _step_message(text: str, step: dict) -> str:
@@ -623,6 +725,36 @@ def _step_values(step: dict, raw: str):
         elif isinstance(value, (str, int, float)):
             values[key] = value
     return values
+
+
+def _ask_step(content: str, step: dict, status: dict):
+    """Ask one step and parse its reply. Returns (values, replies, truncated, tokens).
+
+    Asked plain first, exactly as the baselines were measured. A reply that will
+    not parse is asked once more with decoding constrained to this step's own
+    keys, which is a different question rather than a repeat -- under greedy
+    decoding, asking again in the same words returns the same answer.
+
+    That second attempt is aimed at one measured failure: on Ollama, steps die by
+    transcribing the page into their own first key, and the reply then runs to the
+    step's cap. Instructions-last does not prevent it and a bigger cap buys more
+    page rather than more answer; a grammar that does not contain the page does.
+    Raises the second failure if both attempts fail.
+    """
+    replies, tokens = [], 0
+    raw, truncated, used = _chat(content, step["max_tokens"], status)
+    replies.append(raw)
+    tokens += used
+    try:
+        return _step_values(step, raw), replies, truncated, tokens
+    except Exception:
+        if not EXTRACT_SCHEMA:
+            raise
+    raw, truncated, used = _chat(content, step["max_tokens"], status,
+                                 _step_schema(step))
+    replies.append(raw)
+    tokens += used
+    return _step_values(step, raw), replies, truncated, tokens
 
 
 def _ungrounded_in(values: dict, source) -> list:
@@ -678,11 +810,14 @@ def _extract_agentic(text: str, status: dict):
             at = time.perf_counter()
             truncated = False
             try:
-                raw, truncated, tokens = _chat(content, step["max_tokens"], status)
-                replies.append(f"--- {step['id']}"
-                               + (" (retry)" if attempt else "") + " ---\n" + raw)
+                attempt_values, raws, truncated, tokens = _ask_step(
+                    content, step, status)
+                for n, raw in enumerate(raws):
+                    replies.append(f"--- {step['id']}"
+                                   + (" (retry)" if attempt else "")
+                                   + (" (schema)" if n else "") + " ---\n" + raw)
+                record["schema_retry"] = len(raws) > 1
                 total_tokens += tokens
-                attempt_values = _step_values(step, raw)
             except Exception as err:
                 elapsed += time.perf_counter() - at
                 # Recorded against the step and then dropped: the remaining steps
@@ -812,115 +947,6 @@ def _drain(generator):
 def extract_fields(text: str, mode: str = None) -> dict:
     """`extract_fields_stream` for callers with nowhere to show progress."""
     return _drain(extract_fields_stream(text, mode))
-
-
-def verify_with_llm(fields: dict, checks: list, basis: dict = None) -> dict:
-    """Ask the model to review fields the calculator cannot judge.
-
-    Given the arithmetic results up front, explicitly told not to redo them --
-    a 2B model is poor at addition, so letting it 'check' the sums would add
-    noise and occasionally contradict a correct calculation.
-    """
-    status = llama_status()
-    if not status["available"]:
-        return {"error": status["reason"]}
-    summary = [
-        f"- {c['name']}: {c['status'].upper()}"
-        + ("" if c["difference"] is None else f" (out by {c['difference']:,.2f})")
-        for c in checks
-    ]
-    # Stated before the results, because it is what makes them read correctly:
-    # without it a VAT-inclusive page looks to the reviewer like lines that fail
-    # to add up to the goods total, and it reports that as an error.
-    basis_note = ""
-    if basis:
-        basis_note = (
-            f"\n\nVAT basis of this document: {basis['summary']}"
-            f" — {basis['source']}"
-            + (f" ({basis['evidence']})" if basis.get("evidence") else "")
-            + ".\n"
-            + ("The line amounts printed on this page ALREADY contain VAT. They are"
-               " meant to reach the VAT-inclusive total, not the goods total, and the"
-               " VAT figure is contained within them rather than added to them."
-               if basis["inclusive"] else
-               "The line amounts printed on this page are before VAT, which is added"
-               " below them.")
-        )
-    content = (
-        VERIFY_PROMPT
-        + json.dumps(fields, ensure_ascii=False, indent=1)
-        + basis_note
-        + "\n\nCalculator results (authoritative):\n"
-        + "\n".join(summary)
-    )
-
-    payload = {
-        "messages": backends.system_prefix(status)
-                    + [{"role": "user", "content": content}],
-        "max_tokens": VERIFY_MAX_TOKENS,
-        "temperature": 0,
-        "top_k": 1,
-        "top_p": 1.0,
-        "min_p": 0.0,
-        # Same repetition guard as the OCR pass. Without it the model can lock
-        # into repeating a clause inside a JSON string until it hits the token
-        # cap, which surfaces only as an unterminated-string parse error.
-        **sampler_extras(),
-        "response_format": {"type": "json_object"},
-        "stream": False,
-        **backends.request_extras(status),
-    }
-    started = time.perf_counter()
-    try:
-        res = requests.post(chat_url(), json=payload, timeout=GEN_TIMEOUT)
-        if res.status_code != 200:
-            return {"error": f"{status['kind'] or 'model server'} HTTP "
-                             f"{res.status_code}: {res.text[:200]}"}
-        raw = (res.json()["choices"][0]["message"].get("content") or "").strip()
-    except Exception as err:
-        return {"error": f"verification request failed: {err}"}
-
-    elapsed = round(time.perf_counter() - started, 2)
-    parsed = _first_json_object(strip_fence(raw)) or raw
-    try:
-        review = json.loads(parsed)
-    except json.JSONDecodeError as err:
-        return {"error": f"model did not return valid JSON ({err})",
-                "raw": raw[:1500], "seconds": elapsed}
-
-    issues = review.get("issues") if isinstance(review, dict) else None
-    return {
-        "issues": [i for i in (issues or []) if isinstance(i, dict)],
-        "notes": (review.get("notes") if isinstance(review, dict) else "") or "",
-        # Same reason as the extraction pass: an issue silently dropped here --
-        # because it was not an object, or sat outside the first JSON object --
-        # is invisible unless the verbatim reply is kept alongside.
-        "raw": raw,
-        "seconds": elapsed,
-    }
-
-
-def verify_fields(fields: dict, transcript: str = None, ask_llm: bool = True) -> dict:
-    """Arithmetic checks, then optionally the model's review of the rest.
-
-    The transcript is passed through so a VAT rate the extractor missed can still
-    be recovered from the document text.
-    """
-    # Decided once and passed to both the calculator and the model, so the page
-    # cannot be checked on one basis and reviewed on the other.
-    basis = verify.vat_basis(fields, transcript)
-    checks = verify.run_checks(fields, transcript, basis)
-    rate, source = verify.resolve_vat_rate(fields, transcript)
-    result = {
-        "checks": checks,
-        "vat_rate": rate,
-        "vat_rate_source": source,
-        "vat_basis": basis,
-        **verify.summarise_checks(checks),
-    }
-    if ask_llm:
-        result["review"] = verify_with_llm(fields, checks, basis)
-    return result
 
 
 def strip_fence(text: str) -> str:
@@ -1203,7 +1229,7 @@ def prepare(request_files, form):
 # --------------------------------------------------------------------------
 
 def run_job(job):
-    """Worker body: OCR every page, then extract and verify.
+    """Worker body: OCR every page, then extract the fields.
 
     Cancellation is checked between pages rather than mid-page -- llama.cpp has no
     way to abandon a generation already in flight, so a finer granularity would be
@@ -1268,11 +1294,6 @@ def run_job(job):
                     job.stage = (f"extracting {event['step']}/{event['total']}:"
                                  f" {event['title']}")
                     job.check_cancelled()
-            if payload["extracted"].get("fields"):
-                job.check_cancelled()
-                job.stage = "verifying numbers"
-                payload["verified"] = verify_fields(
-                    payload["extracted"]["fields"], transcript=text)
         job.stage = "finished"
         log_run(payload, source)
         return payload
@@ -1638,18 +1659,6 @@ def queue_workers():
     return jsonify(llama_slots=slots, **job_queue.stats())
 
 
-@app.post("/api/verify")
-def verify_endpoint():
-    """Re-run number verification on a fields object."""
-    body = request.get_json(silent=True) or {}
-    fields = body.get("fields")
-    if not isinstance(fields, dict):
-        return jsonify(error="No fields object supplied."), 400
-    return jsonify(verify_fields(fields,
-                                 transcript=body.get("text"),
-                                 ask_llm=body.get("llm", True)))
-
-
 @app.post("/api/match")
 def match_case():
     """Which ground-truth case does this file correspond to?
@@ -1717,9 +1726,6 @@ def ocr():
     payload["truth"] = evaluate_if_known(case, text)
     if EXTRACT and request.form.get("extract", "1") != "0" and text.strip():
         payload["extracted"] = extract_fields(text)
-        if payload["extracted"].get("fields"):
-            payload["verified"] = verify_fields(
-                payload["extracted"]["fields"], transcript=text)
     log_run(payload, source)
     return jsonify(text=text, pages=page_texts, **payload)
 
@@ -1792,15 +1798,8 @@ def ocr_stream():
                 summary["extracted"] = result
                 yield json.dumps({"event": "fields", **result}) + "\n"
 
-                # Third pass: check the numbers that were just extracted.
-                if result.get("fields"):
-                    yield json.dumps({"event": "verifying"}) + "\n"
-                    checked = verify_fields(result["fields"], transcript=text)
-                    summary["verified"] = checked
-                    yield json.dumps({"event": "verified", **checked}) + "\n"
-
             # Logged once everything has run, so the row carries the accuracy and
-            # the number verdict rather than just the OCR timings.
+            # the extraction counts rather than just the OCR timings.
             log_run(summary, source)
             yield json.dumps({"event": "logged"}) + "\n"
         except GeneratorExit:

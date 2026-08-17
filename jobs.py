@@ -86,9 +86,6 @@ class Job:
             truth = self.result.get("truth")
             if truth and not truth.get("error"):
                 data["summary"]["char_accuracy"] = truth.get("char_accuracy")
-            verified = self.result.get("verified")
-            if verified:
-                data["summary"]["verdict"] = verified.get("verdict")
         return data
 
 

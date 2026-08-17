@@ -209,7 +209,7 @@ EXTRACT_LOOP_MIN_REPEATS = 3
 EXTRACT_REPEAT_THRESHOLD = 3
 
 # --------------------------------------------------------------------------
-# passes 2 and 3
+# pass 2
 # --------------------------------------------------------------------------
 
 # Second pass: feed the finished transcript back to the model as text and ask for
@@ -220,6 +220,39 @@ EXTRACT = config.env_bool("EXTRACT", True)
 # sub-fields per item; 1536 cut those documents off mid-value, which surfaced as
 # a JSON parse error rather than as the budget problem it was.
 EXTRACT_MAX_TOKENS = config.env_int("EXTRACT_MAX_TOKENS", 4096, minimum=256)
+
+# Constrain the reply to the field schema instead of merely to "valid JSON".
+# On by default because it is what stops the OCR fine-tune answering pass 2 with
+# its own transcript envelope: the key names are in the grammar, so
+# {"natural_text": ...} is not a reachable answer. Sent as `format` to Ollama's
+# native endpoint and as `response_format.json_schema` to llama-server -- see
+# `backends.structured_request`. Set EXTRACT_SCHEMA=0 to go back to
+# {"type": "json_object"}, which is how every measurement taken before
+# 2026-08-17 was run.
+EXTRACT_SCHEMA = config.env_bool("EXTRACT_SCHEMA", True)
+
+# Repetition control for Ollama, and the ONE place this project sets
+# repeat_penalty above 1.0. Read it together with DRY_MULTIPLIER above, which
+# explains why that is normally the wrong lever.
+#
+# The short version: DRY is a llama.cpp sampler, and Ollama's /v1 shim drops
+# dry_*, repeat_penalty, top_k and min_p alike, so pass 2 on Ollama ran with no
+# repetition defence at all. Measured on sol005, pass 2 only, schema-constrained
+# on the native endpoint, everything else identical:
+#
+#   repeat_penalty 1.0  -- payment_reference degenerated into 1111111111... and
+#                          the JSON never closed
+#   repeat_penalty 1.1  -- parsed, 31 keys, 6 rows, 94.9% of values grounded
+#
+# A grammar cannot stop repetition *inside* a string value; only the sampler
+# can. This is why the schema alone does not fix the loop.
+#
+# It is not free, and the cost is the one DRY exists to avoid: on the same run a
+# quantity came back as 1.731,118.40, a legitimately repeated thousands
+# separator turned into a decimal point. Set OLLAMA_REPEAT_PENALTY=1.0 to take
+# it off and get the corruption-free, loop-prone behaviour back.
+OLLAMA_REPEAT_PENALTY = config.env_float("OLLAMA_REPEAT_PENALTY", 1.1,
+                                         minimum=1.0)
 
 # Which shape the second pass runs in when nothing has switched it at runtime.
 # The page's Extraction button switches it per server, so this is only the mode a
@@ -242,6 +275,3 @@ AGENTIC_EXTRACT = config.env_bool("AGENTIC_EXTRACT", False)
 # retry costs a short question and a short answer, and a second retry almost never
 # changed an answer the first had not.
 AGENTIC_RETRIES = config.env_int("AGENTIC_RETRIES", 1, minimum=0, maximum=3)
-
-# Third pass. Much smaller: the reply is a short list of issues, not a document.
-VERIFY_MAX_TOKENS = 768

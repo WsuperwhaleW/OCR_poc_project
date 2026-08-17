@@ -17,8 +17,6 @@ benchmark (`python compare.py`) after editing any of them.
                          three fields at a time, one request per step.
 * `EXTRACT_STEPS`     -- the step table those are interpolated with. Still only
                          constants: the loop that walks it lives in `app.py`.
-* `VERIFY_PROMPT`     -- pass 3, the model's advisory review of the extracted
-                         fields, once the arithmetic has already been checked.
 """
 
 # --------------------------------------------------------------------------
@@ -27,7 +25,7 @@ benchmark (`python compare.py`) after editing any of them.
 
 # Page image in, verbatim transcript out. Extracts no fields -- it produces the
 # page as Markdown, with tables as <table> HTML, and that transcript is what
-# passes 2 and 3 read.
+# pass 2 reads.
 #
 # The text is typhoon-ocr1.5's OWN training prompt, recovered from the model, with
 # our ORDER block appended. The <figure> and <page_number> rules are typhoon's and
@@ -135,6 +133,11 @@ Return ONLY a JSON object, no prose and no code fence. Use exactly these keys:
   "other_fields": [ { "label": "", "value": "" } ]
 }
 
+Answer every key listed above, in the order listed, and close the object only after the
+last of them. Stopping early is the commonest way to get this wrong: the keys printed
+after the table are as required as the ones before it, and "" is the answer for any the
+document does not state. Do not invent a key that is not on the list.
+
 Every key above names something a document of this kind normally prints somewhere. Find
 it by its printed label, wherever on the page that label happens to sit, and copy what is
 printed against it. Documents word their labels differently and lay them out differently;
@@ -173,10 +176,16 @@ The two parties -- four keys each, and each holds one thing:
   reference, a meter number, an account or customer number -- is not a name, however close
   to the block it is printed. Leave the name key "" and put the code in whichever key the
   page labels it as, or in "other_fields".
-- The tax ID key takes only the digits printed as the tax ID. The branch key takes what is
-  printed beside it, copied as printed -- do not translate it, and do not turn a word into
-  a number. The address key takes the street lines and postcode, without the name, the tax
-  ID or the branch repeated inside it.
+- The tax ID key takes only the digits printed as the tax ID. A tax identification number
+  is a LONG run of digits -- thirteen of them in Thailand, sometimes written with dashes. A
+  short number of two, three or four digits is something else the page numbers, and never
+  belongs here.
+- The branch key takes what is printed beside that tax ID, copied as printed -- do not
+  translate it, and do not turn a word into a number. A town, a postcode, a street or a
+  telephone number is an address, not a branch.
+- The address key takes the street lines and postcode, without the name, the tax ID or the
+  branch repeated inside it. Each party's address is its own: never give one party the
+  address printed in the other's block.
 - The issuer is normally the letterhead at the top; the other party is the block addressed
   as the customer or buyer.
 
@@ -192,7 +201,15 @@ The table:
 - One object per printed row of the charges table, in the order they are printed. Copy
   every row once, including a row whose amount is nil. Do not revisit a row.
 - Rows that total the ones above them are not line items, whatever they are labelled.
-  Their figures belong in the totals keys.
+  Their figures belong in the totals keys instead -- each one under the key whose printed
+  label names it.
+- The table ends at its last charge. Everything printed below it -- conditions, notes and
+  small print, who received the money, bank or cheque details, signature blocks, filing
+  statements, a stray code at the foot of the page -- is not part of the table, however
+  close it sits. A sentence is not a charge: if what you are about to write as a
+  description reads as prose rather than as the name of a thing charged for, the table
+  finished before it and so should you.
+- Never carry a figure down into a row that does not print one of its own.
 - Read across the row: a figure belongs to the column it sits under. Never shift a value
   into a neighbouring column to make a row look complete. Where the table rules no column
   for one of the keys, that key is "" on every row -- do not produce it from the other
@@ -210,6 +227,9 @@ The totals and the rate:
 - Fill only the total lines the page actually prints, each from its own printed label. A
   page that prints one total fills the key its label names and leaves the others "". Never
   copy one figure into two keys, and never add or subtract to produce the other.
+- A total printed in two parts, the whole units and the fraction, is ONE figure: take both
+  parts together, the fraction after the decimal point. The fraction on its own is never a
+  total -- a total that comes out as a one- or two-digit number is half of a figure.
 - vat_rate takes just the number the page states, written the way it writes it: a page
   showing 7 per cent gives 7, one showing 7.00 per cent gives 7.00. Not a fraction, not
   the per-cent sign. Where no rate is printed, "".
@@ -229,6 +249,67 @@ EXTRACT_REMINDER = """
 Now return the JSON object described above, using exactly the keys listed.
 Do NOT transcribe the document and do NOT return a "natural_text" field."""
 
+# The same schema as the skeleton in EXTRACT_PROMPT, in the form a server can
+# constrain decoding with. The prompt ASKS for these keys; this makes them the
+# only keys the sampler can produce, which is what finally stopped the OCR
+# fine-tune answering with its own transcript envelope. Sent by
+# `backends.structured_request`; `settings.EXTRACT_SCHEMA` switches it off.
+#
+# Two constraints on edits here:
+#
+# * It must agree with the skeleton above, key for key. The prompt explains what
+#   each key means and the schema decides what may be emitted -- they are two
+#   halves of one contract, and a key in one and not the other is a silent bug.
+# * It must stay inside the JSON Schema subset Ollama's grammar runtime accepts:
+#   object, array, string, number, properties, items, required, enum. A nullable
+#   union ({"type": ["string", "null"]}) or a length constraint is rejected by
+#   the parser, and the request fails with HTTP 400 rather than degrading.
+#
+# Every value is typed as a string because the prompt asks for figures copied as
+# printed, separators and all. Typing an amount as a number would make the model
+# reformat it to satisfy the grammar, and `grounding.py` would then flag its own
+# request as ungrounded.
+_ITEM_KEYS = ("description", "period", "quantity", "unit_price", "amount",
+              "vat", "withholding_tax", "net_amount")
+_SCALAR_KEYS = (
+    "document_type", "document_number", "issue_date", "due_date",
+    "reference_document", "po_number", "original_invoice_number",
+    "contract_number", "customer_code", "location_code", "service_period",
+    "seller_name", "seller_tax_id", "seller_branch", "seller_address",
+    "buyer_name", "buyer_tax_id", "buyer_branch", "buyer_address",
+    "currency", "vat_rate", "subtotal", "vat_total", "amount_incl_vat",
+    "withholding_tax_total", "net_payable", "amount_in_words",
+    "payment_method", "payment_reference",
+)
+
+LINE_ITEM_SCHEMA = {
+    "type": "array",
+    "items": {"type": "object",
+              "properties": {k: {"type": "string"} for k in _ITEM_KEYS},
+              "required": list(_ITEM_KEYS)},
+}
+OTHER_FIELDS_SCHEMA = {
+    "type": "array",
+    "items": {"type": "object",
+              "properties": {"label": {"type": "string"},
+                             "value": {"type": "string"}},
+              "required": ["label", "value"]},
+}
+
+# Every key is required. The prompt already says to answer all of them and to
+# leave "" for what the page does not state; requiring them is what makes that
+# true rather than requested -- stopping early after the table was the commonest
+# single-shot failure, and it cannot happen under this grammar.
+EXTRACT_JSON_SCHEMA = {
+    "type": "object",
+    "properties": {
+        **{k: {"type": "string"} for k in _SCALAR_KEYS},
+        "line_items": LINE_ITEM_SCHEMA,
+        "other_fields": OTHER_FIELDS_SCHEMA,
+    },
+    "required": list(_SCALAR_KEYS) + ["line_items", "other_fields"],
+}
+
 # --------------------------------------------------------------------------
 # pass 2, agentic mode: one small group of fields per request
 # --------------------------------------------------------------------------
@@ -247,9 +328,12 @@ Do NOT transcribe the document and do NOT return a "natural_text" field."""
 # * EXTRACT_STEP_TASK is shared by all 15 steps -- a clause added here changes
 #   every answer, including the 14 that were already right. Fix a step in its own
 #   `rules` instead.
-# * On Ollama, 3 of the 15 steps currently die by transcribing the page into their
-#   own first key. Bounding the answer's length was tried and made it worse.
-#   CLAUDE.md has the measurements and the one untested hypothesis left.
+# * On Ollama, some steps die by transcribing the page into their own first key.
+#   Bounding the answer's length in the SHARED task was tried and made it worse.
+#   What does work is the ORDER of a step's own skeleton: `seller` leads with its
+#   shortest, most reliably printed key rather than the name, and stopped echoing.
+#   `references` and `other` still echo and cannot be reordered out of it.
+#   CLAUDE.md has the measurements.
 #
 # Each step's skeleton is written out rather than generated, so the exact bytes
 # the model is asked for can be read here.
@@ -355,6 +439,9 @@ EXTRACT_STEPS = (
   money already paid has none; leave it "".
 - service_period is a period the document as a WHOLE covers, printed near the head of the
   page. A period printed on one row of the table belongs to that row, not here.
+- A period runs from one date to another and is copied WHOLE, both ends of it together,
+  exactly as printed. Never split a period between these two fields: half of a period is
+  not a due date.
 - Both of these are empty on many documents, and empty is the right answer for them.""",
     },
     {
@@ -392,19 +479,27 @@ EXTRACT_STEPS = (
     {
         "id": "seller",
         "title": "who issued this document",
-        "keys": ("seller_name", "seller_tax_id", "seller_branch"),
-        "skeleton": ('{ "seller_name": "", "seller_tax_id": "", '
-                     '"seller_branch": "" }'),
+        "keys": ("seller_tax_id", "seller_branch", "seller_name"),
+        "skeleton": ('{ "seller_tax_id": "", "seller_branch": "", '
+                     '"seller_name": "" }'),
         "max_tokens": 260,
         "rules": """The issuer's block is normally the letterhead at the top of the page.
-- seller_name is the issuer's name and nothing else, on ONE line. Stop at the end of the
-  name. If what you are about to write contains a street, a postcode, a telephone number, a
-  tax ID, a date or a line break, you have taken too much of the block -- cut it back.
 - seller_tax_id is only the digits printed as that party's tax identification number. Copy
   the separators as printed if there are any.
+- A tax identification number is a LONG run of digits -- thirteen of them in Thailand,
+  sometimes written with dashes. A short number of two, three or four digits is something
+  else the page numbers -- a book, volume, page, branch or sequence number -- and never
+  belongs here. Where no long run of digits is labelled as the tax number, this is "".
 - seller_branch is what is printed beside that tax ID to say which office or branch it is,
   whether that is a word or a number. Copy it as printed; do not translate it, and do not
   turn a word into a number.
+- seller_branch says which office or branch, and nothing else. A street, a town, a postcode
+  or a telephone number is an address, not a branch, and does not belong in it.
+- None of these three may take the customer's name, tax ID or branch. They describe the
+  issuer only.
+- seller_name is the issuer's name and nothing else, on ONE line. Stop at the end of the
+  name. If what you are about to write contains a street, a postcode, a telephone number, a
+  tax ID, a date or a line break, you have taken too much of the block -- cut it back.
 - A name is TEXT. A value that is mostly digits, or that reads as a code, is not a name --
   leave seller_name "" rather than putting a code in it.""",
     },
@@ -417,6 +512,10 @@ EXTRACT_STEPS = (
         "rules": """What to look for:
 - seller_address is the street lines and postcode from the issuer's block -- the letterhead
   at the top of the page.
+- An address is where a place is: it names a street, a district, a town or a postcode. A
+  bare run of digits is a number, not an address, however close to the block it is printed;
+  a name is not an address either. If what you are about to write contains no place at all,
+  this field is "".
 - Leave the name, the tax ID and the branch out of it: those are separate fields and must
   not be repeated inside this one.
 - Keep the address itself exactly as printed, including its own line breaks.""",
@@ -439,6 +538,10 @@ party being billed -- NOT the letterhead at the top of the page, which is the is
   complete it looks. If the only name you can find is that one, buyer_name is "".
 - buyer_tax_id is only the digits printed as that party's tax identification number, and
   buyer_branch is what is printed beside that tax ID to say which office or branch it is.
+- A tax identification number is a LONG run of digits -- thirteen of them in Thailand,
+  sometimes written with dashes. A short number of two, three or four digits is something
+  else the page numbers -- a book, volume, page, branch or sequence number -- and never
+  belongs here. Where no long run of digits is labelled as the tax number, this is "".
 - buyer_branch says which office or branch, and nothing else. A street, a postcode or a
   telephone number is an address, not a branch, and does not belong in it.
 - None of these three may repeat the issuer's name, tax ID or branch from the letterhead.""",
@@ -452,6 +555,9 @@ party being billed -- NOT the letterhead at the top of the page, which is the is
         "rules": """What to look for:
 - buyer_address is the street lines and postcode from the customer's block -- the one
   addressed as the customer or the party being billed, not the letterhead at the top.
+- An address is where a place is: it names a street, a district, a town or a postcode. A
+  block of company names, or a bare run of digits, is not an address. If what you are about
+  to write contains no place at all, this field is "".
 - Leave that party's name, tax ID and branch out of it.
 - Where the page gives the customer no address, this is "".""",
     },
@@ -482,12 +588,26 @@ party being billed -- NOT the letterhead at the top of the page, which is the is
   ] }""",
         "max_tokens": 3000,
         "rules": """What to look for:
+- line_items is a LIST of JSON objects, one object per row, each with the eight keys shown.
+  Do not answer with the table as a single piece of text: not as Markdown, not as HTML, not
+  as one string with the rows run together. Its column headings are not a row either --
+  they name the columns, and what they name is which key each cell goes to.
+- The table begins under that row of column headings, part way down the page. Begin there,
+  at the first charge. If the first description you are about to write is a letterhead, a
+  heading, an address or a party's name, you have not reached the table yet -- find the
+  column headings and start under them.
 - One object per row of the charges table, in the order the rows are printed. Copy every row
   once, including a row whose amount is nil. A dropped row is the most damaging error here,
   and a row written twice is the second most damaging -- do not revisit a row you have
   already written.
 - Rows that total the rows above them are NOT line items, whatever they are labelled. Their
   figures belong to the totals, not here. Stop at the last real charge.
+- The table ends at that last charge. Everything printed below it -- conditions, notes and
+  small print, who received the money, bank or cheque details, signature blocks, filing
+  statements, a stray code at the foot of the page -- is not part of the table, however
+  close it sits. A sentence is not a charge: if the description you are about to write
+  reads as prose rather than as the name of a thing charged for, the table finished before
+  it and so should you. Never carry a figure down into such a row.
 - Read across the row: each figure belongs to the column it sits under. Never shift a value
   into a neighbouring column to make a row look complete.
 - Each of these keys is filled only from a column the table actually rules for it. Where
@@ -513,6 +633,13 @@ party being billed -- NOT the letterhead at the top of the page, which is the is
 - vat_total is the figure on the tax line.
 - Take each from its own printed label, never from its position on the page. Pages order
   these lines differently, and the order tells you nothing about which is which.
+- Some forms print a money figure in two parts, the whole units and the fraction, with a
+  gap or a rule between them. Both parts are ONE figure: take them together, the fraction
+  after the decimal point. The fraction on its own is never the value of one of these keys
+  -- a total that comes out as a one- or two-digit number is half of a figure, not a total.
+- Where one printed line carries several figures side by side, each under a heading of its
+  own, they are separate figures: take the one whose heading names this key, not the first
+  one on the line.
 - Fill only lines the page actually prints. Where it prints no such line, that key is "" --
   do not add the rows up yourself and do not derive one of these from the other.""",
     },
@@ -528,6 +655,13 @@ party being billed -- NOT the letterhead at the top of the page, which is the is
 - withholding_tax_total is the figure on the line for tax deducted at source.
 - net_payable is the figure on the line for what is left to pay after that deduction. A
   document with no such deduction usually prints no such line -- then net_payable is "".
+- Some forms print a money figure in two parts, the whole units and the fraction, with a
+  gap or a rule between them. Both parts are ONE figure: take them together, the fraction
+  after the decimal point. The fraction on its own is never the value of one of these keys
+  -- a total that comes out as a one- or two-digit number is half of a figure, not a total.
+- Where one printed line carries several figures side by side, each under a heading of its
+  own, they are separate figures: take the one whose heading names this key, not the first
+  one on the line. A figure standing under a tax heading is not the total.
 - Fill only the lines the page prints. Where it shows a single grand total, put it under the
   key its own label names and leave the others "". Never copy one figure into two of these
   keys, and never add or subtract to produce another.""",
@@ -576,48 +710,3 @@ party being billed -- NOT the letterhead at the top of the page, which is the is
 - Where nothing is left over, return an empty list.""",
     },
 )
-
-# --------------------------------------------------------------------------
-# pass 3: advisory review
-# --------------------------------------------------------------------------
-
-# Extracted fields in, a list of issues out: {"issues": [{field, problem,
-# severity}], "notes": ""}. Extracts no document values of its own.
-#
-# `verify.py` has already checked the arithmetic and its results go into the
-# message, so this is asked only for the judgements arithmetic cannot make -- a
-# value in the wrong field, an identifier of implausible shape. Advisory.
-VERIFY_PROMPT = """You are auditing fields extracted from a Thai/English business document.
-The arithmetic has ALREADY been checked by an exact calculator, and its results are given
-to you below. Do not redo the sums and do not contradict them -- they are authoritative.
-
-Your job is only what arithmetic cannot decide. Look for:
-- values that landed in the wrong field (a date in a document number, an address in a name)
-- identifiers with an implausible shape (a Thai tax ID is 13 digits, dates should be real dates)
-- a line item whose description does not match its amount's magnitude
-- a field left empty that the other fields contradict (a VAT total with no rate)
-- anything that looks transcribed wrong rather than calculated wrong
-
-An empty field is not itself a problem: it means the document does not state that
-value, which is the correct answer. Report problems only -- never supply a value,
-and never suggest what an empty field "should" contain. You cannot see the page.
-
-Some documents price VAT-inclusive and some price VAT-exclusive; which one this is
-appears below the fields, and it has already been taken into account by the
-calculator. Do not raise an issue that assumes the other basis -- on a VAT-inclusive
-document the line amounts are SUPPOSED to exceed the goods total and to add up to the
-grand total instead, and that is not an error.
-
-Return ONLY a JSON object, no prose and no code fence:
-
-{
-  "issues": [ { "field": "", "problem": "", "severity": "error" } ],
-  "notes": ""
-}
-
-severity is "error" (certainly wrong), "warning" (suspicious) or "info".
-Return an empty issues list if the fields look sound. Never invent a problem to
-have something to report.
-
-Extracted fields:
-"""

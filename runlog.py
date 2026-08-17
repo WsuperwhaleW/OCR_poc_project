@@ -50,7 +50,6 @@ COLUMNS = [
     # setting, so a mode switched during a batch still labels each row with the
     # shape that actually produced it. Blank when the run never extracted.
     "extract_mode",
-    "verify_seconds",
     # Grounding of the extracted fields against the transcript: the share of
     # values found on the page, and how many were not. Logged because an
     # invented field costs nothing in time or tokens and so shows up in no
@@ -71,7 +70,6 @@ COLUMNS = [
     "char_accuracy",
     "word_accuracy",
     "char_accuracy_no_marks",
-    "verdict",          # number-check verdict
     "error",
     # DRY multiplier in force for the run. Recorded because it is the one setting
     # that does NOT reach both backends: llama.cpp applies it, Ollama's
@@ -152,7 +150,7 @@ def record(summary: dict, source: dict = None, extras: dict = None) -> dict:
     """Append one run. Returns the row written, or None if logging failed.
 
     `summary` is the payload both OCR endpoints already build (`summarise()` plus
-    truth/extracted/verified). Nothing here is required: a failed run logs what it
+    truth/extracted). Nothing here is required: a failed run logs what it
     knows and leaves the rest blank, because a row saying a read failed after 40 s
     is the row you most want later.
     """
@@ -165,7 +163,6 @@ def record(summary: dict, source: dict = None, extras: dict = None) -> dict:
         truth = {}
     extracted = summary.get("extracted") or {}
     grounded = extracted.get("grounding") or {}
-    verified = summary.get("verified") or {}
     error = extras.get("error") or ""
 
     size = source.get("size_bytes")
@@ -188,7 +185,6 @@ def record(summary: dict, source: dict = None, extras: dict = None) -> dict:
         "extract_seconds": extracted.get("seconds", ""),
         "extract_tokens": extracted.get("tokens", ""),
         "extract_mode": extracted.get("mode", ""),
-        "verify_seconds": (verified.get("review") or {}).get("seconds", ""),
         "grounded_pct": _pct(grounded.get("grounded_ratio")),
         "ungrounded": len(grounded.get("flagged") or []) if grounded else "",
         "fields_missing": len(grounded.get("missing") or []) if grounded else "",
@@ -201,7 +197,6 @@ def record(summary: dict, source: dict = None, extras: dict = None) -> dict:
         "char_accuracy": _pct(truth.get("char_accuracy")),
         "word_accuracy": _pct(truth.get("word_accuracy")),
         "char_accuracy_no_marks": _pct(truth.get("char_accuracy_no_marks")),
-        "verdict": verified.get("verdict", ""),
         "error": str(error)[:300],
         "dry": _DRY,
     }
