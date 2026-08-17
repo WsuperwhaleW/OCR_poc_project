@@ -1617,7 +1617,8 @@ function paintAccuracy() {
 
   const marksGain = truth.char_accuracy_no_marks - truth.char_accuracy;
   accBars.innerHTML =
-      accRow('Character accuracy', truth.char_accuracy, 'Edit distance over characters')
+      accRow('Character accuracy', truth.char_accuracy,
+             'Edit distance over content characters — whitespace and zero-width marks are removed from both sides first')
     + accRow('Word accuracy', truth.word_accuracy, 'Word-sequence overlap')
     + accRow('Characters, marks ignored', truth.char_accuracy_no_marks,
              'Thai tone marks and upper/lower vowels stripped')
@@ -1628,7 +1629,8 @@ function paintAccuracy() {
         ? ' Ignoring Thai marks gains ' + (marksGain * 100).toFixed(1)
           + ' points — the letters are largely right and the tone marks are what is being lost.'
         : ' Ignoring Thai marks changes little, so errors are whole-word rather than diacritic.')
-    + ' Table markup is normalised before scoring, so HTML vs pipe tables do not count against it.</p>';
+    + ' Table markup is normalised before scoring, so HTML vs pipe tables do not count against it,'
+    + ' and character accuracy compares content only — spacing and line breaks cannot lower it.</p>';
 
   if (!truth.diff || !truth.diff.length) {
     accDiff.innerHTML = '<span class="add">Exact match.</span>';

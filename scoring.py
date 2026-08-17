@@ -26,6 +26,28 @@ OUT = SOLUTION / "out"
 # stripped separates "read the wrong word" from "read the word, lost the marks".
 THAI_MARKS = re.compile(r"[ัิ-ฺ็-๎]")
 
+# Characters a reader cannot see. Whitespace of every flavour -- `\s` is
+# Unicode-aware here, so it covers NBSP, the U+2000 block and the ideographic
+# space -- plus zero-width, directional and soft-hyphen marks that arrive from
+# PDF text layers and from Thai word-break conventions.
+#
+# Character accuracy is the headline number and it scores *content*: where a
+# line wraps, how a cell is padded and whether a word carries a zero-width break
+# are layout, not recognition. Stripping them from both sides is what stops a
+# correct read from losing points for whitespace it had no way to reproduce.
+#
+# ZERO_WIDTH is the same set without the whitespace. `normalise` drops those
+# outright while collapsing real whitespace to one space: a zero-width mark
+# joins text, it does not separate it, so turning one into a space would invent
+# a word boundary that is not on the page.
+ZERO_WIDTH = re.compile(r"[\u00ad\u200b-\u200f\u202a-\u202e\u2060\ufeff]+")
+INVISIBLE = re.compile(r"[\s\u00ad\u200b-\u200f\u202a-\u202e\u2060\ufeff]+")
+
+
+def content_only(text: str) -> str:
+    """Text reduced to the characters that carry content."""
+    return INVISIBLE.sub("", text)
+
 
 def load_manifest():
     path = SOLUTION / "manifest.json"
@@ -160,7 +182,11 @@ def normalise(text: str, ignore_tables: bool = True) -> str:
         text = re.sub(r"^\s*\|?\s*-{2,}.*$", "", text, flags=re.M)  # pipe rules
         text = text.replace("\\|", "|")   # unescape Markdown-escaped pipes
         text = text.replace("|", " ")
-    lines = [re.sub(r"[ \t ]+", " ", ln).strip() for ln in text.splitlines()]
+    # Real whitespace collapses to one space; zero-width marks go entirely.
+    lines = [
+        re.sub(r"\s+", " ", ZERO_WIDTH.sub("", ln)).strip()
+        for ln in text.splitlines()
+    ]
     return "\n".join(ln for ln in lines if ln)
 
 
@@ -180,8 +206,11 @@ def levenshtein(a: str, b: str) -> int:
 
 
 def score(expected: str, actual: str) -> dict:
-    exp_c = expected.replace("\n", "").replace(" ", "")
-    act_c = actual.replace("\n", "").replace(" ", "")
+    # Character accuracy is content only: every invisible character comes out of
+    # both sides first, so line breaks, indentation and cell padding cannot move
+    # the number in either direction. See INVISIBLE.
+    exp_c = content_only(expected)
+    act_c = content_only(actual)
     cer = levenshtein(exp_c, act_c) / max(len(exp_c), 1)
 
     exp_w, act_w = expected.split(), actual.split()

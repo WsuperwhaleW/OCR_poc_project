@@ -562,9 +562,9 @@ Each case reports:
 
 | Metric | Meaning |
 |---|---|
-| `char accuracy` | 1 − character edit distance / length |
-| `word accuracy` | longest-common-subsequence word overlap |
-| `char acc. w/o marks` | same, with Thai tone marks and above/below vowels stripped. If this is much higher than `char accuracy`, the right letters are being read and the marks lost — a different problem from wrong words. |
+| `char accuracy` | 1 − character edit distance / length. **The headline number, and it scores content only** — every invisible character is removed from both sides first, so line breaks, blank lines, indentation, cell padding, tabs, non-breaking and other Unicode spaces, and zero-width marks cannot change it. Only the characters a reader would see are compared. |
+| `word accuracy` | longest-common-subsequence word overlap. Whitespace does not count here either, but re-ordering does: a value read correctly in the wrong place lowers this and not `char accuracy`. |
+| `char acc. w/o marks` | `char accuracy` with Thai tone marks and above/below vowels stripped. If this is much higher than `char accuracy`, the right letters are being read and the marks lost — a different problem from wrong words. |
 
 …followed by a unified diff of expected vs actual.
 
