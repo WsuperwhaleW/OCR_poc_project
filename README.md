@@ -283,6 +283,11 @@ case. Multi-page input is capped at 10 pages, uploads at 32 MB (`MAX_PAGES`,
 `MAX_UPLOAD_MB`). PDF and HEIC can't render in an `<img>`, so the page shows a filename
 card instead of a thumbnail.
 
+**The Workspace holds one file, and a new one replaces it** — a read is one measurement, and
+documents are tested one at a time. Dropping several keeps the first and says which, and how
+many it ignored, rather than silently discarding them. For batches use the **Queue** tab,
+whose drop zone takes as many as you like.
+
 ### Detail (input resolution)
 
 The **Detail** selector caps how many pixels are sent. It is the main fidelity/latency
@@ -378,31 +383,64 @@ The switch is server-side and takes effect on the next extraction — including 
 documents and the run log's `extract_mode` column, which records the shape each row actually
 ran in. It is **not** refused while the queue is busy, unlike switching model server.
 
+**The fields on screen say which shape produced them**, first thing on the Fields tab status
+line: `single prompt` or `agentic · 15 steps`, then the seconds, tokens, model and grounded
+share. That is the mode this result ran in, not the current setting — the picker may have been
+switched since, and a result loaded from the queue can be older still.
+
 `AGENTIC_EXTRACT=1` starts in agentic mode; `AGENTIC_RETRIES` sets how many times a step may
 be re-asked (default 1, `0` to turn the retry off). Over HTTP, send `{"mode": "agentic"}` to
 `POST /api/extract`, or `POST /api/extract/mode` to change the setting.
 
-### Compare with source
+### Compare
 
-The card below the result puts the source page and the extracted text side by side, for
-proofreading against the original. **Show** opens it.
+The card below the result puts two of three panels side by side, for proofreading.
+**Show** opens it; the buttons on the left of its toolbar choose the pair:
+
+| View | |
+|---|---|
+| **Source › OCR** *(default)* | the prepared page beside the transcript |
+| **Source › Truth** | the prepared page beside `solution/<case>.md` |
+| **OCR › Truth** | the transcript beside the ground truth it is scored against |
+
+A view is offered only when both of its halves exist. The source image and the transcript
+come from a run; ground truth comes from the fixture, so it can be read on its own — pick a
+benchmark case, or drop a file that matches one, and open the card before running anything.
 
 The image shown is the **prepared** page — after PDF rasterisation and after the Detail
-downscale — so it is literally what was sent.
+downscale — so it is literally what was sent. Ground truth is rendered through the same
+renderer as a transcript, so a pipe table in the fixture and an HTML table from the model
+appear as the same shape of table.
 
-- Page arrows for multi-page documents; image and text stay on the same page.
-- **Markdown** checkbox swaps the right pane between rendered output and raw text.
-- **Sync scroll** links the panes proportionally.
+- Page arrows for multi-page documents; image and transcript stay on the same page. Ground
+  truth is one file for the whole document and its caption says so.
+- **Markdown** checkbox swaps the text panels between rendered output and raw text.
+- **Sync scroll** links whichever two panels are showing, proportionally.
 - **Open image** opens the prepared page full size in a new tab.
 - Available while a run is still streaming.
 
 Prepared pages are cached in memory per upload (`MAX_JOBS = 5`, oldest evicted) and served
-from `GET /api/page/<job>/<n>`. Nothing is written to disk.
+from `GET /api/page/<job>/<n>`. Ground truth is served verbatim from
+`GET /api/truth/<case>` and fetched once per case. Nothing is written to disk.
 
 ### Queue tab
 
-One document at a time streams in the Workspace pane. Drop in more than one — or use **Add
-to queue**, **Queue all cases**, **Queue whole folder** — and they go to the **Queue** tab.
+One document at a time streams in the Workspace pane. Several go to the **Queue** tab, which
+is the only place that fills the queue: its drop zone takes any number of files, and **Queue
+all cases** and **Queue whole folder** sit beside it. The Workspace has no queue buttons — it
+holds the one document being tested, and what it does with it is read it.
+
+**Queuing does not start anything: the queue holds until you press Run queue.** That is what
+makes the run mode and the worker count settable against a batch you can already see, and it
+lets a batch be assembled over several drops. The button counts what is waiting — *Run queue
+(3)* — and the line under it says `holding — press Run queue` so a queue that is deliberately
+not working cannot be mistaken for a stalled one.
+
+While it runs the same button reads **Pause after current**. Pausing stops the queue handing
+out further documents; one already reading is left to finish, because llama.cpp cannot abandon
+a generation it has started and a button that claimed otherwise would be lying. To stop that
+one, **Cancel** it. A batch that drains closes the gate behind it, so the next thing you queue
+waits for its own Run.
 
 | Run mode | |
 |---|---|
@@ -533,6 +571,12 @@ colour-coded bars (red < 80%, amber < 95%, green above) and a colourised diff ag
 expected text. The headline character accuracy is also appended to the footer line. Every
 scored run is written to `solution/out/<id>.txt`.
 
+The tab also says how this run compares with **the best that document has ever scored** —
+the highest character accuracy in the run log for that case across every run and every
+setting, with the model, backend and detail that reached it, or *the best this document has
+scored* when the current run is it. A percentage on its own does not say whether it is good:
+93.1% is the ceiling on the handwritten scan and a poor result on the printed pages.
+
 ### From the CLI
 
 The app must be running — each case is sent through it over HTTP at
@@ -587,6 +631,23 @@ Every document read appends one row to `logs/runs.csv` — from the page, from t
 `/api/ocr`, and from `compare.py`. The **Run log** card at the bottom of the page shows the
 recent rows and links the CSV.
 
+**Re-extracting appends a row too.** Every press of **Re-extract**, and every call to
+`/api/extract`, writes its own row with `run_type` = `extract`, and the card refreshes itself
+when the extraction finishes. The row carries the extraction's own figures — mode, seconds,
+tokens, grounding, tier coverage — against the document the transcript came from. Its pass-1
+columns (`pages`, `seconds`, `tokens`, and the accuracy scores) are **blank**: nothing re-read
+the page, and copying the earlier row's numbers forward would count one read twice in every
+total.
+
+**A better re-extraction is also written back onto the read's own row.** If it scores higher —
+more priority-1 keys filled, then more priority-2, then a higher `grounded_pct` — its figures
+replace the pass-2 columns of the row for the read it came from, and `extract_updated` records
+when that happened. 12/14 becomes 14/14; 14/14 is never pulled back down to 12/14, and an
+extraction that failed can never displace one that ran. The read's own columns are never
+touched, and the re-extraction keeps its own row regardless, so the history stays complete and
+the read row reports the best extraction of that transcript rather than whichever one happened
+to run first. The **Fields** cell marks an updated row.
+
 **It holds measurements only.** No transcript, no extracted fields, no page images:
 
 | Column | |
@@ -594,17 +655,27 @@ recent rows and links the CSV.
 | `timestamp` | local time, seconds resolution |
 | `file`, `file_size_mb`, `pages`, `detail`, `source` | what was read, and how it got in (`upload`/`folder`/`case`/`queue`) |
 | `server`, `backend`, `model` | which endpoint and model actually ran it |
-| `seconds`, `prefill_seconds`, `decode_seconds` | runtime, split into prompt processing and generation |
+| `seconds`, `prefill_seconds`, `decode_seconds` | runtime, split into prompt processing and generation. The card shows the split under the total, because the two move for different reasons — prefill scales with pixels, decode with output length |
 | `tokens`, `tokens_per_second` | OCR output tokens; the rate is decode-only |
 | `extract_seconds`, `extract_tokens` | pass 2 |
 | `extract_mode` | `single` or `agentic` — the shape pass 2 ran in, taken from the result, so a mode switched mid-batch still labels each row correctly. Blank on a run that never extracted |
 | `grounded_pct`, `ungrounded`, `fields_missing` | share of extracted values found in the transcript, how many were not, and how many fields the document does not state |
 | `p1_present`, `p1_absent`, `p2_present`, `p2_absent` | field coverage by delivery tier — how many of the 14 priority-1 and 14 priority-2 keys came back filled. Blank on a run that extracted nothing, which is not the same as zero |
 | `case`, `char_accuracy`, `word_accuracy`, `char_accuracy_no_marks` | percentages, blank when the input has no ground truth |
-| `status`, `error` | `ok` / `truncated` / `looped` / `cancelled` / `error` |
+| `status`, `error` | `ok` / `partial` / `truncated` / `looped` / `cancelled` / `error` |
+| `run_type` | `ocr` for a document read, `extract` for a re-extraction of a transcript already read. Blank on rows written before the column existed |
+| `extract_updated` | set when a later, better re-extraction replaced this row's pass-2 columns, so `timestamp` no longer says when they were measured. Blank on the normal case |
 
 Coverage is not correctness. `p1_present` counts what came back filled, not what came back
-right — read it beside `grounded_pct`.
+right — read it beside `grounded_pct`. Each row's **Fields** cell also carries the shape that
+filled it, `single` or `agentic`: one request and fifteen fill the schema in different ways,
+so two rows of counts are not comparable without it.
+
+The card header reports the **mean** accuracy over every scored row and the **best** single
+score in the file, and above the table is the best each document has ever reached — over
+every run and every setting, with the model, backend, detail and mode that reached it on
+hover. The mean moves with whatever was being tried lately; the best says what the document
+is known to be capable of, which is the number to beat.
 
 Failed and cancelled runs are logged too. Move the file with `OCR_LOG_DIR`. It is written as
 UTF-8 with a BOM so Excel opens Thai filenames correctly; new columns are only ever
@@ -638,7 +709,7 @@ same cases on each and compare the columns.
 | Route | |
 |---|---|
 | `POST /api/ocr` | same fields as the stream, blocking, whole JSON at once. Drains the same generator internally, so timings are measured identically |
-| `POST /api/extract` | re-run pass 2 on a transcript the app already has. Takes an optional `mode` (`single`/`agentic`) for that one call |
+| `POST /api/extract` | re-run pass 2 on a transcript the app already has. Takes an optional `mode` (`single`/`agentic`) for that one call, and an optional `job` — the id from the `page`/`done` events — which names the document in the run-log row it writes |
 | `POST /api/extract/stream` | the same as `/api/extract`, as NDJSON: `extract_steps` once, then an `extract_step` per step as it starts and finishes, then `fields`. Agentic mode only emits the step events; single mode emits `fields` alone |
 | `GET` · `POST /api/extract/mode` | read or set the extraction shape for everything this process extracts next. Body `{"mode": "single"}` or `{"mode": "agentic"}` |
 | `GET /api/page/<job>/<n>` | PNG of prepared page `n` (0-based). `job` is returned on the `page` and `done` events. 404s once the upload falls out of the cache |
@@ -647,7 +718,9 @@ same cases on each and compare the columns.
 | `POST /api/servers` | `{"url": "...", "model": "..."}`, either field optional. 409 while the queue has a job running |
 | `POST /api/context` | set the Ollama context window for subsequent requests |
 | `GET /api/cases` · `GET /api/files` | benchmark cases, and readable documents in `mockOcr/` |
+| `GET /api/truth/<case>` | the hand-written ground truth for one case, verbatim, plus the case's pdf, kind and page count. 404 for an id that is not a case |
 | `GET`/`POST /api/queue` | list or enqueue. `GET /api/queue/<id>`, `DELETE /api/queue/<id>`, `POST /api/queue/clear`, `POST /api/queue/mode`, `POST /api/queue/workers` |
+| `POST /api/queue/run` | release the queue so workers pick up what is in it; `{"start": false}` stops it handing out more. Queueing alone never starts a read. `started` in the queue's stats says which state it is in |
 | `POST /api/match` | look up the ground-truth case for a file by name or sha256 |
 | `GET /api/runs?limit=50` | recent run-log rows, newest first, plus totals |
 | `GET /api/runs.csv` | the log file itself |

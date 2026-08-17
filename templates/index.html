@@ -71,23 +71,6 @@
   }
   #drop p, #qdrop p { margin: 5px 0; }
   #drop .hint, #qdrop .hint { color: var(--muted); font-size: 0.82rem; }
-  /* Files waiting to be run. Dropping again adds to this list rather than
-     replacing it, so a batch can be assembled from several drops. */
-  #worklist:empty { display: none; }
-  #worklist { margin-top: 12px; }
-  .wl-head {
-    display: flex; align-items: center; gap: 8px;
-    font-size: .78rem; color: var(--muted); margin-bottom: 6px;
-  }
-  .wl-head button { margin-left: auto; }
-  .wl-item {
-    display: flex; align-items: center; gap: 8px; font-size: .8rem;
-    border: 1px solid var(--border); border-radius: 8px;
-    padding: 5px 6px 5px 10px; margin-top: 5px; background: var(--bg);
-  }
-  .wl-item .nm { flex: 1; min-width: 0; word-break: break-all; }
-  .wl-item .sz { color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
-  .wl-item button { padding: 0 7px; font-size: .8rem; border-radius: 5px; line-height: 1.6; }
   #preview { display: none; margin-top: 14px; width: 100%; border-radius: 10px; border: 1px solid var(--border); }
   #filechip {
     display: none; margin-top: 14px; padding: 18px; border-radius: 10px;
@@ -141,12 +124,12 @@
   #render th, #render td { border: 1px solid var(--border); padding: 6px 10px; text-align: left; }
   #render th { background: var(--accent-soft); }
   /* Verbatim text: keep the document's own line breaks and column spacing. */
-  #render .txt, #cmpRender .txt {
+  #render .txt, #cmpRender .txt, #cmpTruthRender .txt {
     white-space: pre-wrap; word-break: break-word; margin: 8px 0;
     font-family: "Segoe UI", "Noto Sans Thai", system-ui, sans-serif;
     tab-size: 4;
   }
-  #render table, #cmpRender table { table-layout: auto; }
+  #render table, #cmpRender table, #cmpTruthRender table { table-layout: auto; }
   /* Scoped to [hidden] on purpose: the toggle works by setting the attribute,
      and a bare `display: none` here outranks removing it, so the panel could
      never open. */
@@ -165,20 +148,39 @@
     text-decoration: none; color: var(--text); font-size: .78rem;
     border: 1px solid var(--border); border-radius: 6px; padding: 4px 10px;
   }
+  /* Which two of the three columns are shown is the view mode; the hidden one
+     keeps its scroll position and its rendered content, so flipping back is
+     instant and does not re-fetch. */
+  .cmp-modes { display: flex; gap: 4px; margin-right: 4px; }
+  .cmp-modes button { padding: 4px 10px; font-size: .78rem; border-radius: 6px; }
+  .cmp-modes button.on { background: var(--accent-soft); border-color: var(--accent); color: var(--text); }
   .cmp-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 12px; }
+  /* One column left to show (ground truth before anything has been run): it
+     takes the full width rather than sitting beside an empty half. */
+  .cmp-grid.one { grid-template-columns: minmax(0, 1fr); }
   @media (max-width: 900px) { .cmp-grid { grid-template-columns: minmax(0, 1fr); } }
+  .cmp-col { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+  /* Same reason as #compare[hidden] above: the display rule on .cmp-col would
+     otherwise outrank the hidden attribute and every column would stay on. */
+  .cmp-col[hidden] { display: none; }
+  .cmp-cap {
+    font-size: .74rem; text-transform: uppercase; letter-spacing: .06em;
+    color: var(--muted); padding-left: 2px;
+  }
+  .cmp-cap span { text-transform: none; letter-spacing: 0; opacity: .8; }
   .cmp-pane {
     border: 1px solid var(--border); border-radius: 10px; padding: 10px;
     height: 68vh; overflow: auto; background: var(--bg);
   }
   #cmpImg { width: 100%; display: block; border-radius: 6px; }
-  #cmpRawText {
+  #cmpRawText, #cmpTruthText {
     white-space: pre-wrap; word-break: break-word; margin: 0;
     font-family: ui-monospace, Consolas, monospace; font-size: .82rem;
   }
-  #cmpRender table { border-collapse: collapse; margin: 10px 0; font-size: .82rem; }
-  #cmpRender th, #cmpRender td { border: 1px solid var(--border); padding: 5px 8px; }
-  #cmpRender figure {
+  #cmpRender table, #cmpTruthRender table { border-collapse: collapse; margin: 10px 0; font-size: .82rem; }
+  #cmpRender th, #cmpRender td,
+  #cmpTruthRender th, #cmpTruthRender td { border: 1px solid var(--border); padding: 5px 8px; }
+  #cmpRender figure, #cmpTruthRender figure {
     margin: 10px 0; padding: 10px; border-left: 3px solid var(--accent);
     background: var(--accent-soft); border-radius: 0 8px 8px 0; font-size: .85rem;
   }
@@ -282,9 +284,24 @@
   .qbadge.done { background: rgba(63,185,80,.18); color: #3fb950; }
   .qbadge.failed { background: rgba(255,107,107,.18); color: var(--danger); }
   .qbadge.cancelled { background: var(--border); color: var(--muted); }
+  /* A reply that was salvaged from a cut-off body: it has real values in it, so
+     it is not a failure, but the keys it never reached are empty for a reason
+     the fields themselves cannot show. Amber, between done and failed. */
+  .qbadge.partial, .qbadge.truncated, .qbadge.looped {
+    background: rgba(217,164,65,.18); color: #d9a441;
+  }
   .qbar { height: 5px; border-radius: 4px; background: var(--border); overflow: hidden; min-width: 70px; }
   .qbar span { display: block; height: 100%; background: var(--accent); transition: width .3s; }
   .issue .who { font-weight: 600; }
+  /* Best-ever score per document. Its own line above the table because it is a
+     different kind of statement from the rows: a row is one run, this is the
+     ceiling reached across every run and every setting. */
+  .run-best {
+    display: flex; flex-wrap: wrap; gap: 6px 14px; align-items: center;
+    font-size: .78rem; color: var(--muted); margin: 10px 0 2px;
+  }
+  .run-best b { color: var(--text); font-variant-numeric: tabular-nums; }
+  .run-best .rb { display: inline-flex; gap: 5px; align-items: baseline; }
   #accuracy { display: none; }
   #accHead { font-size: .88rem; margin-bottom: 14px; }
   #accHead .case { font-weight: 600; font-size: 1rem; }
@@ -383,16 +400,15 @@
 
       <div class="pane on" id="paneSource">
       <div id="drop">
-        <p><strong>Drop files here</strong></p>
+        <p><strong>Drop a file here</strong></p>
         <p class="hint">or click to browse · or paste with Ctrl+V</p>
-        <p class="hint">Drop again to add more — then Run does the whole list</p>
+        <p class="hint">One file at a time — a new one replaces it</p>
         <p class="hint">JPG · PNG · WEBP · BMP · GIF · TIFF · HEIC · PDF</p>
       </div>
-      <input id="file" type="file" multiple
+      <input id="file" type="file"
              accept="image/*,application/pdf,.pdf,.heic,.heif,.tif,.tiff,.webp,.bmp" hidden>
       <img id="preview" alt="preview">
       <div id="filechip"><strong>📄</strong><span id="filechipname"></span></div>
-      <div id="worklist"></div>
       <div id="mapchip"></div>
 
       <div class="row">
@@ -484,27 +500,27 @@
         <button id="clear">Clear</button>
       </div>
       <p class="note" id="runNote"></p>
-      <div class="row">
-        <button id="queueAdd" class="ghost-sm">Add to queue</button>
-        <button id="queueAll" class="ghost-sm">Queue all cases</button>
-        <button id="queueFolder" class="ghost-sm">Queue whole folder</button>
-      </div>
       <p class="note" id="detailNote"></p>
-      <p class="note">One document at a time, streamed in as it is generated.
-      Drop in more than one and they go to the <b>Queue</b> tab, which decides
-      how many run at once. Device placement belongs to the model server
+      <p class="note">One document at a time, streamed in as it is generated —
+      the workspace holds a single file, and dropping another replaces it. For
+      several documents use the <b>Queue</b> tab, which decides how many run at
+      once and starts on its own Run. Device placement belongs to the model server
       (llama-server's <code>-ngl</code>, Ollama's own scheduler), not to this app.</p>
       </div><!-- /paneSource -->
 
       <div class="pane" id="paneQueue">
         <div id="qdrop">
           <p><strong>Drop files straight into the queue</strong></p>
-          <p class="hint">or click to browse</p>
-          <p class="hint">Queued as one batch — a worker picks up the first
-            only once the whole batch is listed</p>
+          <p class="hint">or click to browse · several at once is fine here</p>
+          <p class="hint">Nothing starts until you press <b>Run queue</b></p>
         </div>
         <input id="qfile" type="file" multiple
                accept="image/*,application/pdf,.pdf,.heic,.heif,.tif,.tiff,.webp,.bmp" hidden>
+
+        <div class="row" style="margin-top:12px">
+          <button id="queueAll" class="ghost-sm">Queue all cases</button>
+          <button id="queueFolder" class="ghost-sm">Queue whole folder</button>
+        </div>
 
         <div class="row">
           <label class="field" style="flex:1">
@@ -522,8 +538,11 @@
         <p class="note" id="workerNote"></p>
 
         <div class="row" style="margin-top:12px">
+          <button id="queueRun" class="primary" disabled>Run queue</button>
+          <button id="queueClear" class="ghost-sm" style="margin-left:auto">Clear finished</button>
+        </div>
+        <div class="row" style="margin-top:8px">
           <span id="queueStats" class="muted-inline" style="font-size:.78rem;flex:1"></span>
-          <button id="queueClear" class="ghost-sm">Clear finished</button>
         </div>
         <div id="queueBody"></div>
       </div>
@@ -574,12 +593,17 @@
 
   <div class="card" id="compareCard">
     <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
-      <h2 style="margin:0">Compare with source</h2>
+      <h2 style="margin:0">Compare</h2>
       <span id="cmpHint" class="muted-inline" style="font-size:.8rem"></span>
       <button id="cmpToggle" class="ghost-sm" style="margin-left:auto" disabled>Show</button>
     </div>
     <div id="compare" hidden>
       <div class="cmp-bar">
+        <div class="cmp-modes" id="cmpModes">
+          <button data-view="source-model" class="on">Source › OCR</button>
+          <button data-view="source-truth">Source › Truth</button>
+          <button data-view="model-truth">OCR › Truth</button>
+        </div>
         <button id="cmpPrev" class="ghost-sm">‹</button>
         <span id="cmpLabel">Page 1</span>
         <button id="cmpNext" class="ghost-sm">›</button>
@@ -587,13 +611,26 @@
         <label class="cmp-opt"><input type="checkbox" id="cmpSync" checked> Sync scroll</label>
         <a id="cmpOpen" class="ghost-sm" style="margin-left:auto" target="_blank" rel="noopener">Open image</a>
       </div>
-      <div class="cmp-grid">
-        <div class="cmp-pane" id="cmpImgPane">
-          <img id="cmpImg" alt="source page">
+      <div class="cmp-grid" id="cmpGrid">
+        <div class="cmp-col" id="cmpColImg">
+          <div class="cmp-cap">Source page <span id="cmpImgCap"></span></div>
+          <div class="cmp-pane" id="cmpImgPane">
+            <img id="cmpImg" alt="source page">
+          </div>
         </div>
-        <div class="cmp-pane" id="cmpTextPane">
-          <div id="cmpRender"></div>
-          <pre id="cmpRawText"></pre>
+        <div class="cmp-col" id="cmpColModel">
+          <div class="cmp-cap">OCR output <span id="cmpModelCap"></span></div>
+          <div class="cmp-pane" id="cmpTextPane">
+            <div id="cmpRender"></div>
+            <pre id="cmpRawText"></pre>
+          </div>
+        </div>
+        <div class="cmp-col" id="cmpColTruth" hidden>
+          <div class="cmp-cap">Ground truth <span id="cmpTruthCap"></span></div>
+          <div class="cmp-pane" id="cmpTruthPane">
+            <div id="cmpTruthRender"></div>
+            <pre id="cmpTruthText"></pre>
+          </div>
         </div>
       </div>
     </div>
@@ -606,6 +643,7 @@
       <button id="runRefresh" class="ghost-sm" style="margin-left:auto">Refresh</button>
       <a id="runDownload" class="ghost-sm" href="/api/runs.csv" download>Download CSV</a>
     </div>
+    <div class="run-best" id="runBest"></div>
     <div id="runBody"></div>
     <p class="note" id="runPath"></p>
   </div>
@@ -675,16 +713,32 @@ const cmpLabel = document.getElementById('cmpLabel');
 const cmpPrev = document.getElementById('cmpPrev');
 const cmpNext = document.getElementById('cmpNext');
 const cmpOpen = document.getElementById('cmpOpen');
+const cmpModes = document.getElementById('cmpModes');
+const cmpGrid = document.getElementById('cmpGrid');
+const cmpColImg = document.getElementById('cmpColImg');
+const cmpColModel = document.getElementById('cmpColModel');
+const cmpColTruth = document.getElementById('cmpColTruth');
+const cmpTruthPane = document.getElementById('cmpTruthPane');
+const cmpTruthRender = document.getElementById('cmpTruthRender');
+const cmpTruthText = document.getElementById('cmpTruthText');
+const cmpTruthCap = document.getElementById('cmpTruthCap');
+const cmpImgCap = document.getElementById('cmpImgCap');
+const cmpModelCap = document.getElementById('cmpModelCap');
 let job = null, pageTexts = [], cmpPage = 0;
+// Which two columns are on. 'source-model' is the original view, so a page that
+// never touches the picker behaves exactly as it did before.
+let cmpView = 'source-model';
+// Ground truth, fetched once per case and kept: solution/<id>.md does not change
+// under a running app, and re-fetching on every repaint would flicker the pane.
+const truthCache = {};
+// `current` is the workspace: one file, dropped but not yet run. A new drop
+// replaces it -- reading a document is a measurement, and they are tested one at
+// a time. Batches go to the queue, which has its own drop zone and its own Run.
 let current = null, controller = null, text = '';
-// The workspace: files dropped but not yet run. One file streams live into the
-// result panel as before; several go to the queue and are worked by the pool.
-let staged = [];
 
 /* ---------- left-hand panes ---------- */
 const sideTabs = document.getElementById('sideTabs');
 const qCount = document.getElementById('qCount');
-const worklist = document.getElementById('worklist');
 const runNote = document.getElementById('runNote');
 function showPane(name) {
   [...sideTabs.querySelectorAll('button[data-pane]')].forEach(b =>
@@ -1085,6 +1139,18 @@ function stepList(steps) {
    failed leaves its keys empty and they are otherwise indistinguishable from
    fields the document does not state -- which is the one distinction the
    grounding note below is careful to make. */
+/* How an extraction was asked for, in the words the picker uses. `agentic` says
+   how many steps it actually ran rather than how many the table has, because a
+   result carried over from an older run may have had a different step list. */
+function modeLabel(r) {
+  const mode = r && r.mode;
+  if (mode === 'agentic') {
+    const steps = (r.steps || []).length;
+    return 'agentic' + (steps ? ' · ' + steps + ' steps' : '');
+  }
+  if (mode === 'single') return 'single prompt';
+  return mode ? esc(mode) : 'extraction';
+}
 function stepNote(r) {
   const failed = (r && r.steps_failed) || [];
   const retried = ((r && r.steps) || []).filter(s => s.retried).length;
@@ -1141,7 +1207,12 @@ function paintFieldBody() {
   const g = extracted.grounding || {};
   const st = g.statuses || {};
   const ratio = g.grounded_ratio;
-  fldStatus.textContent = `${extracted.seconds}s · ${extracted.tokens} tokens · ${extracted.model || ''}`
+  // The shape that produced these fields, named first. Two extractions of one
+  // transcript are not comparable without it -- the same 22 keys mean different
+  // things filled by one request and by fifteen -- and the picker in the sidebar
+  // shows the *current* setting, which may already have been switched since.
+  fldStatus.textContent = `${modeLabel(extracted)} · ${extracted.seconds}s · `
+    + `${extracted.tokens} tokens · ${extracted.model || ''}`
     + (ratio === null || ratio === undefined ? ''
        : ` · ${(ratio * 100).toFixed(0)}% grounded`);
 
@@ -1221,7 +1292,8 @@ async function runExtract() {
   try {
     const res = await fetch('/api/extract/stream', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ text })
+      // The page job id names the document in the run-log row this writes.
+      body: JSON.stringify({ text, job })
     });
     if (!res.ok) {
       extracted = await res.json();
@@ -1255,6 +1327,10 @@ async function runExtract() {
     extracted = { error: err.message };
   }
   paintFields();
+  // Every extraction writes its own run-log row, so the card below is stale the
+  // moment this finishes -- and the whole point of re-extracting is comparing
+  // this run's field counts and grounded ratio with the last one's.
+  refreshRuns();
 }
 fldRerun.addEventListener('click', runExtract);
 fldRawChk.addEventListener('change', paintFields);
@@ -1275,9 +1351,9 @@ cmpToggle.addEventListener('click', () => {
 /* ---------- job queue ---------- */
 const queueBody = document.getElementById('queueBody');
 const queueStats = document.getElementById('queueStats');
-const queueAddBtn = document.getElementById('queueAdd');
 const queueAllBtn = document.getElementById('queueAll');
 const queueClearBtn = document.getElementById('queueClear');
+const queueRun = document.getElementById('queueRun');
 const workersInput = document.getElementById('workers');
 const workerNote = document.getElementById('workerNote');
 let queuePoll = null;
@@ -1315,29 +1391,73 @@ function qcell(job) {
       + '</div></div>';
 }
 
+/* Run / Pause. The state comes from the queue rather than being remembered here,
+   because the gate is server-side: a reload mid-batch, or a second tab, would
+   otherwise show a button that does not match what the queue is doing. */
+function paintQueueRun(data) {
+  const c = data.counts || {};
+  const queued = c.queued || 0, running = c.running || 0;
+  const started = !!data.started;
+  queueRun.textContent = started ? (running ? 'Pause after current' : 'Pause')
+                                 : 'Run queue' + (queued ? ' (' + queued + ')' : '');
+  // Nothing to start, and nothing in flight to pause.
+  queueRun.disabled = !started && !queued;
+  const on = modeSeg.querySelector('button.on');
+  queueRun.title = started
+    ? 'Stop handing out new documents. One already reading is left to finish.'
+    : 'Start reading the queued documents'
+      + (on ? ', ' + on.dataset.mode : '') + '.';
+}
+
 async function refreshQueue() {
   let data;
   try { data = await (await fetch('/api/queue')).json(); } catch { return; }
   const c = data.counts || {};
-  queueStats.textContent = `${c.queued || 0} queued · ${c.running || 0} running · `
-    + `${c.done || 0} done · ${c.failed || 0} failed · ${data.workers} worker(s)`;
+  const queued = c.queued || 0, running = c.running || 0;
+  queueStats.textContent = `${queued} queued · ${running} running · `
+    + `${c.done || 0} done · ${c.failed || 0} failed · ${data.workers} worker(s)`
+    // Said in words as well as on the button: a queue with three documents in it
+    // and nothing happening is otherwise indistinguishable from a stalled one.
+    // "idle" is only true with nothing queued *and* nothing in flight -- a paused
+    // queue still has a document reading, and calling that idle is a plain lie.
+    + (data.started ? ''
+       : queued ? ' · holding — press Run queue'
+       : running ? ' · finishing the current document'
+       : ' · idle');
   if (document.activeElement !== workersInput) workersInput.value = data.workers;
+  paintQueueRun(data);
 
   // The tab badge counts only unfinished work -- that is what "still to do" means.
-  const outstanding = (c.queued || 0) + (c.running || 0);
+  const outstanding = queued + running;
   qCount.textContent = outstanding;
   qCount.classList.toggle('show', outstanding > 0);
 
   queueBody.innerHTML = data.jobs.map(qcell).join('');
 
-  // Poll only while something is moving; idle pages should not chatter.
-  const active = (c.queued || 0) + (c.running || 0) > 0;
+  // Poll only while something is actually moving: a job in flight, or a released
+  // queue with work left in it. A queue that is holding with nothing running is
+  // not moving, and it changes only when the user does something -- every one of
+  // those paths refreshes this itself. Pausing mid-batch still polls, because the
+  // document already reading is left to finish and its progress is real.
+  const active = running > 0 || (data.started && outstanding > 0);
   if (active && !queuePoll) queuePoll = setInterval(refreshQueue, 1500);
   if (!active && queuePoll) {
     clearInterval(queuePoll); queuePoll = null;
     refreshRuns();   // the queue just drained: its rows are now in the log
   }
 }
+
+queueRun.addEventListener('click', async () => {
+  const start = queueRun.textContent.startsWith('Run');
+  queueRun.disabled = true;
+  try {
+    await fetch('/api/queue/run', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ start })
+    });
+  } catch { /* refreshQueue below reports the real state either way */ }
+  refreshQueue();
+});
 
 queueBody.addEventListener('click', async e => {
   const cancel = e.target.closest('[data-cancel]');
@@ -1361,6 +1481,7 @@ queueBody.addEventListener('click', async e => {
     extractSteps = null;
     tabAccuracy.disabled = !truth;
     tabFields.disabled = !extracted;
+    enableCompare();   // this job's own case, not whatever the workspace holds
     paint(); renderStats(r);
     meta.textContent = `${r.page_count} page(s) · ${r.detail} · ${r.tokens} tokens · ${r.seconds}s`
       + (truth && !truth.error ? ` · ${(truth.char_accuracy * 100).toFixed(1)}% vs ${truth.case}` : '');
@@ -1382,29 +1503,26 @@ async function postQueue(body) {
     return null;
   }
   const added = (data.added || []).length;
-  meta.textContent = `${added} document(s) queued · ${data.workers} worker(s)`;
+  // Says what to do next: nothing is running yet, and a queue that looked busy
+  // but was not would be read as a stall.
+  meta.textContent = `${added} document(s) queued · ${data.workers} worker(s)`
+    + (data.started ? '' : ' · press Run queue to start');
   meta.classList.remove('err');
   refreshQueue();
   showPane('queue');
   return data;
 }
 
-async function enqueue(cases) {
+/* The two batch actions live on the Queue tab, beside its drop zone. The
+   workspace has no queue button at all any more: it holds the one document being
+   tested, and what it does with it is read it. */
+async function enqueueCases(ids) {
   const body = new FormData();
   body.append('detail', detailSel.value);
-  if (cases) cases.forEach(c => body.append('cases', c));
-  else if (benchCase && benchCase.value) body.append('cases', benchCase.value);
-  else if (mockFile && mockFile.value) body.append('files', mockFile.value);
-  else if (staged.length) staged.forEach(f => body.append('image', f));
-  else return null;
-  const data = await postQueue(body);
-  // Once queued, the workspace copy is redundant -- and leaving it there would
-  // let a second click queue the same files again.
-  if (data && staged.length && !cases) { staged = []; paintWorkspace(); }
-  return data;
+  ids.forEach(c => body.append('cases', c));
+  return postQueue(body);
 }
-queueAddBtn.addEventListener('click', () => enqueue(null));
-queueAllBtn.addEventListener('click', () => enqueue(BENCH_IDS));
+queueAllBtn.addEventListener('click', () => enqueueCases(BENCH_IDS));
 // Nothing to queue means nothing to click: both of these would otherwise post an
 // empty batch and come back with an error the user could do nothing about.
 if (!BENCH_IDS.length) {
@@ -1449,6 +1567,7 @@ qdrop.addEventListener('drop', e => queueDirect(e.dataTransfer.files));
    Measurements only: the CSV behind this holds no transcript, no extracted
    fields and no page images, so it stays small and is safe to keep around. */
 const runBody = document.getElementById('runBody');
+const runBest = document.getElementById('runBest');
 const runStats = document.getElementById('runStats');
 const runPath = document.getElementById('runPath');
 const runRefresh = document.getElementById('runRefresh');
@@ -1459,19 +1578,36 @@ function runRow(r) {
   const size = r.file_size_mb ? Number(r.file_size_mb).toFixed(2) + ' MB' : '—';
   const cls = r.status === 'error' ? 'q-failed'
             : r.status === 'cancelled' ? 'q-cancelled' : '';
+  // A pass-2-only row: no page was read, so its pass-1 cells are blank by
+  // design. The Tokens and Time cells show the extraction's own figures rather
+  // than an em dash, which would read as "nothing was measured".
+  const only = r.run_type === 'extract';
   return '<tr class="' + cls + '">'
     + '<td class="n">' + esc(when) + '</td>'
     + '<td>' + esc(r.file || '—')
+      + (only ? ' <span class="tier p2">re-extract</span>' : '')
       + '<br><span style="color:var(--muted);font-size:.74rem">' + esc(size)
       + (r.pages ? ' · ' + esc(r.pages) + 'p' : '') + ' · ' + esc(r.detail || '')
       + (r.source ? ' · ' + esc(r.source) : '') + '</span></td>'
     + '<td>' + esc(r.model || '—')
       + '<br><span style="color:var(--muted);font-size:.74rem">'
       + esc(r.backend || '') + ' ' + esc(r.server || '') + '</span></td>'
-    + '<td class="n">' + esc(r.tokens || '—') + '</td>'
-    + '<td class="n">' + (r.seconds ? Number(r.seconds).toFixed(1) + 's' : '—')
+    + '<td class="n">' + esc((only ? r.extract_tokens : r.tokens) || '—') + '</td>'
+    // Prefill and decode are the two halves of the run and they move for
+    // different reasons -- prefill scales with pixels, decode with output length
+    // -- so a total alone cannot say why a run was slow. Both are already in the
+    // CSV; this is where they become readable without opening it.
+    + '<td class="n">'
+      + (only
+          ? (r.extract_seconds ? Number(r.extract_seconds).toFixed(1) + 's' : '—')
+          : (r.seconds ? Number(r.seconds).toFixed(1) + 's' : '—'))
       + '<br><span style="color:var(--muted);font-size:.74rem">'
-      + (r.tokens_per_second ? Number(r.tokens_per_second).toFixed(1) + ' tok/s' : '')
+      + (only ? 'pass 2 only'
+              : ((r.prefill_seconds || r.decode_seconds
+                   ? Number(r.prefill_seconds || 0).toFixed(1) + 's prefill + '
+                     + Number(r.decode_seconds || 0).toFixed(1) + 's decode<br>'
+                   : '')
+                 + (r.tokens_per_second ? Number(r.tokens_per_second).toFixed(1) + ' tok/s' : '')))
       + '</span></td>'
     // Blank, not 0/14, when the run never got as far as extracting: an
     // unmeasured tier is not a tier measured at zero, and the CSV keeps them
@@ -1480,7 +1616,27 @@ function runRow(r) {
         : '<span class="tier p1">P1</span> ' + esc(r.p1_present) + '/'
           + (Number(r.p1_present) + Number(r.p1_absent))
           + '<br><span class="tier p2">P2</span> ' + esc(r.p2_present) + '/'
-          + (Number(r.p2_present) + Number(r.p2_absent))) + '</td>'
+          + (Number(r.p2_present) + Number(r.p2_absent)))
+      // Which shape filled them. Beside the counts rather than in a column of
+      // its own because it is what makes two rows of counts comparable: one
+      // request and fifteen fill the schema in different ways, and the CSV has
+      // carried `extract_mode` from the start for exactly this reason.
+      + (r.extract_mode
+          ? '<br><span class="tier ' + (r.extract_mode === 'agentic' ? 'p1' : 'p2')
+            + '" title="pass 2 ran as '
+            + (r.extract_mode === 'agentic' ? 'fifteen steps of one to three fields'
+                                            : 'one request for the whole form')
+            + '">' + esc(r.extract_mode) + '</span>'
+          : '')
+      // These figures came from a later re-extraction that scored better than
+      // the one this read ran with, so the row's timestamp does not describe
+      // them. Said here rather than left silent: a coverage count that quietly
+      // changed under a fixed timestamp is the kind of thing that gets believed.
+      + (r.extract_updated
+          ? '<br><span style="color:var(--muted);font-size:.7rem" title="replaced by a '
+            + 'better re-extraction at ' + esc(r.extract_updated) + '">updated</span>'
+          : '')
+      + '</td>'
     + '<td class="n acc" style="' + (acc === null ? '' : 'color:' + accColour(acc / 100))
       + '">' + (acc === null ? '—' : acc.toFixed(1) + '%')
       + (r.case ? '<br><span style="color:var(--muted);font-size:.74rem;font-weight:400">'
@@ -1501,17 +1657,47 @@ function runRow(r) {
     + '</tr>';
 }
 
+/* Best score per document, over the whole log. Kept in a variable as well as on
+   screen because the Accuracy tab compares the run it is showing against it, and
+   the two must not be able to disagree. */
+let logBests = {};
+function paintBests(t) {
+  logBests = t.best_by_case || {};
+  const cases = Object.keys(logBests).sort();
+  if (!cases.length) { runBest.innerHTML = ''; return; }
+  runBest.innerHTML = '<span>Best ever, any setting:</span>'
+    + cases.map(c => {
+        const b = logBests[c];
+        // The condition is the tooltip rather than the line: five documents
+        // times model, backend and detail is more text than the numbers it
+        // would be explaining.
+        const how = [b.model, b.backend, b.detail, b.extract_mode, b.timestamp]
+          .filter(Boolean).join(' · ');
+        return '<span class="rb" title="' + esc(how) + '">' + esc(c)
+          + ' <b>' + Number(b.char_accuracy).toFixed(1) + '%</b></span>';
+      }).join('');
+}
+
 async function refreshRuns() {
   let data;
   try { data = await (await fetch('/api/runs?limit=50')).json(); } catch { return; }
   const rows = data.runs || [];
   const t = data.totals || {};
+  paintBests(t);
   runStats.textContent = [
     t.runs + ' run(s) logged',
-    rows.length < t.runs ? 'showing ' + rows.length : null,
+    // Counted apart from reads: a re-extraction is a row, but it is not another
+    // document read, and every other figure on this line is read against `runs`.
+    t.extracts ? t.extracts + ' re-extract(s)' : null,
+    rows.length < (t.runs + (t.extracts || 0)) ? 'showing ' + rows.length : null,
     t.scored ? t.scored + ' scored' : null,
     t.mean_accuracy !== null && t.mean_accuracy !== undefined
       ? 'mean ' + Number(t.mean_accuracy).toFixed(1) + '%' : null,
+    // The ceiling as well as the average: the mean moves with whatever was being
+    // tried lately, and on its own it hides that a document has scored higher.
+    t.best_accuracy !== null && t.best_accuracy !== undefined
+      ? 'best ' + Number(t.best_accuracy).toFixed(1) + '%'
+        + (t.best_case ? ' (' + t.best_case + ')' : '') : null,
     t.seconds ? Math.round(t.seconds) + 's total' : null,
     t.tokens ? t.tokens + ' tokens' : null
   ].filter(Boolean).join(' · ');
@@ -1604,6 +1790,27 @@ function accRow(label, value, hint) {
     + (value * 100).toFixed(1) + '%;background:' + accColour(value) + '"></span></span>'
     + '<span class="acc-val">' + (value * 100).toFixed(1) + '%</span></div>';
 }
+/* This run against the best this document has ever scored, under any model,
+   backend, detail or prompt. A percentage on its own says nothing about whether
+   it is good: 93.1% is the ceiling on the handwritten scan and a poor result on
+   the printed ones, and the only thing on the page that knows the difference is
+   the run log. Read from `logBests`, which the run-log card fills on load. */
+function bestNote(t) {
+  const b = t && t.case && logBests[t.case];
+  if (!b) return '';
+  const best = Number(b.char_accuracy);
+  const now = t.char_accuracy * 100;
+  const how = [b.model, b.backend, b.detail].filter(Boolean).join(' · ');
+  // A run can beat the record and still be reading a row written moments ago:
+  // the log is refreshed on the `logged` event, so treat within-noise as equal.
+  const verdict = now >= best - 0.05
+    ? '<strong>the best this document has scored</strong>'
+    : 'below its best of <strong>' + best.toFixed(1) + '%</strong>, set by '
+      + esc(how) + (b.timestamp ? ' on ' + esc(b.timestamp.replace('T', ' ')) : '');
+  return '<p class="acc-note">This run is ' + verdict
+    + '. The figure is the highest in the run log for ' + esc(t.case)
+    + ' across every run and every setting — not a mean.</p>';
+}
 function paintAccuracy() {
   if (!truth) { accHead.innerHTML = ''; accBars.innerHTML = ''; accDiff.textContent = ''; return; }
   if (truth.error) {
@@ -1630,7 +1837,8 @@ function paintAccuracy() {
           + ' points — the letters are largely right and the tone marks are what is being lost.'
         : ' Ignoring Thai marks changes little, so errors are whole-word rather than diacritic.')
     + ' Table markup is normalised before scoring, so HTML vs pipe tables do not count against it,'
-    + ' and character accuracy compares content only — spacing and line breaks cannot lower it.</p>';
+    + ' and character accuracy compares content only — spacing and line breaks cannot lower it.</p>'
+    + bestNote(truth);
 
   if (!truth.diff || !truth.diff.length) {
     accDiff.innerHTML = '<span class="add">Exact match.</span>';
@@ -1644,32 +1852,148 @@ function paintAccuracy() {
   }).join('\n');
 }
 
-/* ---------- compare view ---------- */
+/* ---------- compare view ----------
+   Three columns exist, two are shown: the picker chooses which pair. The pair
+   that is off keeps its rendered content, so flipping between OCR and ground
+   truth against the same source page is instant and re-fetches nothing.
+
+   Ground truth is `solution/<id>.md` rendered through the same renderer as a
+   transcript. That is deliberate: the two are only comparable by eye if a pipe
+   table in the fixture and an HTML table from the model come out as the same
+   shape of table -- which is exactly what `scoring.normalise` does before it
+   scores them. */
+const CMP_VIEWS = {
+  'source-model': [cmpColImg, cmpColModel],
+  'source-truth': [cmpColImg, cmpColTruth],
+  'model-truth':  [cmpColModel, cmpColTruth],
+};
+function hasRun() { return !!(job && pageTexts.length); }
+/* Which case's ground truth to show. What the finished run was scored against
+   wins; failing that, whatever the workspace is pointing at -- so a fixture can
+   be read before anything has been run against it. */
+function truthCase() {
+  if (truth && truth.case) return truth.case;
+  return matchedCase || null;
+}
+/* The source image and the OCR text both come out of a run; ground truth comes
+   out of the fixture and is there before one. So a pair is offered only when
+   both of its halves exist -- and where no pair does, the one column that does
+   exist is shown on its own rather than beside an empty box. */
+function colAvailable(col) {
+  return col === cmpColTruth ? !!truthCase() : hasRun();
+}
+function viewFull(view) { return CMP_VIEWS[view].every(colAvailable); }
+
+/* Ground truth, fetched once per case. A failure is cached too, as an error --
+   a missing fixture is not going to appear on the next repaint, and retrying on
+   every one of them would hammer the endpoint from a scroll. */
+async function loadTruth(id) {
+  if (truthCache[id] === undefined) {
+    truthCache[id] = (async () => {
+      try {
+        const res = await fetch('/api/truth/' + encodeURIComponent(id));
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Ground truth unavailable.');
+        return data;
+      } catch (err) {
+        return { error: err.message };
+      }
+    })();
+  }
+  return truthCache[id];
+}
+function paintTruthPane() {
+  const id = truthCase();
+  if (!id) {
+    cmpTruthCap.textContent = '';
+    cmpTruthRender.innerHTML = '<em>No ground truth for this document.</em>';
+    cmpTruthText.textContent = '';
+    return;
+  }
+  cmpTruthCap.textContent = '· ' + id;
+  loadTruth(id).then(data => {
+    // The pane may have moved on to another case while this was in flight.
+    if (truthCase() !== id) return;
+    const raw = cmpRawChk.checked;
+    cmpTruthRender.style.display = raw ? 'none' : 'block';
+    cmpTruthText.style.display = raw ? 'block' : 'none';
+    if (data.error) {
+      cmpTruthCap.textContent = '· ' + id;
+      cmpTruthRender.innerHTML = '<em>' + esc(data.error) + '</em>';
+      cmpTruthText.textContent = data.error;
+      return;
+    }
+    cmpTruthCap.textContent = '· ' + data.file
+      + (data.pages > 1 ? ' · whole document, ' + data.pages + ' pages' : '');
+    if (raw) cmpTruthText.textContent = data.text;
+    else cmpTruthRender.innerHTML = sanitize(renderOutput(data.text));
+  });
+}
+/* The view actually painted. A chosen view whose half is missing falls back for
+   as long as it is missing -- but `cmpView` itself is left alone, so starting a
+   new run (no pages yet, ground truth still known) does not quietly move the
+   reader to a different pair and leave them there once the pages arrive. */
+function effectiveView() {
+  if (viewFull(cmpView)) return cmpView;
+  return Object.keys(CMP_VIEWS).find(viewFull) || null;
+}
 function paintCompare() {
+  const view = effectiveView();
+  const cols = view ? CMP_VIEWS[view]
+                    : [cmpColImg, cmpColModel, cmpColTruth].filter(colAvailable);
+  [cmpColImg, cmpColModel, cmpColTruth].forEach(c => { c.hidden = !cols.includes(c); });
+  cmpGrid.classList.toggle('one', cols.length < 2);
+  [...cmpModes.querySelectorAll('button')].forEach(b => {
+    b.classList.toggle('on', b.dataset.view === view);
+    b.disabled = !viewFull(b.dataset.view);
+  });
+
   const total = pageTexts.length;
-  if (!job || !total) return;
-  cmpPage = Math.max(0, Math.min(cmpPage, total - 1));
-  cmpLabel.textContent = total > 1 ? `Page ${cmpPage + 1} of ${total}` : 'Page 1';
-  cmpPrev.disabled = cmpPage === 0;
-  cmpNext.disabled = cmpPage >= total - 1;
+  // The page controls belong to the two columns that are per-page; ground truth
+  // is one file for the whole document and says so in its own caption.
+  const paged = cols.some(c => c !== cmpColTruth) && total > 0;
+  [cmpPrev, cmpNext, cmpLabel].forEach(el => { el.hidden = !paged; });
+  // "Open image" belongs to the image column, not to paging: it is meaningless
+  // in the view that shows the transcript beside the fixture.
+  cmpOpen.hidden = cmpColImg.hidden || !paged;
 
-  const src = `/api/page/${job}/${cmpPage}`;
-  if (cmpImg.getAttribute('src') !== src) cmpImg.src = src;
-  cmpOpen.href = src;
+  if (paged) {
+    cmpPage = Math.max(0, Math.min(cmpPage, total - 1));
+    cmpLabel.textContent = total > 1 ? `Page ${cmpPage + 1} of ${total}` : 'Page 1';
+    cmpPrev.disabled = cmpPage === 0;
+    cmpNext.disabled = cmpPage >= total - 1;
 
-  const body = pageTexts[cmpPage] || '';
-  const raw = cmpRawChk.checked;
-  cmpRender.style.display = raw ? 'none' : 'block';
-  cmpRawText.style.display = raw ? 'block' : 'none';
-  if (raw) cmpRawText.textContent = body;
-  else cmpRender.innerHTML = body ? sanitize(renderOutput(body)) : '<em>No text.</em>';
+    const src = `/api/page/${job}/${cmpPage}`;
+    if (cmpImg.getAttribute('src') !== src) cmpImg.src = src;
+    cmpOpen.href = src;
+    cmpImgCap.textContent = total > 1 ? '· page ' + (cmpPage + 1) : '';
+    cmpModelCap.textContent = total > 1 ? '· page ' + (cmpPage + 1) : '';
+
+    const body = pageTexts[cmpPage] || '';
+    const raw = cmpRawChk.checked;
+    cmpRender.style.display = raw ? 'none' : 'block';
+    cmpRawText.style.display = raw ? 'block' : 'none';
+    if (raw) cmpRawText.textContent = body;
+    else cmpRender.innerHTML = body ? sanitize(renderOutput(body)) : '<em>No text.</em>';
+  }
+
+  if (cols.includes(cmpColTruth)) paintTruthPane();
 }
 function enableCompare() {
-  const ready = !!(job && pageTexts.length);
+  const ready = hasRun() || !!truthCase();
   cmpToggle.disabled = !ready;
-  cmpHint.textContent = ready ? 'Source page beside the transcript.' : 'Run a document first.';
+  cmpHint.textContent = !ready ? 'Run a document first.'
+    : hasRun() ? 'Source page, transcript and ground truth, two at a time.'
+    : 'Ground truth only — run the document to compare it against a transcript.';
   if (!ready) { compareEl.hidden = true; cmpToggle.textContent = 'Show'; }
+  else if (!compareEl.hidden) paintCompare();
 }
+cmpModes.addEventListener('click', e => {
+  const btn = e.target.closest('button[data-view]');
+  if (!btn || btn.disabled) return;
+  cmpView = btn.dataset.view;
+  paintCompare();
+});
 cmpPrev.addEventListener('click', () => { cmpPage--; paintCompare(); });
 cmpNext.addEventListener('click', () => { cmpPage++; paintCompare(); });
 cmpRawChk.addEventListener('change', paintCompare);
@@ -1698,11 +2022,20 @@ function applySync(from, to) {
   to.scrollTop = target;
   return 'synced';
 }
-function linkScroll(from, to) {
-  from.addEventListener('scroll', () => applySync(from, to));
+// The pair being synced follows the view mode, so the link is resolved per
+// scroll event rather than wired once: a listener bound to a column that is
+// currently off would sync a pane nobody can see.
+const CMP_PANES = [cmpImgPane, cmpTextPane, cmpTruthPane];
+function otherVisiblePane(from) {
+  return CMP_PANES.find(p => p !== from && !p.parentElement.hidden);
 }
-linkScroll(cmpImgPane, cmpTextPane);
-linkScroll(cmpTextPane, cmpImgPane);
+CMP_PANES.forEach(pane => {
+  pane.addEventListener('scroll', () => {
+    if (pane.parentElement.hidden) return;
+    const to = otherVisiblePane(pane);
+    if (to) applySync(pane, to);
+  });
+});
 
 /* ---------- model server: status and switching ----------
    Two server kinds are supported and they are not interchangeable in one
@@ -1811,8 +2144,8 @@ if (mockFile) {
   mockFile.addEventListener('change', () => {
     // Picking from the folder replaces any upload or benchmark selection.
     if (mockFile.value) {
-      current = null; staged = []; fileInput.value = '';
-      paintWorklist(); paintRun();
+      current = null; fileInput.value = '';
+      runNote.textContent = ''; paintRun();
       dropPreview();
       if (benchCase) benchCase.value = '';
       showChip(mockFile.value);
@@ -1827,14 +2160,16 @@ if (mockFile) {
       matchedCase = null; mapChip.textContent = ''; mapChip.className = '';
     }
     paintServer();
+    // The ground-truth pane follows the selection, so it can be read before a run.
+    enableCompare();
   });
 }
 if (benchCase) {
   benchCase.addEventListener('change', () => {
     // The server reads the case PDF from disk, so any attached file is ignored.
     if (benchCase.value) {
-      current = null; staged = []; fileInput.value = '';
-      paintWorklist(); paintRun();
+      current = null; fileInput.value = '';
+      runNote.textContent = ''; paintRun();
       dropPreview();
       showChip(benchCase.options[benchCase.selectedIndex].text);
       matchedCase = benchCase.value;
@@ -1847,6 +2182,7 @@ if (benchCase) {
       mapChip.textContent = '';
     }
     paintServer();
+    enableCompare();
   });
 }
 async function refreshServer() {
@@ -1987,6 +2323,7 @@ async function mapFile(file) {
     mapChip.className = 'none';
     mapChip.textContent = '';
   }
+  enableCompare();   // a matched upload can show its ground truth before it runs
 }
 
 /* A single file gets the preview and the ground-truth lookup, exactly as before.
@@ -2016,77 +2353,42 @@ function previewOne(file) {
   meta.textContent = file.name + ' · ' + (file.size / 1024 / 1024).toFixed(2) + ' MB';
   meta.classList.remove('err');
 }
-function previewMany(files) {
-  dropPreview();
-  chip.style.display = 'none';
-  const mb = files.reduce((sum, f) => sum + f.size, 0) / 1024 / 1024;
-  meta.textContent = `${files.length} files · ${mb.toFixed(2)} MB total`;
-  meta.classList.remove('err');
-  // Ground truth is matched per file, by the worker that runs it.
-  matchedCase = null;
-  mapChip.className = 'none';
-  mapChip.textContent = 'Each file is matched to its own solution when it runs.';
-}
-
-const sameFile = (a, b) =>
-  a.name === b.name && a.size === b.size && a.lastModified === b.lastModified;
-
+/* The workspace holds exactly one file, and a new one replaces it. Reading a
+   document is a measurement -- one page, one set of settings, one row in the log
+   -- and testing them one at a time is what the workspace is for. Several
+   documents belong in the Queue tab, which is built for batches and starts on its
+   own Run. */
 function addFiles(list) {
   const incoming = [...(list || [])].filter(Boolean);
   if (!incoming.length) return;
-  // Adds rather than replaces: a batch is usually assembled over several drops.
-  for (const f of incoming) if (!staged.some(s => sameFile(s, f))) staged.push(f);
+  // The first of a multi-file drop is kept, and the rest are named rather than
+  // silently dropped: a file that is quietly ignored reads as one that ran.
+  const file = incoming[0];
+  const ignored = incoming.length - 1;
   // Hand-picked files override the folder and benchmark pickers.
   if (benchCase && benchCase.value) benchCase.value = '';
   if (mockFile && mockFile.value) mockFile.value = '';
-  paintWorkspace();
+  current = file;
+  previewOne(file);
+  paintRun();
+  paintServer();
+  runNote.textContent = ignored
+    ? `One file at a time — kept ${file.name}, ignored ${ignored} other`
+      + `${ignored > 1 ? 's' : ''}. Use the Queue tab to run several.`
+    : '';
 }
-function removeStaged(i) {
-  staged.splice(i, 1);
-  paintWorkspace();
-}
-function paintWorkspace() {
-  current = staged[0] || null;
-  if (staged.length === 1) previewOne(staged[0]);
-  else if (staged.length > 1) previewMany(staged);
-  else {
-    dropPreview();
-    chip.style.display = 'none';
-    mapChip.textContent = ''; mapChip.className = '';
-    matchedCase = null;
-  }
-  paintWorklist();
+function clearWorkspaceFile() {
+  current = null;
+  dropPreview();
+  chip.style.display = 'none';
+  mapChip.textContent = ''; mapChip.className = '';
+  matchedCase = null;
+  runNote.textContent = '';
   paintRun();
   paintServer();
 }
-function paintWorklist() {
-  if (staged.length < 2) { worklist.innerHTML = ''; return; }
-  worklist.innerHTML =
-    '<div class="wl-head"><span>' + staged.length + ' files in the workspace</span>'
-    + '<button class="ghost-sm" data-rm="all">Remove all</button></div>'
-    + staged.map((f, i) =>
-        '<div class="wl-item"><span class="nm">' + esc(f.name) + '</span>'
-        + '<span class="sz">' + (f.size / 1024 / 1024).toFixed(2) + ' MB</span>'
-        + '<button data-rm="' + i + '" title="Remove">✕</button></div>').join('');
-}
-worklist.addEventListener('click', e => {
-  const btn = e.target.closest('[data-rm]');
-  if (!btn) return;
-  if (btn.dataset.rm === 'all') { staged = []; paintWorkspace(); }
-  else removeStaged(Number(btn.dataset.rm));
-});
-
-/* One file streams live; several are queued. The button says which, and the
-   note says what the current pool will actually do with them. */
 function paintRun() {
-  const many = staged.length > 1;
-  runBtn.textContent = many ? `Queue ${staged.length} files & run` : 'Read document';
-  if (!many) { runNote.textContent = ''; return; }
-  const on = modeSeg.querySelector('button.on');
-  runNote.textContent = on && on.dataset.mode === 'concurrent'
-    ? `All ${staged.length} are queued first, then all ${staged.length} go out at once.`
-    : `Queued and run one after another. Switch the Queue tab to Concurrent to `
-      + `send all ${staged.length} at the same time.`;
+  runBtn.textContent = 'Read document';
 }
 
 drop.addEventListener('click', () => fileInput.click());
@@ -2110,12 +2412,12 @@ window.addEventListener('paste', e => {
 
 clearBtn.addEventListener('click', () => {
   if (controller) controller.abort();
-  staged = []; text = ''; fileInput.value = '';
+  text = ''; fileInput.value = '';
   // The folder picker was left selected here, so a "cleared" page would still
   // run whatever was chosen in it.
   if (benchCase) benchCase.value = '';
   if (mockFile) mockFile.value = '';
-  paintWorkspace();
+  clearWorkspaceFile();
   copyBtn.disabled = true;
   pagebar.textContent = ''; warn.textContent = '';
   meta.textContent = ''; meta.classList.remove('err');
@@ -2135,13 +2437,9 @@ stopBtn.addEventListener('click', () => { if (controller) controller.abort(); })
 
 /* ---------- streaming run ---------- */
 runBtn.addEventListener('click', async () => {
-  // A batch has no single transcript to stream into the result panel, so Run
-  // means "queue the whole list and let the pool work it".
-  if (staged.length > 1) {
-    pagebar.textContent = ''; warn.textContent = '';
-    await enqueue(null);
-    return;
-  }
+  // Always the one document in the workspace, streamed into the result panel.
+  // A batch cannot be streamed into one panel, which is why the Queue tab exists
+  // and why the workspace holds a single file.
   if (!current && !(benchCase && benchCase.value) && !(mockFile && mockFile.value)) return;
   runBtn.disabled = true; stopBtn.disabled = false; copyBtn.disabled = true;
   text = ''; pageStats = []; pageTexts = []; curPage = -1; cmpPage = 0;
@@ -2222,6 +2520,7 @@ runBtn.addEventListener('click', async () => {
           renderStats(msg);
           truth = msg.truth || null;
           tabAccuracy.disabled = !truth;
+          enableCompare();   // the scored case is what the truth pane shows
           if (truth && !truth.error) {
             // Surface the headline number without needing a tab switch.
             meta.textContent += ` · ${(truth.char_accuracy * 100).toFixed(1)}% vs ${truth.case}`;
@@ -2282,6 +2581,7 @@ runBtn.addEventListener('click', async () => {
 
 paint();
 showTab('raw');
+enableCompare();
 paintEndpoint();
 paintServer();
 refreshQueue();

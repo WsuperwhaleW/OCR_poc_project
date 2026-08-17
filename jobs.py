@@ -102,6 +102,11 @@ class JobQueue:
         # Concurrent mode grows the pool to fit the batch: queue five documents
         # and five requests go out, rather than five queueing behind two workers.
         self._auto = False
+        # The queue holds until it is told to run. Queueing a document and
+        # starting it are separate acts: a batch is assembled over several drops,
+        # and the run mode and worker count are chosen after seeing what is in it,
+        # neither of which is possible if the first document leaves on submit.
+        self._go = False
         self.set_workers(workers)
 
     # -- pool ------------------------------------------------------------
@@ -133,6 +138,31 @@ class JobQueue:
         with self._lock:
             return self._target_workers
 
+    # -- run gate --------------------------------------------------------
+    def start(self):
+        """Release the queue: workers may pick up pending jobs from now on."""
+        with self._lock:
+            self._go = True
+            self._wake.notify_all()
+        return True
+
+    def pause(self):
+        """Stop handing out new jobs. A job already running is left to finish --
+        cancelling it is `cancel`, and killing a generation mid-page is not
+        something llama.cpp can be asked to do anyway."""
+        with self._lock:
+            self._go = False
+        return False
+
+    @property
+    def started(self):
+        with self._lock:
+            return self._go
+
+    def _running_count(self):
+        # Called with the lock held.
+        return sum(1 for j in self._jobs.values() if j.status == "running")
+
     def _should_exit(self):
         # Called with the lock held.
         return self._stopping or len(self._workers) > self._target_workers
@@ -141,7 +171,7 @@ class JobQueue:
         me = threading.current_thread()
         while True:
             with self._lock:
-                while not self._pending and not self._should_exit():
+                while (not (self._pending and self._go)) and not self._should_exit():
                     self._wake.wait(0.5)
                 if self._should_exit():
                     if me in self._workers:
@@ -168,6 +198,13 @@ class JobQueue:
                 job.error = f"{type(err).__name__}: {err}"
             finally:
                 job.finished = time.time()
+                # A drained queue closes its own gate, so the next document
+                # dropped in waits for its own Run rather than leaving the moment
+                # it is listed. One press starts one batch, which is the whole
+                # point of having the button.
+                with self._lock:
+                    if not self._pending and not self._running_count():
+                        self._go = False
 
     # -- api -------------------------------------------------------------
     def submit(self, name, kind, detail, payload):
@@ -242,4 +279,9 @@ class JobQueue:
         for job in self.list():
             counts[job.status] = counts.get(job.status, 0) + 1
         return {"counts": counts, "workers": self.worker_count,
-                "auto_scale": self.auto_scale, "max_workers": MAX_WORKERS}
+                "auto_scale": self.auto_scale, "max_workers": MAX_WORKERS,
+                # Whether the gate is open. The page reads this to decide whether
+                # its button says Run or Pause, so it must come from the queue
+                # rather than be tracked in the browser: two tabs, or a reload
+                # mid-batch, would otherwise disagree with the server.
+                "started": self.started}

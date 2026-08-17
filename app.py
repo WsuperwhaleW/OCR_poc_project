@@ -110,8 +110,14 @@ app.config["MAX_CONTENT_LENGTH"] = MAX_UPLOAD_MB * 1024 * 1024
 _jobs = OrderedDict()
 _jobs_lock = threading.Lock()
 
+# What each of those jobs was: name, size, origin, detail, page count and case.
+# Kept beside the images, and evicted with them, so a re-extraction can be logged
+# against the document it belongs to instead of as an anonymous row. Text only --
+# a few hundred bytes per job, which is why it is not what MAX_JOBS is sized for.
+_job_meta = OrderedDict()
 
-def register_job(pages):
+
+def register_job(pages, context=None):
     """Cache PNG-encoded page images and return a job id."""
     job_id = uuid.uuid4().hex[:12]
     encoded = []
@@ -121,9 +127,22 @@ def register_job(pages):
         encoded.append(buf.getvalue())
     with _jobs_lock:
         _jobs[job_id] = encoded
+        _job_meta[job_id] = context or {}
         while len(_jobs) > MAX_JOBS:
-            _jobs.popitem(last=False)
+            evicted, _ = _jobs.popitem(last=False)
+            _job_meta.pop(evicted, None)
     return job_id
+
+
+def job_context(job_id: str) -> dict:
+    """What the prepared pages under this id were, or {} once they are gone.
+
+    An id whose images have been evicted answers empty rather than raising: a
+    re-extraction of a transcript still on screen is worth logging even when the
+    page images behind it have fallen out of the cache.
+    """
+    with _jobs_lock:
+        return dict(_job_meta.get(job_id or "", {}))
 
 
 # --------------------------------------------------------------------------
@@ -1166,8 +1185,12 @@ def case_bytes(case_id: str):
     return case["pdf_path"].read_bytes(), case
 
 
-def prepare_input(data: bytes, detail: str, case=None):
-    """Decode, trim and resize. Returns (pages, detail, page_job_id, case)."""
+def prepare_input(data: bytes, detail: str, case=None, source=None):
+    """Decode, trim and resize. Returns (pages, detail, page_job_id, case).
+
+    `source` is carried into the job cache rather than only into the run log, so
+    a later re-extraction against this transcript can name the same document.
+    """
     if detail not in DETAIL_PRESETS:
         detail = DEFAULT_DETAIL
     pages = load_pages(data)
@@ -1175,19 +1198,95 @@ def prepare_input(data: bytes, detail: str, case=None):
     # Trim first, then fit: the pixel budget is spent on content, not margins.
     prepared = [fit_pixels(trim_margins(page) if TRIM_MARGINS else page, budget)
                 for page in pages]
-    return prepared, detail, register_job(prepared), case
+    context = {"source": source or {}, "detail": detail, "pages": len(prepared),
+               "case": case["id"] if case else ""}
+    return prepared, detail, register_job(prepared, context), case
 
 
-def log_run(summary: dict, source: dict, status: str = None, error=None):
+def log_run(summary: dict, source: dict, status: str = None, error=None,
+            run_type: str = "ocr"):
     """Append one line to the run log. Never raises.
 
     Measurements only -- no transcript, no fields, no images. See `runlog.py`.
+
+    The row a read writes is remembered against its page job, so a later
+    re-extraction of the same transcript can find it again and put better figures
+    on it. Timestamp and file name are the whole key -- nothing about the row is
+    held open, and losing it costs the update, not the run.
     """
     try:
-        runlog.record(summary, source,
-                      {"status": status, "error": str(error) if error else ""})
+        row = runlog.record(summary, source,
+                            {"status": status, "error": str(error) if error else "",
+                             "run_type": run_type})
+        job_id = summary.get("job") if isinstance(summary, dict) else None
+        if row and job_id and run_type == "ocr":
+            with _jobs_lock:
+                if job_id in _job_meta:
+                    _job_meta[job_id]["log"] = {"timestamp": row["timestamp"],
+                                                "file": row["file"]}
     except Exception:
         pass
+
+
+def log_extract(result: dict, job_id: str = None):
+    """Append a row for a pass-2-only run -- the Re-extract button, or a script.
+
+    Extraction can be re-run any number of times against one transcript, and each
+    run has its own mode, its own grounded ratio and its own field counts. Before
+    this, none of that reached the log: the row written when the page was read
+    kept whichever extraction happened to run with it, and every later one was
+    invisible.
+
+    It is a new row rather than an edit to that one. The file is append-only by
+    construction (`runlog._migrate` only ever adds columns), a row records what
+    one request did at one time, and the first extraction is a measurement in its
+    own right -- overwriting it would destroy the before/after that re-extracting
+    exists to produce.
+
+    The pass-1 columns stay blank: nothing re-read the page. `job_id` recovers
+    which document this was, from the same cache the compare view reads its
+    images out of.
+    """
+    result = result or {}
+    context = job_context(job_id)
+    error = result.get("error") or ""
+    summary = {
+        # Pass 1 did not run, so page_count/seconds/tokens are left out entirely
+        # rather than passed as zero -- see the blank-is-not-zero rule in runlog.
+        "detail": context.get("detail", ""),
+        "model": result.get("model") or "",
+        "backend": result.get("backend") or "",
+        "url": backends.active_url(),
+        "extracted": result,
+        # Enough for the `case` column to name the document; the accuracy scores
+        # belong to the read that produced the transcript, not to this row.
+        "truth": {"case": context.get("case", "")},
+    }
+    status = ("error" if error
+              else "partial" if result.get("partial")
+              else "ok")
+    log_run(summary, context.get("source") or {}, status=status, error=error,
+            run_type="extract")
+
+    # And, when this extraction beat the one logged with the read, put its
+    # figures on that row too: the read row is what a per-document view of the
+    # log reports, and leaving the worse extraction there means the better one is
+    # only ever seen by someone who reads to the bottom of the file. The appended
+    # row above keeps the history either way, and a worse re-extraction changes
+    # nothing.
+    outcome = None
+    try:
+        outcome = runlog.update_extract(context.get("log"), summary)
+    except Exception:
+        pass
+    if outcome and outcome.get("updated"):
+        # stderr, where the request log already goes: `say`'s print to stdout is
+        # buffered when stdout is a pipe, and a notice about a row that changed
+        # under a fixed timestamp is worth nothing if it surfaces minutes later.
+        config.say(f"[ocr] re-extract improved {context.get('case') or 'the read'} "
+                   f"{outcome['before']} -> {outcome['after']}; run-log row updated",
+                   stream=sys.stderr)
+    return outcome
 
 
 def describe_source(name: str, data: bytes, origin: str) -> dict:
@@ -1221,7 +1320,8 @@ def prepare(request_files, form):
         source = describe_source(upload.filename, data, "upload")
         # Match on contents as well as name, so a renamed copy still scores.
         case, _how = scoring.case_for_upload(filename=upload.filename, data=data)
-    return (*prepare_input(data, form.get("detail", DEFAULT_DETAIL), case), source)
+    return (*prepare_input(data, form.get("detail", DEFAULT_DETAIL), case, source),
+            source)
 
 
 # --------------------------------------------------------------------------
@@ -1246,7 +1346,7 @@ def run_job(job):
     source = describe_source(job.name, data, "queue")
 
     job.stage = "preparing"
-    pages, detail, page_job_id, case = prepare_input(data, job.detail, case)
+    pages, detail, page_job_id, case = prepare_input(data, job.detail, case, source)
     job.pages_total = len(pages)
     job.detail = detail
 
@@ -1420,6 +1520,31 @@ def cases():
     ])
 
 
+@app.get("/api/truth/<case_id>")
+def truth_text(case_id):
+    """The hand-written ground truth for one case, as Markdown.
+
+    The page renders this through the same renderer as a transcript, so a
+    pipe table in `solution/<id>.md` and an HTML table from the model are read
+    side by side in the same shape -- which is the whole point of showing it.
+    The text is served verbatim: normalising here would hide from the reader
+    exactly the formatting that `scoring.normalise` forgives.
+
+    `cases_index()` is keyed by id, so an id that is not a case 404s rather than
+    reaching the filesystem.
+    """
+    case = scoring.cases_index().get(case_id)
+    if not case:
+        return jsonify(error=f"Unknown case '{case_id}'."), 404
+    path = case["ground_truth"]
+    try:
+        text = path.read_text("utf-8")
+    except OSError as err:
+        return jsonify(error=f"Could not read {path.name}: {err}"), 500
+    return jsonify(case=case["id"], pdf=case["pdf"], kind=case.get("kind", ""),
+                   pages=case.get("pages", 1), file=path.name, text=text)
+
+
 def _requested_mode(body):
     """The extraction shape for one request: what it asked for, or the current one."""
     mode = (body.get("mode") or "").strip().lower() or None
@@ -1434,6 +1559,10 @@ def extract_endpoint():
 
     Blocking. Agentic mode is ~15 requests, so the page uses the streaming
     endpoint below and this stays for scripts, which have nowhere to show a step.
+
+    An optional `job` -- the page id the `page`/`done` events carry -- says which
+    document the transcript came from, so the run-log row can name it. Without
+    one the row is still written, just anonymous.
     """
     body = request.get_json(silent=True) or {}
     text = body.get("text", "")
@@ -1443,7 +1572,9 @@ def extract_endpoint():
         mode = _requested_mode(body)
     except ValueError as err:
         return jsonify(error=str(err)), 400
-    return jsonify(extract_fields(text, mode))
+    result = extract_fields(text, mode)
+    log_extract(result, body.get("job"))
+    return jsonify(result)
 
 
 @app.post("/api/extract/stream")
@@ -1462,6 +1593,8 @@ def extract_stream_endpoint():
     except ValueError as err:
         return jsonify(error=str(err)), 400
 
+    job_id = body.get("job")
+
     def generate():
         try:
             stream = extract_fields_stream(text, mode)
@@ -1469,9 +1602,13 @@ def extract_stream_endpoint():
                 try:
                     yield json.dumps(next(stream)) + "\n"
                 except StopIteration as stop:
+                    # Logged before the last event, so a page that refreshes the
+                    # run log when the stream ends finds the row already there.
+                    log_extract(stop.value, job_id)
                     yield json.dumps({"event": "fields", **stop.value}) + "\n"
                     return
         except Exception as err:  # surface failures inside the stream body
+            log_extract({"error": str(err)}, job_id)
             yield json.dumps({"event": "error", "error": str(err)}) + "\n"
 
     return Response(generate(), mimetype="application/x-ndjson")
@@ -1570,6 +1707,30 @@ def queue_mode():
         job_queue.set_workers(target)
 
     return jsonify(mode=mode, llama_slots=slots, **job_queue.stats())
+
+
+@app.post("/api/queue/run")
+def queue_run():
+    """Start the queue, or stop it handing out more work.
+
+    Queueing a document no longer starts it: the queue holds until this is
+    called, which is what makes the run mode and the worker count settable
+    against a batch you can already see. `{"start": false}` pauses -- a document
+    already in flight finishes, because llama.cpp cannot abandon a generation
+    it has begun and pretending otherwise would be a lie about what the button
+    does. Cancelling is `DELETE /api/queue/<id>`.
+
+    A batch that drains closes the gate behind it, so the next one waits for its
+    own start.
+    """
+    body = request.get_json(silent=True) or {}
+    if body.get("start", True):
+        job_queue.start()
+    else:
+        job_queue.pause()
+    # stats() already carries "started"; passing it again would be a duplicate
+    # keyword argument.
+    return jsonify(**job_queue.stats())
 
 
 @app.get("/api/queue")
