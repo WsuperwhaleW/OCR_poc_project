@@ -66,6 +66,15 @@ COLUMNS = [
     "p1_absent",
     "p2_present",
     "p2_absent",
+    # Pass 2 scored against hand-written field ground truth -- the share of the
+    # values the truth file says the document prints that came back correct, and
+    # how many values that was. Blank on every document that has no
+    # solution/<id>.fields.json, which is most of them, so it is NOT comparable
+    # down the column the way grounded_pct is: read a row's accuracy beside its
+    # own `field_expected`, because 100% of three keys and 100% of twenty-nine
+    # are the same cell and not the same claim.
+    "field_acc",
+    "field_expected",
     "case",             # ground-truth case id, blank when unscored
     "char_accuracy",
     "word_accuracy",
@@ -84,6 +93,14 @@ COLUMNS = [
     # see `update_extract`. Blank means the extraction is the one that ran with
     # the read, which is the normal case.
     "extract_updated",
+    # Which pass-1 shape read the document: typhoon | dots (prompts.OCR_PROFILES).
+    # Appended at the end, like every column before it, because reordering
+    # silently re-labels data already written. Taken from the summary rather than
+    # from the current setting, so a profile switched during a batch still labels
+    # each row with the shape that produced it -- the same rule as extract_mode.
+    # Blank on rows written before profiles existed, and on re-extract rows, which
+    # did not read a page.
+    "ocr_profile",
     # DRY multiplier in force for the run. Recorded because it is the one setting
     # that does NOT reach both backends: llama.cpp applies it, Ollama's
     # OpenAI-compatible endpoint drops it. Rows compared across backends are only
@@ -165,7 +182,8 @@ def _pct(value):
 # not a measurement of either.
 EXTRACT_COLUMNS = ("extract_seconds", "extract_tokens", "extract_mode",
                    "grounded_pct", "ungrounded", "fields_missing",
-                   "p1_present", "p1_absent", "p2_present", "p2_absent")
+                   "p1_present", "p1_absent", "p2_present", "p2_absent",
+                   "field_acc", "field_expected")
 
 _TIERS = ("p1_present", "p1_absent", "p2_present", "p2_absent")
 
@@ -185,7 +203,22 @@ def _extract_cells(summary: dict) -> dict:
         # tiers unmeasured, which is not the same as measuring them at zero.
         **(grounding.tier_counts(extracted["fields"]) if extracted.get("fields")
            else {k: "" for k in _TIERS}),
+        **_field_cells(extracted.get("field_score")),
     }
+
+
+def _field_cells(score: dict) -> dict:
+    """The field score, where the document has field ground truth to score against.
+
+    Blank otherwise, and blank on the error shape too: a cell saying 0% because
+    nobody has written a truth file would read as an extraction that got
+    everything wrong.
+    """
+    overall = (score or {}).get("overall") or {}
+    if not overall.get("expected"):
+        return {"field_acc": "", "field_expected": ""}
+    return {"field_acc": _pct(overall.get("accuracy")),
+            "field_expected": overall["expected"]}
 
 
 def _num(value, default=-1.0) -> float:
@@ -207,6 +240,13 @@ def extract_score(cells: dict) -> tuple:
 
     Blank sorts below zero, so an extraction that never ran can never displace one
     that did.
+
+    `field_acc` is deliberately NOT part of this, tempting though it is as the one
+    column that measures correctness rather than coverage: it exists only for the
+    handful of documents someone has written a field truth file for. Ranking by it
+    would make a blank mean two different things in the same tuple -- "no truth
+    file for this document" and "this extraction found nothing" -- and the second
+    is the only one the blank-sorts-below-zero rule above is safe for.
     """
     return (_num(cells.get("p1_present")), _num(cells.get("p2_present")),
             _num(cells.get("grounded_pct")))
@@ -253,6 +293,7 @@ def record(summary: dict, source: dict = None, extras: dict = None) -> dict:
         "char_accuracy_no_marks": _pct(truth.get("char_accuracy_no_marks")),
         "error": str(error)[:300],
         "run_type": extras.get("run_type") or "ocr",
+        "ocr_profile": summary.get("ocr_profile", ""),
         "dry": _DRY,
     }
 
@@ -356,6 +397,117 @@ def read(limit: int = 100) -> list:
     return rows[-limit:][::-1]
 
 
+# The knobs one run can be repeated with. Every "best" in `by_case` carries the
+# whole set, for the reason `totals` already gives for `best_by_case`: a winning
+# score with nothing attached is not a setting anyone can adopt. Kept as one
+# tuple because three spellings of "what this run ran under" would drift apart.
+SETTING_COLUMNS = ("model", "backend", "detail", "ocr_profile", "extract_mode")
+
+
+def _setting(row: dict) -> dict:
+    """One row reduced to what it ran under, when it ran, and which passes it is.
+
+    `run_type` rides along because a best taken from a re-extraction row is a
+    measurement of pass 2 alone -- the transcript it scored was read by an
+    earlier run under settings this dict does not describe.
+    """
+    cells = {c: row.get(c, "") for c in SETTING_COLUMNS}
+    cells["timestamp"] = row.get("timestamp", "")
+    cells["run_type"] = row.get("run_type") or "ocr"
+    return cells
+
+
+def _elapsed(row: dict) -> dict:
+    """The two passes' wall clock, and their sum where the row ran both.
+
+    `total` is None when either half is missing rather than the half that is
+    there: a read that never extracted took less time because it did less work,
+    and calling that the faster setting is how a summary recommends doing half
+    the job.
+    """
+    read_s, extract_s = _num(row.get("seconds"), None), _num(row.get("extract_seconds"), None)
+    total = None if read_s is None or extract_s is None else round(read_s + extract_s, 2)
+    return {"seconds": read_s, "extract_seconds": extract_s, "total_seconds": total}
+
+
+def by_case(rows: list = None) -> dict:
+    """For each ground-truth document: the settings that read it best and quickest.
+
+    Three separate answers, because they are three separate questions and the
+    same run rarely wins all of them:
+
+    - `best_char`  -- the highest transcript accuracy the document has reached.
+    - `best_field` -- the highest field score, which is pass 2's correctness and
+      the only figure here that says a value landed in the right key. Blank for a
+      document with no `solution/<id>.fields.json`, and blank for one that has a
+      truth file no run has been scored against yet, which is not the same as 0%.
+    - `fastest`    -- the quickest run that did the whole job.
+
+    Two rules make the answers comparable, and both narrow the field on purpose:
+
+    `field_acc` only reads down a column within one document -- its denominator
+    is whatever that document's truth file rules on -- which is exactly why the
+    ranking is per case and why `field_expected` is carried beside every figure:
+    a truth file filled in further between two runs moves the denominator, and a
+    percentage against 15 values is not a percentage against 18.
+
+    `fastest` is taken over reads that finished (`status` ok), scored something
+    at all, and ran both passes. A read that returned an empty transcript at
+    HTTP 200 is the failure this project is organised around; letting it win the
+    speed column would hand a rosette to the one failure that has no other
+    symptom. Its accuracy is carried with it regardless, because fast is a claim
+    about cost and nothing else.
+
+    Ties keep the earliest run, so a setting that reached a score first is not
+    displaced by a later repeat of it; a tie on `best_field` is broken towards
+    the faster run, which is the whole of what "and time" can mean once accuracy
+    is equal.
+    """
+    rows = read(limit=10 ** 6) if rows is None else rows
+    out = {}
+    for row in reversed(rows):        # oldest first, so an equal score keeps the first to reach it
+        case = row.get("case") or ""
+        if not case:
+            continue
+        entry = out.setdefault(case, {"case": case, "runs": 0, "extracts": 0,
+                                      "best_char": None, "best_field": None,
+                                      "fastest": None})
+        is_extract = (row.get("run_type") or "ocr") == "extract"
+        entry["extracts" if is_extract else "runs"] += 1
+        setting, elapsed = _setting(row), _elapsed(row)
+        char = _num(row.get("char_accuracy"), None)
+        field = _num(row.get("field_acc"), None)
+
+        if char is not None:
+            best = entry["best_char"]
+            if best is None or char > best["char_accuracy"]:
+                entry["best_char"] = {**setting, **elapsed, "char_accuracy": char,
+                                      "word_accuracy": row.get("word_accuracy", ""),
+                                      "field_acc": field}
+        if field is not None:
+            best = entry["best_field"]
+            # Faster wins an exact tie. `total_seconds` is None on a re-extraction
+            # (it read no page) and on a read that never extracted, and an unknown
+            # time can never displace a known one.
+            better = (best is None or field > best["field_acc"]
+                      or (field == best["field_acc"]
+                          and elapsed["total_seconds"] is not None
+                          and (best["total_seconds"] is None
+                               or elapsed["total_seconds"] < best["total_seconds"])))
+            if better:
+                entry["best_field"] = {**setting, **elapsed, "field_acc": field,
+                                       "field_expected": row.get("field_expected", ""),
+                                       "char_accuracy": char}
+        if (not is_extract and row.get("status") == "ok" and char
+                and elapsed["total_seconds"] is not None):
+            best = entry["fastest"]
+            if best is None or elapsed["total_seconds"] < best["total_seconds"]:
+                entry["fastest"] = {**setting, **elapsed, "char_accuracy": char,
+                                    "field_acc": field,
+                                    "field_expected": row.get("field_expected", "")}
+    return out
+
+
 def totals() -> dict:
     """Headline counts over the whole log, for the card header.
 
@@ -369,7 +521,6 @@ def totals() -> dict:
     accuracies = []
     seconds = 0.0
     tokens = 0
-    best = {}
     for row in rows:
         try:
             seconds += float(row.get("seconds") or 0)
@@ -381,28 +532,19 @@ def totals() -> dict:
                 accuracies.append(float(row["char_accuracy"]))
         except ValueError:
             pass
-        # The best score each document has ever reached, and what reached it.
-        # Deliberately taken over *every* row whatever it ran under -- model,
-        # backend, detail, prompt, extraction mode -- because that is the question
-        # the mean cannot answer: the mean says what a typical run gets, and this
-        # says what the document is known to be capable of. The condition is
-        # carried with it, since a best score with nothing attached is not
-        # reproducible and therefore not much use.
-        case = row.get("case") or ""
-        try:
-            value = float(row.get("char_accuracy") or "")
-        except ValueError:
-            continue
-        if case and (case not in best or value > best[case]["char_accuracy"]):
-            best[case] = {
-                "char_accuracy": value,
-                "word_accuracy": row.get("word_accuracy", ""),
-                "timestamp": row.get("timestamp", ""),
-                "model": row.get("model", ""),
-                "backend": row.get("backend", ""),
-                "detail": row.get("detail", ""),
-                "extract_mode": row.get("extract_mode", ""),
-            }
+    # The best score each document has ever reached, and what reached it.
+    # Deliberately taken over *every* row whatever it ran under -- model,
+    # backend, detail, prompt, extraction mode -- because that is the question
+    # the mean cannot answer: the mean says what a typical run gets, and this
+    # says what the document is known to be capable of. The condition is
+    # carried with it, since a best score with nothing attached is not
+    # reproducible and therefore not much use.
+    #
+    # Derived from `by_case` rather than counted again here, so the chips on the
+    # run-log card and the per-document summary under them cannot name two
+    # different runs as one document's best.
+    cases = by_case(rows)
+    best = {c: s["best_char"] for c, s in cases.items() if s["best_char"]}
     top = max(best.items(), key=lambda kv: kv[1]["char_accuracy"], default=None)
     return {
         "runs": len(rows) - extracts,
@@ -415,6 +557,10 @@ def totals() -> dict:
         "best_accuracy": round(top[1]["char_accuracy"], 2) if top else None,
         "best_case": top[0] if top else None,
         "best_by_case": best,
+        # The same documents again, with the settings that scored the fields best
+        # and finished quickest beside the transcript score -- three questions the
+        # single "best ever" chip cannot answer at once. See `by_case`.
+        "by_case": cases,
         "seconds": round(seconds, 1),
         "tokens": tokens,
         "path": str(LOG_PATH),

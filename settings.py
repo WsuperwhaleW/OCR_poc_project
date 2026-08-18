@@ -139,6 +139,22 @@ PROMPT_FIRST_OLLAMA = config.env_bool("PROMPT_FIRST_OLLAMA", False)
 OLLAMA_SYSTEM = config.env_str("OLLAMA_SYSTEM", "You are a helpful assistant.",
                                allow_empty=True)
 
+# Which pass-1 shape to start in: a key of `prompts.OCR_PROFILES`. Not validated
+# here -- this module deliberately imports nothing but `config` and `jobs`, so
+# `app.py` checks the name against the table and falls back with a warning, the
+# same way the env readers above degrade one setting instead of killing startup.
+#
+# `typhoon` is the default and every pass-1 baseline in CLAUDE.md was measured on
+# it. `dots` exists because a second model needed a different prompt AND no
+# system message at once: sending either of typhoon's to dots.ocr returns two
+# tokens and an empty string at HTTP 200. A profile is what makes those two move
+# together, so a half-switched request cannot be built.
+#
+# The profile also decides whether OLLAMA_SYSTEM above is sent at all. Where they
+# disagree the profile wins, because it is the narrower statement -- OLLAMA_SYSTEM
+# says what to send when a system message is wanted, not that one always is.
+OCR_PROFILE = config.env_str("OCR_PROFILE", "typhoon")
+
 # Repetition control. DRY only penalises a sequence once it repeats for longer than
 # DRY_ALLOWED_LENGTH tokens, so identical table cells and repeated amounts survive
 # while a runaway loop gets broken. Set DRY_MULTIPLIER to 0 to disable entirely.

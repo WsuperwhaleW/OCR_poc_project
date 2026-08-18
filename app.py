@@ -27,6 +27,7 @@ from flask import Flask, Response, jsonify, render_template, request
 
 import backends
 import config
+import fieldscore
 import grounding
 import jobs
 import runlog
@@ -48,8 +49,11 @@ from prompts import (
     LINE_ITEM_SCHEMA,
     OTHER_FIELDS_SCHEMA,
     PROMPT,
+    OCR_PROFILES,
+    DEFAULT_OCR_PROFILE,
 )
 from settings import (
+    OCR_PROFILE,
     ACCEPTED_SUFFIXES,
     AGENTIC_EXTRACT,
     AGENTIC_RETRIES,
@@ -228,11 +232,21 @@ def image_data_uri(image: Image.Image) -> str:
     return "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode()
 
 
-def stream_page(image: Image.Image, stats: dict | None = None):
-    """Stream tokens for one page from llama-server."""
+def stream_page(image: Image.Image, stats: dict | None = None,
+                profile: str = None):
+    """Stream tokens for one page from llama-server.
+
+    `profile` names the pass-1 shape (`prompts.OCR_PROFILES`); omitted, the one
+    the process is currently set to. Resolved once here and reported on `stats`,
+    so a page reads and logs under the profile it actually ran with even if the
+    setting is flipped mid-batch -- the same rule `extract_mode` follows.
+    """
     status = llama_status()
     if not status["available"]:
         raise ValueError(status["reason"])
+    spec = profile_spec(profile)
+    if stats is not None:
+        stats["ocr_profile"] = profile or ocr_profile()
 
     # Prompt BEFORE image on llama.cpp: it reuses the longest common KV prefix
     # between requests, so with the image first every request differs from token 0
@@ -244,7 +258,7 @@ def stream_page(image: Image.Image, stats: dict | None = None):
     # -- see PROMPT_FIRST. Ollama caches prompt prefixes on its own anyway, so
     # nothing is lost.
     prompt_first = PROMPT_FIRST_OLLAMA if status["kind"] == "ollama" else PROMPT_FIRST
-    text_part = {"type": "text", "text": PROMPT}
+    text_part = {"type": "text", "text": spec["prompt"]}
     image_part = {"type": "image_url", "image_url": {"url": image_data_uri(image)}}
     content = [text_part, image_part] if prompt_first else [image_part, text_part]
 
@@ -252,7 +266,10 @@ def stream_page(image: Image.Image, stats: dict | None = None):
         # Ollama gets an explicit system message here; llama.cpp gets none. See
         # backends.system_prefix -- this reproduces what Ollama was injecting from
         # the Modelfile by itself, rather than adding anything new.
-        "messages": backends.system_prefix(status)
+        # The profile can veto the system message outright: on dots.ocr an
+        # occupied system slot returns two tokens and nothing else, whatever the
+        # prompt says. See prompts.OCR_PROFILES.
+        "messages": backends.system_prefix(status, spec["system"])
                     + [{"role": "user", "content": content}],
         "max_tokens": MAX_NEW_TOKENS,
         # Fully deterministic decoding. temperature 0 should already force greedy,
@@ -919,6 +936,44 @@ def _extract_agentic(text: str, status: dict):
 _extract_mode = "agentic" if AGENTIC_EXTRACT else "single"
 _mode_lock = threading.Lock()
 
+# The pass-1 shape, held for the process for the same reasons as the mode above,
+# and switched from the page for the same reason: it is a thing you flip while
+# looking at a document that came back empty.
+#
+# Clamped here rather than in `settings`, which imports nothing but `config` and
+# so cannot see the profile table. An unknown name warns and falls back instead of
+# killing startup -- a typo in a service file should cost one setting, not the app.
+_ocr_profile = OCR_PROFILE if OCR_PROFILE in OCR_PROFILES else DEFAULT_OCR_PROFILE
+if _ocr_profile != OCR_PROFILE:
+    config.say(f"OCR_PROFILE={OCR_PROFILE!r} is not a known profile "
+               f"({', '.join(OCR_PROFILES)}); using {_ocr_profile}.", sys.stderr)
+_profile_lock = threading.Lock()
+
+
+def ocr_profile() -> str:
+    with _profile_lock:
+        return _ocr_profile
+
+
+def set_ocr_profile(name: str) -> str:
+    if name not in OCR_PROFILES:
+        raise ValueError(f"profile must be one of: {', '.join(OCR_PROFILES)}.")
+    global _ocr_profile
+    with _profile_lock:
+        _ocr_profile = name
+    return name
+
+
+def profile_spec(name: str = None) -> dict:
+    """The profile a request should be built from, resolved once per read.
+
+    Taken by name and returned whole so a run cannot be assembled half from one
+    profile and half from another -- the prompt, the system-message veto and the
+    way the reply is read have to be the same profile's, or the request is not a
+    measurement of either.
+    """
+    return OCR_PROFILES[name or ocr_profile()]
+
 
 def extract_mode() -> str:
     with _mode_lock:
@@ -934,7 +989,7 @@ def set_extract_mode(mode: str) -> str:
     return mode
 
 
-def extract_fields_stream(text: str, mode: str = None):
+def extract_fields_stream(text: str, mode: str = None, case_id: str = None):
     """Turn a finished transcript into structured JSON, yielding progress.
 
     A separate text-only pass rather than part of the OCR prompt: mixing
@@ -943,6 +998,12 @@ def extract_fields_stream(text: str, mode: str = None):
 
     Single mode has no progress to report and yields nothing. Both shapes return
     the same result dict, plus `mode` saying which one ran.
+
+    `case_id` is a benchmark document this transcript came from, and it is scored
+    here rather than at each of the four call sites: the two modes build their
+    result dicts separately, and a score attached in only some of the places a
+    result is produced is a score that quietly disappears depending on which
+    button was pressed.
     """
     if not text.strip():
         return {"error": "Nothing to extract from."}
@@ -950,8 +1011,30 @@ def extract_fields_stream(text: str, mode: str = None):
     if not status["available"]:
         return {"error": status["reason"]}
     if (mode or extract_mode()) == "agentic":
-        return (yield from _extract_agentic(text, status))
-    return _extract_single(text, status)
+        result = yield from _extract_agentic(text, status)
+    else:
+        result = _extract_single(text, status)
+    return _score_fields(result, case_id)
+
+
+def _score_fields(result: dict, case_id: str) -> dict:
+    """Attach the field score, when this document has field ground truth.
+
+    Absent rather than an error when there is none: most documents are not
+    benchmark cases, and a `field_score` holding only a complaint on every real
+    upload would have to be filtered out by everything that reads a result.
+
+    Scoring must never break an extraction that worked -- the fields are the
+    product, the score is a measurement of it.
+    """
+    if not (case_id and isinstance(result, dict) and result.get("fields")):
+        return result
+    try:
+        if fieldscore.has_truth(case_id):
+            result["field_score"] = fieldscore.evaluate(case_id, result["fields"])
+    except Exception as err:  # pragma: no cover - a score is never worth a 500
+        result["field_score"] = {"error": f"field scoring failed: {err}"}
+    return result
 
 
 def _drain(generator):
@@ -963,9 +1046,9 @@ def _drain(generator):
             return stop.value
 
 
-def extract_fields(text: str, mode: str = None) -> dict:
+def extract_fields(text: str, mode: str = None, case_id: str = None) -> dict:
     """`extract_fields_stream` for callers with nowhere to show progress."""
-    return _drain(extract_fields_stream(text, mode))
+    return _drain(extract_fields_stream(text, mode, case_id))
 
 
 def strip_fence(text: str) -> str:
@@ -1009,13 +1092,125 @@ def normalise_output(text: str) -> str:
     return text.strip()
 
 
-def read_page(image: Image.Image, stats: dict | None = None) -> str:
+def layout_text(raw: str) -> str:
+    """Flatten a dots.ocr layout reply into a transcript, in reading order.
+
+    The profile asks for a JSON array of blocks -- `bbox`, `category`, `text` --
+    already sorted the way a person would read the page, so the transcript is
+    those texts joined. Everything downstream (scoring, pass 2, the run log) then
+    sees the same kind of string it sees from any other profile, which is the
+    whole point of doing this here rather than teaching five other modules about
+    layout blocks.
+
+    A reply that never closed is salvaged the same way `_salvage_json` salvages
+    pass 2: keep the blocks that finished, drop the one it died inside. This is
+    the common case rather than an edge -- the model runs to the token cap inside
+    a single block on both fixtures it was measured on -- and a partial page is
+    worth more than nothing, with `looks_repetitive` and the truncation flag
+    already saying the read did not finish.
+
+    `Picture` blocks carry no text by the prompt's own rule, so they contribute
+    nothing rather than an empty line.
+    """
+    return "\n".join(b["text"] for b in layout_blocks(raw) if b["text"])
+
+
+def layout_blocks(raw: str) -> list:
+    """The blocks of a layout reply, kept whole: bbox, category and text.
+
+    `layout_text` throws the geometry away because a transcript has no room for
+    it. The page's Layout view is the one thing that wants it, so the parsing
+    lives here and both callers share it -- two parsers for one reply would
+    disagree about the salvage and put the boxes out of step with the text
+    beside them.
+
+    Coordinates are the model's own, in the pixel space of the image it was
+    sent, and are passed through unchecked beyond being four numbers: a box in
+    the wrong place is a finding, not something to quietly correct. A block
+    whose bbox is missing or malformed keeps its text and gets `None`, so it
+    still appears in the list the transcript was built from.
+    """
+    raw = (raw or "").strip()
+    if not raw:
+        return []
+    try:
+        blocks = json.loads(raw)
+    except ValueError:
+        cut = raw.rfind("},")
+        if cut < 0:
+            return []
+        try:
+            blocks = json.loads(raw[:cut + 1] + "]")
+        except ValueError:
+            return []
+    if isinstance(blocks, dict):
+        # The prompt says "a single JSON object", and a model that takes that
+        # literally wraps the array in one. Take the first list it holds.
+        blocks = next((v for v in blocks.values() if isinstance(v, list)), [])
+    if not isinstance(blocks, list):
+        return []
+    out = []
+    for block in blocks:
+        if not isinstance(block, dict):
+            continue
+        box = block.get("bbox")
+        if not (isinstance(box, list) and len(box) == 4
+                and all(isinstance(n, (int, float)) and not isinstance(n, bool)
+                        for n in box)):
+            box = None
+        out.append({
+            "bbox": box,
+            "category": str(block.get("category") or "")[:40],
+            "text": (block.get("text") or "").strip(),
+        })
+    return out
+
+
+def finish_page(raw: str, stats: dict | None = None, profile: str = None) -> str:
+    """One page's raw reply -> its transcript, with the boxes kept on `stats`.
+
+    Called wherever a page finishes -- the streaming endpoint, the blocking one
+    and the queue worker -- so all three produce the same thing from the same
+    bytes. `layout` rides on the page stats, which already travel to the browser
+    in `page_done` and in `summarise`'s `page_stats`, so nothing new had to be
+    plumbed for it; `runlog.record` names the columns it writes, so the log is
+    unaffected.
+
+    Only a layout profile sets the key at all. On a Markdown profile it is
+    absent rather than empty, which is what lets the page tell "this run had no
+    geometry to show" from "this page found nothing".
+    """
+    profile = profile or (stats or {}).get("ocr_profile")
+    spec = profile_spec(profile)
+    text = read_reply(raw, profile)
+    if stats is not None:
+        # The reply exactly as it arrived, before the fence, the layout flatten
+        # and normalise_output have had it. Kept because every one of those steps
+        # throws something away on purpose, and the only way to check what was
+        # thrown away is to see what came in -- the coordinates of a layout reply
+        # most of all, which the transcript cannot carry.
+        stats["raw"] = raw
+        if spec["reply"] == "layout_json":
+            stats["layout"] = layout_blocks(strip_fence(raw))
+    return text
+
+
+def read_reply(raw: str, profile: str = None) -> str:
+    """One profile's raw answer, turned into the transcript everything else uses."""
+    spec = profile_spec(profile)
+    if spec["reply"] == "layout_json":
+        return normalise_output(layout_text(strip_fence(raw)))
+    return normalise_output(strip_fence(raw))
+
+
+def read_page(image: Image.Image, stats: dict | None = None,
+              profile: str = None) -> str:
     """Blocking full-page read.
 
     Deliberately drains the streaming generator rather than issuing its own
     request, so both endpoints report timings measured exactly the same way.
     """
-    return normalise_output(strip_fence("".join(stream_page(image, stats))))
+    return finish_page("".join(stream_page(image, stats, profile)), stats, profile)
 
 
 # --------------------------------------------------------------------------
@@ -1133,9 +1328,14 @@ def summarise(all_stats, detail, started, job_id=None):
     # the page has since been pointed somewhere else.
     urls = [s.get("url") for s in all_stats if s.get("url")]
     kinds = [s.get("backend") for s in all_stats if s.get("backend")]
+    profiles = [s.get("ocr_profile") for s in all_stats if s.get("ocr_profile")]
     return {
         "page_count": len(all_stats),
         "detail": detail,
+        # From the pages, like model and backend above: a profile switched during
+        # a batch must not relabel the pages that were already read under the old
+        # one.
+        "ocr_profile": profiles[0] if profiles else ocr_profile(),
         "job": job_id,
         "model": models[0] if models else None,
         "url": urls[0] if urls else backends.active_url(),
@@ -1361,7 +1561,10 @@ def run_job(job):
             job.stage = f"reading page {index} of {len(pages)}"
             stats = {}
             text = "".join(stream_page(page, stats))
-            collected.append(normalise_output(strip_fence(text)))
+            # Read back under the profile this page ran with, not the one set
+            # now: a layout-JSON reply flattened as Markdown would be logged and
+            # scored as a page of JSON.
+            collected.append(finish_page(text, stats))
             all_stats.append(stats)
             job.pages_done = index
 
@@ -1382,7 +1585,8 @@ def run_job(job):
             # Stepped through rather than called, so agentic mode can name the
             # step in the queue row and can be cancelled between steps. Single
             # mode yields nothing, so this is the plain call it used to be.
-            stream = extract_fields_stream(text)
+            stream = extract_fields_stream(
+                text, case_id=case["id"] if case else None)
             while True:
                 try:
                     event = next(stream)
@@ -1445,6 +1649,8 @@ def index():
         num_ctx=backends.num_ctx(),
         extract_mode=extract_mode(),
         extract_steps=len(EXTRACT_STEPS),
+        ocr_profile=ocr_profile(),
+        ocr_profiles=[{"id": pid, **spec} for pid, spec in OCR_PROFILES.items()],
     )
 
 
@@ -1572,7 +1778,9 @@ def extract_endpoint():
         mode = _requested_mode(body)
     except ValueError as err:
         return jsonify(error=str(err)), 400
-    result = extract_fields(text, mode)
+    # Which document this transcript came from, so a re-extraction of a
+    # benchmark case is scored the same way the read that produced it was.
+    result = extract_fields(text, mode, job_context(body.get("job")).get("case"))
     log_extract(result, body.get("job"))
     return jsonify(result)
 
@@ -1594,10 +1802,14 @@ def extract_stream_endpoint():
         return jsonify(error=str(err)), 400
 
     job_id = body.get("job")
+    # The document behind this transcript, for the same reason as above. Resolved
+    # out here rather than inside the generator: the job cache can evict the page
+    # between the request arriving and the stream being consumed.
+    case_id = job_context(job_id).get("case")
 
     def generate():
         try:
-            stream = extract_fields_stream(text, mode)
+            stream = extract_fields_stream(text, mode, case_id)
             while True:
                 try:
                     yield json.dumps(next(stream)) + "\n"
@@ -1635,6 +1847,33 @@ def extract_mode_set():
     except ValueError as err:
         return jsonify(error=str(err)), 400
     return jsonify(mode=mode, steps=len(EXTRACT_STEPS))
+
+
+@app.get("/api/ocr/profile")
+def ocr_profile_get():
+    """The pass-1 shape in force, and every shape on offer."""
+    return jsonify(profile=ocr_profile(), profiles=[
+        {"id": pid, "label": spec["label"], "note": spec["note"],
+         "system": spec["system"], "reply": spec["reply"]}
+        for pid, spec in OCR_PROFILES.items()
+    ])
+
+
+@app.post("/api/ocr/profile")
+def ocr_profile_set():
+    """Switch the pass-1 shape for everything this process reads next.
+
+    Not refused while the queue is busy, for the same reason switching extraction
+    mode is not: every page stamps the profile it ran under onto its own stats, so
+    a batch split across two profiles still says which read what. Switching
+    *server* mid-batch is refused because nothing there could say so.
+    """
+    body = request.get_json(silent=True) or {}
+    try:
+        name = set_ocr_profile((body.get("profile") or "").strip().lower())
+    except ValueError as err:
+        return jsonify(error=str(err)), 400
+    return jsonify(profile=name)
 
 
 MOCK_DIR = scoring.MOCK
@@ -1886,7 +2125,8 @@ def ocr():
     payload = summarise(all_stats, detail, started, job_id)
     payload["truth"] = evaluate_if_known(case, text)
     if EXTRACT and request.form.get("extract", "1") != "0" and text.strip():
-        payload["extracted"] = extract_fields(text)
+        payload["extracted"] = extract_fields(
+            text, case_id=case["id"] if case else None)
     log_run(payload, source)
     return jsonify(text=text, pages=page_texts, **payload)
 
@@ -1921,7 +2161,7 @@ def ocr_stream():
                 for chunk in stream_page(page, stats):
                     parts.append(chunk)
                     yield json.dumps({"event": "token", "text": chunk}) + "\n"
-                collected.append(normalise_output(strip_fence("".join(parts))))
+                collected.append(finish_page("".join(parts), stats))
                 all_stats.append(stats)
                 yield json.dumps({"event": "page_done", "page": index, **stats}) + "\n"
                 if stats.get("truncated"):
@@ -1949,7 +2189,8 @@ def ocr_stream():
                 # Agentic mode yields a step at a time on the way through; single
                 # mode yields nothing and the loop runs once. Either way the
                 # result arrives as the same "fields" event.
-                stream = extract_fields_stream(text)
+                stream = extract_fields_stream(
+                    text, case_id=case["id"] if case else None)
                 while True:
                     try:
                         yield json.dumps(next(stream)) + "\n"

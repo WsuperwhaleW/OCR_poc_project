@@ -40,6 +40,7 @@ FILES = [
     "prompts.py",
     "backends.py",
     "grounding.py",
+    "fieldscore.py",
     "jobs.py",
     "runlog.py",
     "scoring.py",
@@ -60,6 +61,11 @@ TREES = [
 FIXTURES = [
     ("mockOcr", "*.pdf"),
     ("solution", "*.md"),
+    # Field ground truth: which value belongs in which extracted key. Hand-written
+    # like the .md beside it, and the only thing that scores pass 2 -- a zip with
+    # the documents and the transcripts but not these can benchmark the read and
+    # not the extraction.
+    ("solution", "*.fields.json"),
     ("solution", "manifest.json"),
 ]
 

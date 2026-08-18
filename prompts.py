@@ -11,6 +11,10 @@ each one is worded as it is, is in CLAUDE.md -- not repeated here. Re-run the
 benchmark (`python compare.py`) after editing any of them.
 
 * `PROMPT`            -- pass 1, page image in, verbatim transcript out.
+* `DOTS_PROMPT`       -- pass 1 for dots.ocr, which answers with layout JSON.
+* `OCR_PROFILES`      -- the two pass-1 shapes, each pairing a prompt with
+                         whether a system message may go with it and how the
+                         reply is read back.
 * `EXTRACT_PROMPT`    -- pass 2, transcript in as text, structured JSON out.
 * `EXTRACT_REMINDER`  -- closes pass 2's message, after the transcript.
 * `EXTRACT_STEP_*`    -- pass 2 in agentic mode: the same schema asked for one to
@@ -59,6 +63,70 @@ ORDER -- this matters
 - Text positioned higher on the page MUST appear earlier in your output. Never move a
   heading, title, total or page number away from where it sits on the page.
 - For multi-column layouts, finish the left column before starting the right one."""
+
+# dots.ocr's own prompt, quoted exactly. A different model, a different request
+# shape, and a different answer: this one returns a JSON array of layout blocks
+# (`bbox`, `category`, `text`) rather than a page of Markdown, which `app.py`
+# flattens back into a transcript before anything else sees it.
+#
+# THE WORDING IS LOAD-BEARING AND SO IS THE PLACEMENT. Measured 2026-08-18 on
+# `hf.co/mradermacher/dots.ocr-GGUF:latest` through Ollama: a paraphrase that kept
+# the opening sentence and dropped the numbered rules returned 2 tokens and an
+# empty string, and so did this exact text when it was put in the system slot.
+# Sent verbatim, in the user turn, with no system message, it reads the page.
+# Do not tidy the indentation, renumber the rules, or "improve" the categories
+# list without re-running the benchmark -- CLAUDE.md has the table.
+DOTS_PROMPT = """Please output the layout information from the PDF image, including each layout element's bbox, its category, and the corresponding text content within the bbox.
+1. Bbox format: [x1, y1, x2, y2]
+2. Layout Categories: The possible categories are ['Caption', 'Footnote', 'Formula', 'List-item', 'Page-footer', 'Page-header', 'Picture', 'Section-header', 'Table', 'Text', 'Title'].
+3. Text Extraction & Formatting Rules:
+    - Picture: For the 'Picture' category, the text field should be omitted.
+    - Formula: Format its text as LaTeX.
+    - Table: Format its text as HTML.
+    - All Others (Text, Title, etc.): Format their text as Markdown.
+4. Constraints:
+    - The output text must be the original text from the image, with no translation.
+    - All layout elements must be sorted according to human reading order.
+5. Final Output: The entire output must be a single JSON object.
+"""
+
+# Pass 1 comes in shapes now, not just wordings, and a prompt cannot be swapped
+# on its own. Each profile carries the three things that have to move together:
+#
+#   prompt   what is sent with the page image
+#   system   whether the backend's system message may be sent alongside it
+#   reply    how `app.py` turns the answer back into a transcript
+#
+# `system` is here because it is not a preference. On dots.ocr the system slot
+# alone -- with a prompt that otherwise works -- takes the reply to two tokens,
+# while on typhoon dropping it costs 2.42 points of mean character accuracy. One
+# global switch cannot be right for both, so it belongs to the profile.
+#
+# `reply` is a tag, not a function: this module holds no logic, and `app.py`
+# switches on it. Adding a profile here without teaching `app.py` its tag is
+# caught at startup rather than at the first read.
+OCR_PROFILES = {
+    "typhoon": {
+        "label": "Typhoon OCR (Markdown transcript)",
+        "prompt": PROMPT,
+        "system": True,
+        "reply": "markdown",
+        "note": "The default, and every accuracy baseline in CLAUDE.md was taken "
+                "on it. Built for typhoon-ocr1.5; returns the page as Markdown.",
+    },
+    "dots": {
+        "label": "dots.ocr (layout JSON)",
+        "prompt": DOTS_PROMPT,
+        "system": False,
+        "reply": "layout_json",
+        "note": "dots.ocr's own prompt, verbatim, with no system message -- both "
+                "are required or the model returns nothing at HTTP 200. Returns "
+                "layout blocks, which are flattened into a transcript in reading "
+                "order.",
+    },
+}
+
+DEFAULT_OCR_PROFILE = "typhoon"
 
 # --------------------------------------------------------------------------
 # pass 2: field extraction
@@ -269,8 +337,11 @@ Do NOT transcribe the document and do NOT return a "natural_text" field."""
 # printed, separators and all. Typing an amount as a number would make the model
 # reformat it to satisfy the grammar, and `grounding.py` would then flag its own
 # request as ungrounded.
-_ITEM_KEYS = ("description", "period", "quantity", "unit_price", "amount",
-              "vat", "withholding_tax", "net_amount")
+# Public, unlike the scalar list below: `fieldscore.py` walks a line-item row
+# cell by cell and has to agree with this schema key for key. A second copy of
+# these eight names would drift the moment one of them changed.
+ITEM_KEYS = ("description", "period", "quantity", "unit_price", "amount",
+             "vat", "withholding_tax", "net_amount")
 _SCALAR_KEYS = (
     "document_type", "document_number", "issue_date", "due_date",
     "reference_document", "po_number", "original_invoice_number",
@@ -285,8 +356,8 @@ _SCALAR_KEYS = (
 LINE_ITEM_SCHEMA = {
     "type": "array",
     "items": {"type": "object",
-              "properties": {k: {"type": "string"} for k in _ITEM_KEYS},
-              "required": list(_ITEM_KEYS)},
+              "properties": {k: {"type": "string"} for k in ITEM_KEYS},
+              "required": list(ITEM_KEYS)},
 }
 OTHER_FIELDS_SCHEMA = {
     "type": "array",

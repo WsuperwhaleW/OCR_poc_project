@@ -307,6 +307,60 @@ Uniform blank margins are cropped before the cap is applied; disable with `TRIM_
 too many is not reliably better either. `accurate` is the default because it scored best on
 the bundled cases — score a case yourself before moving off it.
 
+### Page reading (which prompt goes with the page)
+
+**Page reading** picks the shape of pass 1. A profile is one prompt *plus* whether a system
+message is sent with it, because on some models those two cannot be chosen independently.
+
+| Profile | |
+|---|---|
+| **Typhoon OCR (Markdown transcript)** | The default. Written for `typhoon-ocr1.5`; returns the page as Markdown with tables as `<table>` HTML. Every accuracy figure quoted for this project was measured on it |
+| **dots.ocr (layout JSON)** | dots.ocr's own prompt, sent verbatim with no system message. Returns a JSON array of layout blocks — `bbox`, `category`, `text` — which the app flattens back into a transcript in reading order before scoring, extraction or the run log see it |
+
+Two things to know:
+
+- **Both halves of a profile matter.** Send dots.ocr the typhoon prompt, or the right prompt
+  with a system message attached, and it answers with two tokens and an empty transcript at
+  HTTP 200 — no error anywhere. That is why this is one control instead of two.
+- **The profile does not follow the model.** Selecting a model in the server picker does not
+  change the profile, and nothing checks that they match; a mismatch is a legitimate thing to
+  measure. The run log records both per row.
+
+Set the starting profile with `OCR_PROFILE` (`typhoon` or `dots`). Switching it applies to
+this process — the queue and any other browser tab included — and takes effect on the next
+page read; a page already streaming finishes under the profile it started with.
+
+### Raw output (the reply before anything touched it)
+
+A **Raw output** toggle sits at the top right of the Result card, next to Layout. It shows the
+model's answer for one page exactly as it arrived — before the code fence is stripped, before a
+layout reply is flattened into a transcript, and before `normalise_output` removes the markup the
+model emits regardless of the prompt. Page arrows for multi-page documents, and a Copy button.
+
+It is the only place the discarded material is visible: `<page_number>` tags and leading `# `
+headings on a Markdown profile, and the `bbox` coordinates on a layout one, which a transcript has
+no way to carry. Enabled as soon as a run returns anything, on every profile.
+
+Like Layout, it is a toggle rather than a tab — press it again to go back to where you were.
+
+### Layout (where the model says it found each block)
+
+A **Layout** toggle sits at the top right of the Result card. It shows the page exactly as the
+model received it with the model's own bounding boxes drawn on top, numbered in the order they
+were returned. Click a box to read the text that came back for it, with its category and
+coordinates; click it again to clear. Multi-page documents get page arrows.
+
+It is a toggle, not a fifth tab — pressing it again returns you to the tab you were on.
+
+**It is enabled only when the run actually returned boxes**, which today means a profile whose
+reply carries geometry (**dots.ocr**). A Markdown profile has no coordinates to draw, so the
+button stays disabled rather than showing an empty page, and a fresh run on such a profile
+returns you to the transcript rather than leaving you on a blank view.
+
+Boxes are drawn at the model's own coordinates against the image's own pixel size, unscaled and
+uncorrected. A box in the wrong place is the model putting it there — which is the point of
+looking.
+
 ### What a run does
 
 Each run is up to two passes against the model server:
@@ -542,8 +596,13 @@ directly; they are the files the scores are computed from. Scoring lives in `sco
 is shared by the web page and the CLI, so the browser and the terminal can never report
 different numbers for the same run.
 
-`solution/out/*.txt` is the transcript of the last run, written automatically. Deleting it
-is harmless. `solution/manifest.json` maps each id to its source PDF.
+`solution/<id>.fields.json` is the second ground truth: which **value** belongs in which
+**extracted field** for the same document. It scores pass 2, the way the `.md` scores pass 1,
+and it is filled in by hand — see *Field extraction accuracy* below.
+
+`solution/out/*.txt` is the transcript of the last run and `solution/out/*.fields.json` the
+last extraction, both written automatically. Deleting them is harmless.
+`solution/manifest.json` maps each id to its source PDF.
 
 ### From the web page
 
@@ -601,12 +660,25 @@ python compare.py --no-run
 | `--detail fast\|balanced\|accurate\|max` | override the resolution preset |
 | `--app URL` | score a deployed instance instead of localhost |
 | `--keep-tables` | compare table markup literally instead of normalising it |
+| `--fields` | also score the extracted fields — see below |
+| `--fields-only` | score the fields and skip the transcript diff and accuracy |
+| `--from-truth` | extract from `solution/<id>.md` instead of from a transcript, so pass 1 contributes nothing to the pass-2 score |
+| `--no-extract` | re-score the saved `solution/out/<id>.fields.json` without extracting again |
+| `--mode single\|agentic` | the extraction shape for this run, instead of whatever the app is set to |
+| `--profile typhoon\|dots` | the pass-1 shape for this run: which OCR prompt is sent, and whether a system message goes with it |
+| `--model NAME` | switch the app to this model before the sweep. Any unique substring of a served name is enough (`--model dots.ocr`); an ambiguous or unknown one is refused, with the served names listed. Ollama only — `llama-server` serves the one model it was started with |
+| `--server URL` | switch the app to this model server before the sweep, e.g. `http://127.0.0.1:11434` |
+
+The server and model in force are printed above the first case whether or not either flag
+was given, and the same pair is written to every run-log row. Neither flag has an effect on
+a run that makes no model call (`--no-run` on its own, `--no-extract`); that is said rather
+than done silently.
 
 Each case reports:
 
 | Metric | Meaning |
 |---|---|
-| `char accuracy` | 1 − character edit distance / length. **The headline number, and it scores content only** — every invisible character is removed from both sides first, so line breaks, blank lines, indentation, cell padding, tabs, non-breaking and other Unicode spaces, and zero-width marks cannot change it. Only the characters a reader would see are compared. |
+| `char accuracy` | 1 − character edit distance / length. **The headline number, and it scores content only** — every invisible character is removed from both sides first, so line breaks, blank lines, indentation, cell padding, tabs, non-breaking and other Unicode spaces, and zero-width marks cannot change it. So is every piece of table markup: `<table>`, `<tr>`, `<td>`, `<th>` and their `colspan`/`rowspan` attributes, `<br>`, pipes and the `\|---\|` separator row all come out, leaving the cell text. A table scores on what it says, not on how it was marked up. The `--- page 2 ---` separator this app puts between the pages of one document goes too. Only the characters a reader would see on the paper are compared. |
 | `word accuracy` | longest-common-subsequence word overlap. Whitespace does not count here either, but re-ordering does: a value read correctly in the wrong place lowers this and not `char accuracy`. |
 | `char acc. w/o marks` | `char accuracy` with Thai tone marks and above/below vowels stripped. If this is much higher than `char accuracy`, the right letters are being read and the marks lost — a different problem from wrong words. |
 
@@ -622,6 +694,103 @@ set PYTHONIOENCODING=utf-8
 **The scores are only as good as `solution/*.md`.** Those files are one person's reading of
 the rendered pages — correct them where you disagree. `sol003` is a handwritten scan and its
 handwritten values in particular deserve a second look.
+
+### Field extraction accuracy
+
+The transcript score says how much of the page was read. It says nothing about whether the
+right value ended up in the right field, and neither does the grounding check — that only
+asks whether a value appears somewhere on the page, so a customer code returned as the
+buyer's name passes it.
+
+`solution/<id>.fields.json` is what answers that. One file per case, hand-written, holding
+the value that belongs in each of the 29 keys. **All five ship filled in** — every key is
+stated, so an empty one means *the page does not print this* and is scored as such — and each
+file carries a `_decisions` block explaining the readings that were a judgement call. Create a
+file for a new case with:
+
+```bash
+python fieldscore.py init
+```
+
+That writes an empty file for any case that has none, and **never overwrites one that
+exists** (`--force` does, and there is no undo — it would discard the hand-written files that
+ship). A new file starts every key at `null`; the states are the whole format:
+
+| Value | Means |
+|---|---|
+| `null` | not checked yet — left out of every count, so a half-filled file scores its filled half |
+| `""` | the document does not print this. A value here is scored as **spurious** |
+| `"text"` | the document prints this. Copy it exactly as printed — same digits, same separators, same language |
+| `"-"` | the document prints a dash where a figure would go. Either a dash or an empty answer counts as correct, which is what the extraction prompt asks for |
+| `["…", "…"]` | the document prints this value in more than one way and a reply matching **any** of them is correct |
+
+A list is for a value the page states twice — a name printed in Thai on the letterhead and
+again in English below it, a heading printed in both languages on adjacent lines. Keep it to
+one or two readings and make sure every one of them is printed on the page: a list long
+enough to catch anything is a key that is no longer being scored. Where a key has several
+readings, the score reports the one the answer came closest to, so *expected* beside the
+answer is always the reading it was judged against. The Fields tab names the others after it —
+under a wrong value as *Ground truth: X — or "Y"*, and under a **correct** one as *Also
+accepted: "Y"*, because a green mark on a key with two readings otherwise looks exactly like a
+green mark on a key with one, and the reader cannot tell whether the other language would have
+been taken.
+
+**The line-item table is not in this file.** It is read out of the Markdown table in
+`solution/<id>.md`, which already transcribes those rows — each column is matched to one of
+the eight line-item cells by its heading, totals rows printed inside the table are dropped,
+and a cell no column maps to is expected empty on every row. Every run prints what it mapped:
+
+```
+rows from sol005.md: description ← รายการ Description, period ← ประจำงวด Period, …; 2 row(s) dropped (totals row)
+columns not scored, no key matches their heading: ลำดับ, เลขที่ใบแจ้งหนี้
+```
+
+If a heading is not recognised, name it yourself — `"table_columns": {"จำนวนเงินรับ": "amount"}`
+— or set `"score_table": false` to leave the table out of the score. `other_fields` is still
+`null` until you fill it; a list means it is scored. The file carries a `_readme` block
+restating all of this, and keys starting with `_` are ignored by the scorer, so notes to
+yourself are safe there.
+
+Comparison is loose about presentation and strict about content: punctuation, spacing and
+Thai digits are normalised away and figures are compared by value, so `1,200` and `1,200.00`
+score equal. You do not have to guess how the model will write a number.
+
+Then:
+
+```bash
+python compare.py --fields
+```
+
+```bash
+python compare.py sol005 --fields --from-truth
+```
+
+| Metric | Meaning |
+|---|---|
+| `field accuracy` | correct values ÷ values the truth file says the page prints. **The headline.** |
+| loose | the same, counting a partial match — one value contains the other, so the right thing was found and too much or too little of it was taken |
+| `field precision` | correct ÷ everything the extractor filled in. Falls when it invents values the page does not state |
+| `by tier` | the same accuracy over the 14 priority-1 and 14 priority-2 keys separately |
+| `line items` | how many rows were matched, returned and invented, and the accuracy of the cells inside the matched ones — against the table read out of `solution/<id>.md`. Rows are matched by content, not by position, so one dropped row does not mis-score every row after it |
+| `other fields` | reported, and deliberately **not** part of the headline: those labels are the model's own wording |
+
+Under the numbers is a table of every value that was wrong, missed or spurious, with what was
+expected beside what came back. The summary at the end totals by value rather than by case,
+so a file covering three keys does not weigh as much as one covering two hundred.
+
+The same score appears on the page whenever the document read is a case with a field truth
+file, in three places:
+
+- the **Accuracy** tab — a fourth bar, *Field extraction*, beside the three transcript bars,
+  with one line under it saying how many values were correct, wrong, missed and spurious;
+- the **Fields** tab — the same headline, the list of every value that missed, and which
+  column of the `.md` table was taken for which line-item key;
+- the **Run log** card — the *Grounded · fields* cell carries `56% of 39 fields` under the
+  grounded percentage. **That number does not read down the column**: its denominator is
+  whatever that document's truth file rules on, so the count of values is always printed with
+  it, and a row for a document with no truth file shows nothing there rather than 0%. Both are absent while the truth file is
+still all `null` — a bar reading 0.0% because nobody has filled it in would be a score, and
+there is no score. It reaches the run log as `field_acc` and `field_expected`.
 
 ---
 
@@ -659,7 +828,9 @@ to run first. The **Fields** cell marks an updated row.
 | `tokens`, `tokens_per_second` | OCR output tokens; the rate is decode-only |
 | `extract_seconds`, `extract_tokens` | pass 2 |
 | `extract_mode` | `single` or `agentic` — the shape pass 2 ran in, taken from the result, so a mode switched mid-batch still labels each row correctly. Blank on a run that never extracted |
+| `ocr_profile` | `typhoon` or `dots` — the pass-1 shape that read the page, taken from the pages themselves for the same reason. Blank on rows written before profiles existed, and on `run_type=extract` rows, which read no page |
 | `grounded_pct`, `ungrounded`, `fields_missing` | share of extracted values found in the transcript, how many were not, and how many fields the document does not state |
+| `field_acc`, `field_expected` | pass 2 scored against `solution/<id>.fields.json`: the share of the values that came back correct, and how many values that was. Blank on every document without a field truth file, so it does not read down the column like `grounded_pct` — read the accuracy beside its own `field_expected`, because 100% of three keys and 100% of twenty-nine are the same cell and not the same claim |
 | `p1_present`, `p1_absent`, `p2_present`, `p2_absent` | field coverage by delivery tier — how many of the 14 priority-1 and 14 priority-2 keys came back filled. Blank on a run that extracted nothing, which is not the same as zero |
 | `case`, `char_accuracy`, `word_accuracy`, `char_accuracy_no_marks` | percentages, blank when the input has no ground truth |
 | `status`, `error` | `ok` / `partial` / `truncated` / `looped` / `cancelled` / `error` |
@@ -677,6 +848,30 @@ every run and every setting, with the model, backend, detail and mode that reach
 hover. The mean moves with whatever was being tried lately; the best says what the document
 is known to be capable of, which is the number to beat.
 
+### Best setting per document
+
+Under those chips, one row per ground-truth document answers *which setting should I use for
+this page* three ways, because the log answers it three ways and they are rarely the same run:
+
+| Column | |
+|---|---|
+| **Best fields** | the highest `field_acc` this document has scored, with the number of values it was scored over. This is pass 2's correctness — whether a value landed in the key it belongs in. Reads *not scored yet* where there is no `solution/<id>.fields.json`, or no run has been scored against one: blank is not zero |
+| **Fastest full run** | the quickest run that finished, scored something, and ran **both** passes, split into read and extract. A read that skipped extraction is left out — it took less time because it did less work. Its accuracy is printed beside the clock, because fast is a claim about cost and nothing else |
+| **Best transcript** | the highest `char_accuracy`, with word accuracy under it — the same figure as the chip above, in the same row as the other two |
+
+Every figure carries the setting that produced it — model, backend, detail, pass-1 profile,
+extraction mode — with the full model name and the timestamp on hover. A figure from a
+re-extraction row is marked `re-extract only`: it scored pass 2 against a transcript some
+earlier run read, so the detail and profile beside it are not what produced the number.
+
+Two things to keep in mind reading it. **Fields and transcript are separate scores** — a run
+can read the page almost perfectly and still put the values in the wrong keys, which is why
+both are shown and why the fields column prints the transcript score under it. And **llama.cpp
+caches prompts**, so re-reading a page it has already seen is faster than the first time under
+any setting; a fastest time set on a repeat read is not a setting you can expect cold.
+
+The same figures are in `GET /api/runs` under `totals.by_case`.
+
 Failed and cancelled runs are logged too. Move the file with `OCR_LOG_DIR`. It is written as
 UTF-8 with a BOM so Excel opens Thai filenames correctly; new columns are only ever
 appended, so old rows stay readable.
@@ -688,6 +883,13 @@ same cases on each and compare the columns.
 ---
 
 ## API
+
+`GET /api/ocr/profile` — the pass-1 profile in force and the ones on offer:
+`{"profile":"typhoon","profiles":[{"id","label","note","system","reply"}, ...]}`.
+
+`POST /api/ocr/profile` — `{"profile":"dots"}` switches it, and answers with what was
+accepted. `400` for an unknown name. Not refused while the queue is busy: every page records
+the profile it ran under, so a batch split across two is still readable afterwards.
 
 `POST /api/ocr/stream` — multipart form, fields `image` and `detail`
 (`fast`/`balanced`/`accurate`/`max`). Returns NDJSON:
@@ -706,10 +908,17 @@ same cases on each and compare the columns.
 
 `logged` is emitted last, once the row for the run is on disk.
 
+Every extraction result — on `/api/ocr`, on the `fields` event, and from `/api/extract` —
+carries `fields`, `grounding`, `tiers`, `vat_basis` and `mode`. It also carries
+**`field_score`** when the document is a benchmark case with a `solution/<id>.fields.json`
+to score against: `overall`, `scalars`, `line_items`, `other_fields`, `coverage`, and a row
+per checked key saying what was expected and what came back. The key is simply absent for
+everything else, which is most documents.
+
 | Route | |
 |---|---|
 | `POST /api/ocr` | same fields as the stream, blocking, whole JSON at once. Drains the same generator internally, so timings are measured identically |
-| `POST /api/extract` | re-run pass 2 on a transcript the app already has. Takes an optional `mode` (`single`/`agentic`) for that one call, and an optional `job` — the id from the `page`/`done` events — which names the document in the run-log row it writes |
+| `POST /api/extract` | re-run pass 2 on a transcript the app already has. Takes an optional `mode` (`single`/`agentic`) for that one call, and an optional `job` — the id from the `page`/`done` events — which names the document in the run-log row it writes, and is also what lets the reply carry `field_score` |
 | `POST /api/extract/stream` | the same as `/api/extract`, as NDJSON: `extract_steps` once, then an `extract_step` per step as it starts and finishes, then `fields`. Agentic mode only emits the step events; single mode emits `fields` alone |
 | `GET` · `POST /api/extract/mode` | read or set the extraction shape for everything this process extracts next. Body `{"mode": "single"}` or `{"mode": "agentic"}` |
 | `GET /api/page/<job>/<n>` | PNG of prepared page `n` (0-based). `job` is returned on the `page` and `done` events. 404s once the upload falls out of the cache |
@@ -800,6 +1009,7 @@ still never parses `.env` itself.
 | `config.py` | Every path and the typed environment readers. The only place that knows where anything lives |
 | `backends.py` | Endpoint probing and switching; every llama.cpp-vs-Ollama difference |
 | `grounding.py` | Checking extracted fields against the transcript they came from |
+| `fieldscore.py` | Scoring extracted fields against the hand-written field ground truth, and `init` to create it |
 | `verify.py` | Reads document amounts, and decides whether the extracted figures already carry VAT |
 | `scoring.py` | Ground-truth lookup and accuracy scoring, shared by page and CLI |
 | `runlog.py` | The CSV run log |

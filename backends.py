@@ -337,7 +337,7 @@ def set_num_ctx(value) -> int:
     return value
 
 
-def system_prefix(info: dict = None) -> list:
+def system_prefix(info: dict = None, enabled: bool = True) -> list:
     """Messages to put before the user message, for the active server.
 
     Ollama fills an empty system slot from the served model's Modelfile --
@@ -351,9 +351,15 @@ def system_prefix(info: dict = None) -> list:
     llama-server has no Modelfile and no injected default, and every llama.cpp
     baseline was measured with no system message, so it is still sent none.
     Returned as a list so a call site can splice it in without a conditional.
+
+    `enabled` is the pass-1 profile's veto. Whether a system message helps is a
+    property of the served model, not of the backend: it is worth 2.42 points on
+    typhoon and fatal on dots.ocr, which answers two tokens and an empty string
+    when the slot is filled. The profile that knows which model it is written for
+    passes False; the endpoint difference stays here.
     """
     info = info or status()
-    if info["kind"] != "ollama" or not settings.OLLAMA_SYSTEM:
+    if not enabled or info["kind"] != "ollama" or not settings.OLLAMA_SYSTEM:
         return []
     return [{"role": "system", "content": settings.OLLAMA_SYSTEM}]
 

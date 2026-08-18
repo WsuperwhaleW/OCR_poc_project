@@ -43,6 +43,29 @@ THAI_MARKS = re.compile(r"[ัิ-ฺ็-๎]")
 ZERO_WIDTH = re.compile(r"[\u00ad\u200b-\u200f\u202a-\u202e\u2060\ufeff]+")
 INVISIBLE = re.compile(r"[\s\u00ad\u200b-\u200f\u202a-\u202e\u2060\ufeff]+")
 
+# Table markup, and nothing else. Every pattern here tolerates attributes: the
+# model emits `<td colspan="5">` and `<td colspan="2" rowspan="2">` freely, and
+# a bare-tag pattern does not match those at all -- it leaves the whole string
+# in the text, where sixteen characters of markup score as if a reader could see
+# them on the page. A cell that spans two columns is a layout decision about the
+# same content, so it must not move the number in either direction.
+TABLE_BLOCK = re.compile(
+    r"</?(?:table|thead|tbody|tfoot|caption|colgroup|tr)\b[^>]*>", re.I)
+TABLE_CELL = re.compile(r"</?(?:td|th|col)\b[^>]*>", re.I)
+LINE_BREAK = re.compile(r"<br\b[^>]*>", re.I)
+
+# A Markdown separator row: pipes, dashes, alignment colons and spaces, nothing
+# else. Anchored on a real run of dashes so a line of prose that opens with a
+# dash survives, and colon-tolerant so `|:---:|` is markup here too.
+PIPE_RULE = re.compile(r"^[|\-: \t]*-{2,}[|\-: \t]*$", re.M)
+
+# `--- page 2 ---` is this app's own separator between the pages of one document
+# (`app.py` joins page transcripts with it), not something a model read off the
+# paper. It comes out of both sides unconditionally, including under
+# `--keep-tables`: the truth files only carry it where a page actually breaks,
+# so leaving it in charges a multi-page read for a marker it did not write.
+PAGE_MARKER = re.compile(r"^\s*-{2,}\s*page\s+\d+\s*-{2,}\s*$", re.I | re.M)
+
 
 def content_only(text: str) -> str:
     """Text reduced to the characters that carry content."""
@@ -172,14 +195,15 @@ def normalise(text: str, ignore_tables: bool = True) -> str:
     between them and that is formatting, not recognition.
     """
     text = unicodedata.normalize("NFC", text)
+    text = PAGE_MARKER.sub("", text)
     if ignore_tables:
         # <br> is a line break however it is spelled -- an HTML table can hold a
         # real newline inside a cell, a Markdown pipe table has to encode it as
         # <br>, and the two must score the same.
-        text = re.sub(r"<br\s*/?>", "\n", text, flags=re.I)
-        text = re.sub(r"</?(table|tr|thead|tbody)>", "\n", text, flags=re.I)
-        text = re.sub(r"</?(td|th)>", " ", text, flags=re.I)
-        text = re.sub(r"^\s*\|?\s*-{2,}.*$", "", text, flags=re.M)  # pipe rules
+        text = LINE_BREAK.sub("\n", text)
+        text = TABLE_BLOCK.sub("\n", text)
+        text = TABLE_CELL.sub(" ", text)
+        text = PIPE_RULE.sub("", text)
         text = text.replace("\\|", "|")   # unescape Markdown-escaped pipes
         text = text.replace("|", " ")
     # Real whitespace collapses to one space; zero-width marks go entirely.

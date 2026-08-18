@@ -143,6 +143,18 @@ def is_nil(value):
     return _is_nil(value)
 
 
+def squash(value):
+    """Value reduced to comparable content: letters and digits, nothing else.
+
+    Public for the same reason as the two above: `fieldscore.py` compares an
+    extracted value with a hand-written one and has to be loose about exactly the
+    same things this module is loose about -- punctuation, spacing, Thai digits.
+    A second implementation of that would let the audit and the score disagree
+    about whether two spellings of one value are the same value.
+    """
+    return _squash(value)
+
+
 def _transcript_numbers(transcript):
     """Every number the page prints, as floats, for value-wise comparison."""
     text = (transcript or "").translate(_THAI_DIGITS)

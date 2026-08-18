@@ -218,6 +218,28 @@
   .tier-bar i { display: block; height: 100%; background: #6ea8fe; }
   .fld-tag.computed { background: rgba(217,164,65,.18); color: #d9a441; }
   #fields td.ungrounded { color: var(--danger); text-decoration: underline wavy var(--danger); }
+  /* Scored against the hand-written truth file, marked at the value itself. A
+     list of paths below the fields says a value is wrong; a mark beside it says
+     WHICH one while you are reading it, which is the question you actually have
+     with the document open. Green is the only place on this tab that claims a
+     value is right -- grounding can only say it is printed somewhere. */
+  .sc { font-size: .68rem; font-weight: 700; padding: 1px 6px; border-radius: 4px;
+        margin-left: 7px; white-space: nowrap; vertical-align: 1px;
+        text-transform: uppercase; letter-spacing: .04em; }
+  .sc.correct { background: rgba(63,185,80,.16); color: #3fb950; }
+  .sc.partial { background: rgba(217,164,65,.18); color: #d9a441; }
+  .sc.wrong, .sc.missed, .sc.spurious { background: rgba(255,107,107,.18); color: var(--danger); }
+  .sc.absent { background: var(--border); color: var(--muted); }
+  /* The value the truth says belongs there, under the one that came back. */
+  .truth { font-size: .78rem; color: var(--muted); margin-top: 2px; }
+  .truth b { color: var(--text); font-weight: 600; }
+  .truth i { font-style: normal; opacity: .8; }
+  #fields td.sc-wrong, #fields td.sc-missed, #fields td.sc-spurious { color: var(--danger); }
+  #fields td.sc-partial { color: #d9a441; }
+  #fields td .truth { display: block; }
+  /* A row the page prints and the extraction never returned. Dashed, because
+     nothing in it came from the model -- it is the truth file talking. */
+  #fields tr.row-missed td { border-style: dashed; color: var(--danger); opacity: .8; }
   .ground-note { font-size: .8rem; border-radius: 8px; padding: 9px 12px; margin: 0 0 4px;
                  border: 1px solid var(--border); background: var(--accent-soft); }
   .ground-note.bad { border-color: var(--danger); background: rgba(255,107,107,.1); }
@@ -268,6 +290,19 @@
   #runBody table.queue { min-width: 900px; }
   #runBody td.acc { font-weight: 600; }
   #runPath { word-break: break-all; }
+  /* Per-document summary: one row per ground-truth case, the settings that read
+     it best and quickest side by side. A block of its own rather than more chips
+     on `.run-best`, because every figure here carries the setting that produced
+     it and a setting does not fit on a chip. */
+  #caseSum { overflow-x: auto; margin-top: 16px; }
+  #caseSum table.queue { min-width: 820px; margin-top: 6px; }
+  #caseSum .cs-title { font-size: .78rem; text-transform: uppercase;
+    letter-spacing: .07em; color: var(--muted); }
+  .cs-val { font-weight: 700; font-variant-numeric: tabular-nums; }
+  .cs-of { color: var(--muted); font-weight: 400; font-size: .74rem; }
+  .cs-set { display: block; color: var(--muted); font-size: .72rem;
+            margin-top: 3px; line-height: 1.5; word-break: break-word; }
+  .cs-none { color: var(--muted); }
   table.queue { width: 100%; border-collapse: collapse; font-size: .82rem; margin-top: 10px; }
   table.queue th, table.queue td {
     border-bottom: 1px solid var(--border); padding: 7px 9px; text-align: left; }
@@ -333,6 +368,70 @@
   #accDiff .del { color: var(--danger); }
   #accDiff .hunk { color: var(--accent); }
   .pagebar { font-size: .8rem; color: var(--muted); margin: 10px 0 0; }
+
+  /* Layout view: the model's own boxes, over the image it was actually sent. */
+  #layout, #rawout { display: none; }
+  .ro-bar {
+    display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+    margin: 10px 0 8px; font-size: .8rem; color: var(--muted);
+  }
+  .ro-bar .spacer { flex: 1 1 auto; }
+  #rawoutBody {
+    margin: 0; padding: 11px 13px; border: 1px solid var(--border); border-radius: 8px;
+    max-height: 70vh; overflow: auto; font-size: .78rem; line-height: 1.6;
+    white-space: pre-wrap; overflow-wrap: anywhere;
+  }
+  .lay-bar {
+    display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+    margin: 10px 0 8px; font-size: .8rem; color: var(--muted);
+  }
+  .lay-bar .spacer { flex: 1 1 auto; }
+  .lay-legend { display: flex; flex-wrap: wrap; gap: 3px 10px; font-size: .72rem; }
+  .lay-legend span { display: inline-flex; align-items: center; gap: 4px; }
+  .lay-swatch { width: 8px; height: 8px; border-radius: 2px; flex: none; }
+  .lay-stage {
+    position: relative; line-height: 0; border: 1px solid var(--border);
+    border-radius: 6px; overflow: hidden; background: #f2f2f2;
+  }
+  .lay-stage img { width: 100%; height: auto; display: block; }
+  .lay-stage svg { position: absolute; inset: 0; width: 100%; height: 100%; }
+  /* Literal colours: these are drawn on a scan, which is the same picture in
+     either theme, so they must not follow the page's palette. */
+  .lay-box { fill: transparent; stroke-width: 2; vector-effect: non-scaling-stroke; cursor: pointer; }
+  .lay-box:hover { fill: rgba(255, 255, 255, .30); }
+  .lay-box.on { fill: rgba(255, 255, 255, .45); stroke-width: 4; }
+  .lay-tag { font-size: 13px; fill: #fff; pointer-events: none; }
+  /* What a block holds is read over the page, not under it: the whole point of
+     this view is where a value sits, and a panel below the scan makes the eye
+     leave the position it is asking about. Fixed rather than absolute because
+     .lay-stage clips its overflow -- a popup parented inside it would be cut
+     off by exactly the boxes near the edges. */
+  .lay-pop {
+    position: fixed; z-index: 60; max-width: min(560px, 92vw); max-height: 62vh;
+    overflow: auto; pointer-events: none;
+    background: var(--panel); color: var(--text);
+    border: 1px solid var(--border); border-radius: 8px;
+    box-shadow: 0 10px 30px rgba(0, 0, 0, .35);
+    padding: 9px 11px; font-size: .84rem; line-height: 1.55;
+  }
+  /* Only a pinned popup takes the pointer, so hovering one box never blocks the
+     box behind it -- but a pinned table can still be scrolled and selected. */
+  .lay-pop.pinned { pointer-events: auto; }
+  .lay-pop .cap {
+    font-size: .7rem; text-transform: uppercase; letter-spacing: .06em;
+    color: var(--muted); display: block; margin-bottom: 4px;
+  }
+  .lay-pop .body { white-space: pre-wrap; overflow-wrap: anywhere; }
+  .lay-pop table { border-collapse: collapse; font-size: .82rem; margin: 2px 0; }
+  .lay-pop th, .lay-pop td { border: 1px solid var(--border); padding: 4px 8px; text-align: left; }
+  .lay-pop th { background: var(--accent-soft); }
+  .lay-pop .txt { white-space: pre-wrap; overflow-wrap: anywhere; margin: 4px 0; }
+  /* The crop is the page's own pixels, positioned by the model's own bbox, so a
+     picture block is checked as a picture rather than as four numbers. */
+  .lay-crop { border: 1px solid var(--border); border-radius: 4px; background-repeat: no-repeat; }
+  .lay-pin {
+    display: block; margin-top: 6px; font-size: .7rem; color: var(--muted);
+  }
   .serverbar {
     display: flex; align-items: center; gap: 9px; margin-top: 14px;
     padding: 9px 12px; border: 1px solid var(--border); border-radius: 9px;
@@ -460,6 +559,17 @@
       <p class="note" id="ctxNote"></p>
       <div class="row">
         <label class="field" style="flex:1;min-width:200px">
+          Page reading
+          <select id="ocrProfileSel">
+            {% for p in ocr_profiles %}
+            <option value="{{ p.id }}" {% if p.id == ocr_profile %}selected{% endif %}>{{ p.label }}</option>
+            {% endfor %}
+          </select>
+        </label>
+      </div>
+      <p class="note" id="ocrProfileNote"></p>
+      <div class="row">
+        <label class="field" style="flex:1;min-width:200px">
           Field extraction
           <select id="extractSel">
             <option value="single" {% if extract_mode == 'single' %}selected{% endif %}>one request for the whole form</option>
@@ -561,11 +671,41 @@
           <button id="tabFields" disabled><b>4</b> Fields</button>
           <button id="copy" disabled style="margin-left:10px">Copy</button>
         </div>
+        <button id="tabRawOut" class="ghost-sm" style="margin-left:auto"
+                aria-pressed="false" disabled
+                title="The model's reply exactly as it arrived, before any cleanup">Raw output</button>
+        <button id="tabLayout" class="ghost-sm" aria-pressed="false" disabled
+                title="Show the boxes the model reported, on the page it read">Layout</button>
       </div>
       <div class="pagebar" id="pagebar"></div>
       <div class="warn" id="warn"></div>
       <div id="render" class="empty">Nothing yet.</div>
       <pre id="raw" class="empty">Nothing yet.</pre>
+
+      <div id="rawout">
+        <div class="ro-bar">
+          <button id="roPrev" class="ghost-sm">‹</button>
+          <span id="roLabel"></span>
+          <button id="roNext" class="ghost-sm">›</button>
+          <span id="roSize"></span>
+          <span class="spacer"></span>
+          <button id="roCopy" class="ghost-sm">Copy</button>
+        </div>
+        <pre id="rawoutBody"></pre>
+      </div>
+
+      <div id="layout">
+        <div class="lay-bar">
+          <button id="layPrev" class="ghost-sm">‹</button>
+          <span id="layLabel"></span>
+          <button id="layNext" class="ghost-sm">›</button>
+          <span id="layCount"></span>
+          <span class="spacer"></span>
+          <div class="lay-legend" id="layLegend"></div>
+        </div>
+        <div class="lay-stage" id="layStage"></div>
+        <div class="lay-pop" id="layPop" hidden></div>
+      </div>
 
       <div id="fields">
         <div class="fld-bar">
@@ -644,6 +784,11 @@
       <a id="runDownload" class="ghost-sm" href="/api/runs.csv" download>Download CSV</a>
     </div>
     <div class="run-best" id="runBest"></div>
+    <!-- One row per ground-truth document: the best transcript, the best field
+         score, and the quickest complete run, each with the setting behind it.
+         Filled by `paintCaseSummary` from the same /api/runs payload as the
+         table below. -->
+    <div id="caseSum"></div>
     <div id="runBody"></div>
     <p class="note" id="runPath"></p>
   </div>
@@ -837,23 +982,295 @@ function paint() {
 }
 
 /* ---------- tabs ---------- */
+let curMode = 'raw';
 function showTab(mode) {
+  curMode = mode;
   renderEl.style.display = mode === 'rendered' ? 'block' : 'none';
   rawEl.style.display = mode === 'raw' ? 'block' : 'none';
   accuracyEl.style.display = mode === 'accuracy' ? 'block' : 'none';
   fieldsEl.style.display = mode === 'fields' ? 'block' : 'none';
-  statsEl.style.display = ['accuracy', 'fields'].includes(mode) ? 'none' : '';
+  layoutEl.style.display = mode === 'layout' ? 'block' : 'none';
+  tabLayout.setAttribute('aria-pressed', mode === 'layout');
+  tabLayout.classList.toggle('on', mode === 'layout');
+  rawoutEl.style.display = mode === 'rawout' ? 'block' : 'none';
+  tabRawOut.setAttribute('aria-pressed', mode === 'rawout');
+  tabRawOut.classList.toggle('on', mode === 'rawout');
+  statsEl.style.display = ['accuracy', 'fields', 'layout', 'rawout'].includes(mode) ? 'none' : '';
   tabRendered.classList.toggle('on', mode === 'rendered');
   tabRaw.classList.toggle('on', mode === 'raw');
   tabAccuracy.classList.toggle('on', mode === 'accuracy');
   tabFields.classList.toggle('on', mode === 'fields');
   if (mode === 'accuracy') paintAccuracy();
   if (mode === 'fields') paintFields();
+  if (mode === 'layout') paintLayout();
+  if (mode === 'rawout') paintRawOut();
 }
 tabRendered.addEventListener('click', () => showTab('rendered'));
 tabRaw.addEventListener('click', () => showTab('raw'));
 tabAccuracy.addEventListener('click', () => { if (!tabAccuracy.disabled) showTab('accuracy'); });
 tabFields.addEventListener('click', () => { if (!tabFields.disabled) showTab('fields'); });
+
+/* ---------- raw output: the reply before anything touched it ----------------
+   Three steps stand between what the model said and what the Markdown tab shows
+   -- the fence strip, the layout flatten, and normalise_output -- and each one
+   drops something deliberately. This is the only place the dropped material is
+   visible: the <page_number> tags and headings on a Markdown profile, and the
+   bbox coordinates on a layout one, which the transcript has no way to carry.
+
+   Per page, because that is the unit the model actually answered in; the
+   Markdown tab's page separators are this app's, not the model's. */
+const rawoutEl = document.getElementById('rawout');
+const tabRawOut = document.getElementById('tabRawOut');
+const rawoutBody = document.getElementById('rawoutBody');
+const roLabel = document.getElementById('roLabel');
+const roSize = document.getElementById('roSize');
+const roPrev = document.getElementById('roPrev');
+const roNext = document.getElementById('roNext');
+const roCopy = document.getElementById('roCopy');
+
+/* Shared by both toggles: where to go back to when one is pressed again. */
+let lastMode = 'raw';
+let roPage = 0;
+
+function roRaw(index) {
+  const st = pageStats[index] || {};
+  return typeof st.raw === 'string' ? st.raw : '';
+}
+function enableRawOut() {
+  const on = pageStats.some(st => st && typeof st.raw === 'string' && st.raw !== '');
+  tabRawOut.disabled = !on;
+  if (!on && curMode === 'rawout') showTab(lastMode === 'rawout' ? 'raw' : lastMode);
+}
+
+function paintRawOut() {
+  const total = pageStats.length || 1;
+  roPage = Math.max(0, Math.min(roPage, total - 1));
+  const body = roRaw(roPage);
+  const paged = total > 1;
+  roPrev.hidden = roNext.hidden = !paged;
+  roLabel.textContent = paged ? 'Page ' + (roPage + 1) + ' of ' + total : '';
+  roPrev.disabled = roPage === 0;
+  roNext.disabled = roPage >= total - 1;
+  roSize.textContent = body
+    ? body.length.toLocaleString() + ' characters, exactly as returned'
+    : '';
+  rawoutBody.textContent = body || 'This page returned nothing.';
+}
+
+roPrev.addEventListener('click', () => { roPage--; paintRawOut(); });
+roNext.addEventListener('click', () => { roPage++; paintRawOut(); });
+roCopy.addEventListener('click', async () => {
+  try {
+    await navigator.clipboard.writeText(roRaw(roPage));
+    roCopy.textContent = 'Copied';
+    setTimeout(() => { roCopy.textContent = 'Copy'; }, 1200);
+  } catch (err) { roCopy.textContent = 'Copy failed'; }
+});
+tabRawOut.addEventListener('click', () => {
+  if (tabRawOut.disabled) return;
+  if (curMode === 'rawout') { showTab(lastMode); return; }
+  lastMode = curMode;
+  showTab('rawout');
+});
+
+/* ---------- layout view: where the model says it found each block ----------
+   Only a profile that answers with geometry produces this, so the button stays
+   disabled until a run actually returns boxes -- an empty stage would otherwise
+   read as "the model found nothing" on every Markdown run ever made.
+
+   It is a toggle rather than a fifth tab because it answers a question about the
+   tab you are already on ("where on the page did that come from?"), so pressing
+   it twice puts you back where you were. */
+const layoutEl = document.getElementById('layout');
+const tabLayout = document.getElementById('tabLayout');
+const layStage = document.getElementById('layStage');
+const layPop = document.getElementById('layPop');
+const layLabel = document.getElementById('layLabel');
+const layCount = document.getElementById('layCount');
+const layLegend = document.getElementById('layLegend');
+const layPrev = document.getElementById('layPrev');
+const layNext = document.getElementById('layNext');
+
+/* Stroke colours for the categories dots.ocr can return. Literals, for the
+   reason the stylesheet gives: they sit on a photograph, not on the page. */
+const LAY_COLOURS = {
+  'Text': '#0e6f78', 'Section-header': '#4a5cae', 'Page-header': '#7a4f9e',
+  'Page-footer': '#5a6470', 'Picture': '#6f7c82', 'Table': '#a8760e',
+  'Title': '#b3372c', 'List-item': '#2f6b46', 'Caption': '#8a5a2b',
+  'Footnote': '#5a6470', 'Formula': '#9c5f2e'
+};
+const layColour = c => LAY_COLOURS[c] || '#6f7c82';
+
+let layPage = 0, laySel = null;
+/* The image's own pixel size, needed to crop a Picture block out of it. Set
+   once the page image loads; until then a crop is not drawn at all. */
+let layNat = null, layPageSrc = '';
+
+/* Boxes for one page, from the stats that page reported. */
+function layBlocks(index) {
+  const st = pageStats[index] || {};
+  return (st.layout || []).filter(b => b.bbox);
+}
+function layAnyBoxes() {
+  return pageStats.some(st => (st && st.layout || []).some(b => b.bbox));
+}
+function enableLayout() {
+  const on = layAnyBoxes() && !!job;
+  tabLayout.disabled = !on;
+  /* A re-run on a Markdown profile must not strand the user in an empty view. */
+  if (!on && curMode === 'layout') showTab(lastMode === 'layout' ? 'raw' : lastMode);
+}
+
+function paintLayout() {
+  const total = pageStats.length || 1;
+  layPage = Math.max(0, Math.min(layPage, total - 1));
+  const blocks = layBlocks(layPage);
+  const paged = total > 1;
+  layPrev.hidden = layNext.hidden = !paged;
+  layLabel.textContent = paged ? 'Page ' + (layPage + 1) + ' of ' + total : '';
+  layPrev.disabled = layPage === 0;
+  layNext.disabled = layPage >= total - 1;
+  layCount.textContent = blocks.length + (blocks.length === 1 ? ' block' : ' blocks')
+    + ' · in the order the model returned them';
+
+  const cats = [...new Set(blocks.map(b => b.category).filter(Boolean))];
+  layLegend.innerHTML = cats.map(c =>
+    '<span><i class="lay-swatch" style="background:' + layColour(c) + '"></i>'
+    + esc(c) + '</span>').join('');
+
+  /* The image is the one the model was sent, straight from the job cache, so a
+     box drawn at its own coordinates lands where the model put it. The viewBox
+     is set from the image's natural size once it loads, for the same reason. */
+  const src = '/api/page/' + job + '/' + layPage;
+  layPageSrc = src;
+  layNat = null;
+  const boxes = blocks.map((b, i) => {
+    const x = b.bbox[0], y = b.bbox[1];
+    const w = Math.max(1, b.bbox[2] - x), h = Math.max(1, b.bbox[3] - y);
+    const col = layColour(b.category);
+    return '<g><rect class="lay-box' + (laySel === i ? ' on' : '') + '" data-i="' + i
+      + '" x="' + x + '" y="' + y + '" width="' + w + '" height="' + h
+      + '" stroke="' + col + '"></rect>'
+      + '<rect x="' + x + '" y="' + (y - 16) + '" width="' + (String(i + 1).length * 9 + 8)
+      + '" height="16" fill="' + col + '"></rect>'
+      + '<text class="lay-tag" x="' + (x + 4) + '" y="' + (y - 4) + '">' + (i + 1)
+      + '</text></g>';
+  }).join('');
+
+  layStage.innerHTML = '<img id="layImg" alt="the page as the model received it" src="'
+    + esc(src) + '"><svg id="laySvg" preserveAspectRatio="none"></svg>';
+  const img = document.getElementById('layImg');
+  const svg = document.getElementById('laySvg');
+  const fit = () => {
+    if (!img.naturalWidth) return;
+    layNat = { w: img.naturalWidth, h: img.naturalHeight };
+    svg.setAttribute('viewBox', '0 0 ' + layNat.w + ' ' + layNat.h);
+    svg.innerHTML = boxes;
+    if (laySel !== null) layPopPin(laySel);
+  };
+  if (img.complete) fit(); else img.addEventListener('load', fit, { once: true });
+
+}
+
+/* ---------- the hover popup ----------
+   Three shapes, because a block's category says what its text *is* and reading
+   it as a string throws that away: a Table's text is table markup, and a
+   Picture has no text at all -- the prompt tells the model to omit it, so an
+   empty body there is obedience and not a gap. Rendering each as what it is
+   makes a wrong box obvious at a glance, which four numbers never do. */
+function layPopBody(b) {
+  const isTable = b.category === 'Table' || /<table[\s>]/i.test(b.text || '');
+  if (isTable && b.text) return sanitize(renderOutput(b.text));
+  if (b.category === 'Picture') {
+    /* Crop the region out of the page the model was actually sent, so the box
+       is checked against the pixels it claims rather than against a caption. */
+    if (!layNat) return '<span class="body"><em>the page image is still loading</em></span>';
+    const x = b.bbox[0], y = b.bbox[1];
+    const w = Math.max(1, b.bbox[2] - x), h = Math.max(1, b.bbox[3] - y);
+    const s = Math.min(1, 420 / w, 300 / h);
+    return '<div class="lay-crop" style="width:' + Math.round(w * s) + 'px;height:'
+      + Math.round(h * s) + 'px;background-image:url(&quot;' + esc(layPageSrc)
+      + '&quot;);background-size:' + Math.round(layNat.w * s) + 'px '
+      + Math.round(layNat.h * s) + 'px;background-position:' + Math.round(-x * s)
+      + 'px ' + Math.round(-y * s) + 'px"></div>'
+      + (b.text ? '<span class="body">' + esc(b.text) + '</span>' : '');
+  }
+  return '<span class="body">' + (b.text ? esc(b.text)
+    : '<em>no text — omitted by the prompt for this category</em>') + '</span>';
+}
+
+function layPopFill(i) {
+  const b = layBlocks(layPage)[i];
+  if (!b) return false;
+  layPop.innerHTML = '<span class="cap">' + (i + 1) + '. ' + esc(b.category || 'block')
+    + ' · [' + b.bbox.join(', ') + ']</span>' + layPopBody(b)
+    + (laySel === i ? '<span class="lay-pin">pinned — click the box again to release</span>' : '');
+  layPop.classList.toggle('pinned', laySel === i);
+  layPop.hidden = false;
+  return true;
+}
+
+/* Clamped to the viewport after the content is in, because the popup's size is
+   what decides whether it fits -- a table is not the height of a text run. */
+function layPopPlace(x, y) {
+  const pad = 10, r = layPop.getBoundingClientRect();
+  let left = x + 16, top = y + 16;
+  if (left + r.width > innerWidth - pad) left = Math.max(pad, x - 16 - r.width);
+  if (top + r.height > innerHeight - pad) top = Math.max(pad, innerHeight - pad - r.height);
+  layPop.style.left = Math.round(left) + 'px';
+  layPop.style.top = Math.round(top) + 'px';
+}
+function layPopHide() {
+  layPop.hidden = true;
+  layPop.classList.remove('pinned');
+}
+/* Selecting a box repaints the marks only. A full paintLayout() re-creates the
+   <img>, which re-requests the page and flickers the very thing being pointed
+   at, so the selected state is toggled on the boxes already on screen. */
+function layMark() {
+  layStage.querySelectorAll('.lay-box').forEach(el =>
+    el.classList.toggle('on', Number(el.dataset.i) === laySel));
+}
+/* A pinned popup is anchored to its box rather than to the cursor, so it stays
+   put while the pointer goes to it. */
+function layPopPin(i) {
+  const box = layStage.querySelector('.lay-box[data-i="' + i + '"]');
+  if (!box || !layPopFill(i)) return;
+  const r = box.getBoundingClientRect();
+  layPopPlace(r.right, r.top - 16);
+}
+
+layStage.addEventListener('mousemove', e => {
+  if (laySel !== null) return;            // pinned: hover must not fight it
+  const box = e.target.closest('.lay-box');
+  if (!box) { layPopHide(); return; }
+  if (!layPopFill(Number(box.dataset.i))) return;
+  layPopPlace(e.clientX, e.clientY);
+});
+layStage.addEventListener('mouseleave', () => { if (laySel === null) layPopHide(); });
+layStage.addEventListener('click', e => {
+  const box = e.target.closest('.lay-box');
+  if (!box) { laySel = null; layPopHide(); layMark(); return; }
+  const i = Number(box.dataset.i);
+  laySel = laySel === i ? null : i;
+  layMark();
+  if (laySel === null) layPopHide(); else layPopPin(laySel);
+});
+document.addEventListener('keydown', e => {
+  if (e.key !== 'Escape' || laySel === null || curMode !== 'layout') return;
+  laySel = null; layPopHide(); layMark();
+});
+addEventListener('scroll', () => { if (laySel !== null) layPopPin(laySel); }, true);
+addEventListener('resize', () => { if (laySel !== null) layPopPin(laySel); });
+
+layPrev.addEventListener('click', () => { layPage--; laySel = null; layPopHide(); paintLayout(); });
+layNext.addEventListener('click', () => { layPage++; laySel = null; layPopHide(); paintLayout(); });
+tabLayout.addEventListener('click', () => {
+  if (tabLayout.disabled) return;
+  if (curMode === 'layout') { showTab(lastMode); return; }
+  lastMode = curMode;
+  showTab('layout');
+});
 
 /* ---------- extracted fields (second LLM pass) ---------- */
 const FIELD_LABELS = {
@@ -925,12 +1342,68 @@ const GROUND_TAG = {
   computed: ['computed', 'not printed on the page; it is the sum of the other extracted figures']
 };
 
-function defList(pairs) {
+/* The verdict a hand-written truth file passes on one value. Distinct from
+   GROUND_TAG above and worth keeping distinct: grounding says a value is printed
+   somewhere on the page, this says it is the value that belongs in THIS key --
+   sol005's buyer_name held the page's Location Code, which grounds and is wrong,
+   and only this can say so. */
+const SCORE_TAG = {
+  correct: ['correct', 'matches the value the ground truth says belongs in this field'],
+  partial: ['partly', 'the right value, over- or under-captured — one contains the other'],
+  wrong: ['wrong', 'the ground truth says a different value belongs in this field'],
+  missed: ['not returned', 'the document prints a value here and nothing came back for it'],
+  spurious: ['extra', 'the ground truth says this document prints nothing for this field'],
+  absent: ['not stated', 'the document does not print this, and nothing was filled in — agreed']
+};
+const SCORE_OK = new Set(['correct', 'absent']);
+function scoreMark(row) {
+  const tag = row && SCORE_TAG[row.status];
+  return tag ? '<span class="sc ' + row.status + '" title="' + esc(tag[1]) + '">'
+               + esc(tag[0]) + '</span>' : '';
+}
+/* The readings of the truth file this row was NOT judged against, quoted.
+   `expected` is the one the answer came closest to, so these are the rest. */
+function otherReadings(row) {
+  return ((row && row.accepted) || [])
+    .filter(v => String(v) !== String(row.expected))
+    .map(v => '“' + esc(String(v)) + '”');
+}
+/* Printed where the two differ -- repeating the truth under every correct value
+   would double the length of the list to say nothing -- and, on a key the truth
+   file gives more than one accepted reading, printed under a CORRECT value too.
+
+   That second case is the one worth arguing for. A key with two readings was
+   marked right against one of them, and the mark alone does not say that: it
+   looks identical to a key with a single truth, so the reader cannot tell
+   whether the other language would have been accepted or whether this run
+   simply happened to answer in the one the file wanted. Saying which readings
+   the key accepts is the only thing on screen that distinguishes a value that
+   was right from a value that could only ever have been right one way -- and
+   the readings are what a reviewer edits when they disagree with the score.
+
+   Wrong and partial keep "Ground truth", because there the readings are what
+   the answer failed to match; correct gets "Also accepted", because there they
+   are not a finding and must not read as one. */
+function truthLine(row) {
+  if (!row) return '';
+  const alt = otherReadings(row);
+  if (SCORE_OK.has(row.status))
+    return alt.length ? '<div class="truth">Also accepted: <i>'
+                        + alt.join(', ') + '</i></div>' : '';
+  if (row.status === 'spurious')
+    return '<div class="truth">Ground truth: <b>the page prints nothing here</b></div>';
+  return '<div class="truth">Ground truth: <b>' + esc(String(row.expected)) + '</b>'
+    + (alt.length ? '<i> — or ' + alt.join(', or ') + '</i>' : '')
+    + '</div>';
+}
+
+function defList(pairs, truth) {
   if (!pairs.length) return '';
   return '<dl class="fld-grid">' + pairs.map(([label, value, money, status, key]) => {
     const blank = (value === null || value === undefined || value === '');
     const tag = GROUND_TAG[status];
     const tier = FIELD_TIER[key];
+    const sc = (truth && key) ? truth[key] : null;
     const cls = [blank ? 'empty' : '', money ? 'money' : '',
                  status === 'ungrounded' || status === 'computed' ? status : ''].join(' ');
     let body;
@@ -945,8 +1418,36 @@ function defList(pairs) {
     return '<dt>' + esc(label)
       + (tier ? '<span class="tier ' + tier + '" title="Priority '
                 + tier.slice(1) + ' field">' + tier.toUpperCase() + '</span>' : '')
-      + '</dt><dd class="' + cls.trim() + '">' + body + '</dd>';
+      + '</dt><dd class="' + cls.trim() + '">' + body + scoreMark(sc) + truthLine(sc)
+      + '</dd>';
   }).join('') + '</dl>';
+}
+
+/* The truth file for this document, re-keyed the way the fields on screen are
+   keyed, so every value can be marked where it is read.
+
+   The line items are the part that needs doing at all: `line_items[i].key`
+   carries the index of the TRUTH row, and rows are paired with the extractor's
+   by content rather than by position (one dropped row would otherwise shift
+   every row after it), so `row` -- which returned row the truth row was paired
+   with -- is the only thing that lets a cell on screen find the value it is
+   judged against. A truth row paired with nothing is a row the page prints and
+   the extraction never returned, which is a finding in its own right and is
+   drawn under the table rather than dropped. */
+function truthIndex(fs) {
+  const out = { scalars: {}, items: {}, missedRows: [], keys: new Set() };
+  if (!fs || fs.error) return out;
+  for (const r of ((fs.scalars || {}).rows) || []) out.scalars[r.path] = r;
+  for (const r of ((fs.line_items || {}).rows) || []) {
+    const m = /^line_items\[(\d+)\]\.(.+)$/.exec(r.path || '');
+    if (!m) continue;
+    if (r.expected !== '' && r.expected !== null && r.expected !== undefined) out.keys.add(m[2]);
+    const bucket = (r.row === null || r.row === undefined)
+      ? (out.missedRows[+m[1]] = out.missedRows[+m[1]] || {})
+      : (out.items[r.row] = out.items[r.row] || {});
+    bucket[m[2]] = r;
+  }
+  return out;
 }
 
 /* Coverage by delivery tier. Sits above the grounding note deliberately: this
@@ -987,8 +1488,76 @@ function basisNote(b) {
     + ' <span class="how">— ' + how + '</span></p>';
 }
 
-/* The headline the tab opens with: how much of what follows is actually
-   traceable to the transcript. */
+/* The field score, where this document has hand-written field ground truth
+   (solution/<id>.fields.json). A stronger statement than the grounding note
+   that follows it: grounding says a value is printed somewhere on the page,
+   this says it is the value that belongs in that key. sol005's buyer_name came
+   back as the page's Location Code -- grounded, and wrong.
+
+   It sits BELOW the fields, not above them: every value it scores is already
+   marked where it is read, so this is the summary of marks the reader has just
+   been through rather than a verdict handed down before they see any of them.
+   Absent on every document nobody has written a truth file for. */
+function fieldScoreNote(fs) {
+  if (!fs || fs.error) return '';
+  const o = fs.overall || {};
+  if (!o.expected) return '';
+  const c = o.counts || {};
+  const pct = v => (v === null || v === undefined) ? '—' : (v * 100).toFixed(1) + '%';
+  const cov = fs.coverage || {};
+  let html = '<p class="ground-note' + (c.correct === o.expected ? '' : ' bad') + '">'
+    + '<strong>Field score ' + pct(o.accuracy) + '</strong> — ' + c.correct + ' of '
+    + o.expected + ' value(s) the ground truth says this page prints came back '
+    + 'correct'
+    + (c.partial ? ', ' + c.partial + ' partly (' + pct(o.accuracy_loose) + ' counting those)' : '')
+    + '. ' + c.wrong + ' wrong, ' + c.missed + ' missed, ' + c.spurious
+    + ' filled where the page states nothing.';
+  if (cov.scalars_checked < cov.scalars_total) {
+    html += ' <span class="how">Scored over the ' + cov.scalars_checked + ' of '
+      + cov.scalars_total + ' key(s) the truth file fills in'
+      + (cov.line_items_checked ? ', plus the table' : '')
+      + '; the rest are unscored.</span>';
+  }
+  html += '</p>';
+  const d = (fs.line_items || {}).derived;
+  if (d) {
+    // The rows were read out of the .md's own table, and which printed column
+    // was taken for which key is a guess made from the heading. A column it
+    // could not name makes a correct extraction look wrong, so it is said here
+    // rather than left to the terminal.
+    html += '<p class="ground-note"><b>Line items</b> are scored against the table in '
+      + '<code>' + esc(d.source || '') + '</code> — '
+      + Object.entries(d.columns || {}).map(([h, k]) => esc(k) + ' ← ' + esc(h)).join(', ')
+      + (d.dropped && d.dropped.length
+          ? '. ' + d.dropped.length + ' row(s) dropped as totals or notes' : '')
+      + ((d.unmapped || []).length
+          ? '. Not scored, no key matches the heading: ' + d.unmapped.map(esc).join(', ')
+          : '')
+      + '.</p>';
+  }
+  return html;
+}
+
+/* The same score read as a list, and the counterpart to the marks beside the
+   fields: those answer "is this one right" with the document open, this answers
+   "what is left" once they have been read. Kept below the fields for that
+   reason, with the rest of the warnings. */
+function fieldMissNote(fs) {
+  if (!fs || fs.error) return '';
+  const rows = ((fs.scalars || {}).rows || [])
+    .concat(((fs.line_items || {}).rows) || [])
+    .concat(((fs.other_fields || {}).rows) || [])
+    .filter(r => r.status !== 'correct' && r.status !== 'absent');
+  if (!rows.length) return '';
+  return '<p class="ground-note bad"><strong>' + rows.length
+    + ' value(s) did not match the ground truth.</strong>'
+    + '<ul>' + rows.slice(0, 12).map(r =>
+        '<li><code>' + esc(r.path) + '</code> ' + esc(r.status) + ' — expected “'
+        + esc(r.expected) + '”, got “' + esc(r.actual) + '”</li>').join('')
+    + (rows.length > 12 ? '<li>… and ' + (rows.length - 12) + ' more</li>' : '')
+    + '</ul></p>';
+}
+
 function groundingNote(g) {
   if (!g || g.error) return '';
   const flagged = g.flagged || [];
@@ -1081,6 +1650,38 @@ fldMode.addEventListener('click',
   () => setMode(extractMode === 'agentic' ? 'single' : 'agentic'));
 extractSel.addEventListener('change', () => setMode(extractSel.value));
 paintMode();
+
+/* ---------- pass 1: which prompt, and whether a system message goes with it ----
+   The two move together on purpose. A prompt written for one model sent to
+   another has been measured returning nothing at all at HTTP 200, and so has the
+   right prompt sent with the wrong system slot -- so this is one control, not
+   two, and the server owns it for the same reason it owns the extraction mode. */
+const ocrProfileSel = document.getElementById('ocrProfileSel');
+const ocrProfileNote = document.getElementById('ocrProfileNote');
+const OCR_PROFILES = {{ ocr_profiles | tojson }};
+
+function paintOcrProfile() {
+  const spec = OCR_PROFILES.find(p => p.id === ocrProfileSel.value);
+  ocrProfileNote.textContent = spec ? spec.note : '';
+}
+
+async function setOcrProfile(next) {
+  ocrProfileSel.disabled = true;
+  try {
+    const res = await fetch('/api/ocr/profile', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ profile: next })
+    });
+    const body = await res.json();
+    /* Show what the server accepted, never what was clicked. */
+    if (body.profile) ocrProfileSel.value = body.profile;
+  } catch (err) { /* leave it where it was */ }
+  ocrProfileSel.disabled = false;
+  paintOcrProfile();
+}
+
+ocrProfileSel.addEventListener('change', () => setOcrProfile(ocrProfileSel.value));
+paintOcrProfile();
 
 /* Step progress, from either the Re-extract stream or a full run's stream.
    Returns true when the message was a step message and has been consumed. */
@@ -1225,44 +1826,83 @@ function paintFieldBody() {
                         && basis.subtotal_includes_vat) ? 'Amount (VAT included)'
                    : FIELD_LABELS[k];
 
-  /* Said first, and before the counts, because everything under it is measured
-     over keys the reply never reached: an empty field here means the model
-     stopped, not that the page is silent, and the grounding note below is
-     careful to make exactly that distinction the other way round. */
+  const truth = truthIndex(extracted.field_score);
+
+  /* Two banners stay above the fields and everything else moved below them.
+     Both of these say the values under them are incomplete for a reason that is
+     not the document's -- an extraction that stopped, and a step that was never
+     answered -- so an empty field below reads as "the model never got here"
+     rather than as "the page is silent", which is the one distinction the
+     grounding note is careful to make the other way round. Everything that
+     COMMENTS on the fields -- the score, the grounding audit, the tier counts,
+     the basis -- now follows them, so the tab opens with what was extracted
+     instead of with four paragraphs about it. */
   let html = (extracted.partial
       ? '<p class="ground-note bad"><strong>Partial extraction.</strong> '
         + esc(extracted.partial) + '</p>' : '')
-    + stepNote(extracted) + tierNote(extracted.tiers)
-    + groundingNote(g) + basisNote(basis);
+    + stepNote(extracted);
+
   for (const [title, keys, hideWhenEmpty] of FIELD_SECTIONS) {
-    if (hideWhenEmpty && keys.every(k => !f[k])) continue;
+    // A section of keys the document simply may not have drops when it is empty
+    // -- unless the truth file says one of them IS printed, in which case the
+    // whole point of this tab is to show that nothing came back for it.
+    if (hideWhenEmpty && keys.every(k => !f[k]
+        && !(truth.scalars[k] && truth.scalars[k].status === 'missed'))) continue;
     html += '<div class="fld-sec">' + title + '</div>'
-      + defList(keys.map(k => [label(k), f[k], MONEY_KEYS.has(k), st[k], k]));
+      + defList(keys.map(k => [label(k), f[k], MONEY_KEYS.has(k), st[k], k]), truth.scalars);
   }
 
   // Filtered exactly as the grounding pass filters it, so the row index in
   // `line_items[i].key` addresses the same row on both sides.
   const items = (Array.isArray(f.line_items) ? f.line_items : [])
     .filter(it => it && typeof it === 'object' && !Array.isArray(it));
-  if (items.length) {
-    // Only show columns that at least one row actually fills.
-    const cols = ITEM_COLS.filter(([k]) => items.some(it => it && it[k]));
+  const missedRows = truth.missedRows.filter(Boolean);
+  if (items.length || missedRows.length) {
+    // Only show columns that at least one row actually fills -- plus any the
+    // truth file rules on, because a column every row left empty is exactly the
+    // one worth seeing when the page prints it.
+    const cols = ITEM_COLS.filter(([k]) =>
+      items.some(it => it && it[k]) || truth.keys.has(k));
     // The Amount header says which basis its column is on, because that is
     // where the difference actually lives — every figure under it either
     // carries the tax or does not, and they look identical.
     const colHead = (k, text) => (k === 'amount' && basis)
       ? text + (basis.inclusive ? ' (incl. VAT)' : ' (ex VAT)') : text;
-    html += '<div class="fld-sec">Line items (' + items.length + ')</div>'
+    html += '<div class="fld-sec">Line items (' + items.length
+      + (missedRows.length ? ', ' + missedRows.length + ' not returned' : '') + ')</div>'
       + '<div style="overflow-x:auto"><table><tr>'
       + cols.map(([k, label]) => '<th>' + esc(colHead(k, label)) + '</th>').join('') + '</tr>'
-      + items.map((it, i) => '<tr>' + cols.map(([k]) => {
-          const v = it && it[k] ? String(it[k]) : '';
-          const num = /^[\d.,\- ]+$/.test(v) && v.trim() !== '';
-          const s = st['line_items[' + i + '].' + k];
-          const bad = s === 'ungrounded' || s === 'computed';
-          return '<td class="' + (num ? 'num ' : '') + (bad ? 'ungrounded' : '') + '"'
-            + (bad ? ' title="' + esc(GROUND_TAG[s][1]) + '"' : '') + '>' + esc(v) + '</td>';
-        }).join('') + '</tr>').join('') + '</table></div>';
+      + items.map((it, i) => {
+          // Which truth row this returned row was paired with -- by content, so
+          // a row the extractor dropped does not shift the marks along by one.
+          const scored = truth.items[i] || {};
+          return '<tr>' + cols.map(([k]) => {
+            const v = it && it[k] ? String(it[k]) : '';
+            const num = /^[\d.,\- ]+$/.test(v) && v.trim() !== '';
+            const s = st['line_items[' + i + '].' + k];
+            const bad = s === 'ungrounded' || s === 'computed';
+            const sc = scored[k];
+            const off = sc && !SCORE_OK.has(sc.status);
+            const tip = bad ? GROUND_TAG[s][1]
+                      : off ? SCORE_TAG[sc.status][1] : '';
+            return '<td class="' + (num ? 'num ' : '') + (bad ? 'ungrounded' : '')
+              + (off ? ' sc-' + sc.status : '') + '"'
+              + (tip ? ' title="' + esc(tip) + '"' : '') + '>' + esc(v)
+              + (off && sc.status !== 'spurious'
+                  ? '<div class="truth">' + esc(String(sc.expected)) + '</div>' : '')
+              + '</td>';
+          }).join('') + '</tr>';
+        }).join('')
+      // Rows the page prints that the extraction never returned. Drawn from the
+      // truth file, dashed, so nothing in them can be mistaken for model output
+      // -- and drawn at all because a dropped row is the observed failure on
+      // sol005 and leaving it out is how it stayed invisible.
+      + missedRows.map(row => '<tr class="row-missed">' + cols.map(([k], ci) =>
+          '<td>' + esc(String((row[k] || {}).expected || ''))
+          + (ci === 0 ? '<span class="fld-tag missing" title="the ground truth prints '
+              + 'this row and the extraction did not return it">not returned</span>' : '')
+          + '</td>').join('') + '</tr>').join('')
+      + '</table></div>';
   }
 
   // Paired with its original index for the same reason as the line items above.
@@ -1274,9 +1914,21 @@ function paintFieldBody() {
                                        st['other_fields[' + i + '].value']]));
   }
 
-  // Last, not first: which question produced a value matters when one looks
-  // wrong, which is after the fields have been read rather than before.
+  // Then the score: how did this run do, over the values just read. Nothing is
+  // rendered where there is no truth file, which is most documents.
+  const score = fieldScoreNote(extracted.field_score);
+  if (score) html += '<div class="fld-sec">Score</div>' + score;
+
+  // Then everything that is a warning or a finding rather than a value: what
+  // came back empty, what is not in the transcript at all, what did not match
+  // the truth, which basis the money is on, and last -- because it matters when
+  // a value looks wrong, which is after reading them -- which question produced
+  // which field.
+  const notes = tierNote(extracted.tiers) + groundingNote(g)
+    + fieldMissNote(extracted.field_score) + basisNote(basis);
+  if (notes) html += '<div class="fld-sec">Warnings and findings</div>' + notes;
   html += stepList(extracted.steps);
+
   fldBody.innerHTML = html;
 }
 
@@ -1327,6 +1979,8 @@ async function runExtract() {
     extracted = { error: err.message };
   }
   paintFields();
+  // A re-extraction moves the field score too, and the Accuracy tab shows it.
+  if (tabAccuracy.classList.contains('on')) paintAccuracy();
   // Every extraction writes its own run-log row, so the card below is stale the
   // moment this finishes -- and the whole point of re-extracting is comparing
   // this run's field counts and grounded ratio with the last one's.
@@ -1482,6 +2136,8 @@ queueBody.addEventListener('click', async e => {
     tabAccuracy.disabled = !truth;
     tabFields.disabled = !extracted;
     enableCompare();   // this job's own case, not whatever the workspace holds
+    layPage = 0; laySel = null; enableLayout();
+    roPage = 0; enableRawOut();
     paint(); renderStats(r);
     meta.textContent = `${r.page_count} page(s) · ${r.detail} · ${r.tokens} tokens · ${r.seconds}s`
       + (truth && !truth.error ? ` · ${(truth.char_accuracy * 100).toFixed(1)}% vs ${truth.case}` : '');
@@ -1649,6 +2305,23 @@ function runRow(r) {
       + (Number(r.ungrounded) > 0
          ? '<br><span style="color:var(--danger);font-size:.72rem">'
            + esc(r.ungrounded) + ' ungrounded</span>' : '')
+      // The field score, in the same cell as grounding because the two answer
+      // the same kind of question about pass 2 and the stronger one belongs
+      // beside the weaker: grounded says a value is printed somewhere on the
+      // page, this says it is the value that belongs in that key. Blank for
+      // every document without a field truth file, which is most of them.
+      //
+      // The count of values comes with it, always. This number does NOT read
+      // down the column -- its denominator is whatever that document's truth
+      // file rules on -- so 100% of 3 values and 100% of 39 have to be
+      // distinguishable at a glance.
+      + (r.field_acc === '' || r.field_acc === undefined ? ''
+         : '<br><span style="font-size:.72rem" title="of the ' + esc(r.field_expected)
+           + ' value(s) the field ground truth says this document prints, the share '
+           + 'that came back correct — a different question from whether they are '
+           + 'on the page"><b style="color:' + accColour(Number(r.field_acc) / 100)
+           + '">' + Number(r.field_acc).toFixed(0) + '%</b> of '
+           + esc(r.field_expected) + ' fields</span>')
       + '</td>'
     + '<td><span class="qbadge ' + (r.status === 'ok' ? 'done' : esc(r.status || '')) + '">'
       + esc(r.status || '') + '</span>'
@@ -1678,12 +2351,107 @@ function paintBests(t) {
       }).join('');
 }
 
+/* ---------- per-document summary ---------- */
+/* Which setting to use for a document, answered three ways, because the run log
+   answers it three ways and they rarely agree: the transcript score, the field
+   score, and the clock. The chips above give the first of those only, and a
+   percentage with no setting attached is not something anyone can act on.
+
+   Everything here is computed in `runlog.by_case` -- the rules about what is
+   eligible for each column live there, beside the file format they read. */
+
+/* A model name short enough to sit under a number. The full one is the title
+   attribute wherever this is used, because two `hf.co/...` repacks of one model
+   differ only in the part this drops. */
+function csModel(name) {
+  return String(name || '')
+    .replace(/^hf\.co\//, '').replace(/:latest$/, '').split('/').pop();
+}
+/* The setting a figure was reached under, on one line. `run_type` is spelled out
+   for a re-extraction: that row scored pass 2 against a transcript some earlier
+   run read, so the detail and profile beside it did not produce the number. */
+function csSetting(b) {
+  if (!b) return '';
+  const bits = [csModel(b.model), b.backend, b.detail, b.ocr_profile, b.extract_mode]
+    .filter(Boolean).join(' · ');
+  const when = (b.timestamp || '').replace('T', ' ');
+  return '<span class="cs-set" title="' + esc(b.model || '') + (when ? ' — ' + esc(when) : '')
+    + '">' + esc(bits || '—')
+    + (b.run_type === 'extract' ? ' <b>· re-extract only</b>' : '') + '</span>';
+}
+function csSecs(v) { return v === null || v === undefined ? '—' : Number(v).toFixed(1) + 's'; }
+function csPct(v) {
+  return '<span class="cs-val" style="color:' + accColour(Number(v) / 100) + '">'
+    + Number(v).toFixed(1) + '%</span>';
+}
+function paintCaseSummary(t) {
+  const cases = t.by_case || {};
+  const ids = Object.keys(cases).sort();
+  if (!ids.length) { caseSum.innerHTML = ''; return; }
+  const rows = ids.map(id => {
+    const c = cases[id];
+    const bc = c.best_char, bf = c.best_field, fast = c.fastest;
+    return '<tr>'
+      + '<td><b>' + esc(id) + '</b><span class="cs-set">' + c.runs + ' read(s)'
+        + (c.extracts ? ' · ' + c.extracts + ' re-extract(s)' : '') + '</span></td>'
+      // Pass 2's correctness. The count of values comes with the percentage
+      // everywhere it is printed: the denominator is this document's truth file
+      // and nothing else, so 40% of 15 and 44% of 18 are not one column.
+      + '<td>' + (bf
+          ? csPct(bf.field_acc) + ' <span class="cs-of">of ' + esc(bf.field_expected)
+            + '</span>' + csSetting(bf)
+            + '<span class="cs-set">transcript '
+            + (bf.char_accuracy === null ? 'not scored'
+               : Number(bf.char_accuracy).toFixed(1) + '%')
+            + ' · ' + csSecs(bf.total_seconds) + '</span>'
+          // Blank is not zero, the same rule the CSV column follows: no field
+          // truth file, or none of this document's runs has been scored against
+          // one yet.
+          : '<span class="cs-none">not scored yet</span>') + '</td>'
+      + '<td>' + (fast
+          ? '<span class="cs-val">' + csSecs(fast.total_seconds) + '</span>'
+            + csSetting(fast)
+            + '<span class="cs-set">' + csSecs(fast.seconds) + ' read + '
+            + csSecs(fast.extract_seconds) + ' extract · transcript '
+            + Number(fast.char_accuracy).toFixed(1) + '%'
+            + (fast.field_acc === null ? ''
+               : ' · fields ' + Number(fast.field_acc).toFixed(0) + '%')
+            + '</span>'
+          : '<span class="cs-none">no complete run</span>') + '</td>'
+      + '<td>' + (bc
+          ? csPct(bc.char_accuracy) + csSetting(bc)
+            + '<span class="cs-set">word '
+            + (bc.word_accuracy ? Number(bc.word_accuracy).toFixed(1) + '%' : '—')
+            + '</span>'
+          : '<span class="cs-none">not scored</span>') + '</td>'
+      + '</tr>';
+  }).join('');
+  caseSum.innerHTML = '<span class="cs-title">Best setting per document</span>'
+    + '<table class="queue"><tr><th>Document</th>'
+    + '<th title="highest field score: the share of the values the field ground '
+      + 'truth says this document prints that came back correct">Best fields</th>'
+    + '<th title="quickest run that finished and did both passes; a read that '
+      + 'skipped extraction is not in this column, because it did less work">'
+      + 'Fastest full run</th>'
+    + '<th title="highest character accuracy of the transcript, over every run '
+      + 'and every setting">Best transcript</th></tr>'
+    + rows + '</table>'
+    + '<p class="note">Each column is the best row in the whole log for that '
+    + 'document, with the setting that produced it — they are three different '
+    + 'runs more often than one. Fields and transcript are separate scores: a '
+    + 'run can read the page well and still put the values in the wrong keys. '
+    + 'Fastest counts reads that finished, scored above zero and ran both '
+    + 'passes, and llama.cpp caches prompts, so re-reading the same page again '
+    + 'is quicker than the first time under any setting.</p>';
+}
+
 async function refreshRuns() {
   let data;
   try { data = await (await fetch('/api/runs?limit=50')).json(); } catch { return; }
   const rows = data.runs || [];
   const t = data.totals || {};
   paintBests(t);
+  paintCaseSummary(t);
   runStats.textContent = [
     t.runs + ' run(s) logged',
     // Counted apart from reads: a re-extraction is a row, but it is not another
@@ -1702,10 +2470,13 @@ async function refreshRuns() {
     t.tokens ? t.tokens + ' tokens' : null
   ].filter(Boolean).join(' · ');
   runPath.textContent = t.path ? 'Written to ' + t.path
-    + ' — time, tokens, model, runtime, file name, file size and accuracy. No document text.' : '';
+    + ' — time, tokens, model, runtime, file name, file size, accuracy and the field '
+    + 'score. No document text.' : '';
   runBody.innerHTML = rows.length
     ? '<table class="queue"><tr><th>When</th><th>Document</th><th>Model</th>'
-      + '<th>Tokens</th><th>Time</th><th>Fields</th><th>Accuracy</th><th>Grounded</th>'
+      + '<th>Tokens</th><th>Time</th><th>Fields</th><th>Accuracy</th>'
+      + '<th title="grounded: found on the page. fields: correct against the field '
+      + 'ground truth, where there is one">Grounded · fields</th>'
       + '<th>Status</th></tr>'
       + rows.map(runRow).join('') + '</table>'
     : '';
@@ -1811,6 +2582,38 @@ function bestNote(t) {
     + '. The figure is the highest in the run log for ' + esc(t.case)
     + ' across every run and every setting — not a mean.</p>';
 }
+/* Pass 2's score on the Accuracy tab, beside pass 1's. The headline only --
+   which values were wrong, missed or invented is the Fields tab's job, and
+   repeating the list here would make the tab that answers "how well was this
+   document read" twice as long to answer a different question.
+
+   Shown only for a document with a solution/<id>.fields.json behind it, and only
+   once that file checks something: a bar reading 0.0% because nobody has filled
+   the truth file in yet would be a score, and there is no score. */
+function fieldAccNote(fs) {
+  if (!fs || fs.error) return '';
+  const o = fs.overall || {};
+  if (!o.expected) return '';
+  const c = o.counts || {};
+  const cov = fs.coverage || {};
+  const items = fs.line_items;
+  return accRow('Field extraction', o.accuracy,
+                'Extracted values against the value the field ground truth says '
+                + 'belongs in that key -- a different question from whether the '
+                + 'text was read correctly')
+    + '<p class="acc-note">' + c.correct + ' of ' + o.expected
+    + ' value(s) correct'
+    + (c.partial ? ', ' + c.partial + ' partly' : '')
+    + ' — ' + c.wrong + ' wrong, ' + c.missed + ' missed, ' + c.spurious
+    + ' filled where the page states nothing'
+    + (items ? '; ' + items.rows_matched + '/' + items.rows_expected
+               + ' line-item row(s) matched, from the table in '
+               + esc(((items.derived || {}).source) || 'the ground truth') : '')
+    + '. Scored over the ' + cov.scalars_checked + ' of ' + cov.scalars_total
+    + ' key(s) <code>' + esc(fs.case || '') + '.fields.json</code> fills in'
+    + (cov.line_items_checked ? ', plus the table' : '')
+    + '. The <b>Fields</b> tab lists each one.</p>';
+}
 function paintAccuracy() {
   if (!truth) { accHead.innerHTML = ''; accBars.innerHTML = ''; accDiff.textContent = ''; return; }
   if (truth.error) {
@@ -1838,7 +2641,8 @@ function paintAccuracy() {
         : ' Ignoring Thai marks changes little, so errors are whole-word rather than diacritic.')
     + ' Table markup is normalised before scoring, so HTML vs pipe tables do not count against it,'
     + ' and character accuracy compares content only — spacing and line breaks cannot lower it.</p>'
-    + bestNote(truth);
+    + bestNote(truth)
+    + fieldAccNote(extracted && extracted.field_score);
 
   if (!truth.diff || !truth.diff.length) {
     accDiff.innerHTML = '<span class="add">Exact match.</span>';
@@ -2443,6 +3247,8 @@ runBtn.addEventListener('click', async () => {
   if (!current && !(benchCase && benchCase.value) && !(mockFile && mockFile.value)) return;
   runBtn.disabled = true; stopBtn.disabled = false; copyBtn.disabled = true;
   text = ''; pageStats = []; pageTexts = []; curPage = -1; cmpPage = 0;
+  layPage = 0; laySel = null; enableLayout();
+  roPage = 0; enableRawOut();
   truth = null; tabAccuracy.disabled = true;
   extracted = null; extractSteps = null; tabFields.disabled = true;
   if (['accuracy','fields'].some(m => document.querySelector('#tab' + m[0].toUpperCase() + m.slice(1)).classList.contains('on'))) showTab('rendered');
@@ -2493,6 +3299,10 @@ runBtn.addEventListener('click', async () => {
           if (!compareEl.hidden) paintCompare();
         } else if (msg.event === 'page_done') {
           pageStats.push(msg);
+          enableLayout();
+          enableRawOut();
+          if (curMode === 'layout') paintLayout();
+          if (curMode === 'rawout') paintRawOut();
           renderStats();
         } else if (msg.event === 'truncated') {
           warn.textContent = 'Page ' + msg.page + ' hit the output limit and may be cut off. '
@@ -2517,6 +3327,10 @@ runBtn.addEventListener('click', async () => {
           enableCompare();
           if (!compareEl.hidden) paintCompare();
           pageStats = msg.page_stats || pageStats;
+          enableLayout();
+          enableRawOut();
+          if (curMode === 'layout') paintLayout();
+          if (curMode === 'rawout') paintRawOut();
           renderStats(msg);
           truth = msg.truth || null;
           tabAccuracy.disabled = !truth;
@@ -2552,6 +3366,9 @@ runBtn.addEventListener('click', async () => {
           tabFields.disabled = false;
           pagebar.textContent = '';
           if (tabFields.classList.contains('on')) paintFields();
+          // The Accuracy tab now has a second bar to draw, and extraction
+          // finishes long after the scores it sits under were painted.
+          if (tabAccuracy.classList.contains('on')) paintAccuracy();
         } else if (msg.event === 'logged') {
           // The row for this run is on disk; show it without waiting.
           refreshRuns();
