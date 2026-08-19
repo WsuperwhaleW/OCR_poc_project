@@ -106,6 +106,16 @@ COLUMNS = [
     # OpenAI-compatible endpoint drops it. Rows compared across backends are only
     # meaningful when this reads 0 on both.
     "dry",
+    # The third delivery tier -- the requirement's "advanced extraction" set.
+    # Appended here rather than beside p2_present for the reason every note above
+    # gives: inserting a column mid-file re-labels every value written to the
+    # right of it. A reader wanting the three tiers together reads them by name.
+    #
+    # Tier sizes changed when the schema grew to cover the field requirement, so
+    # p1/p2 counts are comparable across the change only as a RATE: present and
+    # absent are both written, and their sum is what the tier was on that row.
+    "p3_present",
+    "p3_absent",
 ]
 
 # The value the run was actually made with, taken from `settings` rather than
@@ -183,9 +193,11 @@ def _pct(value):
 EXTRACT_COLUMNS = ("extract_seconds", "extract_tokens", "extract_mode",
                    "grounded_pct", "ungrounded", "fields_missing",
                    "p1_present", "p1_absent", "p2_present", "p2_absent",
+                   "p3_present", "p3_absent",
                    "field_acc", "field_expected")
 
-_TIERS = ("p1_present", "p1_absent", "p2_present", "p2_absent")
+_TIERS = ("p1_present", "p1_absent", "p2_present", "p2_absent",
+          "p3_present", "p3_absent")
 
 
 def _extract_cells(summary: dict) -> dict:

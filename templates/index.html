@@ -191,6 +191,11 @@
   .fld-grid { display: grid; grid-template-columns: 200px minmax(0, 1fr); gap: 2px 14px; font-size: .88rem; }
   @media (max-width: 620px) { .fld-grid { grid-template-columns: minmax(0, 1fr); } }
   .fld-grid dt { color: var(--muted); padding: 6px 0; font-size: .82rem; }
+  /* A label that carries a definition says so, or nobody hovers it. Dotted
+     underline is the long-standing convention for exactly this and costs no
+     layout; `help` is the cursor that matches it. */
+  .has-hint { text-decoration: underline dotted var(--muted); text-underline-offset: 3px; cursor: help; }
+  th.has-hint { text-decoration-color: currentColor; }
   .fld-grid dd { margin: 0; padding: 6px 0; word-break: break-word; }
   .fld-grid dd.empty { color: var(--muted); opacity: .55; }
   .fld-grid dd.money { font-variant-numeric: tabular-nums; font-weight: 600; }
@@ -210,12 +215,7 @@
           vertical-align: .08rem; }
   .tier.p1 { background: rgba(110,168,254,.18); color: #6ea8fe; }
   .tier.p2 { background: rgba(255,255,255,.08); color: var(--muted); }
-  .tier-note { display: flex; align-items: center; gap: .9rem; flex-wrap: wrap; }
-  .tier-stat { display: inline-flex; align-items: center; gap: .3rem;
-               font-variant-numeric: tabular-nums; }
-  .tier-bar { display: inline-block; width: 54px; height: 5px; border-radius: 3px;
-              background: rgba(255,255,255,.1); overflow: hidden; }
-  .tier-bar i { display: block; height: 100%; background: #6ea8fe; }
+  .tier.p3 { background: rgba(255,255,255,.05); color: var(--muted); }
   .fld-tag.computed { background: rgba(217,164,65,.18); color: #d9a441; }
   #fields td.ungrounded { color: var(--danger); text-decoration: underline wavy var(--danger); }
   /* Scored against the hand-written truth file, marked at the value itself. A
@@ -1275,60 +1275,80 @@ tabLayout.addEventListener('click', () => {
 /* ---------- extracted fields (second LLM pass) ---------- */
 const FIELD_LABELS = {
   document_type: 'Document type', document_number: 'Document number',
-  issue_date: 'Issue date', due_date: 'Due date',
-  service_period: 'Service period', currency: 'Currency', vat_rate: 'VAT rate',
-  reference_document: 'Reference document', po_number: 'PO number',
-  original_invoice_number: 'Original invoice', contract_number: 'Contract no.',
-  customer_code: 'Customer code', location_code: 'Location code',
+  issue_date: 'Issue date', reference_document: 'Reference document',
   seller_name: 'Seller', seller_tax_id: 'Seller tax ID',
-  seller_branch: 'Seller branch', seller_address: 'Seller address',
+  seller_branch: 'Seller branch',
   buyer_name: 'Buyer', buyer_tax_id: 'Buyer tax ID',
-  buyer_branch: 'Buyer branch', buyer_address: 'Buyer address',
-  subtotal: 'Amount ex VAT', vat_total: 'VAT',
-  amount_incl_vat: 'Amount incl. VAT',
-  withholding_tax_total: 'Withholding tax', net_payable: 'Net payable',
-  amount_in_words: 'Amount in words',
-  payment_method: 'Payment method', payment_reference: 'Payment reference'
+  buyer_branch: 'Buyer branch',
+  currency: 'Currency', subtotal: 'Amount ex VAT', vat_total: 'VAT',
+  amount_incl_vat: 'Amount incl. VAT'
 };
-/* Twenty-nine scalars is past what one flat list reads as, so they are grouped
-   the way the page itself is laid out: what the document is, what it points at,
-   who the parties are, what it comes to, how it is paid. */
-const FIELD_SECTIONS = [
-  ['Document', ['document_type', 'document_number', 'issue_date', 'due_date',
-                'service_period', 'currency', 'vat_rate']],
-  // Every key here is one a real document may simply not have, and the server
-  // does not demand any of them. When none came back there is nothing to say,
-  // so the whole section drops rather than printing six "missing" tags.
-  ['References', ['reference_document', 'po_number', 'original_invoice_number',
-                  'contract_number', 'customer_code', 'location_code'], true],
-  ['Seller', ['seller_name', 'seller_tax_id', 'seller_branch', 'seller_address']],
-  ['Buyer', ['buyer_name', 'buyer_tax_id', 'buyer_branch', 'buyer_address']],
-  ['Totals', ['subtotal', 'vat_total', 'amount_incl_vat',
-              'withholding_tax_total', 'net_payable', 'amount_in_words']],
-  ['Payment', ['payment_method', 'payment_reference']]
-];
-const MONEY_KEYS = new Set(['subtotal', 'vat_total', 'amount_incl_vat',
-                            'withholding_tax_total', 'net_payable']);
 
-/* Delivery tier per key, mirroring grounding.PRIORITY_1/PRIORITY_2. Shown as a
-   tag beside each label because the sections above group by where a value sits
-   on the page, which is the right way to READ a document and the wrong way to
-   see how much of the MVP set came back. amount_in_words is tier 3 and untagged. */
+/* One line saying what each key MEANS, shown on hover over its label.
+
+   The labels have to fit a narrow column, so several are abbreviations or terms
+   of art -- "ex VAT", "incl. VAT", "branch" -- which four characters cannot
+   convey to a reader who does not already know them. These say what the field is
+   and, where it matters, what it is NOT: the pair this page most often has to
+   tell apart is ex-VAT against incl-VAT, two figures that look identical and
+   differ by the tax.
+
+   Written from the same definitions EXTRACT_PROMPT gives the model, so the page
+   and the prompt cannot describe a key differently. */
+const FIELD_HINTS = {
+  document_type: 'The heading naming what this document is, copied as printed. Normalised to a standard code below',
+  document_number: 'The number identifying this document',
+  issue_date: 'The date this document is dated \u2014 not a due or payment date',
+  reference_document: 'Another document this one cites. Empty on most documents, and never this document\u2019s own number',
+  seller_name: 'The issuer of this document, normally the letterhead at the top',
+  seller_tax_id: 'The issuer\u2019s tax ID. Thirteen digits in Thailand',
+  seller_branch: 'Which office or branch that tax ID is, as printed \u2014 a head-office word or a branch number',
+  buyer_name: 'The customer, found by its printed label \u2014 never the letterhead',
+  buyer_tax_id: 'The customer\u2019s tax ID. Thirteen digits in Thailand',
+  buyer_branch: 'Which office or branch that tax ID is, as printed',
+  currency: 'Only where the page prints a currency word, code or symbol. Thai text alone does not state a currency',
+  subtotal: 'The goods total printed BEFORE tax is added',
+  vat_total: 'The VAT line',
+  amount_incl_vat: 'The total printed AFTER VAT is added'
+};
+
+/* Pass 2 extracts the field requirement's PRIORITY 1 set and nothing else --
+   fourteen keys, grouped the way the page itself is laid out. Everything else the
+   document states arrives under its own printed label in `other_fields`, which is
+   rendered below rather than as named keys. */
+const FIELD_SECTIONS = [
+  ['Document', ['document_type', 'document_number', 'issue_date',
+                'reference_document']],
+  ['Seller', ['seller_name', 'seller_tax_id', 'seller_branch']],
+  ['Buyer', ['buyer_name', 'buyer_tax_id', 'buyer_branch']],
+  ['Totals', ['currency', 'subtotal', 'vat_total', 'amount_incl_vat']]
+];
+const MONEY_KEYS = new Set(['subtotal', 'vat_total', 'amount_incl_vat']);
+
+/* Every extracted key is priority 1 now, so the per-key tier tag would say P1
+   fourteen times and carry no information. Left empty rather than removed: the
+   tag renders from this map, so restoring tiers is a matter of filling it in. */
 const FIELD_TIER = {};
-[['p1', ['document_type', 'document_number', 'issue_date', 'seller_name',
-         'buyer_name', 'seller_tax_id', 'buyer_tax_id', 'seller_branch',
-         'buyer_branch', 'subtotal', 'vat_total', 'amount_incl_vat', 'currency',
-         'reference_document']],
- ['p2', ['seller_address', 'buyer_address', 'due_date', 'po_number',
-         'original_invoice_number', 'withholding_tax_total', 'net_payable',
-         'vat_rate', 'service_period', 'customer_code', 'contract_number',
-         'location_code', 'payment_method', 'payment_reference']]
-].forEach(([tier, keys]) => keys.forEach(k => { FIELD_TIER[k] = tier; }));
 const ITEM_COLS = [
   ['description', 'Description'], ['period', 'Period'], ['quantity', 'Qty'],
   ['unit_price', 'Unit price'], ['amount', 'Amount'], ['vat', 'VAT'],
   ['withholding_tax', 'W/T'], ['net_amount', 'Net amount']
 ];
+
+/* What each of those columns holds, on hover over the heading. Qty and W/T are
+   the reason this exists -- a two-letter heading over a column of money is not
+   readable on its own, and W/T in particular is the one column whose figure is
+   SUBTRACTED where every other money column is added. */
+const ITEM_HINTS = {
+  description: 'What is being charged for, as the row prints it',
+  period: 'The period this row covers, where the table rules a column for it',
+  quantity: 'How many — a count, not an amount of money',
+  unit_price: 'Price per unit',
+  amount: 'The row’s charge',
+  vat: 'VAT on this row, where the table rules a VAT column',
+  withholding_tax: 'Withholding tax (ภาษีหัก ณ ที่จ่าย) — deducted at source, so it comes OFF the row rather than being added to it',
+  net_amount: 'What the row comes to after those, where the table rules such a column'
+};
 
 /* A value is only worth reading if it came off the page. `status` is the
    server's grounding verdict for that field; without one the list renders
@@ -1415,9 +1435,18 @@ function defList(pairs, truth) {
         + (tag ? '<span class="fld-tag ' + status + '" title="' + esc(tag[1]) + '">'
                  + esc(tag[0]) + '</span>' : '');
     }
-    return '<dt>' + esc(label)
+    // The label is abbreviated to fit the column, so what the key actually means
+    // hangs off it rather than beside it -- forty-four one-line definitions
+    // printed on the page would bury the values they describe.
+    const hint = key ? FIELD_HINTS[key] : '';
+    return '<dt' + (hint ? ' class="has-hint" title="' + esc(hint) + '"' : '')
+      + '>' + esc(label)
       + (tier ? '<span class="tier ' + tier + '" title="Priority '
-                + tier.slice(1) + ' field">' + tier.toUpperCase() + '</span>' : '')
+                + tier.slice(1) + ' field — '
+                + (tier === 'p1' ? 'prototype / MVP'
+                   : tier === 'p2' ? 'production readiness'
+                   : 'advanced extraction') + '">' + tier.toUpperCase()
+                + '</span>' : '')
       + '</dt><dd class="' + cls.trim() + '">' + body + scoreMark(sc) + truthLine(sc)
       + '</dd>';
   }).join('') + '</dl>';
@@ -1452,42 +1481,9 @@ function truthIndex(fs) {
 
 /* Coverage by delivery tier. Sits above the grounding note deliberately: this
    one says how much came back, that one says how much of it is real, and reading
-   them in the other order invites treating 28/28 as a result. */
-function tierNote(t) {
-  if (!t) return '';
-  const bar = (tier, present, absent) => {
-    const total = present + absent;
-    const pct = total ? Math.round(present / total * 100) : 0;
-    return '<span class="tier-stat"><span class="tier ' + tier + '">'
-      + tier.toUpperCase() + '</span> ' + present + '/' + total
-      + '<span class="tier-bar"><i style="width:' + pct + '%"></i></span></span>';
-  };
-  return '<p class="ground-note tier-note">Fields returned: '
-    + bar('p1', t.p1_present, t.p1_absent)
-    + bar('p2', t.p2_present, t.p2_absent)
-    + '<span class="how">— how many keys came back filled, not how many are right.</span></p>';
-}
-
 /* Which figures below carry tax. Two documents can print identical numbers and
    mean different things by them, and nothing else on this tab would say so —
    the amounts are copied verbatim from the page either way, which is right, and
-   silent. */
-function basisNote(b) {
-  if (!b) return '';
-  const how = esc(b.evidence || b.source || '');
-  return '<p class="ground-note basis-note">'
-    + (b.inclusive
-        ? '<strong>The line amounts on this page already include VAT.</strong> They are '
-          + 'meant to reach the VAT-inclusive total, not the goods total, and the VAT '
-          + 'figure is contained within them rather than added to them.'
-        : '<strong>The line amounts on this page are before VAT</strong>, which is added '
-          + 'below them.')
-    + (b.subtotal_includes_vat
-        ? ' The subtotal carries VAT too — it is the same figure as the inclusive total, '
-          + 'not a pre-tax one.' : '')
-    + ' <span class="how">— ' + how + '</span></p>';
-}
-
 /* The field score, where this document has hand-written field ground truth
    (solution/<id>.fields.json). A stronger statement than the grounding note
    that follows it: grounding says a value is printed somewhere on the page,
@@ -1541,49 +1537,6 @@ function fieldScoreNote(fs) {
 /* The same score read as a list, and the counterpart to the marks beside the
    fields: those answer "is this one right" with the document open, this answers
    "what is left" once they have been read. Kept below the fields for that
-   reason, with the rest of the warnings. */
-function fieldMissNote(fs) {
-  if (!fs || fs.error) return '';
-  const rows = ((fs.scalars || {}).rows || [])
-    .concat(((fs.line_items || {}).rows) || [])
-    .concat(((fs.other_fields || {}).rows) || [])
-    .filter(r => r.status !== 'correct' && r.status !== 'absent');
-  if (!rows.length) return '';
-  return '<p class="ground-note bad"><strong>' + rows.length
-    + ' value(s) did not match the ground truth.</strong>'
-    + '<ul>' + rows.slice(0, 12).map(r =>
-        '<li><code>' + esc(r.path) + '</code> ' + esc(r.status) + ' — expected “'
-        + esc(r.expected) + '”, got “' + esc(r.actual) + '”</li>').join('')
-    + (rows.length > 12 ? '<li>… and ' + (rows.length - 12) + ' more</li>' : '')
-    + '</ul></p>';
-}
-
-function groundingNote(g) {
-  if (!g || g.error) return '';
-  const flagged = g.flagged || [];
-  const missing = g.missing || [];
-  if (!flagged.length && !missing.length) {
-    return '<p class="ground-note">All ' + g.checked
-      + ' extracted value(s) were found in the transcript. Nothing below was invented.</p>';
-  }
-  let html = '<p class="ground-note' + (flagged.length ? ' bad' : '') + '">';
-  html += flagged.length
-    ? '<strong>' + flagged.length + ' value(s) could not be found in the transcript.</strong> '
-      + 'The model produced them rather than reading them — check each against the page '
-      + 'before using it.'
-    : '<strong>Every extracted value was found in the transcript.</strong>';
-  if (missing.length) {
-    html += ' ' + missing.length + ' field(s) came back empty and are flagged missing '
-      + 'rather than filled in — check the page for each: not stated, or missed.';
-  }
-  if (flagged.length) {
-    html += '<ul>' + flagged.map(f =>
-      '<li><code>' + esc(f.path) + '</code> = “' + esc(f.value) + '” — ' + esc(f.why) + '</li>'
-    ).join('') + '</ul>';
-  }
-  return html + '</p>';
-}
-
 /* ---------- raw pass output ---------- */
 // Both later passes ask the model for JSON and then parse it, so when a value on
 // screen looks wrong the question is which of those two steps lost it. Showing
@@ -1719,7 +1672,8 @@ function stepList(steps) {
           // reports how many of its own keys the page filled, which is not a
           // score -- most documents leave whole steps legitimately empty.
           if (s.items) bits.push(s.items + (s.items === 1 ? ' row' : ' rows'));
-          else bits.push(filled + '/' + keys.length);
+          // "0/0" is not a count, it is a step that did not say what it owns.
+          else if (keys.length) bits.push(filled + '/' + keys.length);
           if (s.retry_error) bits.push('re-ask failed');
           else if (s.retried) bits.push('re-asked');
           if (s.ungrounded) { bits.push(s.ungrounded + ' not on page'); cls = 'flagged'; }
@@ -1809,11 +1763,21 @@ function paintFieldBody() {
   const st = g.statuses || {};
   const ratio = g.grounded_ratio;
   // The shape that produced these fields, named first. Two extractions of one
-  // transcript are not comparable without it -- the same 22 keys mean different
-  // things filled by one request and by fifteen -- and the picker in the sidebar
+  // transcript are not comparable without it -- the same 14 keys mean different
+  // things filled by one request and by seven -- and the picker in the sidebar
   // shows the *current* setting, which may already have been switched since.
+  // Counts only the tiers this build actually asks for, so a schema that covers
+  // one tier does not report two empty ones. This is what is left of the tier
+  // bar that used to sit at the foot of the tab.
+  const tiers = extracted.tiers || {};
+  const filled = ['p1', 'p2', 'p3'].reduce((acc, t) => {
+    const present = Number(tiers[t + '_present']), absent = Number(tiers[t + '_absent']);
+    if (!Number.isFinite(present) || present + absent === 0) return acc;
+    return {present: acc.present + present, total: acc.total + present + absent};
+  }, {present: 0, total: 0});
   fldStatus.textContent = `${modeLabel(extracted)} · ${extracted.seconds}s · `
     + `${extracted.tokens} tokens · ${extracted.model || ''}`
+    + (filled.total ? ` · ${filled.present}/${filled.total} fields` : '')
     + (ratio === null || ratio === undefined ? ''
        : ` · ${(ratio * 100).toFixed(0)}% grounded`);
 
@@ -1871,7 +1835,9 @@ function paintFieldBody() {
     html += '<div class="fld-sec">Line items (' + items.length
       + (missedRows.length ? ', ' + missedRows.length + ' not returned' : '') + ')</div>'
       + '<div style="overflow-x:auto"><table><tr>'
-      + cols.map(([k, label]) => '<th>' + esc(colHead(k, label)) + '</th>').join('') + '</tr>'
+      + cols.map(([k, label]) => '<th'
+          + (ITEM_HINTS[k] ? ' class="has-hint" title="' + esc(ITEM_HINTS[k]) + '"' : '')
+          + '>' + esc(colHead(k, label)) + '</th>').join('') + '</tr>'
       + items.map((it, i) => {
           // Which truth row this returned row was paired with -- by content, so
           // a row the extractor dropped does not shift the marks along by one.
@@ -1919,14 +1885,14 @@ function paintFieldBody() {
   const score = fieldScoreNote(extracted.field_score);
   if (score) html += '<div class="fld-sec">Score</div>' + score;
 
-  // Then everything that is a warning or a finding rather than a value: what
-  // came back empty, what is not in the transcript at all, what did not match
-  // the truth, which basis the money is on, and last -- because it matters when
-  // a value looks wrong, which is after reading them -- which question produced
-  // which field.
-  const notes = tierNote(extracted.tiers) + groundingNote(g)
-    + fieldMissNote(extracted.field_score) + basisNote(basis);
-  if (notes) html += '<div class="fld-sec">Warnings and findings</div>' + notes;
+  // There is no "Warnings and findings" block any more, and its absence is the
+  // point rather than an omission. Every line of it restated something already
+  // marked against the value it was about: `missing` and `not on page` are tags
+  // on the field itself, a wrong value already prints the truth underneath it,
+  // and the money labels already say which VAT basis they are on. Read down the
+  // page it was a second copy of the page. The one figure in it that was not a
+  // repeat -- how many keys came back filled -- is now in the status line above,
+  // where it costs a phrase instead of a section.
   html += stepList(extracted.steps);
 
   fldBody.innerHTML = html;
@@ -2269,18 +2235,25 @@ function runRow(r) {
     // unmeasured tier is not a tier measured at zero, and the CSV keeps them
     // apart for the same reason.
     + '<td class="n">' + (r.p1_present === '' || r.p1_present === undefined ? '—'
-        : '<span class="tier p1">P1</span> ' + esc(r.p1_present) + '/'
-          + (Number(r.p1_present) + Number(r.p1_absent))
-          + '<br><span class="tier p2">P2</span> ' + esc(r.p2_present) + '/'
-          + (Number(r.p2_present) + Number(r.p2_absent)))
+        : [['p1', r.p1_present, r.p1_absent], ['p2', r.p2_present, r.p2_absent],
+           ['p3', r.p3_present, r.p3_absent]]
+          // A tier the row never recorded is skipped, and so is one this build
+          // asked no keys for: `0/0` in a column of counts reads as a failure
+          // rather than as an absence. Blank-vs-zero is still kept -- a row with
+          // no p1 count at all renders the dash above.
+          .filter(([, present, absent]) => present !== '' && present !== undefined
+                  && Number(present) + Number(absent) > 0)
+          .map(([tier, present, absent]) => '<span class="tier ' + tier + '">'
+               + tier.toUpperCase() + '</span> ' + esc(present) + '/'
+               + (Number(present) + Number(absent))).join('<br>'))
       // Which shape filled them. Beside the counts rather than in a column of
       // its own because it is what makes two rows of counts comparable: one
-      // request and fifteen fill the schema in different ways, and the CSV has
+      // request and twenty fill the schema in different ways, and the CSV has
       // carried `extract_mode` from the start for exactly this reason.
       + (r.extract_mode
           ? '<br><span class="tier ' + (r.extract_mode === 'agentic' ? 'p1' : 'p2')
             + '" title="pass 2 ran as '
-            + (r.extract_mode === 'agentic' ? 'fifteen steps of one to three fields'
+            + (r.extract_mode === 'agentic' ? 'a step per group of one to three fields'
                                             : 'one request for the whole form')
             + '">' + esc(r.extract_mode) + '</span>'
           : '')
@@ -2897,8 +2870,14 @@ async function switchServer(url, model) {
     }
     serverNote.classList.remove('err');
     server = data.server;
+    // The models Ollama was holding are stopped on a switch, so the new one
+    // loads onto a free card. Said out loud: an unload that happened and one
+    // that did not look the same on this line otherwise, and they leave very
+    // different amounts of VRAM behind.
+    const stopped = data.unloaded || [];
     serverNote.textContent = 'Now using ' + server.url
-      + (server.model ? ' · ' + server.model : '');
+      + (server.model ? ' · ' + server.model : '')
+      + (stopped.length ? ' · stopped ' + stopped.join(', ') + ' to free the GPU' : '');
     customRow.style.display = 'none';
     paintEndpoint();
     paintServer();

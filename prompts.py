@@ -135,31 +135,40 @@ DEFAULT_OCR_PROFILE = "typhoon"
 # Transcript in as text, one JSON object out, in a single request. No image, so
 # it costs a fraction of the OCR run.
 #
-# Extracts 29 scalars and two lists:
-#   what it is    document_type, document_number, issue_date, due_date
-#   references    reference_document, po_number, original_invoice_number
-#   codes         contract_number, customer_code, location_code, service_period
-#   the issuer    seller_name, seller_tax_id, seller_branch, seller_address
-#   the customer  buyer_name, buyer_tax_id, buyer_branch, buyer_address
-#   basis         currency, vat_rate
-#   totals        subtotal, vat_total, amount_incl_vat, withholding_tax_total,
-#                 net_payable, amount_in_words
-#   payment       payment_method, payment_reference
-#   lists         line_items[], other_fields[]
+# SCOPE: the field requirement's PRIORITY 1 set and nothing else -- the fourteen
+# keys it calls Prototype / MVP. They are the fields a document has to give up
+# before it can be classified and matched at all:
+#
+#   what it is    document_type, document_number, issue_date
+#   what it cites reference_document
+#   the issuer    seller_name, seller_tax_id, seller_branch
+#   the customer  buyer_name, buyer_tax_id, buyer_branch
+#   the money     currency, subtotal, vat_total, amount_incl_vat
+#
+# Priority 2 and 3 -- addresses, due dates, PO/GR/RTV numbers, withholding,
+# service periods, payment and bank details, the line-item table -- are OUT of
+# this pass on purpose. Asking a 2B model for more keys measurably damages the
+# keys it was already getting right; CLAUDE.md has the numbers, and they are the
+# reason this pass is narrow rather than complete.
+#
+# `other_fields` stays, and is the only thing here that is not priority 1. It is
+# the overflow valve: everything the page states that these fourteen keys do not
+# cover goes there under the document's OWN wording, so narrowing the schema
+# loses nothing for later. It is never scored in the headline.
 #
 # It is a LOOKUP: it copies printed values onto keys and reasons about none of
-# them. Every judgement about what the figures mean belongs to `verify.py`.
-#
-# Three things here are load-bearing and look like style until removed -- no
-# example value is written in quotes, the skeleton stays a JSON skeleton, and no
-# Thai label wording is named. CLAUDE.md says what each one costs.
+# them. The requirement also asks for a NORMALISED document type, branch codes
+# and tax IDs -- none of which is asked for here, because each is a
+# classification rather than a reading. `normalise.py` derives them afterwards,
+# in Python, from the values copied here.
 EXTRACT_PROMPT = """You are reading the text of a Thai/English business document that has
 already been transcribed. Map what it prints onto the keys below.
 
 This is a lookup, not an analysis. For each key, find where the document states that
 thing and copy it across. Do not interpret the document, do not work anything out from
-it, and do not check whether it adds up -- the numbers are checked afterwards by a
-calculator, and nothing you write here is used to reason about them.
+it, and do not check whether it adds up.
+
+There are only fourteen keys and they are the important ones. Take your time over each.
 
 Return ONLY a JSON object, no prose and no code fence. Use exactly these keys:
 
@@ -167,151 +176,104 @@ Return ONLY a JSON object, no prose and no code fence. Use exactly these keys:
   "document_type": "",        // the heading naming what this document is
   "document_number": "",
   "issue_date": "",
-  "due_date": "",
   "reference_document": "",   // another document this one cites
-  "po_number": "",
-  "original_invoice_number": "",   // an earlier document this one corrects
-  "contract_number": "",
-  "customer_code": "",
-  "location_code": "",        // code for the site, premises or meter charged
-  "service_period": "",       // the period the whole document covers
   "seller_name": "",          // the issuer's name only
   "seller_tax_id": "",
   "seller_branch": "",        // whatever is printed beside that tax ID
-  "seller_address": "",
   "buyer_name": "",           // the customer's name only
   "buyer_tax_id": "",
   "buyer_branch": "",
-  "buyer_address": "",
   "currency": "",
-  "vat_rate": "",             // just the number the document states
-  "line_items": [
-    { "description": "", "period": "", "quantity": "",
-      "unit_price": "", "amount": "", "vat": "",
-      "withholding_tax": "", "net_amount": "" }
-  ],
   "subtotal": "",             // the total line printed before tax is added
   "vat_total": "",            // the tax line
   "amount_incl_vat": "",      // the total line printed after tax
-  "withholding_tax_total": "",     // the tax-deducted-at-source line
-  "net_payable": "",          // the line for what is left to pay
-  "amount_in_words": "",
-  "payment_method": "",
-  "payment_reference": "",    // the reference identifying that payment
   "other_fields": [ { "label": "", "value": "" } ]
 }
 
 Answer every key listed above, in the order listed, and close the object only after the
-last of them. Stopping early is the commonest way to get this wrong: the keys printed
-after the table are as required as the ones before it, and "" is the answer for any the
-document does not state. Do not invent a key that is not on the list.
+last of them. "" is the answer for any the document does not state. Do not invent a key
+that is not on the list.
 
-Every key above names something a document of this kind normally prints somewhere. Find
-it by its printed label, wherever on the page that label happens to sit, and copy what is
-printed against it. Documents word their labels differently and lay them out differently;
-match on what the label MEANS, not on where it is or on any particular wording.
+Each key names something a document of this kind normally prints somewhere. Find it by its
+printed label, wherever on the page that label happens to sit, and copy what is printed
+against it. Documents word their labels differently and lay them out differently; match on
+what the label MEANS, not on where it is or on any particular wording.
 
 How to fill them:
 - Copy values EXACTLY as printed. Do not reformat, do not translate, do not convert Thai
   text to English, and do not tidy a number's digits, separators or decimals.
 - Every value must appear, character for character, in the document text below. If you
   cannot point at it there, the key is not yours to fill.
-- Use "" for anything the document does not state. An empty key is a correct answer and a
-  common one; a plausible invented value is neither. Never write a placeholder -- not a
-  row of zeros, not a dash, not a repeat of a value you used elsewhere.
+- Use "" for anything the document does not state. An empty key is a correct answer; a
+  plausible invented value is not. Never write a placeholder -- not a row of zeros, not a
+  dash, not a repeat of a value you used elsewhere.
 - A value belongs to the key whose printed LABEL matches it, never to the key it happens
   to sit nearest. Before writing a value, name to yourself the label it was printed under.
   If it has no such label, it is not that key's value.
 - One thing per key, and never the same text in two keys.
 - Do not work anything out. Do not add, subtract, convert, or fill one key from another --
-  not a tax ID from a name, not a due date from an issue date, not a total from the rows
-  above it. If a figure is not printed, its key is "".
-- Output exactly the keys listed above and no others. Nothing written in these
-  instructions is itself a key or a value: where a rule names a label to look for, that is
-  a hint for finding it on the page, never something to emit.
-- The skeleton above is the shape of the answer, not the answer. Returning it unchanged,
-  with every value still "", is wrong for any document that states anything at all.
-- Anything else the page labels and states -- meter readings, page numbers, notes,
-  references these keys do not cover -- goes in "other_fields" under the document's own
-  wording for it. That is the place for a value that does not fit a key; do not force it
-  into one that nearly fits.
+  not a tax ID from a name, not a total from the rows above it. If a figure is not printed,
+  its key is "".
+- Nothing written in these instructions is itself a key or a value: where a rule names a
+  label to look for, that is a hint for finding it on the page, never something to emit.
 
-The two parties -- four keys each, and each holds one thing:
+The two parties -- three keys each, and each holds one thing:
 - The name key takes the party's name and nothing else, on ONE line. Stop at the end of
   the name. If what you are about to write contains a street, a postcode, a telephone
   number, a tax ID, a date or a line break, you have taken too much of the block.
 - A name is TEXT. A value that is mostly digits, or that reads as a code -- a site
   reference, a meter number, an account or customer number -- is not a name, however close
-  to the block it is printed. Leave the name key "" and put the code in whichever key the
-  page labels it as, or in "other_fields".
+  to the block it is printed. Leave the name key "" and put the code in "other_fields".
 - The tax ID key takes only the digits printed as the tax ID. A tax identification number
   is a LONG run of digits -- thirteen of them in Thailand, sometimes written with dashes. A
   short number of two, three or four digits is something else the page numbers, and never
   belongs here.
-- The branch key takes what is printed beside that tax ID, copied as printed -- do not
-  translate it, and do not turn a word into a number. A town, a postcode, a street or a
-  telephone number is an address, not a branch.
-- The address key takes the street lines and postcode, without the name, the tax ID or the
-  branch repeated inside it. Each party's address is its own: never give one party the
-  address printed in the other's block.
-- The issuer is normally the letterhead at the top; the other party is the block addressed
-  as the customer or buyer.
+- The branch key takes what is printed beside that tax ID to say which office or branch it
+  is, copied as printed -- do not translate it, and do not turn a word into a number. A
+  town, a postcode, a street or a telephone number is an address, not a branch.
+- The issuer is normally the letterhead at the top, printed above this document's own
+  heading; the other party is the block addressed as the customer or buyer. Neither
+  party's three keys may take the other's name, tax ID or branch.
 
-The references -- one identifier each, and only where the page labels it as that:
-- These keys are empty on most documents, and that is the expected answer. Do not reuse
-  the document's own number to fill them, and never write one value into several of them.
-- An unlabelled number is not a reference. If a reference is labelled with something these
-  keys do not cover, it belongs in "other_fields".
-- service_period is a period covering the whole document, printed near its head. A period
-  printed on one row of the table belongs to that row instead.
+reference_document:
+- ONE identifier, and only where the page labels it as another document this one cites or
+  refers to. It is empty on most documents, and that is the expected answer.
+- Never this document's own number. An unlabelled number is not a reference. Where the page
+  cites several documents, or names one with a label this key does not cover, put them in
+  "other_fields" instead of choosing one.
 
-The table:
-- One object per printed row of the charges table, in the order they are printed. Copy
-  every row once, including a row whose amount is nil. Do not revisit a row.
-- Rows that total the ones above them are not line items, whatever they are labelled.
-  Their figures belong in the totals keys instead -- each one under the key whose printed
-  label names it.
-- The table ends at its last charge. Everything printed below it -- conditions, notes and
-  small print, who received the money, bank or cheque details, signature blocks, filing
-  statements, a stray code at the foot of the page -- is not part of the table, however
-  close it sits. A sentence is not a charge: if what you are about to write as a
-  description reads as prose rather than as the name of a thing charged for, the table
-  finished before it and so should you.
-- Never carry a figure down into a row that does not print one of its own.
-- Read across the row: a figure belongs to the column it sits under. Never shift a value
-  into a neighbouring column to make a row look complete. Where the table rules no column
-  for one of the keys, that key is "" on every row -- do not produce it from the other
-  cells in the row.
-
-Reading a figure:
-- A cell showing a dash or left blank is nil: write it as a dash or as "", not as 0.00
-  unless the page prints 0.00.
-- A figure in brackets or with a leading minus is negative. Keep the sign.
-- Some forms rule a money column into two parts, the whole units and the fraction. Two
-  such parts under ONE column heading are one figure; two figures under DIFFERENT headings
-  are two figures. Keep them apart.
-
-The totals and the rate:
-- Fill only the total lines the page actually prints, each from its own printed label. A
-  page that prints one total fills the key its label names and leaves the others "". Never
-  copy one figure into two keys, and never add or subtract to produce the other.
+The money -- three figures and the currency:
+- subtotal is the total line printed BEFORE tax is added; vat_total is the tax line;
+  amount_incl_vat is the total line printed AFTER tax.
+- Fill only the lines the page actually prints, each from its own printed label. A page that
+  prints one total fills the key its label names and leaves the others "". Never copy one
+  figure into two keys, and never add or subtract to produce another.
+- Where one printed line carries several figures side by side, each under a heading of its
+  own, they are separate figures: take the one whose heading names this key, not the first
+  one on the line. A figure standing under a tax heading is not the total.
 - A total printed in two parts, the whole units and the fraction, is ONE figure: take both
   parts together, the fraction after the decimal point. The fraction on its own is never a
   total -- a total that comes out as a one- or two-digit number is half of a figure.
-- vat_rate takes just the number the page states, written the way it writes it: a page
-  showing 7 per cent gives 7, one showing 7.00 per cent gives 7.00. Not a fraction, not
-  the per-cent sign. Where no rate is printed, "".
-- currency only where the page prints one -- a currency word, code or symbol. A document
-  written in Thai does not state its currency by being written in Thai. Where none appears
-  anywhere, "".
+- A figure in brackets or with a leading minus is negative. Keep the sign. A cell showing a
+  dash is nil: write it as a dash or as "", not as 0.00 unless the page prints 0.00.
+- currency only where the page prints one -- a currency word, code or symbol against a
+  figure or in a column heading. A document written in Thai does not state its currency by
+  being written in Thai, and a currency word inside an amount spelled out in words is part
+  of that amount, not a label. Where none appears, "".
+
+other_fields:
+- Everything else the page labels and states -- addresses, due dates, purchase order and
+  delivery numbers, contract, customer and site codes, withholding tax, discounts, net
+  payable, payment and bank details, the charges table, page numbers, notes.
+- label is the document's OWN wording for it, copied as printed. value is what is printed
+  against that label.
+- This is where a value goes when it does not fit one of the fourteen keys. Never force a
+  value into a key that nearly fits, and never repeat here anything already written above.
+- Where nothing is left over, return an empty list.
 
 Document text:
 """
 
-# Closes pass 2's message, after the transcript. Extracts nothing itself: it
-# restates the schema so the OCR fine-tune answers with the fields rather than
-# with its own {"natural_text": "<the whole page>"} envelope. Load-bearing on
-# long documents, and not belt and braces -- see CLAUDE.md.
 EXTRACT_REMINDER = """
 
 Now return the JSON object described above, using exactly the keys listed.
@@ -340,17 +302,45 @@ Do NOT transcribe the document and do NOT return a "natural_text" field."""
 # Public, unlike the scalar list below: `fieldscore.py` walks a line-item row
 # cell by cell and has to agree with this schema key for key. A second copy of
 # these eight names would drift the moment one of them changed.
+# EIGHT keys, and `reference_no`/`reference_date` are deliberately NOT among them
+# even though the field requirement lists Reference No. as an MVP line-item field.
+# They were added on 2026-08-19 and reverted the same day, measured:
+#
+# Only sol004 rules a column for either. On the four fixtures that do not, the
+# two extra keys did not come back empty as the rules below tell them to -- the
+# model filled every key it was given, and the smear spread to the keys that were
+# already right. sol001 came back with `reference_no` holding the period,
+# `quantity` and `unit_price` both holding the row's amount, and
+# `withholding_tax` holding a copy of the VAT. A row of ten keys where the table
+# rules six is not a longer answer, it is a wrong one.
+#
+# So the cost was four fixtures' tables to score two columns on the fifth. If
+# this is revisited, the lever is not the prompt -- the "where there is no such
+# column, that key is empty on every row" rule is already there and already
+# ignored. It is a stronger model, or a per-document schema that only asks for
+# the columns that document actually rules.
+# Whether pass 2 asks for the charges table at all. It does not: the line-item
+# table is priority 3 in the field requirement, and this pass is priority 1 only.
+# Read by `fieldscore`, which otherwise derives the truth table from the .md and
+# then scores every row of it as missed against an extraction that was never
+# asked for one.
+EXTRACT_LINE_ITEMS = False
+
+# The eight cells of a charges row. Kept although nothing extracts them now, so
+# that `fieldscore` can still DERIVE the table from the Markdown in solution/*.md
+# and report it, and so that restoring line items is a matter of turning the flag
+# above back on rather than rebuilding the mapping.
 ITEM_KEYS = ("description", "period", "quantity", "unit_price", "amount",
              "vat", "withholding_tax", "net_amount")
+
+# The requirement's priority-1 set, in reading order rather than in the order the
+# requirement lists them. Fourteen keys. `grounding.SCALAR_FIELDS` is this list,
+# and the two must not be allowed to drift.
 _SCALAR_KEYS = (
-    "document_type", "document_number", "issue_date", "due_date",
-    "reference_document", "po_number", "original_invoice_number",
-    "contract_number", "customer_code", "location_code", "service_period",
-    "seller_name", "seller_tax_id", "seller_branch", "seller_address",
-    "buyer_name", "buyer_tax_id", "buyer_branch", "buyer_address",
-    "currency", "vat_rate", "subtotal", "vat_total", "amount_incl_vat",
-    "withholding_tax_total", "net_payable", "amount_in_words",
-    "payment_method", "payment_reference",
+    "document_type", "document_number", "issue_date", "reference_document",
+    "seller_name", "seller_tax_id", "seller_branch",
+    "buyer_name", "buyer_tax_id", "buyer_branch",
+    "currency", "subtotal", "vat_total", "amount_incl_vat",
 )
 
 LINE_ITEM_SCHEMA = {
@@ -369,16 +359,18 @@ OTHER_FIELDS_SCHEMA = {
 
 # Every key is required. The prompt already says to answer all of them and to
 # leave "" for what the page does not state; requiring them is what makes that
-# true rather than requested -- stopping early after the table was the commonest
-# single-shot failure, and it cannot happen under this grammar.
+# true rather than requested.
+#
+# `line_items` is deliberately absent -- a grammar that contains the key is an
+# invitation to fill it, and the whole point of this pass is that it does not ask
+# for the table.
 EXTRACT_JSON_SCHEMA = {
     "type": "object",
     "properties": {
         **{k: {"type": "string"} for k in _SCALAR_KEYS},
-        "line_items": LINE_ITEM_SCHEMA,
         "other_fields": OTHER_FIELDS_SCHEMA,
     },
-    "required": list(_SCALAR_KEYS) + ["line_items", "other_fields"],
+    "required": list(_SCALAR_KEYS) + ["other_fields"],
 }
 
 # --------------------------------------------------------------------------
@@ -463,27 +455,28 @@ own label, or return "" for it. Return the same JSON object as before."""
 # only thing the merge takes from that step's reply -- anything else the model
 # returns is dropped rather than trusted.
 #
-# The 15 steps, and the fields each extracts:
+# The 7 steps, and the fields each extracts. Fourteen priority-1 scalars plus the
+# overflow list:
 #
-#   document        document_type, document_number, issue_date
-#   dates           due_date, service_period
-#   references      reference_document, po_number, original_invoice_number
-#   codes           contract_number, customer_code, location_code
-#   seller          seller_name, seller_tax_id, seller_branch
-#   seller_address  seller_address
-#   buyer           buyer_name, buyer_tax_id, buyer_branch
-#   buyer_address   buyer_address
-#   basis           currency, vat_rate
-#   line_items      line_items[]
-#   totals_goods    subtotal, vat_total
-#   totals_pay      amount_incl_vat, withholding_tax_total, net_payable
-#   words           amount_in_words
-#   payment         payment_method, payment_reference
-#   other           other_fields[]
+#   document    document_type, document_number, issue_date
+#   reference   reference_document
+#   seller      seller_name, seller_tax_id, seller_branch
+#   buyer       buyer_name, buyer_tax_id, buyer_branch
+#   currency    currency
+#   totals      subtotal, vat_total, amount_incl_vat
+#   other       other_fields[]
+#
+# **THREE KEYS PER STEP IS A CEILING, NOT A STYLE.** Measured 2026-08-19: adding a
+# fourth key to a step does not cost that key, it costs the keys the step was
+# ALREADY getting right. sol001 fell from 23 correct values out of 43 to 8 when
+# four steps were widened, with `subtotal` coming back empty and the seller keys
+# filling from a payment slip at the foot of the page. If this schema ever grows
+# again, add a step. Do not add a key to a step that already has three.
 #
 # The grouping is not arbitrary: fields competing for the same value are asked
-# together, and fields mistaken for one another are kept apart -- codes runs
-# separately from buyer, which is where location_code was landing in buyer_name.
+# together, and fields mistaken for one another are kept apart. seller and buyer
+# are the pair that matters -- each step is told which block is which, because a
+# tax ID labelled more plainly is very often the other party's.
 EXTRACT_STEPS = (
     {
         "id": "document",
@@ -493,59 +486,28 @@ EXTRACT_STEPS = (
         "max_tokens": 200,
         "rules": """What to look for:
 - document_type is the heading that names what this document is, printed at the head of the
-  page. Copy the heading itself, not a description of it.
+  page. Copy the heading itself, not a description of it, and do not translate it or turn it
+  into a category -- the heading is normalised afterwards, by a program.
 - document_number is the number identifying this document, printed with that heading.
 - issue_date is the date the document is dated. Where the page prints several dates, take
   the one labelled as this document's own date -- not a due date, not a period, not a
   payment date.""",
     },
     {
-        "id": "dates",
-        "title": "the dates and period this document covers",
-        "keys": ("due_date", "service_period"),
-        "skeleton": '{ "due_date": "", "service_period": "" }',
-        "max_tokens": 200,
+        "id": "reference",
+        "title": "the document this one refers to",
+        "keys": ("reference_document",),
+        "skeleton": '{ "reference_document": "" }',
+        "max_tokens": 160,
         "rules": """What to look for:
-- due_date only where the page labels a date as the one payment falls due. A document for
-  money already paid has none; leave it "".
-- service_period is a period the document as a WHOLE covers, printed near the head of the
-  page. A period printed on one row of the table belongs to that row, not here.
-- A period runs from one date to another and is copied WHOLE, both ends of it together,
-  exactly as printed. Never split a period between these two fields: half of a period is
-  not a due date.
-- Both of these are empty on many documents, and empty is the right answer for them.""",
-    },
-    {
-        "id": "references",
-        "title": "other documents this one refers to",
-        "keys": ("reference_document", "po_number", "original_invoice_number"),
-        "skeleton": ('{ "reference_document": "", "po_number": "", '
-                     '"original_invoice_number": "" }'),
-        "max_tokens": 200,
-        "rules": """What to look for:
-- Each key takes ONE identifier, and only where the page labels it as that kind of thing.
-- reference_document is another document this one cites or refers to.
-- po_number is a purchase order number the page names as such.
-- original_invoice_number is the earlier invoice that a correcting document adjusts.
-- These three are empty on most documents. Do NOT reuse this document's own number to fill
-  any of them, and never write one value into more than one of them. An unlabelled number
-  is not a reference.""",
-    },
-    {
-        "id": "codes",
-        "title": "the account, contract and site codes",
-        "keys": ("contract_number", "customer_code", "location_code"),
-        "skeleton": ('{ "contract_number": "", "customer_code": "", '
-                     '"location_code": "" }'),
-        "max_tokens": 200,
-        "rules": """What to look for:
-- contract_number is a contract or agreement number.
-- customer_code is the issuer's own code for this customer.
-- location_code is a code for the site, premises, meter or delivery point the charge
-  belongs to. A short code mixing digits, dashes and a place name is this kind of thing --
-  it is a code, not a name and not a document number.
-- Only fill a key where the page labels the value as that. Anything labelled something else
-  is not one of these, and all three are empty on many documents.""",
+- reference_document is ONE identifier, and only where the page labels it as another
+  document this one cites or refers to.
+- It is empty on most documents, and empty is the commonest correct answer to this question.
+- This document's OWN number is never the answer. An unlabelled number is not a reference.
+- Where the page cites several documents -- a column of them down a table -- none of them
+  belongs here: do not pick one, and do not join them together.
+- Answer with the one short value and stop. If you find yourself copying a line of the page
+  into this field, the answer is "".""",
     },
     {
         "id": "seller",
@@ -555,6 +517,9 @@ EXTRACT_STEPS = (
                      '"seller_name": "" }'),
         "max_tokens": 260,
         "rules": """The issuer's block is normally the letterhead at the top of the page.
+- Work inside that block and nowhere else. Find the letterhead first -- the block printed
+  ABOVE this document's own heading -- and take all three of these from inside it. A value
+  printed lower down, in a block labelled as the customer's, belongs to the other party.
 - seller_tax_id is only the digits printed as that party's tax identification number. Copy
   the separators as printed if there are any.
 - A tax identification number is a LONG run of digits -- thirteen of them in Thailand,
@@ -566,30 +531,12 @@ EXTRACT_STEPS = (
   turn a word into a number.
 - seller_branch says which office or branch, and nothing else. A street, a town, a postcode
   or a telephone number is an address, not a branch, and does not belong in it.
-- None of these three may take the customer's name, tax ID or branch. They describe the
-  issuer only.
+- None of these three may take the customer's name, tax ID or branch.
 - seller_name is the issuer's name and nothing else, on ONE line. Stop at the end of the
   name. If what you are about to write contains a street, a postcode, a telephone number, a
   tax ID, a date or a line break, you have taken too much of the block -- cut it back.
 - A name is TEXT. A value that is mostly digits, or that reads as a code, is not a name --
   leave seller_name "" rather than putting a code in it.""",
-    },
-    {
-        "id": "seller_address",
-        "title": "where the issuer is",
-        "keys": ("seller_address",),
-        "skeleton": '{ "seller_address": "" }',
-        "max_tokens": 300,
-        "rules": """What to look for:
-- seller_address is the street lines and postcode from the issuer's block -- the letterhead
-  at the top of the page.
-- An address is where a place is: it names a street, a district, a town or a postcode. A
-  bare run of digits is a number, not an address, however close to the block it is printed;
-  a name is not an address either. If what you are about to write contains no place at all,
-  this field is "".
-- Leave the name, the tax ID and the branch out of it: those are separate fields and must
-  not be repeated inside this one.
-- Keep the address itself exactly as printed, including its own line breaks.""",
     },
     {
         "id": "buyer",
@@ -618,166 +565,61 @@ party being billed -- NOT the letterhead at the top of the page, which is the is
 - None of these three may repeat the issuer's name, tax ID or branch from the letterhead.""",
     },
     {
-        "id": "buyer_address",
-        "title": "where the customer is",
-        "keys": ("buyer_address",),
-        "skeleton": '{ "buyer_address": "" }',
-        "max_tokens": 300,
-        "rules": """What to look for:
-- buyer_address is the street lines and postcode from the customer's block -- the one
-  addressed as the customer or the party being billed, not the letterhead at the top.
-- An address is where a place is: it names a street, a district, a town or a postcode. A
-  block of company names, or a bare run of digits, is not an address. If what you are about
-  to write contains no place at all, this field is "".
-- Leave that party's name, tax ID and branch out of it.
-- Where the page gives the customer no address, this is "".""",
-    },
-    {
-        "id": "basis",
-        "title": "the currency and the tax rate",
-        "keys": ("currency", "vat_rate"),
-        "skeleton": '{ "currency": "", "vat_rate": "" }',
-        "max_tokens": 160,
+        "id": "currency",
+        "title": "the currency",
+        "keys": ("currency",),
+        "skeleton": '{ "currency": "" }',
+        "max_tokens": 120,
         "rules": """What to look for:
 - currency only where the page actually prints one -- a currency word, code or symbol, in a
-  money column heading, beside a total, or inside the amount written in words. A document
-  written in Thai does not state its currency by being written in Thai; where no currency
-  word, code or symbol appears anywhere, currency is "".
-- vat_rate is the tax rate the page states. Put just the number, written the way the page
-  writes it: a page showing 7 per cent gives 7, a page showing 7.00 per cent gives 7.00.
-  Never a fraction such as 0.07, and never the per-cent sign.
-- Where no rate is printed anywhere, vat_rate is "" -- do not assume one, and never work it
-  out from the figures.""",
+  money column heading or beside a figure.
+- A document written in Thai does not state its currency by being written in Thai. Where no
+  currency word, code or symbol appears anywhere, currency is "".
+- A currency word inside an amount spelled out in words is part of that amount, not a label
+  for the column, and does not fill this field on its own.""",
     },
     {
-        "id": "line_items",
-        "title": "the rows of the charges table",
-        "keys": ("line_items",),
-        "skeleton": """{ "line_items": [
-    { "description": "", "period": "", "quantity": "", "unit_price": "",
-      "amount": "", "vat": "", "withholding_tax": "", "net_amount": "" }
-  ] }""",
-        "max_tokens": 3000,
-        "rules": """What to look for:
-- line_items is a LIST of JSON objects, one object per row, each with the eight keys shown.
-  Do not answer with the table as a single piece of text: not as Markdown, not as HTML, not
-  as one string with the rows run together. Its column headings are not a row either --
-  they name the columns, and what they name is which key each cell goes to.
-- The table begins under that row of column headings, part way down the page. Begin there,
-  at the first charge. If the first description you are about to write is a letterhead, a
-  heading, an address or a party's name, you have not reached the table yet -- find the
-  column headings and start under them.
-- One object per row of the charges table, in the order the rows are printed. Copy every row
-  once, including a row whose amount is nil. A dropped row is the most damaging error here,
-  and a row written twice is the second most damaging -- do not revisit a row you have
-  already written.
-- Rows that total the rows above them are NOT line items, whatever they are labelled. Their
-  figures belong to the totals, not here. Stop at the last real charge.
-- The table ends at that last charge. Everything printed below it -- conditions, notes and
-  small print, who received the money, bank or cheque details, signature blocks, filing
-  statements, a stray code at the foot of the page -- is not part of the table, however
-  close it sits. A sentence is not a charge: if the description you are about to write
-  reads as prose rather than as the name of a thing charged for, the table finished before
-  it and so should you. Never carry a figure down into such a row.
-- Read across the row: each figure belongs to the column it sits under. Never shift a value
-  into a neighbouring column to make a row look complete.
-- Each of these keys is filled only from a column the table actually rules for it. Where
-  there is no such column, that key is "" on every row -- never produce it from the other
-  cells in the row. A figure you worked out is wrong here even when the arithmetic is right.
-- Keep digits exactly as printed, with their thousands separators and decimal places.
-- Some forms rule a money column into two parts, the whole units and the fraction. Two such
-  parts under ONE column heading are one figure -- a cell reading 9,741 then a gap then 60 is
-  9,741.60. Two figures under DIFFERENT headings are two figures; keep them apart.
-- A cell showing a dash or left blank is nil: write it as a dash or as "", never as 0.00 unless
-  the page prints 0.00. A figure in brackets or with a leading minus is negative; keep the sign.
-- Where the table has no rows at all, return an empty list.""",
-    },
-    {
-        "id": "totals_goods",
-        "title": "the total before tax, and the tax line",
-        "keys": ("subtotal", "vat_total"),
-        "skeleton": '{ "subtotal": "", "vat_total": "" }',
-        "max_tokens": 160,
-        "rules": """What to look for:
-- subtotal is the figure on the total line printed before tax is added -- the total of the
-  goods or services themselves.
-- vat_total is the figure on the tax line.
-- Take each from its own printed label, never from its position on the page. Pages order
-  these lines differently, and the order tells you nothing about which is which.
-- Some forms print a money figure in two parts, the whole units and the fraction, with a
-  gap or a rule between them. Both parts are ONE figure: take them together, the fraction
-  after the decimal point. The fraction on its own is never the value of one of these keys
-  -- a total that comes out as a one- or two-digit number is half of a figure, not a total.
-- Where one printed line carries several figures side by side, each under a heading of its
-  own, they are separate figures: take the one whose heading names this key, not the first
-  one on the line.
-- Fill only lines the page actually prints. Where it prints no such line, that key is "" --
-  do not add the rows up yourself and do not derive one of these from the other.""",
-    },
-    {
-        "id": "totals_pay",
-        "title": "the total, any tax deducted, and what is left to pay",
-        "keys": ("amount_incl_vat", "withholding_tax_total", "net_payable"),
-        "skeleton": ('{ "amount_incl_vat": "", "withholding_tax_total": "", '
-                     '"net_payable": "" }'),
+        "id": "totals",
+        "title": "the total before tax, the tax line, and the total after tax",
+        "keys": ("subtotal", "vat_total", "amount_incl_vat"),
+        "skeleton": ('{ "subtotal": "", "vat_total": "", '
+                     '"amount_incl_vat": "" }'),
         "max_tokens": 200,
         "rules": """These are three different figures, each read off its own printed line.
-- amount_incl_vat is the figure on the line the page prints as the total including tax.
-- withholding_tax_total is the figure on the line for tax deducted at source.
-- net_payable is the figure on the line for what is left to pay after that deduction. A
-  document with no such deduction usually prints no such line -- then net_payable is "".
-- Some forms print a money figure in two parts, the whole units and the fraction, with a
-  gap or a rule between them. Both parts are ONE figure: take them together, the fraction
-  after the decimal point. The fraction on its own is never the value of one of these keys
-  -- a total that comes out as a one- or two-digit number is half of a figure, not a total.
+- subtotal is the figure on the total line printed BEFORE tax is added -- the total of the
+  goods or services themselves.
+- vat_total is the figure on the tax line.
+- amount_incl_vat is the figure on the line the page prints as the total INCLUDING tax.
+- Take each from its own printed label, never from its position on the page. Pages order
+  these lines differently, and the order tells you nothing about which is which.
+- Fill only lines the page actually prints. Where it shows a single total, put it under the
+  key its own label names and leave the others "". Never copy one figure into two of these
+  keys, never add the rows up yourself, and never derive one of these from another.
 - Where one printed line carries several figures side by side, each under a heading of its
   own, they are separate figures: take the one whose heading names this key, not the first
-  one on the line. A figure standing under a tax heading is not the total.
-- Fill only the lines the page prints. Where it shows a single grand total, put it under the
-  key its own label names and leave the others "". Never copy one figure into two of these
-  keys, and never add or subtract to produce another.""",
-    },
-    {
-        "id": "words",
-        "title": "the total written out in words",
-        "keys": ("amount_in_words",),
-        "skeleton": '{ "amount_in_words": "" }',
-        "max_tokens": 200,
-        "rules": """What to look for:
-- amount_in_words is a total spelled out in words rather than digits, usually on a line of
-  its own near the totals and often inside brackets.
-- Copy the whole phrase exactly as printed, to the end of it. Do not convert it to digits,
-  do not shorten it, and do not correct it.
-- Where the page spells no amount out, this is "".""",
-    },
-    {
-        "id": "payment",
-        "title": "how the document is paid",
-        "keys": ("payment_method", "payment_reference"),
-        "skeleton": '{ "payment_method": "", "payment_reference": "" }',
-        "max_tokens": 200,
-        "rules": """What to look for:
-- payment_method is how payment was or is to be made, as the page words it. A ticked box
-  counts: copy the label beside the tick.
-- payment_reference is the number or reference identifying that payment -- a cheque number, a
-  transfer reference, a slip number.
-- Both are empty on a document that says nothing about how it is paid, which is common.""",
+  one on the line. A figure standing under a tax heading is not the total, and a figure under
+  a heading for tax deducted at source belongs to none of these three.
+- Some forms print a money figure in two parts, the whole units and the fraction, with a gap
+  or a rule between them. Both parts are ONE figure: take them together, the fraction after
+  the decimal point. The fraction on its own is never the value of one of these keys -- a
+  total that comes out as a one- or two-digit number is half of a figure, not a total.""",
     },
     {
         "id": "other",
         "title": "the remaining labelled facts",
         "keys": ("other_fields",),
         "skeleton": '{ "other_fields": [ { "label": "", "value": "" } ] }',
-        "max_tokens": 700,
+        "max_tokens": 900,
         "rules": """What to look for:
-- Every remaining fact on the page that has a printed label of its own and is worth keeping:
-  meter readings, page numbers, order numbers, delivery details, notes, anything this
-  document prints that the rest of the form has no key for.
+- Every remaining fact on the page that has a printed label of its own: addresses, due dates,
+  purchase order and delivery numbers, contract, customer and site codes, withholding tax,
+  discounts, the net payable, payment and bank details, page numbers, notes, the rows of the
+  charges table.
 - label is the document's OWN wording for it, copied as printed. value is what is printed
   against that label.
 - Do NOT repeat anything that belongs to another part of this form: the document type and
-  number, the dates, either party's name, tax ID, branch or address, the charges table, the
-  totals, or the payment lines. Those have their own fields and are already filled.
+  number, the issue date, either party's name, tax ID or branch, the currency, or the three
+  totals. Those have their own fields and are already filled.
 - Where nothing is left over, return an empty list.""",
     },
 )

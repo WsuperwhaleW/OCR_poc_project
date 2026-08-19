@@ -35,42 +35,45 @@ import verify
 # The scalar keys of the extraction schema. Anything else the model returns is
 # checked for grounding but never demanded.
 SCALAR_FIELDS = [
-    "document_type", "document_number", "issue_date", "due_date",
-    "reference_document", "po_number", "original_invoice_number",
-    "contract_number", "customer_code", "location_code", "service_period",
-    "seller_name", "seller_tax_id", "seller_branch", "seller_address",
-    "buyer_name", "buyer_tax_id", "buyer_branch", "buyer_address",
-    "currency", "vat_rate", "subtotal", "vat_total", "amount_incl_vat",
-    "withholding_tax_total", "net_payable", "amount_in_words",
-    "payment_method", "payment_reference",
+    "document_type", "document_number", "issue_date", "reference_document",
+    "seller_name", "seller_tax_id", "seller_branch",
+    "buyer_name", "buyer_tax_id", "buyer_branch",
+    "currency", "subtotal", "vat_total", "amount_incl_vat",
 ]
 
-# Of those, the ones whose absence is worth reporting. The rest are ordinary on a
-# real document -- a cash receipt has no PO number, no contract and no branch, and
-# listing all thirteen as missing on every run would bury the ones that matter.
-# Same reasoning as ITEM_REQUIRED below, applied to the scalars.
+# Of those, the ones whose absence is worth reporting. Every priority-1 key is
+# Mandatory in the field requirement except `reference_document`, which is
+# Conditional -- a document that cites nothing is complete without one, and
+# flagging it on every run would put a standing complaint against the one key
+# here that is legitimately empty most of the time.
 SCALAR_REQUIRED = [
-    "document_type", "document_number", "issue_date", "due_date",
-    "seller_name", "seller_tax_id", "buyer_name", "buyer_tax_id",
-    "currency", "vat_rate", "subtotal", "vat_total", "amount_incl_vat",
-    "withholding_tax_total", "amount_in_words", "payment_method",
+    "document_type", "document_number", "issue_date",
+    "seller_name", "seller_tax_id", "seller_branch",
+    "buyer_name", "buyer_tax_id", "buyer_branch",
+    "currency", "subtotal", "vat_total", "amount_incl_vat",
 ]
 
-# The same scalars split into the two delivery tiers, so a run can be scored as
-# "how much of the MVP set did we get" separately from the production set. Order
-# is the mapping's, not the schema's. amount_in_words is tier 3 and in neither.
-PRIORITY_1 = [
-    "document_type", "document_number", "issue_date",
-    "seller_name", "buyer_name", "seller_tax_id", "buyer_tax_id",
-    "seller_branch", "buyer_branch", "subtotal", "vat_total",
-    "amount_incl_vat", "currency", "reference_document",
-]
-PRIORITY_2 = [
-    "seller_address", "buyer_address", "due_date", "po_number",
-    "original_invoice_number", "withholding_tax_total", "net_payable",
-    "vat_rate", "service_period", "customer_code", "contract_number",
-    "location_code", "payment_method", "payment_reference",
-]
+# The delivery tiers of the field requirement. Pass 2 extracts TIER 1 ONLY, so
+# tier 1 is the whole schema and the other two are empty here rather than
+# deleted.
+#
+# They are kept as empty lists on purpose, and this is not tidiness. `tier_counts`
+# writes `p2_present`/`p2_absent` into every run-log row, and the run log is
+# append-only across builds: a reader comparing a row written today with one
+# written last week needs today's row to say `0/0` -- "this build asked for none
+# of them" -- rather than to leave a blank that means "this run extracted
+# nothing". Present and absent are both written, so the sum is what the tier was
+# on that row.
+#
+# The keys that used to be in tiers 2 and 3 -- addresses, due dates, PO/GR/RTV
+# numbers, withholding tax, net payable, VAT rate, service period, customer,
+# contract and location codes, payment and bank details, the amount in words --
+# are not lost. Pass 2 puts anything it finds under its own printed label into
+# `other_fields`, which is exactly where they go until a later phase asks for
+# them by name.
+PRIORITY_1 = list(SCALAR_FIELDS)
+PRIORITY_2 = []
+PRIORITY_3 = []
 
 # Line-item cells that are normally blank on a real document (a receipt rarely
 # rules a period or a withholding column). Missing ones are not worth reporting;
@@ -87,7 +90,8 @@ def tier_counts(fields) -> dict:
     and the number checks are for.
     """
     counts = {}
-    for label, keys in (("p1", PRIORITY_1), ("p2", PRIORITY_2)):
+    for label, keys in (("p1", PRIORITY_1), ("p2", PRIORITY_2),
+                        ("p3", PRIORITY_3)):
         present = sum(1 for k in keys
                       if isinstance(fields, dict) and not _is_blank(fields.get(k)))
         counts[f"{label}_present"] = present

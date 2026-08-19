@@ -255,14 +255,130 @@ def active_url():
         return _active
 
 
-def select(url: str = None, model: str = None) -> dict:
+# --------------------------------------------------------------------------
+# freeing the GPU when the model changes
+# --------------------------------------------------------------------------
+#
+# Only Ollama needs any of this. llama-server holds the one model it was started
+# with for its whole life, so there is nothing a switch could release; Ollama
+# keeps every model it has served resident for `keep_alive` (5 minutes by
+# default) and loads the next one *beside* it, so picking a second model in the
+# page puts two sets of weights on one card and the second load spills to CPU or
+# fails outright.
+#
+# `ollama stop <model>` is a request, not a signal: the CLI posts an empty
+# generation with keep_alive 0 and the scheduler evicts the weights. That is
+# exactly what is sent here, so this is the CLI command and not an imitation of
+# it.
+
+# Eviction is quick, but it happens on the same scheduler that is loading the
+# model being switched to, so the read timeout is generous rather than PROBE's.
+UNLOAD_TIMEOUT = (1.5, 20)
+
+
+def _same_model(a: str, b: str) -> bool:
+    """Model names, comparing an implicit `:latest` with an explicit one.
+
+    `/api/tags` and `/api/ps` both spell the tag out, but a name typed into the
+    picker or passed to `compare.py --model` may not, and a mismatch here would
+    stop the model that was just selected.
+    """
+    def norm(name):
+        name = (name or "").strip()
+        return name if ":" in name else name + ":latest"
+    return bool(a) and bool(b) and norm(a) == norm(b)
+
+
+def loaded_models(url: str) -> list:
+    """What Ollama currently holds in memory at `url`, from `/api/ps`.
+
+    Not `/api/tags`: that is everything pulled, which on this machine is most of
+    a disk. Only resident models cost VRAM and only they are worth stopping.
+    Failure is reported as "nothing loaded" -- an endpoint that cannot answer
+    this is one there is no safe way to unload anything on.
+    """
+    try:
+        res = requests.get(f"{url}/api/ps", timeout=PROBE_TIMEOUT)
+        if res.status_code != 200:
+            return []
+        body = res.json()
+    except Exception:
+        return []
+    if not isinstance(body, dict):
+        return []
+    names = []
+    for entry in body.get("models") or []:
+        name = entry.get("name") or entry.get("model") or ""
+        if name:
+            names.append(name)
+    return names
+
+
+def stop_model(url: str, model: str) -> bool:
+    """Evict one model from Ollama's memory now. True if it acknowledged.
+
+    A failure is returned, never raised: the switch itself has already happened
+    and refusing to complete it because the old model would not let go would be
+    worse than leaving the memory occupied for its keep_alive.
+    """
+    try:
+        res = requests.post(f"{url}/api/generate",
+                            json={"model": model, "keep_alive": 0},
+                            timeout=UNLOAD_TIMEOUT)
+        return res.status_code == 200
+    except Exception:
+        return False
+
+
+def free_gpu(url: str, keep: str = None) -> list:
+    """Stop every model resident at an Ollama endpoint except `keep`.
+
+    Returns the names actually stopped, which is what the page reports -- a
+    switch that silently unloaded something is indistinguishable from one that
+    did nothing, and the two have very different consequences for the next run.
+
+    **It stops models this app did not load**, deliberately: the old model is
+    not always the one this process last selected (switch A -> B -> C without
+    running B and it is A that is still resident), and the point of the feature
+    is a free card rather than tidy bookkeeping. On a shared Ollama that is the
+    wrong trade -- `OLLAMA_UNLOAD_ON_SWITCH=0` turns the whole thing off.
+
+    A non-Ollama endpoint returns [] without a request: `probe` is cached, and
+    llama-server has nothing to unload.
+    """
+    if probe(url)["kind"] != "ollama":
+        return []
+    stopped = []
+    for name in loaded_models(url):
+        if keep and _same_model(name, keep):
+            continue
+        if stop_model(url, name):
+            stopped.append(name)
+    return stopped
+
+
+def select(url: str = None, model: str = None, unload: bool = True) -> dict:
     """Point the app at an endpoint, optionally at one of its models.
 
     An unknown URL is added to the list rather than rejected, so the page can
     offer a free-text box for a port that was not configured up front.
+
+    Whatever Ollama was holding is then stopped, so the model being switched to
+    loads onto a card the model being switched from has let go of -- see
+    `free_gpu`. The names stopped ride back on the status dict as `unloaded`.
+    Two things about when it runs:
+
+    * The endpoint that was left is unloaded in full, and the one arrived at
+      keeps only the model now selected. Switching Ollama -> llama.cpp is the
+      case that most needs it and the one a model-only check would miss.
+    * `unload=False` is the caller's veto, and `app.py` uses it while the queue
+      is working. Eviction is a request to the same scheduler that is serving
+      the run in flight, so a switch made mid-batch would be paid for by the
+      document being read.
     """
     global _active
     with _lock:
+        was = _active
         if url:
             url = clean_url(url)
             if not url:
@@ -275,7 +391,16 @@ def select(url: str = None, model: str = None) -> dict:
         if model:
             _chosen[url] = model
     # Force: the point of switching is to see the new server's real state.
-    return status(url, force=True)
+    info = status(url, force=True)
+
+    stopped = []
+    if unload and settings.OLLAMA_UNLOAD_ON_SWITCH:
+        if was != url:
+            stopped += free_gpu(was)
+        stopped += free_gpu(url, keep=info["model"])
+        for name in stopped:
+            config.say(f"[ollama] stopped {name} to free the GPU")
+    return {**info, "unloaded": stopped}
 
 
 def overview(force: bool = False) -> dict:

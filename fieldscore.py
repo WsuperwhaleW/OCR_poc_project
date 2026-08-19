@@ -96,6 +96,23 @@ PARTIAL_MIN_CHARS = 4
 # reading in it and keeps the best one -- see `accepted`.
 _STATUS_ORDER = ("correct", "partial", "wrong", "missed", "spurious", "absent")
 
+# What each of those six words claims, in one line each. Printed under the report
+# table by `format_report`, because the column itself is six bare words and the
+# two that matter most are the two least obvious: `missed` and `spurious` are
+# statements about opposite mistakes -- one is the page saying something the
+# extractor did not, the other the extractor saying something the page did not --
+# and neither is a synonym for "empty". `absent` is agreement rather than a
+# score, which is why the totals do not count it.
+STATUS_MEANING = {
+    "correct": "matches the value the truth file gives for that key",
+    "partial": "right thing found, too much or too little of it taken"
+               " -- one value contains the other",
+    "wrong": "both sides filled, and they are different values",
+    "missed": "the page states it, the extractor returned nothing",
+    "spurious": "the page does not state it, the extractor filled it in anyway",
+    "absent": "both empty -- agreed, and not counted either way",
+}
+
 
 # Keys of the truth file that are configuration rather than a value to score.
 _CONFIG_KEYS = ("other_fields", "table_columns", "score_table", "line_items")
@@ -456,8 +473,81 @@ def load_truth(case_id: str) -> dict:
 
     return {"scalars": scalars, "other_fields": others,
             "table_columns": columns,
-            "score_table": raw.get("score_table", True) is not False,
+            # The truth file may switch the table off, and so may the schema:
+            # pass 2 does not ask for line items at all while
+            # `prompts.EXTRACT_LINE_ITEMS` is false, and scoring a table the
+            # extractor was never asked for would mark every row of it missed and
+            # report the resulting collapse as an accuracy figure. Either veto is
+            # enough, so the schema's is applied here rather than being written
+            # into five truth files by hand.
+            "score_table": (prompts.EXTRACT_LINE_ITEMS
+                            and raw.get("score_table", True) is not False),
             "warnings": warnings}
+
+
+# The legend that ships INSIDE every truth file, as `_readme`.
+#
+# A truth file is read and corrected by a person, and it states a lot of its
+# meaning in one or two characters: "" is not the same claim as null, and a
+# lone "-" is a third thing again. JSON has no comments, so the explanation has
+# to be a key -- and the loader ignores underscored keys precisely so that one
+# can sit here without being scored.
+#
+# A module constant rather than a literal inside `skeleton()`, because the five
+# shipped files carry it too. Two copies of a legend drift, and a legend that
+# disagrees with the format it describes is worse than none.
+README_LINES = [
+        "Hand-written ground truth for pass 2 (field extraction), scored by",
+        "fieldscore.py. The transcript ground truth for this case is the .md",
+        "file beside this one; this file is about which VALUE belongs in which",
+        "KEY, which the .md cannot say and grounding.py cannot check.",
+        "",
+        "Three states per key:",
+        "  null   not checked yet -- left out of every count. This is the",
+        "         default, so fill in what you are sure of and leave the rest.",
+        "  \"\"     the document does not print this. A value here is scored as",
+        "         spurious -- the extractor invented it, or took it from",
+        "         another key's label.",
+        "  \"text\" the document prints this. Copy it EXACTLY as printed: same",
+        "         digits, same separators, same language, no tidying. The model",
+        "         is told to copy verbatim, so the truth has to be verbatim too.",
+        "  \"-\"    the document prints a dash where a figure would go. A dash",
+        "         and an empty answer both count as correct, which is what the",
+        "         extraction prompt asks the model for.",
+        "  [ .. ]  the document prints this value in more than one way and a",
+        "         reply matching any of them is correct -- a name printed in",
+        "         Thai on the letterhead and again in English below it is the",
+        "         case it is for. One or two readings; a list long enough to",
+        "         catch anything is a key that is no longer being scored, and",
+        "         every reading in it still has to be printed on the page.",
+        "",
+        "Scoring is loose about presentation and strict about content:",
+        "punctuation, spacing and Thai digits are normalised away, and a figure",
+        "is compared by value, so 1,200 and 1,200.00 score equal. You do not",
+        "have to guess which way the model will write a number.",
+        "",
+        "The line-item table is NOT in this file. It is read out of the",
+        "Markdown table in the .md beside it, which already transcribes those",
+        "rows -- typing them again here would be the same work twice, and two",
+        "hand-written copies of one table disagree eventually. Each column is",
+        "matched to one of these eight cells by its heading:",
+        "  " + ", ".join(ITEM_KEYS),
+        "Totals rows printed inside the table are dropped, and a cell no column",
+        "maps to is expected empty on every row. Rows are matched to the",
+        "extractor's rows by content, not by position, so one row it drops does",
+        "not mis-score every row after it.",
+        "",
+        "table_columns: only needed when a heading is not recognised -- the",
+        "run prints which columns it mapped and which it did not. Write the",
+        "heading exactly as the .md prints it against the cell it fills, e.g.",
+        "  \"table_columns\": { \"จำนวนเงินรับ\": \"amount\" }",
+        "score_table: set false to leave the table out of the score entirely.",
+        "",
+        "other_fields: null means not scored. A list means these labels and",
+        "values are what the page prints outside the schema. Scored and",
+        "reported separately -- the labels are the model's own wording, so they",
+        "never move the headline number.",
+]
 
 
 def skeleton(case_id: str, pdf: str = "", kind: str = "") -> str:
@@ -471,58 +561,7 @@ def skeleton(case_id: str, pdf: str = "", kind: str = "") -> str:
         "_case": case_id,
         "_source": pdf,
         "_kind": kind,
-        "_readme": [
-            "Hand-written ground truth for pass 2 (field extraction), scored by",
-            "fieldscore.py. The transcript ground truth for this case is the .md",
-            "file beside this one; this file is about which VALUE belongs in which",
-            "KEY, which the .md cannot say and grounding.py cannot check.",
-            "",
-            "Three states per key:",
-            "  null   not checked yet -- left out of every count. This is the",
-            "         default, so fill in what you are sure of and leave the rest.",
-            "  \"\"     the document does not print this. A value here is scored as",
-            "         spurious -- the extractor invented it, or took it from",
-            "         another key's label.",
-            "  \"text\" the document prints this. Copy it EXACTLY as printed: same",
-            "         digits, same separators, same language, no tidying. The model",
-            "         is told to copy verbatim, so the truth has to be verbatim too.",
-            "  \"-\"    the document prints a dash where a figure would go. A dash",
-            "         and an empty answer both count as correct, which is what the",
-            "         extraction prompt asks the model for.",
-            "  [ .. ]  the document prints this value in more than one way and a",
-            "         reply matching any of them is correct -- a name printed in",
-            "         Thai on the letterhead and again in English below it is the",
-            "         case it is for. One or two readings; a list long enough to",
-            "         catch anything is a key that is no longer being scored, and",
-            "         every reading in it still has to be printed on the page.",
-            "",
-            "Scoring is loose about presentation and strict about content:",
-            "punctuation, spacing and Thai digits are normalised away, and a figure",
-            "is compared by value, so 1,200 and 1,200.00 score equal. You do not",
-            "have to guess which way the model will write a number.",
-            "",
-            "The line-item table is NOT in this file. It is read out of the",
-            "Markdown table in the .md beside it, which already transcribes those",
-            "rows -- typing them again here would be the same work twice, and two",
-            "hand-written copies of one table disagree eventually. Each column is",
-            "matched to one of these eight cells by its heading:",
-            "  " + ", ".join(ITEM_KEYS),
-            "Totals rows printed inside the table are dropped, and a cell no column",
-            "maps to is expected empty on every row. Rows are matched to the",
-            "extractor's rows by content, not by position, so one row it drops does",
-            "not mis-score every row after it.",
-            "",
-            "table_columns: only needed when a heading is not recognised -- the",
-            "run prints which columns it mapped and which it did not. Write the",
-            "heading exactly as the .md prints it against the cell it fills, e.g.",
-            "  \"table_columns\": { \"จำนวนเงินรับ\": \"amount\" }",
-            "score_table: set false to leave the table out of the score entirely.",
-            "",
-            "other_fields: null means not scored. A list means these labels and",
-            "values are what the page prints outside the schema. Scored and",
-            "reported separately -- the labels are the model's own wording, so they",
-            "never move the headline number.",
-        ],
+        "_readme": README_LINES,
         **{key: None for key in SCALARS},
         # The shape of one entry, kept where it will be needed rather than only
         # described in the notes above. Underscored, so the loader ignores it
@@ -816,7 +855,10 @@ def score(truth: dict, fields, table: dict = None) -> dict:
     warnings = list(truth.get("warnings") or [])
     items = None
     if not truth.get("score_table", True):
-        warnings.append("table not scored: score_table is false in the truth file")
+        warnings.append(
+            "table not scored: pass 2 does not extract line items"
+            if not prompts.EXTRACT_LINE_ITEMS
+            else "table not scored: score_table is false in the truth file")
     elif table and table.get("error"):
         warnings.append(f"table not scored: {table['error']}")
     elif table:
@@ -962,6 +1004,14 @@ def format_report(result: dict, show: int = 40) -> list:
                          f"{_clip(row['expected']):44} {_clip(row['actual'])}")
         if len(bad) > show:
             lines.append(f"  ... and {len(bad) - show} more")
+        # Only the words actually in the table above, in the order the column
+        # ranks them. A key to six terms none of which appeared is noise, and the
+        # table is read by whoever is correcting the truth file rather than by
+        # someone who already knows the vocabulary.
+        seen = {r["status"] for r in bad[:show]}
+        for name in _STATUS_ORDER:
+            if name in seen:
+                lines.append(f"    {name:9} {STATUS_MEANING[name]}")
         # Where a key accepts more than one reading, the column above holds the
         # one the answer came closest to. Said once, and only when there is such
         # a key in the table, so an ordinary run does not carry a footnote about

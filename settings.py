@@ -139,6 +139,26 @@ PROMPT_FIRST_OLLAMA = config.env_bool("PROMPT_FIRST_OLLAMA", False)
 OLLAMA_SYSTEM = config.env_str("OLLAMA_SYSTEM", "You are a helpful assistant.",
                                allow_empty=True)
 
+# Stop the model that was in use when the picker switches to another one, so the
+# new model loads onto a card the old one has let go of. Ollama only, and the
+# asymmetry is the whole reason this setting exists: llama-server holds exactly
+# one model for the life of its process, while Ollama keeps every model it has
+# served resident for its keep_alive (5 minutes by default) and loads the next
+# one beside it. Two 3B models at F16 is the difference between a run that fits
+# on a 6 GB card and one that spills to system RAM -- and a spilled run is not an
+# error, it is the same read at a fraction of the speed.
+#
+# What it sends is what `ollama stop <model>` sends: an empty generation with
+# keep_alive 0. See `backends.free_gpu`, which also owns the part worth knowing
+# before turning this on for a shared server -- it stops every model resident at
+# the endpoint, including ones this app never loaded, because the model still
+# holding the card is often not the one this process last selected.
+#
+# It never runs while the queue has a job going (`app.py` passes the veto):
+# eviction goes to the same scheduler that is serving the run in flight, so a
+# switch made mid-batch would be paid for by the document being read.
+OLLAMA_UNLOAD_ON_SWITCH = config.env_bool("OLLAMA_UNLOAD_ON_SWITCH", True)
+
 # Which pass-1 shape to start in: a key of `prompts.OCR_PROFILES`. Not validated
 # here -- this module deliberately imports nothing but `config` and `jobs`, so
 # `app.py` checks the name against the table and falls back with a warning, the

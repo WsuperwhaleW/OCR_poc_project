@@ -1,18 +1,8 @@
 {
-  "_case": "sol002",
-  "_source": "Invoice_RBS_BS2502190159_F689219741TINV_mock 1.pdf",
-  "_kind": "printed hotel invoice, mostly English",
   "document_type": "INVOICE",
   "document_number": "CR2024/030",
   "issue_date": "25/12/2024",
-  "due_date": "",
   "reference_document": "",
-  "po_number": "",
-  "original_invoice_number": "",
-  "contract_number": "",
-  "customer_code": "",
-  "location_code": "",
-  "service_period": "",
   "seller_name": [
     "บริษัท โจ-โจ ตราด จำกัด",
     "Jo-Jo TRAT COMPANY LIMITED",
@@ -20,34 +10,14 @@
   ],
   "seller_tax_id": "0211111000011",
   "seller_branch": [
-    "สาขาที่00001",
+    "สาขาที่ 00001",
     "Branch 00001"
-  ],
-  "seller_address": [
-    "3/2 หมู่ 2 ต.เบอร์มิวดา อ.เมืองฟลอริดา จ.ฟลอริดา 22333",
-    "3/2 Moo 2 Tambon Bermuda, Amphur Muang Florida, Florida 22333 Thailand"
   ],
   "buyer_name": "Andromeda Galaxy Company Limited",
   "buyer_tax_id": "0101111000111",
   "buyer_branch": "Head Office",
-  "buyer_address": "1/1 15th - 16th Floor, Duke of York's HQ, King's Rd, London 11111",
   "currency": "",
-  "vat_rate": "7",
   "subtotal": "11,638.64",
   "vat_total": "814.71",
-  "amount_incl_vat": "12,453.35",
-  "withholding_tax_total": "",
-  "net_payable": "",
-  "amount_in_words": "Three Thousand Four Hundred And Sixty Baht Only",
-  "payment_method": "",
-  "payment_reference": "",
-  "_other_fields_template": [
-    {
-      "label": "",
-      "value": ""
-    }
-  ],
-  "other_fields": null,
-  "table_columns": null,
-  "score_table": true
+  "amount_incl_vat": "12,453.35"
 }

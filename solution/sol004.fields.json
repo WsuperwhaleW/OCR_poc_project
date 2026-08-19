@@ -1,43 +1,16 @@
 {
-  "_case": "sol004",
-  "_source": "Receipt_BTM_BS2603200085_F6910191733TINV_mock 1.pdf",
-  "_kind": "printed receipt, long line-item table",
   "document_type": "ใบเสร็จรับเงิน/ใบกำกับภาษี",
   "document_number": "510260007343",
   "issue_date": "24-Feb-26",
-  "due_date": "",
   "reference_document": "",
-  "po_number": "",
-  "original_invoice_number": "",
-  "contract_number": "",
-  "customer_code": "011222",
-  "location_code": "",
-  "service_period": "",
   "seller_name": "บริษัท บราตวูสท์ จำกัด (มหาชน)",
   "seller_tax_id": "0101111000111",
   "seller_branch": "01065",
-  "seller_address": "11 ถ.แฟรงเฟิร์ต เวียนนา ต.เมืองเก่า อ.อัลท์ -ชตัดท์ จ.แฟรงเฟิร์ต 21212 TH",
   "buyer_name": "บริษัท ซไนท์เชล จำกัด",
   "buyer_tax_id": "010111102222",
   "buyer_branch": "สำนักงานใหญ่",
-  "buyer_address": "เลขที่ 121 อาคารเพรทเชล เฮ้าส์ ห้อง 1212-2-1 ถนนพญาไท แขวงวังใหม่ เขตปทุมวัน กรุงเทพมหานคร 10330",
   "currency": "บาท",
-  "vat_rate": "7.00%",
   "subtotal": "467,896.04",
   "vat_total": "20,747.72",
-  "amount_incl_vat": "",
-  "withholding_tax_total": "- 16,170.34",
-  "net_payable": "472,473.42",
-  "amount_in_words": "สี่แสนเจ็ดหมื่นสองพันสี่ร้อยเจ็ดสิบสามบาทสี่สิบสองสตางค์",
-  "payment_method": "โอนเงินเข้าบัญชีธนาคาร",
-  "payment_reference": "HO_13/02/2026_Bank Transfer HSBC = 2,504,945.32_",
-  "_other_fields_template": [
-    {
-      "label": "",
-      "value": ""
-    }
-  ],
-  "other_fields": null,
-  "table_columns": null,
-  "score_table": true
+  "amount_incl_vat": ""
 }

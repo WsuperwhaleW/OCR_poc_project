@@ -239,6 +239,7 @@ The ones that matter for a deployment:
 | `OLLAMA_SYSTEM` | `You are a helpful assistant.` | System message sent with every Ollama request; it reproduces what Ollama otherwise injects from the served model's Modelfile. Ollama only — llama-server is sent none. Set it empty to send no system message. |
 | `EXTRACT_SCHEMA` | `1` | Whether a field-extraction reply that cannot be parsed is asked again with decoding constrained to the field schema. The first request is unconstrained either way. `0` turns the retry off, so an unusable reply is reported instead. |
 | `OLLAMA_REPEAT_PENALTY` | `1.1` | Repetition penalty on the constrained retry above. Ollama only, and the only place this app sets one above `1.0`. `1.0` turns it off. |
+| `OLLAMA_UNLOAD_ON_SWITCH` | `1` | Stop the models Ollama is holding when you switch model or server, freeing the GPU for the new one. Ollama only. `0` leaves them loaded until their `keep_alive` expires. |
 | `OCR_LOG_DIR` | `./logs` | The only directory written to. Point it elsewhere to mount the app directory read-only. |
 | `OCR_MOCK_DIR` | `./mockOcr` | Source documents for the folder picker. Absent ⇒ upload-only. |
 | `OCR_SOLUTION_DIR` | `./solution` | Ground truth. Absent ⇒ accuracy scoring switches off and the page hides its controls. |
@@ -422,11 +423,10 @@ Pass 2 runs in one of two shapes, chosen by **Field extraction** in the sidebar 
 | A reply that will not parse | costs the whole extraction | costs that step's fields |
 | Speed | fast | slower |
 
-Agentic mode walks fifteen steps — the heading, the dates, the references, the codes, the
-seller, its address, the buyer, its address, currency and VAT rate, the charges table, the
-two groups of totals, the amount in words, payment, and whatever is left over — asking for
-one to three fields each against the same transcript. Use it when a value keeps landing in
-the wrong field; the single request is faster and is what a fresh process starts in.
+Agentic mode walks seven steps — the heading, the reference, the seller, the buyer, the
+currency, the totals, and whatever is left over — asking for one to three fields each against
+the same transcript. Use it when a value keeps landing in the wrong field; the single request
+is faster and is what a fresh process starts in.
 
 While it runs, the Fields tab lists the steps and marks each one done, re-asked or failed.
 The list stays after the run, under the fields, so a value can be traced back to the step
@@ -438,7 +438,7 @@ documents and the run log's `extract_mode` column, which records the shape each 
 ran in. It is **not** refused while the queue is busy, unlike switching model server.
 
 **The fields on screen say which shape produced them**, first thing on the Fields tab status
-line: `single prompt` or `agentic · 15 steps`, then the seconds, tokens, model and grounded
+line: `single prompt` or `agentic · 7 steps`, then the seconds, tokens, model and grounded
 share. That is the mode this result ran in, not the current setting — the picker may have been
 switched since, and a result loaded from the queue can be older still.
 
@@ -536,6 +536,21 @@ one server and half on another would be logged and scored as if one server had d
 Finish or cancel those jobs first. A single streaming run is not blocked, but the switch
 only affects the *next* run: the model, backend and URL are captured per page as it is
 read.
+
+Switching a **model** on Ollama stops the models it was holding, so the new one loads onto
+a card the old one has let go of. Ollama keeps every model it has served resident for its
+`keep_alive` (5 minutes by default) and loads the next one beside it; what the app sends is
+what `ollama stop <model>` sends. The picker's status line names what it stopped.
+
+Three things to know about it:
+
+* **It stops every model resident at that endpoint**, not only the one this app selected —
+  the model still holding the card is often not the one last picked here. Set
+  `OLLAMA_UNLOAD_ON_SWITCH=0` if the Ollama server is shared with anything else.
+* **llama-server is untouched.** It serves the one model it was started with for the life
+  of the process, so there is nothing a switch could release.
+* **It is skipped while the queue is working**, even though a model-only switch is allowed
+  there. Eviction goes to the same scheduler that is serving the run in flight.
 
 The app never polls the model server. It asks for status when the page renders and when you
 press **Re-check**, and that is all.
@@ -703,10 +718,13 @@ asks whether a value appears somewhere on the page, so a customer code returned 
 buyer's name passes it.
 
 `solution/<id>.fields.json` is what answers that. One file per case, hand-written, holding
-the value that belongs in each of the 29 keys. **All five ship filled in** — every key is
-stated, so an empty one means *the page does not print this* and is scored as such — and each
-file carries a `_decisions` block explaining the readings that were a judgement call. Create a
-file for a new case with:
+the value that belongs in each of the 14 extracted keys. **All five ship filled in** — every
+key is stated, so an empty one means *the page does not print this* and is scored as such.
+
+These files are maintained and verified by hand, and they hold **values and nothing else** —
+no notes, no rationale, no metadata. The notation is: `""` the page does not print this,
+`"text"` it prints this exactly, `[ … ]` it prints this in more than one way and any of them
+is correct, `null` not checked yet. Create a file for a new case with:
 
 ```bash
 python fieldscore.py init
@@ -770,7 +788,7 @@ python compare.py sol005 --fields --from-truth
 | `field accuracy` | correct values ÷ values the truth file says the page prints. **The headline.** |
 | loose | the same, counting a partial match — one value contains the other, so the right thing was found and too much or too little of it was taken |
 | `field precision` | correct ÷ everything the extractor filled in. Falls when it invents values the page does not state |
-| `by tier` | the same accuracy over the 14 priority-1 and 14 priority-2 keys separately |
+| `by tier` | the same accuracy over each delivery tier. Pass 2 extracts priority 1 only, so tier 1 is the whole schema and tiers 2 and 3 are empty |
 | `line items` | how many rows were matched, returned and invented, and the accuracy of the cells inside the matched ones — against the table read out of `solution/<id>.md`. Rows are matched by content, not by position, so one dropped row does not mis-score every row after it |
 | `other fields` | reported, and deliberately **not** part of the headline: those labels are the model's own wording |
 
@@ -830,8 +848,8 @@ to run first. The **Fields** cell marks an updated row.
 | `extract_mode` | `single` or `agentic` — the shape pass 2 ran in, taken from the result, so a mode switched mid-batch still labels each row correctly. Blank on a run that never extracted |
 | `ocr_profile` | `typhoon` or `dots` — the pass-1 shape that read the page, taken from the pages themselves for the same reason. Blank on rows written before profiles existed, and on `run_type=extract` rows, which read no page |
 | `grounded_pct`, `ungrounded`, `fields_missing` | share of extracted values found in the transcript, how many were not, and how many fields the document does not state |
-| `field_acc`, `field_expected` | pass 2 scored against `solution/<id>.fields.json`: the share of the values that came back correct, and how many values that was. Blank on every document without a field truth file, so it does not read down the column like `grounded_pct` — read the accuracy beside its own `field_expected`, because 100% of three keys and 100% of twenty-nine are the same cell and not the same claim |
-| `p1_present`, `p1_absent`, `p2_present`, `p2_absent` | field coverage by delivery tier — how many of the 14 priority-1 and 14 priority-2 keys came back filled. Blank on a run that extracted nothing, which is not the same as zero |
+| `field_acc`, `field_expected` | pass 2 scored against `solution/<id>.fields.json`: the share of the values that came back correct, and how many values that was. Blank on every document without a field truth file, so it does not read down the column like `grounded_pct` — read the accuracy beside its own `field_expected`, because 100% of three keys and 100% of fourteen are the same cell and not the same claim |
+| `p1_present`, `p1_absent`, `p2_present`, `p2_absent`, `p3_present`, `p3_absent` | field coverage by delivery tier — how many of each tier's keys came back filled. Pass 2 extracts priority 1 only, so `p2`/`p3` read `0/0`: this build asked for none of them, which is not the same as a run that extracted nothing and leaves them blank. Present and absent are both written, so a row always says what its counts were out of |
 | `case`, `char_accuracy`, `word_accuracy`, `char_accuracy_no_marks` | percentages, blank when the input has no ground truth |
 | `status`, `error` | `ok` / `partial` / `truncated` / `looped` / `cancelled` / `error` |
 | `run_type` | `ocr` for a document read, `extract` for a re-extraction of a transcript already read. Blank on rows written before the column existed |
@@ -839,7 +857,7 @@ to run first. The **Fields** cell marks an updated row.
 
 Coverage is not correctness. `p1_present` counts what came back filled, not what came back
 right — read it beside `grounded_pct`. Each row's **Fields** cell also carries the shape that
-filled it, `single` or `agentic`: one request and fifteen fill the schema in different ways,
+filled it, `single` or `agentic`: one request and seven fill the schema in different ways,
 so two rows of counts are not comparable without it.
 
 The card header reports the **mean** accuracy over every scored row and the **best** single
@@ -882,6 +900,62 @@ same cases on each and compare the columns.
 
 ---
 
+## Normalised values
+
+Some of the values the field requirement asks for are *classifications* rather than
+readings: a standard document type separate from the printed heading, a branch **code**
+with head office written `00000`, a tax ID reduced to digits, a service period split into
+its two ends, and the references collected as a list rather than packed into one text
+field.
+
+None of those are asked of the model. Pass 2 copies the heading and the branch line as
+printed, the grounding check confirms each against the transcript, and `normalise.py`
+derives the rest afterwards in Python. They arrive on every extraction result as
+**`derived`**, alongside `fields` rather than inside it:
+
+```json
+"derived": {
+  "document_type_code": "RECEIPT_TAX_INVOICE",
+  "seller_branch_code": "00000",
+  "buyer_branch_code": "00068",
+  "seller_tax_id_digits": "0101111011111",
+  "buyer_tax_id_digits": "0101111001110",
+  "seller_tax_id_valid": true,
+  "buyer_tax_id_valid": true,
+  "service_period_from": "01/01/2026",
+  "service_period_to": "31/01/2026",
+  "electronic_tax": true,
+  "references": [
+    { "type": "PO", "number": "12121212121", "date": "", "source": "header" },
+    { "type": "INVOICE", "number": "510210009577", "date": "2026-01-31",
+      "source": "line_item" }
+  ]
+}
+```
+
+| Key | |
+|---|---|
+| `document_type_code` | `INVOICE`, `CREDIT_NOTE`, `DEBIT_NOTE`, `RECEIPT`, `TAX_INVOICE` or `RECEIPT_TAX_INVOICE`, from the printed heading. `""` where the heading is not one this build recognises — a document whose type cannot be read belongs in review, not in a default |
+| `seller_branch_code`, `buyer_branch_code` | the branch line reduced to a five-digit code, head office written `00000`. `""` for a branch the page names but does not number |
+| `*_tax_id_digits` | the tax ID with its separators removed, so `0-5454-54545-54-5` and `0545454545545` are one value |
+| `*_tax_id_valid` | whether that is thirteen digits. Reported, never enforced — it is the cheapest signal that a tax-ID key holds something that is not a tax ID |
+| `service_period_from`, `service_period_to` | the two ends of the period, where it has two. Both `""` otherwise |
+| `electronic_tax` | whether the page says it was filed with the Revenue Department electronically |
+| `references` | every document this one cites, deduplicated, each with its `type`, `number`, `date` and whether it came from a header key or a table row |
+
+Two things follow from `derived` sitting outside `fields`, and both are deliberate:
+
+- **Grounding never sees it.** `grounding.check` walks `fields` and reports anything it
+  cannot find on the page as invented. A computed value has nothing to be grounded
+  against, so merging these in would flag the one class of value that provably is not an
+  invention.
+- **The field score never sees it either.** `solution/*.fields.json` scores what the model
+  returned. These are checked by the self-tests in `normalise.py`'s own tables instead,
+  because their correctness is a property of the code rather than of the run.
+
+
+---
+
 ## API
 
 `GET /api/ocr/profile` — the pass-1 profile in force and the ones on offer:
@@ -909,7 +983,7 @@ the profile it ran under, so a batch split across two is still readable afterwar
 `logged` is emitted last, once the row for the run is on disk.
 
 Every extraction result — on `/api/ocr`, on the `fields` event, and from `/api/extract` —
-carries `fields`, `grounding`, `tiers`, `vat_basis` and `mode`. It also carries
+carries `fields`, `grounding`, `tiers`, `vat_basis`, `derived` and `mode`. It also carries
 **`field_score`** when the document is a benchmark case with a `solution/<id>.fields.json`
 to score against: `overall`, `scalars`, `line_items`, `other_fields`, `coverage`, and a row
 per checked key saying what was expected and what came back. The key is simply absent for
@@ -1011,6 +1085,7 @@ still never parses `.env` itself.
 | `grounding.py` | Checking extracted fields against the transcript they came from |
 | `fieldscore.py` | Scoring extracted fields against the hand-written field ground truth, and `init` to create it |
 | `verify.py` | Reads document amounts, and decides whether the extracted figures already carry VAT |
+| `normalise.py` | Derives the normalised values from what pass 2 copied — standard document type, branch codes, tax-ID digits, the reference list |
 | `scoring.py` | Ground-truth lookup and accuracy scoring, shared by page and CLI |
 | `runlog.py` | The CSV run log |
 | `jobs.py` | The in-process queue and its worker pool |

@@ -30,6 +30,7 @@ import config
 import fieldscore
 import grounding
 import jobs
+import normalise
 import runlog
 import scoring
 import verify
@@ -647,6 +648,13 @@ def _extract_once(text: str, status: dict, schema) -> dict:
         # a VAT-inclusive page, and a reader taking `subtotal` for a pre-tax
         # figure would be out by the VAT.
         "vat_basis": verify.vat_basis(fields, text),
+        # The normalisations the field requirement asks for -- a standard document
+        # type, branch codes, tax IDs reduced to digits, the period split, and the
+        # references as a list. Worked out in Python from the values just copied,
+        # and kept OUT of `fields` on purpose: `grounding.check` walks that dict
+        # and would report every one of these as an invention, which is the one
+        # thing they provably are not.
+        "derived": normalise.derive(fields, text),
         "seconds": elapsed,
         "tokens": tokens,
         "model": status["model"],
@@ -691,7 +699,7 @@ def _step_schema(step: dict) -> dict:
 
     Derived from the step's `keys` rather than written out beside its skeleton,
     because a schema that disagreed with the skeleton would be a silent bug and
-    there is no way to keep fifteen hand-written pairs honest. The step's
+    there is no way to keep twenty hand-written pairs honest. The step's
     skeleton stays the readable statement of what is asked for; this is the same
     thing in the form the sampler can be held to.
     """
@@ -763,7 +771,7 @@ def _step_values(step: dict, raw: str):
     return values
 
 
-def _ask_step(content: str, step: dict, status: dict):
+def _ask_step(content: str, step: dict, status: dict, collect: list = None):
     """Ask one step and parse its reply. Returns (values, replies, truncated, tokens).
 
     Asked plain first, exactly as the baselines were measured. A reply that will
@@ -776,10 +784,24 @@ def _ask_step(content: str, step: dict, status: dict):
     step's cap. Instructions-last does not prevent it and a bigger cap buys more
     page rather than more answer; a grammar that does not contain the page does.
     Raises the second failure if both attempts fail.
+
+    `collect` is where the raw replies are recorded, and it is a parameter rather
+    than a return value because this function raises on total failure. Returning
+    them only on the success path is what used to throw away the reply of every
+    step that died -- exactly the replies worth reading, since a step that
+    answered is already visible in its values. A dead step now leaves its text in
+    `raw` beside the others.
     """
     replies, tokens = [], 0
+    collect = replies if collect is None else collect
+
+    def keep(text):
+        replies.append(text)
+        if collect is not replies:
+            collect.append(text)
+
     raw, truncated, used = _chat(content, step["max_tokens"], status)
-    replies.append(raw)
+    keep(raw)
     tokens += used
     try:
         return _step_values(step, raw), replies, truncated, tokens
@@ -788,7 +810,7 @@ def _ask_step(content: str, step: dict, status: dict):
             raise
     raw, truncated, used = _chat(content, step["max_tokens"], status,
                                  _step_schema(step))
-    replies.append(raw)
+    keep(raw)
     tokens += used
     return _step_values(step, raw), replies, truncated, tokens
 
@@ -845,9 +867,13 @@ def _extract_agentic(text: str, status: dict):
             record["attempts"] = attempt + 1
             at = time.perf_counter()
             truncated = False
+            # Filled by `_ask_step` as each reply arrives, so a step that raises
+            # still leaves its text behind. Labelled here afterwards on the
+            # success path, and in the handler on the failure path.
+            raws = []
             try:
                 attempt_values, raws, truncated, tokens = _ask_step(
-                    content, step, status)
+                    content, step, status, raws)
                 for n, raw in enumerate(raws):
                     replies.append(f"--- {step['id']}"
                                    + (" (retry)" if attempt else "")
@@ -855,6 +881,11 @@ def _extract_agentic(text: str, status: dict):
                 record["schema_retry"] = len(raws) > 1
                 total_tokens += tokens
             except Exception as err:
+                for n, raw in enumerate(raws):
+                    replies.append(f"--- {step['id']}"
+                                   + (" (retry)" if attempt else "")
+                                   + (" (schema)" if n else "") + " (failed) ---\n"
+                                   + raw)
                 elapsed += time.perf_counter() - at
                 # Recorded against the step and then dropped: the remaining steps
                 # do not depend on this one, and the rest of the form is a better
@@ -910,6 +941,9 @@ def _extract_agentic(text: str, status: dict):
         "grounding": grounding.check(ordered, text),
         "tiers": grounding.tier_counts(ordered),
         "vat_basis": verify.vat_basis(ordered, text),
+        # Same derivation as single mode, from the merged answer rather than from
+        # any one step -- the references list in particular spans several of them.
+        "derived": normalise.derive(ordered, text),
         "seconds": elapsed,
         "tokens": total_tokens,
         "model": status["model"],
@@ -1704,7 +1738,11 @@ def servers_select():
                              "before switching server."), 409
 
     try:
-        server = backends.select(url or None, model or None)
+        # Unloading is vetoed while anything is running. A model-only switch is
+        # allowed mid-queue (it takes effect on the next run), but the eviction
+        # is a request to the same scheduler serving the run in flight, so a
+        # queue that is working keeps its weights and the next switch frees them.
+        server = backends.select(url or None, model or None, unload=not running)
     except ValueError as err:
         return jsonify(error=str(err)), 400
 
@@ -1713,7 +1751,11 @@ def servers_select():
     # page reports the mismatch instead so the choice stays the user's.
     # overview() carries the same fresh status under "server"; select() has just
     # primed the cache, so this does not re-probe.
-    return jsonify(backends.overview())
+    #
+    # `unloaded` is on the response and not only in the console: a switch that
+    # stopped a model and one that found nothing to stop look identical on the
+    # page, and they leave the card in very different states.
+    return jsonify({**backends.overview(), "unloaded": server.get("unloaded", [])})
 
 
 @app.get("/api/cases")

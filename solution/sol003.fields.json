@@ -1,43 +1,16 @@
 {
-  "_case": "sol003",
-  "_source": "Receipt_B2S_BS2604270279_F6910282462TINV_mock 1.pdf",
-  "_kind": "handwritten receipt scan",
   "document_type": "ใบเสร็จรับเงิน/ใบกำกับภาษี",
   "document_number": "10737",
   "issue_date": "17/3/69",
-  "due_date": "",
   "reference_document": "215/10736",
-  "po_number": "",
-  "original_invoice_number": "",
-  "contract_number": "",
-  "customer_code": "",
-  "location_code": "",
-  "service_period": "",
   "seller_name": "บริษัท อะเวนจูรีน จำกัด",
   "seller_tax_id": "0-5454-54545-54-5",
   "seller_branch": "สำนักงานใหญ่",
-  "seller_address": "111 หมู่ 1 ถ.ลูกรัง ต.อัลเมียร์ อ.เมือง จ.อัมสเตอร์ดัม 54111",
   "buyer_name": "บริษัท ไพลิน จำกัด",
   "buyer_tax_id": "0155737222723",
   "buyer_branch": "สาขาที่ 226",
-  "buyer_address": "222 หมู่ 4 ต.นาจักร อ.เมืองแพร่ จ.แพร่",
   "currency": "",
-  "vat_rate": "7",
   "subtotal": "9,604 30",
   "vat_total": "672 30",
-  "amount_incl_vat": "10,276 60",
-  "withholding_tax_total": "",
-  "net_payable": "",
-  "amount_in_words": "หนึ่งหมื่นสองร้อยเจ็ดสิบหกบาทหกสิบสตางค์",
-  "payment_method": "",
-  "payment_reference": "",
-  "_other_fields_template": [
-    {
-      "label": "",
-      "value": ""
-    }
-  ],
-  "other_fields": null,
-  "table_columns": null,
-  "score_table": true
+  "amount_incl_vat": "10,276 60"
 }

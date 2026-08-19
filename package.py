@@ -45,6 +45,7 @@ FILES = [
     "runlog.py",
     "scoring.py",
     "verify.py",
+    "normalise.py",
     "compare.py",
     "package.py",
 ]

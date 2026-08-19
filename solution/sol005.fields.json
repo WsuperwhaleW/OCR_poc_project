@@ -1,7 +1,4 @@
 {
-  "_case": "sol005",
-  "_source": "Receipt_CDS_BS2603030054_F6910137421TINV-mock 1.pdf",
-  "_kind": "printed receipt/tax invoice",
   "document_type": [
     "ใบเสร็จรับเงิน/ใบกำกับภาษี Receipt/Tax Invoice",
     "ใบเสร็จรับเงิน/ใบกำกับภาษี",
@@ -9,14 +6,7 @@
   ],
   "document_number": "12121212121",
   "issue_date": "25/02/2026",
-  "due_date": "",
   "reference_document": "",
-  "po_number": "",
-  "original_invoice_number": "",
-  "contract_number": "25000000",
-  "customer_code": "111111111",
-  "location_code": "10-00-1-Springroll",
-  "service_period": "",
   "seller_name": [
     "บริษัท เอบีซี รีเทล ดีเวลล็อปเม้นท์ จำกัด ABC RETAIL DEVELOPMENT CO.,LTD",
     "บริษัท เอบีซี รีเทล ดีเวลล็อปเม้นท์ จำกัด",
@@ -24,28 +14,11 @@
   ],
   "seller_tax_id": "0101111011111",
   "seller_branch": "สำนักงานใหญ่",
-  "seller_address": "111,112, 112/1-2 ถนนรามเกียรติ์ แขวงนิวอิงแลนด์ เขตฐานทัพ กรุงเทพมหานคร 11111",
   "buyer_name": "บริษัท สปริงโรล จำกัด",
   "buyer_tax_id": "0101111001110",
   "buyer_branch": "สาขาที่ 00068",
-  "buyer_address": "เลขที่ 111 ถนนรามเกียรติ์ แขวงนิวอิงแลนด์ เขตฐานทัพ กรุงเทพมหานคร 11111",
-  "currency": "",
-  "vat_rate": "",
+  "currency": "บาท",
   "subtotal": "3,646,128.51",
   "vat_total": "174,443.47",
-  "amount_incl_vat": "",
-  "withholding_tax_total": "132,465.44",
-  "net_payable": "3,688,106.54",
-  "amount_in_words": "สามล้านหกแสนแปดหมื่นแปดพันหนึ่งร้อยหกบาทห้าสิบสี่สตางค์",
-  "payment_method": "เช็ค",
-  "payment_reference": "11111111",
-  "_other_fields_template": [
-    {
-      "label": "",
-      "value": ""
-    }
-  ],
-  "other_fields": null,
-  "table_columns": null,
-  "score_table": true
+  "amount_incl_vat": ""
 }
