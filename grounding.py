@@ -81,6 +81,61 @@ PRIORITY_3 = []
 ITEM_REQUIRED = ["description", "amount"]
 
 
+# The house rule for "this is a loop, not a document": `app._repeated_list` uses
+# the same figure, and the two must agree or one detector will clear a reply the
+# other condemns. A genuine page does not list one entry three times over.
+REPEAT_THRESHOLD = 3
+
+
+def _entry_text(entry) -> str:
+    """One list entry reduced to the text that identifies it.
+
+    Handles both shapes deliberately. `other_fields` is *supposed* to be
+    {label, value} objects, and the loop that motivated this returned 104 bare
+    STRINGS instead -- so a check that assumes the schema was obeyed misses
+    exactly the replies worth catching.
+    """
+    if isinstance(entry, dict):
+        parts = [entry.get("label"), entry.get("value")]
+    else:
+        parts = [entry]
+    return "|".join(squash(part) for part in parts if part is not None)
+
+
+def list_repetition(fields) -> dict:
+    """How much of what came back under `other_fields` is one entry over again.
+
+    **Why this exists, and why it is not `app._repeated_list`.** That detector
+    reads the RAW reply for `"label"`/`"description"` keys, which is the right
+    place to catch a loop before the JSON is parsed -- and it is blind to a reply
+    whose list holds bare strings, because there are no keys in it to match. That
+    is the shape dots.mocr returns: 104 entries, 5 distinct, the same invented
+    company name a hundred times, salvaged as a clean `partial` and counted as
+    104 extra fields found. This reads the PARSED list instead, so the shape of
+    the entries cannot hide the repetition.
+
+    Returns entries, distinct, and `looped`. `distinct` is the honest count of
+    what the reply actually contributed, and it is what a comparison between
+    models should use: the alternative rewards the failure it should penalise.
+
+    **It compares squashed text, so it catches exact repetition and not a
+    counter loop** (`ปี 1`, `ปี 2`, ...) -- digits survive `squash`. That is the
+    same limit `looks_repetitive` handles separately for streams, and no
+    `other_fields` reply observed so far needs it.
+    """
+    entries = [e for e in ((fields or {}).get("other_fields") or [])]
+    seen = {}
+    for entry in entries:
+        text = _entry_text(entry)
+        if text:
+            seen[text] = seen.get(text, 0) + 1
+    return {
+        "entries": len(entries),
+        "distinct": len(seen),
+        "looped": any(count >= REPEAT_THRESHOLD for count in seen.values()),
+    }
+
+
 def tier_counts(fields) -> dict:
     """How many tier-1 and tier-2 fields came back filled, and how many did not.
 

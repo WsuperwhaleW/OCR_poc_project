@@ -128,6 +128,23 @@ OCR_PROFILES = {
 
 DEFAULT_OCR_PROFILE = "typhoon"
 
+# Which profile a model needs, matched on its name. An ordered list of
+# (substring, profile id) tested in order, first hit wins; anything unmatched
+# gets DEFAULT_OCR_PROFILE.
+#
+# **A table rather than a preference, because the pairing is a fact about the
+# model.** dots builds need their own prompt AND no system message, and given
+# the other profile they return nothing at HTTP 200 -- an empty transcript that
+# logs as a clean run. `app.profile_for_model` reads this on every model switch
+# so the two can no longer drift apart; see CLAUDE.md, which recorded the
+# opposite rule until 2026-08-21 and the 0.0% run that overturned it.
+#
+# A constant, like everything else here: the lookup lives in `backends.py`
+# beside `is_ocr_model`, which is the same kind of name heuristic.
+OCR_PROFILE_BY_NAME = (
+    ("dots", "dots"),
+)
+
 # --------------------------------------------------------------------------
 # pass 2: field extraction
 # --------------------------------------------------------------------------
@@ -179,7 +196,7 @@ Return ONLY a JSON object, no prose and no code fence. Use exactly these keys:
   "reference_document": "",   // another document this one cites
   "seller_name": "",          // the issuer's name only
   "seller_tax_id": "",
-  "seller_branch": "",        // whatever is printed beside that tax ID
+  "seller_branch": "",        // which office or branch, where the page names one
   "buyer_name": "",           // the customer's name only
   "buyer_tax_id": "",
   "buyer_branch": "",
@@ -194,10 +211,8 @@ Answer every key listed above, in the order listed, and close the object only af
 last of them. "" is the answer for any the document does not state. Do not invent a key
 that is not on the list.
 
-Each key names something a document of this kind normally prints somewhere. Find it by its
-printed label, wherever on the page that label happens to sit, and copy what is printed
-against it. Documents word their labels differently and lay them out differently; match on
-what the label MEANS, not on where it is or on any particular wording.
+Find each key by its printed label, wherever on the page that label sits. Documents word
+their labels differently -- match on what a label MEANS, not on any particular wording.
 
 How to fill them:
 - Copy values EXACTLY as printed. Do not reformat, do not translate, do not convert Thai
@@ -218,57 +233,59 @@ How to fill them:
   label to look for, that is a hint for finding it on the page, never something to emit.
 
 The two parties -- three keys each, and each holds one thing:
-- The name key takes the party's name and nothing else, on ONE line. Stop at the end of
-  the name. If what you are about to write contains a street, a postcode, a telephone
-  number, a tax ID, a date or a line break, you have taken too much of the block.
-- A name is TEXT. A value that is mostly digits, or that reads as a code -- a site
-  reference, a meter number, an account or customer number -- is not a name, however close
-  to the block it is printed. Leave the name key "" and put the code in "other_fields".
-- The tax ID key takes only the digits printed as the tax ID. A tax identification number
-  is a LONG run of digits -- thirteen of them in Thailand, sometimes written with dashes. A
-  short number of two, three or four digits is something else the page numbers, and never
-  belongs here.
-- The branch key takes what is printed beside that tax ID to say which office or branch it
-  is, copied as printed -- do not translate it, and do not turn a word into a number. A
-  town, a postcode, a street or a telephone number is an address, not a branch.
-- The issuer is normally the letterhead at the top, printed above this document's own
-  heading; the other party is the block addressed as the customer or buyer. Neither
-  party's three keys may take the other's name, tax ID or branch.
+- The name key takes the party's name and nothing else, on ONE line: if what you are about
+  to write contains a street, a postcode, a telephone number, a tax ID, a date, a branch in
+  brackets or a line break, you have taken too much of the block.
+- A name is TEXT. A value that is mostly digits, or that reads as a code, is not a name
+  however close to the block it is printed -- put it in "other_fields" instead.
+- The tax ID key takes what is printed as that party's tax or registration number, copied
+  as printed -- normally ten or more digits, sometimes with dashes or a letter prefix. A
+  two- or three-digit number is a book, page or sequence number and does not belong here.
+- The branch key takes what names which office, branch or site of that party -- a branch
+  name, a branch number, or a word meaning head office -- copied as printed, not translated
+  and not turned into a number. It often sits beside that party's tax ID, but sitting there
+  does not make a value a branch: a town, a street, a postcode, a telephone number or the
+  tax ID itself is not one. Answer with the value, never with the words of a label.
+- The issuer is the party the document is FROM -- who wrote it, or who is to be paid. The
+  other party is the one it is addressed TO or billed. Tell them apart by the labels printed
+  around each block, not by where the block sits: the top of the page is usually the
+  issuer's letterhead, but on an order or a form printed by the other party it is not.
+  Neither party's three keys may take the other's name, tax ID or branch.
 
 reference_document:
-- ONE identifier, and only where the page labels it as another document this one cites or
-  refers to. It is empty on most documents, and that is the expected answer.
-- Never this document's own number. An unlabelled number is not a reference. Where the page
-  cites several documents, or names one with a label this key does not cover, put them in
-  "other_fields" instead of choosing one.
+- ONE identifier, and only where a printed label says the thing it names is ANOTHER
+  document -- one referred to, cited, replaced, credited or settled. Name that label to
+  yourself before answering; where you cannot, this key is not yours to fill.
+- Never this document's own number, however it is labelled. An unlabelled number is not a
+  reference. Where the page cites several documents, put them in "other_fields" rather than
+  choosing one.
 
 The money -- three figures and the currency:
 - subtotal is the total line printed BEFORE tax is added; vat_total is the tax line;
   amount_incl_vat is the total line printed AFTER tax.
-- Fill only the lines the page actually prints, each from its own printed label. A page that
-  prints one total fills the key its label names and leaves the others "". Never copy one
-  figure into two keys, and never add or subtract to produce another.
+- Fill only the lines the page prints, each from its own label: a page printing one total
+  fills the key its label names. Never copy one figure into two keys, and never add or
+  subtract to produce another.
 - Where one printed line carries several figures side by side, each under a heading of its
   own, they are separate figures: take the one whose heading names this key, not the first
   one on the line. A figure standing under a tax heading is not the total.
-- A total printed in two parts, the whole units and the fraction, is ONE figure: take both
-  parts together, the fraction after the decimal point. The fraction on its own is never a
-  total -- a total that comes out as a one- or two-digit number is half of a figure.
+- Where a money column is ruled into two parts under one heading, the whole units and then
+  the fraction, those parts are ONE figure: take both, the fraction after the decimal point.
+  Two money columns with headings of their own are two figures, not halves of one.
 - A figure in brackets or with a leading minus is negative. Keep the sign. A cell showing a
   dash is nil: write it as a dash or as "", not as 0.00 unless the page prints 0.00.
 - currency only where the page prints one -- a currency word, code or symbol against a
-  figure or in a column heading. A document written in Thai does not state its currency by
-  being written in Thai, and a currency word inside an amount spelled out in words is part
-  of that amount, not a label. Where none appears, "".
+  figure or in a column heading -- in the form the page prints it: where it prints the word,
+  answer with the word and not the three-letter code. A currency you know such a document
+  normally uses, or infer from the language it is written in, is not one the page prints.
 
 other_fields:
-- Everything else the page labels and states -- addresses, due dates, purchase order and
-  delivery numbers, contract, customer and site codes, withholding tax, discounts, net
-  payable, payment and bank details, the charges table, page numbers, notes.
-- label is the document's OWN wording for it, copied as printed. value is what is printed
-  against that label.
-- This is where a value goes when it does not fit one of the fourteen keys. Never force a
-  value into a key that nearly fits, and never repeat here anything already written above.
+- Everything else the page labels and states, whatever kind of document this is -- by way
+  of example only: addresses, other dates, order and account numbers, codes, other tax
+  lines, discounts, other amounts, payment and bank details, page numbers, notes, tables.
+- label is the document's OWN wording, copied as printed; value is what is printed against
+  it. This is where a value goes when it fits none of the fourteen keys -- never force one
+  into a key that nearly fits, and never repeat anything already written above.
 - Where nothing is left over, return an empty list.
 
 Document text:
@@ -357,13 +374,16 @@ OTHER_FIELDS_SCHEMA = {
               "required": ["label", "value"]},
 }
 
-# Every key is required. The prompt already says to answer all of them and to
-# leave "" for what the page does not state; requiring them is what makes that
-# true rather than requested.
-#
 # `line_items` is deliberately absent -- a grammar that contains the key is an
 # invitation to fill it, and the whole point of this pass is that it does not ask
 # for the table.
+#
+# Every key is required. Narrowing this to four was tried on 2026-08-19 and
+# reverted the same day, unmeasurable: the fill pressure it was aimed at turned
+# out to live in the prompt TEXT, and the blank forms that proved it came off the
+# plain request, which no grammar touches. This request is only ever the rescue
+# after a plain one returned nothing at all, so a grammar that permits `{}` would
+# waste the rescue for a saving that was never demonstrated.
 EXTRACT_JSON_SCHEMA = {
     "type": "object",
     "properties": {
@@ -485,9 +505,12 @@ EXTRACT_STEPS = (
         "skeleton": '{ "document_type": "", "document_number": "", "issue_date": "" }',
         "max_tokens": 200,
         "rules": """What to look for:
-- document_type is the heading that names what this document is, printed at the head of the
-  page. Copy the heading itself, not a description of it, and do not translate it or turn it
-  into a category -- the heading is normalised afterwards, by a program.
+- document_type is the heading that names what this document is. Copy the heading itself, not
+  a description of it, and do not translate it or turn it into a category -- the heading is
+  normalised afterwards, by a program.
+- It is often printed near the head of the page and often not: take it from wherever the page
+  prints it. A company, brand or place name is never the heading -- those name a party to the
+  document, not the kind of document it is.
 - document_number is the number identifying this document, printed with that heading.
 - issue_date is the date the document is dated. Where the page prints several dates, take
   the one labelled as this document's own date -- not a due date, not a period, not a
@@ -502,10 +525,13 @@ EXTRACT_STEPS = (
         "rules": """What to look for:
 - reference_document is ONE identifier, and only where the page labels it as another
   document this one cites or refers to.
-- It is empty on most documents, and empty is the commonest correct answer to this question.
-- This document's OWN number is never the answer. An unlabelled number is not a reference.
-- Where the page cites several documents -- a column of them down a table -- none of them
-  belongs here: do not pick one, and do not join them together.
+- Before you answer, name to yourself the printed label the value sits under, and check that
+  the label says the thing it names is ANOTHER document -- one referred to, cited, replaced,
+  or being credited or settled. If you cannot name such a label, the answer is "".
+- This document's OWN number is never the answer, however it is labelled. An unlabelled
+  number is not a reference, and neither is a number that merely looks like one.
+- Where the page cites several documents, none of them belongs here: do not pick one, and
+  do not join them together.
 - Answer with the one short value and stop. If you find yourself copying a line of the page
   into this field, the answer is "".""",
     },
@@ -516,53 +542,71 @@ EXTRACT_STEPS = (
         "skeleton": ('{ "seller_tax_id": "", "seller_branch": "", '
                      '"seller_name": "" }'),
         "max_tokens": 260,
-        "rules": """The issuer's block is normally the letterhead at the top of the page.
-- Work inside that block and nowhere else. Find the letterhead first -- the block printed
-  ABOVE this document's own heading -- and take all three of these from inside it. A value
-  printed lower down, in a block labelled as the customer's, belongs to the other party.
+        "rules": """The issuer is the party this document is FROM -- the one who wrote it, who
+is to be paid, or whose details close it.
+- Find that party's own block first and work inside it and nowhere else. It is often the
+  letterhead at the top of the page, but not always: on an order, a request, or a form
+  printed by the other party, the block at the top belongs to the other party. Decide from
+  the labels printed around each block, not from where the block sits.
+- A value printed in a block labelled as the customer's, or as the party being billed,
+  belongs to the other party and not here.
+- Where the page does not name the issuer, or you cannot tell which party is which, leave
+  these three "" rather than choosing.
 - seller_tax_id is only the digits printed as that party's tax identification number. Copy
   the separators as printed if there are any.
-- A tax identification number is a LONG run of digits -- thirteen of them in Thailand,
-  sometimes written with dashes. A short number of two, three or four digits is something
-  else the page numbers -- a book, volume, page, branch or sequence number -- and never
-  belongs here. Where no long run of digits is labelled as the tax number, this is "".
-- seller_branch is what is printed beside that tax ID to say which office or branch it is,
-  whether that is a word or a number. Copy it as printed; do not translate it, and do not
-  turn a word into a number.
-- seller_branch says which office or branch, and nothing else. A street, a town, a postcode
-  or a telephone number is an address, not a branch, and does not belong in it.
+- A tax or company registration number is normally a run of ten or more digits, sometimes
+  written with dashes or spaces and sometimes carrying a letter prefix. Copy it as printed.
+  A short number of two or three digits is something else the page numbers -- a book,
+  volume, page or sequence number -- and does not belong here. Where nothing on the page is
+  labelled as that party's tax or registration number, this is "".
+- seller_branch is what the page prints to say which office, branch or site of that party
+  this document belongs to -- a branch name, a branch number, or a word meaning head office.
+  Copy it as printed; do not translate it, and do not turn a word into a number.
+- It is often printed beside that party's tax ID, but sitting next to the tax ID does not
+  make a value a branch. A street, a town, a postcode or a telephone number is an address,
+  not a branch, and the tax ID itself is not a branch either. A word meaning head office is
+  a branch and belongs here.
+- Answer with the value, never with the words of a label. If the only thing you can find is
+  the caption asking for a branch, nothing was printed against it and this is "".
 - None of these three may take the customer's name, tax ID or branch.
 - seller_name is the issuer's name and nothing else, on ONE line. Stop at the end of the
   name. If what you are about to write contains a street, a postcode, a telephone number, a
   tax ID, a date or a line break, you have taken too much of the block -- cut it back.
+- An office or branch printed after the name, in brackets or otherwise, is the branch and
+  belongs to seller_branch. It is not part of the name.
 - A name is TEXT. A value that is mostly digits, or that reads as a code, is not a name --
   leave seller_name "" rather than putting a code in it.""",
     },
     {
         "id": "buyer",
         "title": "who this document is addressed to",
-        "keys": ("buyer_name", "buyer_tax_id", "buyer_branch"),
-        "skeleton": '{ "buyer_name": "", "buyer_tax_id": "", "buyer_branch": "" }',
+        "keys": ("buyer_tax_id", "buyer_branch", "buyer_name"),
+        "skeleton": '{ "buyer_tax_id": "", "buyer_branch": "", "buyer_name": "" }',
         "max_tokens": 260,
-        "rules": """The customer's block is the one addressed as the customer, the buyer or the
-party being billed -- NOT the letterhead at the top of the page, which is the issuer.
+        "rules": """The customer is the party this document is addressed TO -- the one billed,
+ordered from, or delivered to. It is not the party that issued the document.
 - buyer_name is that party's name and nothing else, on ONE line.
 - A name is TEXT. A value that is mostly digits, or that reads as a code -- a site
   reference, a meter number, a customer number -- is NOT a name, however close to this block
   it is printed. Where the block gives you a code and no name, buyer_name is "".
 - The customer's block is found by its LABELS -- lines labelled with words meaning customer,
-  name, buyer or the party billed. The block printed at the very top of the page, above this
-  document's own heading, is the issuer's letterhead and is never the customer, however
-  complete it looks. If the only name you can find is that one, buyer_name is "".
+  buyer, bill to, deliver to, or the party being billed. A block at the top of the page
+  carrying a logo and no such label is usually the issuer's letterhead rather than the
+  customer, so do not take it merely for being first; but on an order or a request the block
+  at the top can be the customer, and its labels are what say so. Where no block on the page
+  is labelled as the customer, buyer_name is "".
 - buyer_tax_id is only the digits printed as that party's tax identification number, and
-  buyer_branch is what is printed beside that tax ID to say which office or branch it is.
-- A tax identification number is a LONG run of digits -- thirteen of them in Thailand,
-  sometimes written with dashes. A short number of two, three or four digits is something
-  else the page numbers -- a book, volume, page, branch or sequence number -- and never
-  belongs here. Where no long run of digits is labelled as the tax number, this is "".
+  buyer_branch is what the page prints to say which office, branch or site of that party
+  this document belongs to -- often beside that tax ID, but only where it names an office or
+  branch rather than merely sitting next to one.
+- A tax or company registration number is normally a run of ten or more digits, sometimes
+  written with dashes or spaces and sometimes carrying a letter prefix. Copy it as printed.
+  A short number of two or three digits is something else the page numbers -- a book,
+  volume, page or sequence number -- and does not belong here. Where nothing on the page is
+  labelled as that party's tax or registration number, this is "".
 - buyer_branch says which office or branch, and nothing else. A street, a postcode or a
-  telephone number is an address, not a branch, and does not belong in it.
-- None of these three may repeat the issuer's name, tax ID or branch from the letterhead.""",
+  telephone number is an address, not a branch.
+- None of these three may repeat the issuer's name, tax ID or branch.""",
     },
     {
         "id": "currency",
@@ -571,10 +615,12 @@ party being billed -- NOT the letterhead at the top of the page, which is the is
         "skeleton": '{ "currency": "" }',
         "max_tokens": 120,
         "rules": """What to look for:
-- currency only where the page actually prints one -- a currency word, code or symbol, in a
-  money column heading or beside a figure.
-- A document written in Thai does not state its currency by being written in Thai. Where no
-  currency word, code or symbol appears anywhere, currency is "".
+- currency only where the page prints one -- a currency word, code or symbol, in a
+  money column heading or beside a figure. Copy it in the form the page prints it: a page
+  that prints the word gives you the word, not the three-letter code for it.
+- Point at it in the text above before you answer. A currency you know such a document
+  normally uses, or infer from the language it is written in, is not a currency the page
+  states: if you cannot find the word, code or symbol in the text, the answer is "".
 - A currency word inside an amount spelled out in words is part of that amount, not a label
   for the column, and does not fill this field on its own.""",
     },
@@ -599,10 +645,11 @@ party being billed -- NOT the letterhead at the top of the page, which is the is
   own, they are separate figures: take the one whose heading names this key, not the first
   one on the line. A figure standing under a tax heading is not the total, and a figure under
   a heading for tax deducted at source belongs to none of these three.
-- Some forms print a money figure in two parts, the whole units and the fraction, with a gap
-  or a rule between them. Both parts are ONE figure: take them together, the fraction after
-  the decimal point. The fraction on its own is never the value of one of these keys -- a
-  total that comes out as a one- or two-digit number is half of a figure, not a total.""",
+- Where a money column is ruled into two parts under one heading -- the whole units in one
+  and the fraction of the unit in the next -- those two parts are ONE figure: take them
+  together, the fraction after the decimal point. This applies only to a column actually
+  ruled that way; two money columns each with a heading of its own are two figures, not one,
+  and neither is half of the other.""",
     },
     {
         "id": "other",
@@ -611,10 +658,13 @@ party being billed -- NOT the letterhead at the top of the page, which is the is
         "skeleton": '{ "other_fields": [ { "label": "", "value": "" } ] }',
         "max_tokens": 900,
         "rules": """What to look for:
-- Every remaining fact on the page that has a printed label of its own: addresses, due dates,
-  purchase order and delivery numbers, contract, customer and site codes, withholding tax,
-  discounts, the net payable, payment and bank details, page numbers, notes, the rows of the
-  charges table.
+- Every remaining fact on the page that has a printed label of its own, whatever kind of
+  document this is. What follows is a handful of examples and NOT a list to fill in:
+  addresses, dates other than the issue date, other document, order and account numbers,
+  codes, tax lines other than the one above, discounts, amounts other than the three totals,
+  payment and bank details, page numbers, notes, the rows of a table. Anything else the page
+  labels belongs here too, and a document that labels none of these examples simply has
+  other things instead.
 - label is the document's OWN wording for it, copied as printed. value is what is printed
   against that label.
 - Do NOT repeat anything that belongs to another part of this form: the document type and

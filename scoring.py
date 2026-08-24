@@ -229,7 +229,90 @@ def levenshtein(a: str, b: str) -> int:
     return prev[-1]
 
 
-def score(expected: str, actual: str) -> dict:
+# A block has to look like the truth block before it is filed under it. Below
+# this, two blocks share a few incidental characters and nothing more, and
+# filing them together would move real content to the wrong place -- so an
+# unrecognised block goes to the tail instead, where it costs what extra content
+# has always cost.
+BLOCK_MATCH_MIN = 0.45
+
+
+def _similar(a: str, b: str) -> float:
+    """How alike two blocks are, 0..1, cheaply and symmetrically."""
+    if not a or not b:
+        return 0.0
+    return difflib.SequenceMatcher(None, a, b, autojunk=False).ratio()
+
+
+def align_blocks(expected: str, actual: str) -> str:
+    """`actual` with its blocks put back into the truth's order.
+
+    **Why pass 1 needs this.** Character accuracy is an edit distance, and an
+    edit distance is brutal about MOVED text: a paragraph read perfectly but
+    emitted at the top instead of the bottom is charged twice, once to delete it
+    from where it is and once to insert it where it is not. Two models can
+    produce the same content and score forty points apart because one of them
+    walked the page in a different order -- which is a layout decision, not a
+    recognition failure, and pass 1 is scored on recognition.
+
+    This is the same reasoning `fieldscore._pair_rows` already applies to line
+    items -- match by content, never by position, because one dropped row
+    otherwise mis-scores every row after it -- lifted to whole blocks of a page.
+
+    **It is a pre-alignment step, not a new metric.** The blocks are reordered
+    and then handed to exactly the edit distance that was there before, so
+    everything the score used to charge for it still charges for: a missing line
+    is still missing, an invented one is still invented, a misread character is
+    still wrong. The only thing that stops costing anything is *where on the page
+    the model chose to put it*.
+
+    Inserted and removed line breaks cost nothing either, and did not before:
+    every block is squashed to its content, and `score` strips whitespace from
+    both sides regardless. What changes here is that a line the model split in
+    two now files BOTH halves under the truth line they came from, instead of
+    leaving the second half stranded at the end of the document.
+
+    Blocks the truth has no home for keep their own relative order and go last,
+    which is where unmatched content has always effectively been charged.
+    """
+    exp_blocks = [b for b in expected.split("\n") if b.strip()]
+    act_blocks = [b for b in actual.split("\n") if b.strip()]
+    if not exp_blocks or not act_blocks:
+        return actual
+
+    exp_keys = [content_only(b) for b in exp_blocks]
+    # Each actual block goes to the truth block it looks most like. Many-to-one
+    # on purpose: a truth line the model split across two lines gets both halves
+    # back, in the order it emitted them.
+    filed = {index: [] for index in range(len(exp_blocks))}
+    tail = []
+    for block in act_blocks:
+        key = content_only(block)
+        best, score_ = -1, 0.0
+        for index, exp_key in enumerate(exp_keys):
+            ratio = _similar(key, exp_key)
+            if ratio > score_:
+                best, score_ = index, ratio
+        if best >= 0 and score_ >= BLOCK_MATCH_MIN:
+            filed[best].append(block)
+        else:
+            tail.append(block)
+
+    ordered = [block for index in range(len(exp_blocks)) for block in filed[index]]
+    return "\n".join(ordered + tail)
+
+
+def score(expected: str, actual: str, align: bool = True) -> dict:
+    """Compare a transcript with its ground truth.
+
+    `align` tries the actual's blocks in the truth's order as well as in their
+    own, and keeps whichever scores better -- see `align_blocks`. On by default
+    because reading order is a layout decision and pass 1 is scored on
+    recognition; `align=False` gives the strictly positional score this returned
+    before 2026-08-21, which is what `word_accuracy` still measures either way.
+    """
+    # Kept for word accuracy below, which stays order-sensitive on purpose.
+    positional = actual
     # Character accuracy is content only: every invisible character comes out of
     # both sides first, so line breaks, indentation and cell padding cannot move
     # the number in either direction. See INVISIBLE.
@@ -237,7 +320,26 @@ def score(expected: str, actual: str) -> dict:
     act_c = content_only(actual)
     cer = levenshtein(exp_c, act_c) / max(len(exp_c), 1)
 
-    exp_w, act_w = expected.split(), actual.split()
+    # **The alignment can only ever help, never hurt.** It is a search for a
+    # better correspondence between the two texts, and like any heuristic search
+    # it sometimes finds a worse one: on a long table of near-identical rows the
+    # per-block best match is noisy, so rows that were already in the right order
+    # get filed under the wrong truth row and scrambled. Measured on the saved
+    # outputs, that cost sol004 28 points and sol001 19 before this guard.
+    #
+    # Taking the better of the two is what makes the change monotone: no
+    # transcript can score lower than it did before 2026-08-21, and one whose
+    # content is right but reordered now scores what its content deserves.
+    if align:
+        aligned = content_only(align_blocks(expected, actual))
+        cer = min(cer, levenshtein(exp_c, aligned) / max(len(exp_c), 1))
+
+    # Word accuracy is deliberately left ORDER-SENSITIVE and is taken on the
+    # unaligned text, so the two numbers still say different things: character
+    # accuracy now answers "is the content there", word accuracy "is it in the
+    # order the page prints it". The page shows only the first; the run log keeps
+    # both, and the gap between them is what a reordering looks like.
+    exp_w, act_w = expected.split(), positional.split()
     matcher = difflib.SequenceMatcher(None, exp_w, act_w, autojunk=False)
     matched = sum(b.size for b in matcher.get_matching_blocks())
     wer = 1 - matched / max(len(exp_w), 1)

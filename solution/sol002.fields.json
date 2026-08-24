@@ -13,10 +13,13 @@
     "สาขาที่ 00001",
     "Branch 00001"
   ],
-  "buyer_name": "Andromeda Galaxy Company Limited",
+  "buyer_name": [
+   "Andromeda Galaxy Company Limited",
+   "Andromeda Galaxy Company Limited (Head Office)"
+  ],
   "buyer_tax_id": "0101111000111",
   "buyer_branch": "Head Office",
-  "currency": "",
+  "currency": "Baht",
   "subtotal": "11,638.64",
   "vat_total": "814.71",
   "amount_incl_vat": "12,453.35"

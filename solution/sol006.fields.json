@@ -1,0 +1,27 @@
+{
+  "document_type": [
+    "ใบลดหนี้/ใบกำกับภาษี Credit Note/Tax Invoice",
+    "ใบลดหนี้/ใบกำกับภาษี",
+    "Credit Note/Tax Invoice"
+  ],
+  "document_number": "BYD875419",
+  "issue_date": "17/08/2568",
+  "reference_document": "BYD2020207",
+  "seller_name": [
+    "บริษัท ปฏิทินลายเป็ด ประเทศไทย จำกัด The Duck Calendar.,(Thailand) LTD.",
+    "บริษัท ปฏิทินลายเป็ด ประเทศไทย จำกัด",
+    "The Duck Calendar.,(Thailand) LTD."
+  ],
+  "seller_tax_id": "0155555555555",
+  "seller_branch": "สำนักงานใหญ่",
+  "buyer_name": [
+    "บริษัท เอเอ็มที จำกัด",
+    "789635 บริษัท เอเอ็มที จำกัด"
+  ],
+  "buyer_tax_id": "0154545454545",
+  "buyer_branch": "สาขาที่ 00555",
+  "currency": "",
+  "subtotal": "2,936.00",
+  "vat_total": "205.52",
+  "amount_incl_vat": "3,141.52"
+}

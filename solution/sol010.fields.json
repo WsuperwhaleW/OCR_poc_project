@@ -1,0 +1,20 @@
+{
+  "document_type": "ใบลดหนี้",
+  "document_number": "CN99231000427",
+  "issue_date": "14/12/2023",
+  "reference_document": "I0121CFM0114",
+  "seller_name": [
+    "บริษัท เดินทำไม จำกัด WW WALK WHY CO.,LTD.",
+    "บริษัท เดินทำไม จำกัด",
+    "WW WALK WHY CO.,LTD."
+  ],
+  "seller_tax_id": "3-939-93991-9",
+  "seller_branch": "สำนักงานใหญ่",
+  "buyer_name": "บจก. พระยายาม",
+  "buyer_tax_id": "0105555021215",
+  "buyer_branch": "สาขาที่ 00007",
+  "currency": "",
+  "subtotal": "756.00",
+  "vat_total": "0.00",
+  "amount_incl_vat": "756.00"
+}

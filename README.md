@@ -245,7 +245,7 @@ The ones that matter for a deployment:
 | `OCR_SOLUTION_DIR` | `./solution` | Ground truth. Absent ⇒ accuracy scoring switches off and the page hides its controls. |
 | `MAX_UPLOAD_MB` | `32` | Per-upload size cap. |
 | `MAX_PAGES` | `10` | Pages read per document — a direct cap on the worst case cost of one request. |
-| `MAX_JOBS` | `5` | Rendered documents held in memory for the compare view. A 10-page document at `accurate` is ~40 MB, so this is a RAM ceiling. |
+| `MAX_JOBS` | `5` | Rendered documents held in memory for the compare view. A 10-page document at `medium` is ~40 MB, so this is a RAM ceiling. |
 | `GEN_READ_TIMEOUT` | `1800` | Raise on slow hardware; a timeout firing mid-generation throws away work the model server is still doing. |
 | `EXTRACT` | `1` | Set `0` to run the OCR pass only. |
 | `AGENTIC_EXTRACT` | `0` | Start with field extraction in agentic mode. Switchable from the page at any time; this only sets what a fresh process starts in. |
@@ -296,16 +296,31 @@ dial, because the cost of a read scales with the pixel count.
 
 | Preset | Cap |
 |---|---|
-| `fast` | 1.0 MP |
-| `balanced` | 2.0 MP |
-| `accurate` **(default)** | 4.0 MP |
-| `max` | none — native resolution |
+| `original` | none — the page exactly as rasterised |
+| `medium` **(default)** | 4.0 MP |
+| `low` | 2.0 MP |
+
+Three presets, and three names. The earlier `max` / `accurate` / `balanced` / `fast` were
+renamed on 2026-08-21 and dropped altogether on 2026-08-24 — **they are no longer accepted
+anywhere a Detail arrives**, and a request naming one now reads at the default (`medium`)
+and is logged as `medium`, so the run log never claims a budget it did not use. Update
+saved scripts: `compare.py --detail accurate` means `--detail medium`, `max` means
+`original`, `balanced` means `low`.
+
+The old 1 MP `fast` was deleted rather than renamed, and it is the one preset that really
+went away: at 1 MP this model stops misreading and starts **inventing** — on one bundled
+case it produced an address that is not on the page — and a preset whose failure mode is
+fabrication is not one to offer as the quick option.
+
+The run log keeps whatever it recorded, old names included. The setting and per-document
+tables read a renamed preset as the one that replaced it, and leave out runs at a deleted
+one; the card says how many, because a setting nobody can select is not one to recommend.
 
 PDFs are rasterised at 300 DPI (`PDF_DPI`) so the downscale resamples from real detail.
 Uniform blank margins are cropped before the cap is applied; disable with `TRIM_MARGINS=0`.
 
 **Neither end of the range is safe by default.** Too few pixels and fine detail is lost;
-too many is not reliably better either. `accurate` is the default because it scored best on
+too many is not reliably better either. `medium` is the default because it scored best on
 the bundled cases — score a case yourself before moving off it.
 
 ### Page reading (which prompt goes with the page)
@@ -323,9 +338,11 @@ Two things to know:
 - **Both halves of a profile matter.** Send dots.ocr the typhoon prompt, or the right prompt
   with a system message attached, and it answers with two tokens and an empty transcript at
   HTTP 200 — no error anywhere. That is why this is one control instead of two.
-- **The profile does not follow the model.** Selecting a model in the server picker does not
-  change the profile, and nothing checks that they match; a mismatch is a legitimate thing to
-  measure. The run log records both per row.
+- **The profile follows the model.** Picking a reading model selects the shape that model needs
+  — the prompt and the system-message veto are properties of the model, and the wrong pairing
+  returns an empty transcript at HTTP 200 rather than an error. You can still override it to
+  compare a prompt against a model; the override stands until the next model switch. The run log
+  records both per row either way.
 
 Set the starting profile with `OCR_PROFILE` (`typhoon` or `dots`). Switching it applies to
 this process — the queue and any other browser tab included — and takes effect on the next
@@ -446,6 +463,80 @@ switched since, and a result loaded from the queue can be older still.
 be re-asked (default 1, `0` to turn the retry off). Over HTTP, send `{"mode": "agentic"}` to
 `POST /api/extract`, or `POST /api/extract/mode` to change the setting.
 
+**A step row can show what was sent and what came back**, through two buttons. Neither panel
+opens until you press for it, and neither button is on every row: each appears where it
+answers a question you would actually be asking.
+
+| Button | On which steps |
+|---|---|
+| **prompt** | any step that has answered — the question is for reading against the answer it produced, so there is nothing to check while the step is still running |
+| **raw** | only a step with something to explain: it failed, it was re-asked, its first reply would not parse, it answered with a value that is not on the page, or it left one of its own keys empty. **Hover the button and it says which of those it is.** |
+
+So a clean step carries one button and a troubled one carries two, and the rows worth opening
+are the rows with more on them. A clean step's reply is not lost — the **Raw output** checkbox
+at the top of the tab still holds every reply of the run, concatenated and labelled.
+
+**The reply panel is one block per request**, because a step can send more than one:
+
+| Label | The request |
+|---|---|
+| `seller` | the plain ask |
+| `seller (schema)` | decoding constrained to that step's keys, asked because the plain reply would not parse |
+| `seller (retry)` | asked again with the rejected values quoted back, because the first answer was not on the page |
+| `… (failed)` | the step raised: neither attempt produced usable JSON |
+
+Two of those are worth knowing by shape. **A step showing two blocks is a step whose first
+reply would not parse** — the schema attempt only ever runs for that reason. And **a failed
+step keeps its replies**, which is the text most worth reading: its keys come back empty, and
+empty says nothing about why.
+
+**The prompt panel is laid out the way the message is.** Every step sends the same
+instructions and the same transcript, then its own question — that order is what lets
+llama.cpp prefill the document once for the whole run. So the panel shows one **shared
+prefix** line for the whole list, with its own show/hide, and then this step's question in
+full. A step that was re-asked shows the second question too, so what changed between the two
+attempts is on screen rather than inferred.
+
+Panels stay open while the rest of the run finishes, and across re-extractions of the same
+document.
+
+In single mode there are no steps. The message is one string (instructions, transcript,
+instructions again) and it sits collapsed at the top of the **Raw output** pane as *Prompt
+sent — N characters*; when the schema rescue runs, that pane shows **both** replies — the one
+that failed and the one that worked — instead of only the one that worked.
+
+### Fields only (pass 2 without a read)
+
+The **Fields only** pane runs extraction on its own, against a case's hand-written
+transcript. `solution/<id>.md` goes straight into pass 2 — the page is never read, no image
+is made, and nothing a read got wrong can reach the fields.
+
+Pick a document, a model server and model, and the extraction shape, then press **Extract
+fields**. The results land on the **Fields** tab exactly as they do after a read, scored
+against `solution/<id>.fields.json` where there is one. The pane says which file it is about
+to feed in, how long it is, and whether that document has a field truth file to be scored
+against.
+
+Use it to compare two models, or the two extraction shapes, on the same input: with the
+transcript fixed, the difference between two runs is the extractor's.
+
+Four things to know:
+
+- **The model picker here is the same setting as the Workspace pane's**, and so are the server
+  and the extraction shape — one process, one choice. Changing one here changes it there.
+- **Vision is not required.** Pass 2 sends text and gets text back, so a model with no image
+  support can still be measured on the form. The Workspace **Read document** button still
+  needs one.
+- **There is no transcript accuracy for these runs.** The Accuracy tab is switched off and the
+  ground truth is shown on the Markdown and Rendered tabs, because that is the input, not a
+  read. Scoring the ground truth against itself would be 100% and would mean nothing.
+- **Each run appends its own `extract` row to the run log**, with the file named `<id>.md` and
+  the source `truth`. It never overwrites the pass-2 columns of an earlier read: those figures
+  belong to a transcript this run did not use.
+
+`python compare.py --fields-only --from-truth` is the same thing from the command line,
+across every case at once.
+
 ### Compare
 
 The card below the result puts two of three panels side by side, for proofreading.
@@ -530,6 +621,30 @@ The two server kinds are detected, not configured — `backends.py` probes `/pro
 | Vision | `modalities.vision` from `/props` | `capabilities` per model from `/api/tags` |
 | Concurrency | `total_slots` from `/props` | not exposed, so the page claims no number |
 | Timings | `timings` block: real prompt/predict split | OpenAI `usage`; time-to-first-token stands in for prefill |
+
+### A separate model for extraction
+
+The two passes ask for different things — reading Thai off an image, and mapping a transcript
+onto a form — and a model can be good at one and poor at the other. **Model · extracts fields**,
+beside the reading model in both the Workspace and Fields panes, chooses what pass 2 runs on:
+
+- **same as reading model** (the default) — one model does both, which is how the app has always
+  worked and what every figure in the run log predates this choice was measured under.
+- **any general model the endpoint serves** — pass 2 sends text and gets JSON back, so it does
+  not need vision. A text-only model is a perfectly good extractor and is offered here.
+
+**One combination is refused** (HTTP 400): reading with one OCR model and extracting with a
+*different* OCR model. It costs a second set of weights to get a second model at the task OCR
+fine-tunes are worst at. Extracting with the reading model itself is always allowed — that is
+the one-model case, not a second OCR model. The picker leaves the refused models out rather than
+offering them and failing, but the server enforces the rule regardless.
+
+On Ollama, **both** chosen models are kept resident when the app frees the GPU, so pass 2 does
+not pay a fresh model load on every request.
+
+The run log records `extract_model` only where the two passes differed, and the **Pass 2** table
+groups rows by the model that *extracted*, naming the reading model as `reading: …` underneath —
+a field score taken over a real transcript is partly a measurement of pass 1.
 
 Switching is **refused while the queue is running** (HTTP 409) — half a document read on
 one server and half on another would be logged and scored as if one server had done it.
@@ -672,7 +787,7 @@ python compare.py --no-run
 | Flag | |
 |---|---|
 | `--no-run` | re-score the saved `solution/out/<id>.txt` without paying for OCR again |
-| `--detail fast\|balanced\|accurate\|max` | override the resolution preset |
+| `--detail original\|medium\|low` | override the resolution preset |
 | `--app URL` | score a deployed instance instead of localhost |
 | `--keep-tables` | compare table markup literally instead of normalising it |
 | `--fields` | also score the extracted fields — see below |
@@ -783,6 +898,10 @@ python compare.py --fields
 python compare.py sol005 --fields --from-truth
 ```
 
+`--from-truth` feeds `solution/<id>.md` into extraction instead of reading the page, so pass 1
+contributes nothing to the score. The **Fields only** pane does the same for one document at a
+time, and lets you change model between runs.
+
 | Metric | Meaning |
 |---|---|
 | `field accuracy` | correct values ÷ values the truth file says the page prints. **The headline.** |
@@ -812,6 +931,147 @@ there is no score. It reaches the run log as `field_acc` and `field_expected`.
 
 ---
 
+## Random test
+
+The **Random test** pane runs the whole pipeline on settings nobody chose: a ground-truth
+document, a random model to read it, a random model to extract from it, a random Detail and a
+random extraction shape. Set how many runs you want and press **Run random test**.
+
+**It is the only thing here that tests the whole path.** `compare.py` and the field sweeps feed
+pass 2 a ground-truth transcript on purpose, so a field score measures the extractor and nothing
+else — which leaves decoding, trimming, resizing, the pass-1 profile, the case match and
+extraction-from-a-real-transcript untested by anything automatic.
+
+| | |
+|---|---|
+| **What each round runs** | how much of the pipeline to exercise &mdash; the three scopes below |
+| **Runs** | 1 to 50. A round is a real read plus a real extraction, so tens of seconds each |
+| **Seed** | leave blank for a new one; the seed used is put in the box when the run starts. It fixes the models, Details and shapes, and their order; the documents are chosen from the run log as it stands, so a seed replays the same plan exactly only while the log has not moved |
+
+**Exclusions.** Every served model appears as a chip under **Models that may read** and
+**Models that may extract**; unticking one takes it out of the draw. The two lists are
+separate because a model can be poor at one pass and good at the other. Exclusions apply to
+contests as well, `""` (same as reading model) is never excluded, and emptying a pool the
+run actually needs is refused with a reason. On the CLI: `--exclude-reader MODEL`,
+`--exclude-extractor MODEL`, repeatable.
+
+**Locks.** Any of the document, the OCR model, the extraction model and the extraction
+shape can be pinned instead of drawn, from the four pickers above the Run button. A locked axis is that axis
+taken out of the experiment — locking the document is how a model comparison stops being a
+document comparison as well. A lock this endpoint cannot honour (an unserved model, a model
+pass 2 may not run on here, a document with no ground truth, a shape that is not `single`
+or `agentic`) is **refused with a reason** rather than quietly ignored, and the locks are
+printed beside the seed when the run starts. A read-only run has no extraction, so its
+extraction-model and shape pickers are hidden.
+
+**Three scopes, one per run:**
+
+| | |
+|---|---|
+| **Full** | read the page, then extract from what came back. Both passes, and the field score is therefore partly a measurement of the read: a value pass 1 got wrong cannot then be extracted right |
+| | **A read that failed &mdash; looped, cut off, or empty &mdash; or that scored under `MIN_READ_FOR_FIELDS` (0.75) does not get its fields scored.** The extraction still runs and the row is still written with what came back (keys filled, grounded ratio, extra fields, timings); the correctness columns are left blank, and the round says **unscored** with the reason. A low score is **not** a failed run — it is a run, and it counts in the pass-1 mean. Set `MIN_READ_FOR_FIELDS=0` to score every extraction whatever the read did |
+| **Read only** | pass 1 and stop. No extraction, no field score, and the row it logs has blank pass-2 columns |
+| **Fields only** | pass 2 alone, on `solution/<id>.md`. No page is read and no image is made, so what comes back wrong is the extractor's &mdash; the same thing the Fields pane does, and the shape every pass-2 measurement was taken under. Any served model can be drawn, vision or not, and it runs as the one model in force |
+
+They are separate runs rather than a fourth thing to randomise: the three answer
+different questions, and a run that mixed them would report a mean over two of them.
+Every round says which it ran, and a pass that did not run reads **not run** rather than
+zero.
+
+A fields-only run can leave a text-only model selected when it stops. The Workspace pane
+will refuse to read a page with it until something else is picked &mdash; the settings are
+left where the last round put them, as below.
+
+**The rounds appear on the main page, not in this pane** — the controls decide a run, and
+the rounds take the **Result** card's place while they are on screen (Compare goes with it,
+since it holds that read's page images). A round is five columns wide and a run is up to
+fifty of them, which a 380px pane cannot show without clipping the numbers the feature
+exists to produce.
+
+The two never share the screen, and the Read button is disabled while a test is running.
+**Clear** on the card — or simply reading a document by hand — puts the Result card back;
+nothing is lost, because every round is a real run and is in the run log.
+
+### Contest — re-run the top 5 and bottom 5
+
+The **Run contest** button in the same pane takes the ranking from
+[Standouts](#standouts) and runs the top 5 and bottom 5 models again, **on the same
+documents, at one fixed Detail** (`medium`), with the extraction shape the app is
+currently set to. The only thing that varies is the model.
+
+That is the opposite of what the random test does, and deliberately so: a random plan gives
+every round its own Detail and its own page, which is what makes it good at finding failures
+and useless for settling an argument about which model is better. A contest is the rematch.
+
+| | |
+|---|---|
+| **Contest between** | what the contest is about: **OCR model**, **extraction model**, **document**, or **reader + extractor** pairs. The subject decides the scope too — a reader contest that also extracted would be scored partly on the other pass — so the scope picker above does not apply to a contest |
+| **Top** | how many from each end of the ranking |
+| **and the bottom** | off runs the leaders alone. The two halves answer different questions: the top is *which should I use*, the bottom is *is this really as bad as the log says* |
+| **Documents** | how many documents each contender runs, 1 to 10 — the least-run ones, so a contest also spreads its rounds. Hidden for a **document** contest, where the documents are the contenders |
+| who enters | only entries that have a **score**, and only those this endpoint still serves. Anything ranked but unserved, and anything unranked, is reported and skipped |
+
+A **document** contest reads every contending document with the model the log currently
+ranks first. A **reader + extractor** contest runs every top reader against every top
+extractor, and is trimmed from the bottom of each ranking if the pairing count would not
+fit in 50 rounds.
+
+Where fewer than ten models are ranked, every one of them runs and the run says so — a model
+that is in both the top five and the bottom five is tagged as neither.
+
+The whole plan appears as soon as the run starts — every round `queued`, the current one
+`running`, then filled in with the transcript score, the field score (a partial counting half),
+how many extra fields came back, and the clock. A round that fails is marked and the run
+continues: stopping at the first failure would find one problem per invocation.
+
+Two things worth knowing:
+
+- **Every round is a real run and appends its own row to the run log**, so its results feed the
+  same tables as everything else. A random test whose rows were kept out would be measuring a
+  path nobody else uses.
+- **The settings are left where the last round put them**, not restored. A combination that
+  broke something is still selected when the run stops, which is what you want to look at it.
+
+**The document is the one thing that is not random.** Each round goes to whichever case the run
+log has read fewest times, ties broken at random, counting the rounds planned above it as well —
+so the runs spread over the fixtures instead of piling onto whichever one keeps being drawn, and
+a document nobody has run yet is picked first. The number beside each case in the table is how
+many reads it already had, which is why it was chosen. Re-extraction rows are not counted (they
+read no page) and failed reads are (the document has had its turn).
+
+Only documents with **both** a transcript truth and a field truth are used — a round that can
+report neither number only proves the request did not crash.
+
+**Which models each pass may draw on:**
+
+- **a reader is any model that reports vision.** Pass 1 sends an image, so a text-only model is
+  not a candidate; nothing else is excluded. A fields-only round has no reader at all.
+- **an extractor is the reading model itself, or a model that is not an OCR fine-tune** — the
+  same rule the server enforces, so a plan never contains a round it would refuse.
+
+A general vision model can therefore be planned as a reader. That is deliberate: it is how the
+run that read a fixture at 98.5% was found. What stays narrow is the **default** — with nothing
+chosen, the app resolves an OCR model, so a general model reads a page because something picked
+it and never because it was the newest pull.
+
+The same thing runs headless:
+
+```bash
+python randomtest.py http://localhost:5000 --rounds 10
+```
+
+```bash
+python randomtest.py http://localhost:5000 --seed 1787218747
+```
+
+```bash
+python randomtest.py http://localhost:5000 --scope fields --rounds 10
+```
+
+```bash
+python randomtest.py http://localhost:5000 --contest --documents 2
+```
+
 ## Run log
 
 Every document read appends one row to `logs/runs.csv` — from the page, from the queue, from
@@ -827,10 +1087,14 @@ the page, and copying the earlier row's numbers forward would count one read twi
 total.
 
 **A better re-extraction is also written back onto the read's own row.** If it scores higher —
-more priority-1 keys filled, then more priority-2, then a higher `grounded_pct` — its figures
-replace the pass-2 columns of the row for the read it came from, and `extract_updated` records
-when that happened. 12/14 becomes 14/14; 14/14 is never pulled back down to 12/14, and an
-extraction that failed can never displace one that ran. The read's own columns are never
+more priority-1 values **correct**, then more priority-1 keys filled, then a higher
+`grounded_pct` — its figures replace the pass-2 columns of the row for the read it came from,
+and `extract_updated` records when that happened. 9/14 correct becomes 11/14; 11/14 is never
+pulled back down to 9/14, and an extraction that failed can never displace one that ran.
+Correctness ranks first and coverage second, so a run that filled every key with whatever was
+nearest does not outrank one that filled fewer and got them right; a document with no field
+truth file has no correctness figure on either side and is ranked on coverage, as it always
+was. The read's own columns are never
 touched, and the re-extraction keeps its own row regardless, so the history stays complete and
 the read row reports the best extraction of that transcript rather than whichever one happened
 to run first. The **Fields** cell marks an updated row.
@@ -846,17 +1110,23 @@ to run first. The **Fields** cell marks an updated row.
 | `tokens`, `tokens_per_second` | OCR output tokens; the rate is decode-only |
 | `extract_seconds`, `extract_tokens` | pass 2 |
 | `extract_mode` | `single` or `agentic` — the shape pass 2 ran in, taken from the result, so a mode switched mid-batch still labels each row correctly. Blank on a run that never extracted |
+| `extract_steps` | the agentic steps this row's extraction ran, where it ran only some of them (`POST /api/extract` with `steps`). Blank on every ordinary run — a full walk names no steps here. A row that names steps was measuring one step: its tier counts are out of the keys that step owns, and `field_acc` is blank because a part of the form is not scored against the whole of it |
 | `ocr_profile` | `typhoon` or `dots` — the pass-1 shape that read the page, taken from the pages themselves for the same reason. Blank on rows written before profiles existed, and on `run_type=extract` rows, which read no page |
 | `grounded_pct`, `ungrounded`, `fields_missing` | share of extracted values found in the transcript, how many were not, and how many fields the document does not state |
 | `field_acc`, `field_expected` | pass 2 scored against `solution/<id>.fields.json`: the share of the values that came back correct, and how many values that was. Blank on every document without a field truth file, so it does not read down the column like `grounded_pct` — read the accuracy beside its own `field_expected`, because 100% of three keys and 100% of fourteen are the same cell and not the same claim |
+| `other_fields`, `other_distinct` | how many entries came back under `other_fields` — everything the page states that the fourteen keys do not cover — and how many of them were **distinct**. A count only; the labels are the model's own wording and stay out of the file, like the transcript. The pair is the point: 104 against 5 is a loop, 12 against 12 is a document. Blank where nothing was extracted, `0` where the extraction ran and named none |
+| `extract_model` | the model pass 2 ran on, where it is **not** the one that read the page. Blank on the one-model setup, which reads as "the same as `model`" rather than as unknown |
+| `extract_looped` | `1` when the same entry came back three or more times — a reply that cycled rather than a document with a lot on it. Such a run is counted as a **failure** by the setting table and dropped from the extras ranking rather than allowed to win it. Blank where nothing was extracted, `0` where the extraction ran cleanly |
+| `p1_correct`, `p1_partial`, `p1_scored` | priority-1 values that are the value the field truth file says belongs in that key, values where one contains the other, and how many values that file rules on. **Correctness, not coverage** — `p1_present` counts a key filled with anything at all. The setting table scores a partial as **half a value**; `p1_correct` keeps the strict count, so both readings survive here. Blank on every document without a field truth file, for the same reason `field_acc` is: a `0` would read as an extraction that got everything wrong rather than as one with no answer sheet |
 | `p1_present`, `p1_absent`, `p2_present`, `p2_absent`, `p3_present`, `p3_absent` | field coverage by delivery tier — how many of each tier's keys came back filled. Pass 2 extracts priority 1 only, so `p2`/`p3` read `0/0`: this build asked for none of them, which is not the same as a run that extracted nothing and leaves them blank. Present and absent are both written, so a row always says what its counts were out of |
-| `case`, `char_accuracy`, `word_accuracy`, `char_accuracy_no_marks` | percentages, blank when the input has no ground truth |
+| `case`, `char_accuracy`, `word_accuracy`, `char_accuracy_no_marks` | percentages, blank when the input has no ground truth. **`char_accuracy` is the score** — content only, and order-blind: the transcript's blocks are matched to the ground truth's by content before the edit distance, so a page read correctly but walked in a different order is not charged for it. Missing, invented and misread content cost exactly what they did. The other two stay for diagnosis and are not shown on the page: `word_accuracy` is order-*sensitive*, so the gap between the two is what a reordering looks like |
 | `status`, `error` | `ok` / `partial` / `truncated` / `looped` / `cancelled` / `error` |
 | `run_type` | `ocr` for a document read, `extract` for a re-extraction of a transcript already read. Blank on rows written before the column existed |
 | `extract_updated` | set when a later, better re-extraction replaced this row's pass-2 columns, so `timestamp` no longer says when they were measured. Blank on the normal case |
 
 Coverage is not correctness. `p1_present` counts what came back filled, not what came back
-right — read it beside `grounded_pct`. Each row's **Fields** cell also carries the shape that
+right — read it beside `p1_correct` where the document has a field truth file, and beside
+`grounded_pct` where it does not. Each row's **Fields** cell also carries the shape that
 filled it, `single` or `agentic`: one request and seven fill the schema in different ways,
 so two rows of counts are not comparable without it.
 
@@ -865,6 +1135,95 @@ score in the file, and above the table is the best each document has ever reache
 every run and every setting, with the model, backend, detail and mode that reached it on
 hover. The mean moves with whatever was being tried lately; the best says what the document
 is known to be capable of, which is the number to beat.
+
+### Reading the card: five panels, sortable, filterable
+
+The card is five panels, and only the last of them is the log:
+
+| Panel | |
+|---|---|
+| **Full rank** | best and worst per model and per document, for each pass. The chips above it are each document's best score |
+| **Best reading** | pass 1 per setting — which model, backend, Detail and profile to read a page with |
+| **Best extraction** | pass 2 per setting — which model and shape to extract fields with |
+| **Per document** | one row per ground-truth document: the best transcript, the best fields, the quickest complete run |
+| **Raw data** | the rows of `logs/runs.csv` themselves — unfiltered, and the only place a run can be deleted |
+
+**Every column sorts**, including the one each table is ranked by. Click a header to sort
+descending, again for ascending. The highlighted row stays the best by the table's own
+ranking however you sort it, so re-ordering never re-labels the winner. Rows with nothing to
+sort — *not scored*, *no complete run* — go last in both directions: no score is not a low
+score.
+
+#### Filtering
+
+Under the controls is a row of chips per **document**, **reading model**, **extraction model**
+and **extraction shape**. Click one to keep **only** that value, again to **drop** it, again
+to clear. So *how does my best model do on sol001* is: keep `sol001`, drop the models you are
+not asking about.
+
+**A dropped row is absent, not hidden.** It is out of the run counts, the failure rates, the
+means and the window, exactly as if it had not been run — which is the only reading under
+which the question above has an answer. The chip counts are taken over the **whole** log
+rather than over what survived, so a value you have just dropped is still there to put back.
+
+**The Raw data panel is never filtered.** It is the log, and a row nobody can see is a row
+nobody can delete. If a filter matches nothing, a banner says so and names what is in force —
+the tables go empty, the log does not.
+
+#### Half a pipeline
+
+Some runs are half a pipeline on purpose: a read-only round (`--scope ocr`) never extracts, and
+a fields-only round (`--scope fields`) is fed the ground truth and never reads. **Pipeline**
+isolates them:
+
+| | |
+|---|---|
+| **Any** | every run (default) |
+| **Both passes** | read a page *and* extracted from it |
+| **Read only** | read a page and never extracted |
+| **Extract only** | extracted from a transcript it did not read |
+
+The model chips reach the same place: turning off **every** reading model leaves the runs that
+read no page, and turning off every extraction model leaves the runs that extracted nothing.
+That works because **a model column is blank on a pass the run did not perform** — a fields-only
+row carries the model that *extracted* in `model`, and it is not offered or matched as a reading
+model, because it read nothing. So those pickers only ever list models that actually did the
+job the picker is about, and the counts beside them are counts of that job.
+
+Whichever route you take, a panel with nothing to show says why rather than going blank. One
+caveat is printed where it applies: under **Read only** the pass-2 table is not empty, because a
+read-only run that *looped* is counted as an extraction that never got started — a run that
+never asked for pass 2 and one that died before reaching it are identical in the log, both
+leaving the pass-2 columns and `extract_mode` blank. Those rows are pass-1 failures; compare
+extraction under **Both passes** or **Extract only**.
+
+#### The two knobs
+
+| | |
+|---|---|
+| **Read floor** | transcript accuracy under which a field score is not counted as a measurement of the extractor. Pass 2 can only map the values pass 1 gave it, so a field score over a broken transcript is the read's mistake wearing the extractor's name. Defaults to `MIN_READ_FOR_FIELDS` (0.75 → **75%**); `0` counts every field score whatever the read did |
+| **Runs averaged** | how many recent runs **of each setting, model and document** each table covers. Defaults to `SUMMARY_RUNS` (**50**); `0` is the whole log |
+
+**Neither knob writes anything, and neither hides a run from the log.** Every run is stored
+whatever they say: a read that scored 20% is written, is passed to pass 2, and is in the Raw
+data panel — what a floor above 20% decides is that the field score it produced describes the
+read rather than the extractor, so it stays out of the correctness figures. Raising the floor
+is how you take propagated OCR error off the extractor's bill; the note beside the controls
+says which values are in force and whether they are the server's own.
+
+Both apply to **every row already in the file**, not only to runs made after they were
+changed, so the tables always report the rule you are looking at.
+
+#### Deleting a run
+
+Tick rows in **Raw data** and press **Delete selected**. That is the one control on this card
+that changes the file: the rows leave `runs.csv` and therefore every table, every mean and
+every count.
+
+**They are archived, not destroyed** — appended to `logs/runs.deleted.csv`, which is the only
+way back. A row is identified by its position in the file, checked against its timestamp and
+file name before anything is removed, so a page holding a stale list (a run finished while
+rows were ticked) deletes nothing and says so rather than deleting a neighbour.
 
 ### Best setting per document
 
@@ -890,13 +1249,184 @@ any setting; a fastest time set on a repeat read is not a setting you can expect
 
 The same figures are in `GET /api/runs` under `totals.by_case`.
 
+### Which setting to run at all
+
+Under that table are two more, answering the question the per-document table scatters across
+one row each: *which setting should I run*. **Two tables, not one** — pass 1 is judged on the
+transcript and paid for in prefill and decode, pass 2 on whether a value reached the key it
+belongs in and paid for in neither. One row averaging both answers neither question.
+
+Both follow the same rule for repeats: **the runs of one document are averaged before the
+documents are.** Two runs on `sol001` and one on `sol005` is not three samples of a setting —
+pooling them weights `sol001` twice, and two settings being compared have rarely been run the
+same number of times on the same pages.
+
+Each figure carries two spreads, and they are different claims:
+
+| | |
+|---|---|
+| **± repeat** | how far the setting moved when the same document was run twice, averaged over the documents that were repeated. Reproducibility. Under greedy decoding this should be near zero — a figure that is not is worth chasing |
+| **± across docs** | the spread of the per-document means. How much the documents differ, which is a property of the fixtures as much as of the setting. **Not an error bar on the mean** |
+
+Both read blank where there is nothing to take them over: one document, or no document run twice.
+
+#### Pass 1 — best setting to read a page
+
+| Column | |
+|---|---|
+| **Setting** | model, backend, Detail and pass-1 profile *together*. The same model at a different Detail is a different thing to run, and the profile decides the prompt and the system slot |
+| **Transcript** | character accuracy against `solution/<id>.md`, with word accuracy under it. Word accuracy counts ordering and character accuracy does not, so a value read correctly in the wrong place shows in one and not the other |
+| **Prefill** | vision tower plus prompt encode, paid once per page before the first token. This is the half that scales with Detail |
+| **Decode** | generating the transcript, with the rate under it. The rate excludes prefill, so it compares across pages of different resolutions |
+| **Total** | wall clock for the document |
+
+A **failure rate** appears beside the setting when any of its reads did not finish. Two shapes
+count, and they are named apart because they are found in different places:
+
+- the run **said so** — `looped`, `truncated`, `cancelled`, `error`;
+- the run said `ok` and returned an **empty transcript** — scored 0.0%. That failure has no
+  other symptom: it is fast, it is clean, and only the accuracy column gives it away.
+
+**A failed run is counted and never scored.** It raises the failure rate and stays out of every
+mean — accuracy, word accuracy, prefill, decode and total — because a run that did not finish
+did not measure anything. Read the two figures together: a high score beside a high failure rate
+is one good run among several bad ones, which is precisely what a mean with the failures folded
+into it could not tell you. `char` counts only the documents that produced a number, and a
+setting whose every run failed shows no score at all.
+
+The same rule applies to the per-document table above and to the **Pass 2** table: a run that
+did not finish cannot hold a record or enter the extras ranking either.
+
+**llama.cpp caches prompts**, so a prefill figure that includes a re-read of a page it had
+already seen is lower than anyone gets cold. The log has no column saying whether a read was
+warm, so this cannot be filtered — only known about.
+
+#### Pass 2 — best setting to extract fields
+
+Ranked on **field accuracy**: priority-1 values that are the value the ground truth says
+belongs in that key, as a share of the values that file rules on, meaned over documents. A
+**`partial` scores half a value** — one string contains the other, so the model found the right
+thing and took too much or too little of it, which is neither a hit nor a miss. The truth files
+state 11 to 13 of the fourteen keys, so the denominator is about 12 and it is **per document**,
+which is why this is a mean of per-document rates and never one big fraction.
+
+The strict count (`correct` only) and the generous one (`partial` counting full) are both still
+in the CSV and in the CLI report, because the gap between them is the diagnosis: a wide gap is
+over-capture and truncation, a low pair with no gap is misreading.
+
+| Column | |
+|---|---|
+| **Setting** | the model that **extracted**, backend and extraction shape. Where a different model read the page, it is named as `reading: …` — a field score taken over a real transcript is partly a measurement of pass 1. A **failure rate** appears here when any of its runs cycled |
+| **Field accuracy** | the headline, with the raw counts totalled over the scored runs beneath it. Reads *not scored yet* where nothing this setting ran on has a `solution/<id>.fields.json` |
+| **Extra fields, ranked** | `other_fields` scored against the other settings run on the **same document**, as points **per document** — see below |
+| **Extra fields** | how many **distinct** entries came back under `other_fields`, meaned over documents, with the raw total under it where the two differ |
+| **Filled** | how many of the 14 priority-1 keys came back filled with anything at all. Coverage, not correctness, and deliberately not what the table is sorted on: read it against the score. Many filled and few correct is a model inventing; few filled is one giving up, and they share an accuracy |
+
+**Single and agentic are separate rows.** Some models do well in one shape and badly in the
+other — the measured gap on one model is 2.5× — and it is not a gap a model carries with it, so
+averaging the two reports a number neither shape produces.
+
+**Everything else about a setting is pooled**, including what pass 2 was fed. A run fed
+`solution/<id>.md` measures pass 2 alone; a run fed a transcript pass 1 produced measures *both*
+passes, because a value the OCR misread cannot then be extracted correctly. They share a row, so
+a setting whose runs are mostly real reads is being marked on its OCR as well as its extraction
+— `source` in the CSV is what tells the two apart.
+
+Restricted agentic runs (rows naming `extract_steps`) are left out: they answer part of the
+form, so their counts are not a measurement of the setting on it.
+
+##### How `other_fields` is ranked
+
+**There is no ground truth for `other_fields` and there cannot be one** — the labels are the
+model's own wording, and a page has as many extra fields as a reader decides it has. So it is
+scored the only way an unscorable output can be: **against the other settings run on the same
+document.** Three settings on `sol001` ranking B, C, A gives B +2, C +1, A +0, and the points
+are summed over every document.
+
+Points are *how many settings you strictly beat*, which is what makes ties behave: two settings
+that returned the same count get the same points. A document only one setting has been run on
+is skipped entirely and does not count towards the *of N* either — awarding 0 out of 0 there
+would make a setting look weak for having had no opponent.
+
+**The points are shown per document**, because the settings being compared have not entered the
+same number of contests: +10 from one document and +26 from five are not the same achievement,
+and the raw totals rank whichever setting was run most.
+
+**A run whose reply cycled does not enter the contest at all.** It is not a smaller result, it
+is a failed one, and it is counted in the failure rate instead. Without that rule the column
+rewards exactly the failure it should penalise — a reply that repeats one invented line a
+hundred times returns 104 "extra fields" and beats every honest reply on the page. What is
+compared for the runs that do enter is `other_distinct`, so repetition below the flag's
+threshold cannot inflate a total either.
+
+Even so, **this column measures volume and volume is not quality.** Nothing here checks that
+the extra fields are real; `grounded_pct` is the separate check for that, and it cannot catch a
+loop, because repeated page text is still page text.
+
+The same figures are in `GET /api/runs` under `totals.by_ocr` and `totals.by_extract`, best
+first.
+
 Failed and cancelled runs are logged too. Move the file with `OCR_LOG_DIR`. It is written as
 UTF-8 with a BOM so Excel opens Thai filenames correctly; new columns are only ever
 appended, so old rows stay readable.
 
+**Every compiled figure covers the most recent runs of its own row** — up to
+`SUMMARY_RUNS` (default **50**) of *that setting*, *that model* or *that document*, not the
+last 20 lines of the file. Each table says which it is per — *recent runs per setting*, *per
+document*, *per row* — and deliberately **does not print the number**: the window is a
+ceiling, and a setting with three runs is summarised over three. What each row actually
+covers is the count on the row itself (`N run(s)`, `2 of 7`); the ceiling is in the tooltip.
+The chips read *best recently* rather than *best ever*.
+
+Two reasons, and the second is why it is per row rather than a slice off the end. The log is
+append-only across changes to the thing being measured — a scorer that starts counting
+differently, a schema that grows, presets that are renamed — so a mean over rows from both
+sides of one of those describes a build nobody is running. And a slice would let one busy
+evening on one setting push every other setting out of the tables entirely.
+
+The CSV keeps everything; `SUMMARY_RUNS=0` summarises all of it. The row table below still
+lists the most recent 50 rows — it is the log, not a summary of it. The random test's
+document-fairness rule ignores the window on purpose: a document read thirty rows ago has
+still been read.
+
+**To start the tables from scratch**, rename `logs/runs.csv` — the next run writes a fresh one
+with the current header. Rows written before a column existed read blank in it, which is
+correct but leaves them out of anything ranked on that column.
+
 Because each row carries the server, the model and the accuracy together, this is the
 straightforward way to answer "is 11434 actually better than 8080 on my documents" — run the
 same cases on each and compare the columns.
+
+### Standouts
+
+The top of the run-log card answers four questions the tables under it cannot put
+into words: **which model and which document are carrying this, and which are
+failing it** &mdash; once for reading a page and once for extracting fields.
+
+Each list is ranked on
+
+```
+score = accuracy x (1 - failure rate)
+```
+
+which is what one attempt is worth: a run that failed counts as zero, so failures
+outweigh a few points of accuracy. The accuracy printed beside it is taken over
+the runs that **finished**, which is why the failures are always printed with it.
+
+| | |
+|---|---|
+| **0.0** | runs failed and not one survived to be measured &mdash; a real result, and the worst there is |
+| **not scored** | nothing failed and nothing was scored either: no ground truth, or a field score left off because the read was too poor to judge it by. Ranked nowhere |
+
+Models here are grouped **without** their Detail, profile or extraction shape, unlike
+the two setting tables lower down: those answer *which setting to run*, this answers
+*which model is carrying its weight* across everything it has been asked to do. A
+model can be worst here and still hold the best single row there, at one Detail.
+
+A group with only one run is marked and cannot be the headline best or worst while a
+better-evidenced one exists. And **a document's row is not a verdict on the
+document** &mdash; a fixture every model reads badly may be the hardest page here, or
+its hand-written ground truth may be wrong.
 
 ---
 
@@ -966,7 +1496,7 @@ accepted. `400` for an unknown name. Not refused while the queue is busy: every 
 the profile it ran under, so a batch split across two is still readable afterwards.
 
 `POST /api/ocr/stream` — multipart form, fields `image` and `detail`
-(`fast`/`balanced`/`accurate`/`max`). Returns NDJSON:
+(`original`/`medium`/`low`; the old four names are accepted and mapped). Returns NDJSON:
 
 ```
 {"event":"page","page":1,"total":2,"resolution":"1500x1050"}
@@ -992,7 +1522,7 @@ everything else, which is most documents.
 | Route | |
 |---|---|
 | `POST /api/ocr` | same fields as the stream, blocking, whole JSON at once. Drains the same generator internally, so timings are measured identically |
-| `POST /api/extract` | re-run pass 2 on a transcript the app already has. Takes an optional `mode` (`single`/`agentic`) for that one call, and an optional `job` — the id from the `page`/`done` events — which names the document in the run-log row it writes, and is also what lets the reply carry `field_score` |
+| `POST /api/extract` | re-run pass 2 on a transcript the app already has. Takes an optional `mode` (`single`/`agentic`) for that one call, and an optional `job` — the id from the `page`/`done` events — which names the document in the run-log row it writes, and is also what lets the reply carry `field_score`. `{"case": "sol003"}` names that document outright instead, and with `{"from_truth": true}` the transcript is read from `solution/sol003.md` and no `text` is needed: pass 2 alone, on text pass 1 cannot have spoiled. `400` for an id that is not a case. `{"steps": ["document"]}` runs only those agentic steps, for measuring one step's prompt on its own: the reply then carries `steps_only`, no `field_score` (the keys nobody asked for are not missing), and its run-log row names the steps in `extract_steps`. `400` in single mode, which has no part of the schema to ask for |
 | `POST /api/extract/stream` | the same as `/api/extract`, as NDJSON: `extract_steps` once, then an `extract_step` per step as it starts and finishes, then `fields`. Agentic mode only emits the step events; single mode emits `fields` alone |
 | `GET` · `POST /api/extract/mode` | read or set the extraction shape for everything this process extracts next. Body `{"mode": "single"}` or `{"mode": "agentic"}` |
 | `GET /api/page/<job>/<n>` | PNG of prepared page `n` (0-based). `job` is returned on the `page` and `done` events. 404s once the upload falls out of the cache |
@@ -1000,12 +1530,14 @@ everything else, which is most documents.
 | `GET /api/servers` | every configured endpoint, what each one is, and which is active. `?probe=1` bypasses the status cache |
 | `POST /api/servers` | `{"url": "...", "model": "..."}`, either field optional. 409 while the queue has a job running |
 | `POST /api/context` | set the Ollama context window for subsequent requests |
-| `GET /api/cases` · `GET /api/files` | benchmark cases, and readable documents in `mockOcr/` |
+| `GET /api/cases` · `GET /api/files` | benchmark cases, and readable documents in `mockOcr/`. Each case says `field_truth`: whether it has a `solution/<id>.fields.json`, and so whether an extraction of it can be scored |
 | `GET /api/truth/<case>` | the hand-written ground truth for one case, verbatim, plus the case's pdf, kind and page count. 404 for an id that is not a case |
 | `GET`/`POST /api/queue` | list or enqueue. `GET /api/queue/<id>`, `DELETE /api/queue/<id>`, `POST /api/queue/clear`, `POST /api/queue/mode`, `POST /api/queue/workers` |
 | `POST /api/queue/run` | release the queue so workers pick up what is in it; `{"start": false}` stops it handing out more. Queueing alone never starts a read. `started` in the queue's stats says which state it is in |
 | `POST /api/match` | look up the ground-truth case for a file by name or sha256 |
-| `GET /api/runs?limit=50` | recent run-log rows, newest first, plus totals |
+| `GET /api/runs?limit=50` | recent run-log rows, newest first, plus the compiled tables under the process settings |
+| `POST /api/runs/query` | the same payload recompiled under a different window, read floor and filter. Body `{limit, window, min_read_pct, include: {field: [...]}, exclude: {field: [...]}}`, every key optional and `null` meaning *use the process setting*. Filterable fields: `case`, `model`, `extract_model`, `extract_mode`, `backend`, `detail`, `ocr_profile`, `status`, `run_type`, `source`, `pipeline` (`both`/`read`/`extract`). **Writes nothing** — `runs` is always the unfiltered log, `totals` is compiled over what matched |
+| `POST /api/runs/delete` | remove rows from the log, archiving them to `logs/runs.deleted.csv`. Body `{rows: [{_row, timestamp, file}]}` as they came back from `/api/runs`; a row whose timestamp and file no longer match the position is reported as `stale` and left alone |
 | `GET /api/runs.csv` | the log file itself |
 
 ---

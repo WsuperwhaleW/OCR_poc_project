@@ -1,0 +1,22 @@
+{
+  "document_type": "ใบลดหนี้ / รับคืนสินค้า",
+  "document_number": "2023/1107",
+  "issue_date": "12 ธันวาคม 2566",
+  "reference_document": "",
+  "seller_name": "บริษัท เดินยังไงก็ไกล กำจัด",
+  "seller_tax_id": "0188899547156",
+  "seller_branch": "",
+  "buyer_name": [
+    "บริษัท บีเคบี จำกัด",
+    "บริษัท บีเคบี จำกัด (ศูนย์เลนกลาง)"
+  ],
+  "buyer_tax_id": "0102743035538",
+  "buyer_branch": [
+    "ลำดับสาขา 05656",
+    "05656"
+  ],
+  "currency": "",
+  "subtotal": "208,839.60",
+  "vat_total": "-",
+  "amount_incl_vat": "208,839.60"
+}

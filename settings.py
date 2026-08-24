@@ -47,7 +47,7 @@ ACCEPTED_SUFFIXES = {".pdf", ".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif",
 # with the extracted text. These are the *prepared* pages -- post-rasterisation
 # and post-downscale -- so the comparison shows exactly what the model saw.
 # Held in memory, so this is a RAM ceiling as much as a history depth: a 10-page
-# document at `accurate` is ~40 MB of PNG. Lower it on a small server.
+# document at `medium` is ~40 MB of PNG. Lower it on a small server.
 MAX_JOBS = config.env_int("MAX_JOBS", 5, minimum=1, maximum=100)
 
 # Queue workers. 0 means "one per slot the model server advertises", which is the
@@ -62,7 +62,7 @@ WORKERS_OVERRIDE = config.env_int("OCR_WORKERS", 0, minimum=0,
 # --------------------------------------------------------------------------
 
 # (connect, read) for a generation request. The read timeout is the one that
-# matters: a CPU-only server reading a dense page at `max` detail can legitimately
+# matters: a CPU-only server reading a dense page at `original` detail can legitimately
 # take many minutes, and a timeout that fires mid-generation throws away work the
 # server is still doing. Raise it rather than lower it on slow hardware.
 GEN_CONNECT_TIMEOUT = config.env_float("GEN_CONNECT_TIMEOUT", 10.0, minimum=1.0)
@@ -77,16 +77,59 @@ GEN_TIMEOUT = (GEN_CONNECT_TIMEOUT, GEN_READ_TIMEOUT)
 # the dominant cost -- scales with that. Small Thai glyphs and tone marks are the
 # first thing lost when the cap is too low.
 DETAIL_PRESETS = {
-    "fast": 1_000_000,
-    "balanced": 2_000_000,
-    "accurate": 4_000_000,
-    "max": 0,  # 0 = no downscaling, feed the page at native resolution
+    "original": 0,        # 0 = no downscaling, feed the page at native resolution
+    "medium": 4_000_000,
+    "low": 2_000_000,
 }
-# Measured, not assumed: on a real 300 DPI receipt, "max" (2550x3300) sent the model
-# into a counter loop and hit the 4096-token cap after 636 s, while "accurate"
-# (1758x2275) finished clean in 303 s. Past ~4 MP the extra visual tokens degrade this
-# model rather than helping, so accuracy-first means "accurate", not "max".
-DEFAULT_DETAIL = "accurate"
+# Measured, not assumed: on a real 300 DPI receipt, native resolution (2550x3300)
+# sent the model into a counter loop and hit the 4096-token cap after 636 s, while
+# 4 MP (1758x2275) finished clean in 303 s. Past ~4 MP the extra visual tokens
+# degrade this model rather than helping, so accuracy-first means `medium`, not
+# `original`.
+DEFAULT_DETAIL = "medium"
+
+# **Three presets, and the old four-name vocabulary is gone** (renamed
+# 2026-08-21, the old names dropped 2026-08-24, both at the user's request:
+# *i only need 3 set (original/medium/low)*, then *drop the accurate/fast/max*).
+# The renames kept every measured pixel budget:
+#
+#   original = the old `max`      -- uncapped, unchanged
+#   medium   = the old `accurate` -- 4 MP, unchanged, and still the default
+#   low      = the old `balanced` -- 2 MP, unchanged
+#
+# **The old `fast` (1 MP) was deleted rather than renamed, and it is the one
+# preset that really went away.** At 1 MP this model stops misreading and starts
+# INVENTING: on sol002 it fabricated an address that is not on the page (91.8%
+# against 97.6% at 2 MP). A garbled word is a visible failure; a plausible
+# invented one is not, and a preset whose failure mode is fabrication is not a
+# preset to offer as "quick". Anyone who wants it back adds one line to
+# `DETAIL_PRESETS` -- the pixel budget is the whole of what a preset is.
+#
+# **An alias table stood here for three days and is deliberately not replaced.**
+# It accepted the old names everywhere a Detail arrives, which kept saved page
+# state and `compare.py --detail accurate` working -- and it also kept three of
+# them reachable from every request this app takes, so a script could go on
+# asking for a vocabulary the picker no longer offers and nothing would say so.
+# `resolve_detail` now falls back to the default for anything it does not know,
+# which is what it already did for a typo. The one place the old names still
+# have to be understood is the RUN LOG, which is full of them and cannot be
+# rewritten -- that reading lives in `runlog.DETAIL_RENAMES`, next to the tables
+# that need it and nowhere else.
+
+
+def resolve_detail(name: str) -> str:
+    """A Detail as this build spells it: the preset itself, or the default.
+
+    One function rather than a membership test at each call site, because there
+    are four of them and they must not disagree about what an unknown name
+    means. Unknown is not an error: a Detail arrives from a form field, a saved
+    browser setting and two CLIs, and falling back beats refusing a read over a
+    stale dropdown. What it costs is that a request for `fast` silently reads at
+    4 MP rather than the 1 MP it asked for -- correct, since 1 MP is gone, and
+    the run log records `medium`, so it never claims a budget it did not use.
+    """
+    name = (name or "").strip().lower()
+    return name if name in DETAIL_PRESETS else DEFAULT_DETAIL
 
 # Crop blank scan margins before applying the resolution cap. Set TRIM_MARGINS=0 to
 # send pages exactly as rasterised.
@@ -119,7 +162,8 @@ PROMPT_FIRST_OLLAMA = config.env_bool("PROMPT_FIRST_OLLAMA", False)
 # `app.py` builds every request as a single user message. Ollama fills the empty
 # system slot from the served model's own Modelfile, and scb10x/typhoon-ocr1.5-3b
 # ships `SYSTEM You are a helpful assistant.`, so that text has been part of every
-# OCR request this app has ever sent to Ollama. Measured on sol005 at `balanced`:
+# OCR request this app has ever sent to Ollama. Measured on sol005 at `low` (2 MP,
+# then called `balanced` -- same budget, renamed):
 # sending it explicitly is byte-identical to sending nothing (2854 prompt tokens
 # either way), which is what makes this default a no-op rather than a change.
 #
@@ -138,6 +182,30 @@ PROMPT_FIRST_OLLAMA = config.env_bool("PROMPT_FIRST_OLLAMA", False)
 # below. It is a measurably worse setting for ordinary use.
 OLLAMA_SYSTEM = config.env_str("OLLAMA_SYSTEM", "You are a helpful assistant.",
                                allow_empty=True)
+
+# Ollama only. A reasoning model answers in two parts -- a chain of thought and
+# then the answer -- and Ollama returns the first in its own field, leaving
+# `content` EMPTY until the thinking finishes. Every request this app makes is
+# capped (an agentic step at 120-900 tokens, an OCR page at MAX_NEW_TOKENS), so
+# such a model spends the whole cap thinking and returns nothing at all. Measured
+# 2026-08-19 on `qwen3.5:4b`: all seven agentic steps failed on all five
+# fixtures with `Expecting value: line 1 column 1 (char 0)`, which is what an
+# empty string looks like to a JSON parser. Raising the caps is not the fix --
+# it buys more thinking, the same way a bigger cap buys more page from a model
+# that is echoing.
+#
+# "none" turns thinking off through the OpenAI-compatible endpoint. It is SAFE ON
+# A MODEL THAT DOES NOT THINK: sent to typhoon-ocr1.5-3b beside an otherwise
+# identical body, the reply was byte-identical (same 361 chars, same md5, same
+# 2360 prompt tokens), so no baseline in CLAUDE.md moves because of it.
+#
+# Set it to "low"/"medium"/"high" to let a reasoning model think -- and then raise
+# EXTRACT_MAX_TOKENS and the step caps in `prompts.EXTRACT_STEPS` to pay for it,
+# because the budget is shared between the thinking and the answer.
+# OLLAMA_REASONING_EFFORT= (explicitly empty) sends nothing, which is the shape
+# for a server that rejects the field.
+OLLAMA_REASONING_EFFORT = config.env_str("OLLAMA_REASONING_EFFORT", "none",
+                                         allow_empty=True)
 
 # Stop the model that was in use when the picker switches to another one, so the
 # new model loads onto a card the old one has let go of. Ollama only, and the
@@ -311,3 +379,69 @@ AGENTIC_EXTRACT = config.env_bool("AGENTIC_EXTRACT", False)
 # retry costs a short question and a short answer, and a second retry almost never
 # changed an answer the first had not.
 AGENTIC_RETRIES = config.env_int("AGENTIC_RETRIES", 1, minimum=0, maximum=3)
+
+# The lowest character accuracy a transcript may score and still have the fields
+# extracted from it SCORED. Below it -- and on a read that looped, was cut off,
+# or returned nothing -- extraction still runs, and its field score is dropped
+# instead of written.
+#
+# **A read below it is not a failed run.** It is a poor one, it counts as a run,
+# and it counts in the pass-1 accuracy mean that says so. Failure means a loop or
+# a crash -- see `runlog._incomplete`. What this decides is only whether the
+# PASS-2 figure taken over that transcript is worth writing down.
+#
+# **This is about what a number means, not about saving work.** Pass 2 can only
+# map values that pass 1 actually produced, so a field score taken over a broken
+# transcript is a measurement of the read wearing the extractor's name: it drags
+# down the setting that extracted and lets the setting that read get away with
+# it. The gap is real and is recorded in CLAUDE.md -- dots.mocr agentic scored
+# 32.7% over its own reads against 46.8% over the ground truth, and on the one
+# document it read at 48.3% it returned half the fields it returned from truth.
+#
+# **0.75 since 2026-08-24**, the user's figure both times (0.5 when the rule was
+# built three days earlier). Neither is measured; what is measured is the effect
+# the rule exists for -- dots.mocr agentic scored 32.7% over its own reads
+# against 46.8% over the ground truth, and on the one document it read at 48.3%
+# it returned half the fields it returned from truth. Raising the bar to 75%
+# suppresses more scores, which is the point: a transcript three-quarters right
+# still hands pass 2 wrong values to map, and the score that comes back is the
+# read's mistake wearing the extractor's name.
+#
+# Set MIN_READ_FOR_FIELDS=0 to score every extraction whatever the read did,
+# which is how every row written before 2026-08-21 was recorded.
+#
+# It applies where BOTH passes run against a document whose transcript truth is
+# known -- the random test's `full` scope. A read with no ground truth cannot be
+# judged this way and is never suppressed on a guess.
+MIN_READ_FOR_FIELDS = config.env_float("MIN_READ_FOR_FIELDS", 0.75,
+                                       minimum=0.0, maximum=1.0)
+
+# --------------------------------------------------------------------------
+# run log
+# --------------------------------------------------------------------------
+
+# How many of the most recent runs **of each setting, model and document** every
+# COMPILED figure is taken over -- the ranking tables, the per-document bests,
+# the means, the standouts. **Not a slice off the end of the file**: it is applied
+# per group by `runlog.recent_by`, with the key each table groups on, so a
+# setting is described by its own last twenty runs and one busy evening on
+# another setting cannot push it out of the table. The raw rows are all still in
+# the CSV; what this bounds is what gets averaged.
+#
+# **Set at the user's request, 2026-08-21**: *only get 20 latest run only since
+# some old run maybe on the old system*. The log is append-only across changes to
+# the thing being measured, and this project changes it constantly -- a scorer
+# that started aligning blocks, a schema that grew fifteen keys, four Detail
+# presets that became three. Rows written on either side of one of those are not
+# two samples of anything, and a mean over them describes a build nobody is
+# running. Two of the three log resets in CLAUDE.md were that problem being fixed
+# by hand; this is the standing version of it.
+#
+# It is rows, not reads: a re-extraction is a run and takes a place in its
+# group's window. 0 means the whole log, which is how every figure before this
+# date was taken.
+#
+# **`runlog.case_counts` deliberately ignores it.** The random test's fairness
+# rule needs the whole history -- a document read thirty rows ago has been read,
+# and windowing that would send every round back to the same few fixtures.
+SUMMARY_RUNS = config.env_int("SUMMARY_RUNS", 50, minimum=0)

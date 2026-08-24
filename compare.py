@@ -2,7 +2,7 @@
 
     python compare.py                  # run every case
     python compare.py sol005           # one case
-    python compare.py --detail fast    # override Detail
+    python compare.py --detail low     # override Detail
     python compare.py --no-run         # re-score saved output, no OCR
     python compare.py --app http://ocr.internal:5000    # score a deployed app
     python compare.py --model dots.ocr --profile dots     # a different model entirely
@@ -164,7 +164,7 @@ def bar(value, width=28):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("ids", nargs="*", help="case ids, e.g. sol001 (default: all)")
-    ap.add_argument("--detail", default=None, help="fast|balanced|accurate|max")
+    ap.add_argument("--detail", default=None, help="original|medium|low")
     ap.add_argument("--no-run", action="store_true", help="score saved output only")
     ap.add_argument("--keep-tables", action="store_true",
                     help="compare table markup literally")

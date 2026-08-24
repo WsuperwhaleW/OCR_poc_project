@@ -1,0 +1,23 @@
+{
+  "document_type": [
+    "ใบเสร็จรับเงิน/ใบกำกับภาษี RECEIPTS / TAX INVOICE",
+    "ใบเสร็จรับเงิน/ใบกำกับภาษี",
+    "RECEIPTS / TAX INVOICE"
+  ],
+  "document_number": "2026-10301489",
+  "issue_date": "27/03/2026",
+  "reference_document": "",
+  "seller_name": "บริษัทเสือโคร่ง จำกัด (มหาชน)",
+  "seller_tax_id": "1447778880084",
+  "seller_branch": "สาขาที่: 00009",
+  "buyer_name": [
+    "บริษัท แพนด้า ทำกล่อง จำกัด",
+    "บริษัท แพนด้า ทำกล่อง จำกัด (1555500)"
+  ],
+  "buyer_tax_id": "1885555445555",
+  "buyer_branch": "สำนักงานกลาง",
+  "currency": "บาท",
+  "subtotal": "711,900.73",
+  "vat_total": "49,833.05",
+  "amount_incl_vat": "761,733.78"
+}

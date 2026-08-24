@@ -294,9 +294,107 @@
      it best and quickest side by side. A block of its own rather than more chips
      on `.run-best`, because every figure here carries the setting that produced
      it and a setting does not fit on a chip. */
-  #caseSum { overflow-x: auto; margin-top: 16px; }
+  #caseSum, #ocrSum, #extractSum { overflow-x: auto; margin-top: 16px; }
+  /* ---- the log view: what the tables below are compiled under ----
+     Two numbers and a set of filters, none of which write anything. The raw
+     rows are the log and are never filtered -- a row hidden there is a row
+     nobody could find to delete. */
+  .lv-bar { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 10px 14px;
+            margin-top: 12px; padding: 10px 12px; border: 1px solid var(--border);
+            border-radius: 10px; background: var(--bg); }
+  .lv-num { display: flex; flex-direction: column; gap: 4px; font-size: .74rem;
+            color: var(--muted); }
+  .lv-num input { width: 88px; padding: 5px 7px; font-size: .82rem; }
+  .lv-num .u { color: var(--muted); }
+  .lv-bar .sp { flex: 1; }
+  #lvNote, #rawSel { font-size: .76rem; }
+  button.ghost-sm.danger { border-color: var(--danger); color: var(--danger); }
+  button.ghost-sm.danger:disabled { opacity: .4; border-color: var(--border);
+                                    color: var(--muted); }
+  /* A filter chip is tri-state: neutral, kept, dropped. One control rather than
+     two lists, because "only sol001" and "anything but dots.ocr" are the same
+     question asked from opposite ends and a reader switching between them
+     should not have to find a different widget. */
+  .lv-field { margin-top: 10px; }
+  .lv-field > b { font-size: .74rem; font-weight: 600; color: var(--muted);
+                  text-transform: uppercase; letter-spacing: .05em; }
+  .lv-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 5px; }
+  .lv-chip { font-size: .74rem; border: 1px solid var(--border); border-radius: 999px;
+             padding: 3px 10px; cursor: pointer; user-select: none;
+             background: var(--card); }
+  .lv-chip .n { color: var(--muted); font-size: .68rem; margin-left: 4px; }
+  .lv-chip.inc { border-color: var(--accent); background: var(--accent-soft);
+                 font-weight: 600; }
+  .lv-chip.exc { border-color: var(--danger); opacity: .55;
+                 text-decoration: line-through; }
+  /* Sortable headers. Every column on this card sorts, including the accuracy
+     the tables are ranked by: the server's order is a default, not a lock. */
+  table.queue th.lv-th { cursor: pointer; user-select: none; }
+  table.queue th.lv-th:hover { color: var(--text); }
+  table.queue th.lv-on { color: var(--text); }
+  .lv-arrow { font-size: .6rem; margin-left: 4px; }
+  .lv-panel { margin-top: 4px; }
+  #logTabs button { flex: none; padding: 6px 12px; font-size: .8rem; }
+  .lv-seg button { flex: none; padding: 5px 9px; font-size: .76rem; border-radius: 6px; }
+  #lvEmpty:not(:empty) { margin-top: 12px; padding: 12px 14px; border-radius: 10px;
+    border: 1px solid var(--danger); background: rgba(255,107,107,.07);
+    font-size: .82rem; }
+  #lvEmpty b { color: var(--text); }
+  #runBody td.pick, #runBody th.pick { width: 26px; padding-right: 0; }
+  #rtOut { margin-top: 10px; }
+  .rt-contest { border-top: 1px solid var(--border); margin-top: 12px; padding-top: 10px; }
+  /* Include/exclude chips. An excluded model stays visible and greyed rather
+     than disappearing: a pool you cannot see is a pool you cannot put back. */
+  .rt-ex { margin-top: 10px; }
+  .rt-ex-label { display: block; font-size: .74rem; color: var(--muted);
+                 margin-bottom: 5px; }
+  .rt-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+  .rt-chip { display: inline-flex; align-items: center; gap: 5px; font-size: .74rem;
+             border: 1px solid var(--border); border-radius: 999px;
+             padding: 3px 9px 3px 7px; cursor: pointer; user-select: none; }
+  .rt-chip input { margin: 0; }
+  .rt-chip.off { opacity: .45; text-decoration: line-through; }
+  /* The bottom toggle sits in a row of fields, so it has to line up with
+     their boxes rather than with their labels. */
+  label.check { display: flex; align-items: center; gap: 6px; font-size: .82rem;
+                padding-bottom: 7px; }
+  label.check input { margin: 0; }
+  #rtOut table.queue { min-width: 100%; margin-top: 6px; }
+  #rtOut .rt-plan { color: var(--muted); font-size: .72rem; display: block; }
+  /* The per-case read count in a planned round. Deliberately quiet: it explains
+     why that document was chosen, it is not a result. */
+  #rtOut .rt-seen {
+    margin-left: 6px; font-size: .68rem; font-weight: 400; color: var(--muted);
+    border: 1px solid var(--border); border-radius: 8px; padding: 0 5px;
+  }
+  #rtOut tr.rt-bad td { background: rgba(255, 107, 107, .09); }
+  #rtOut tr.rt-now td { background: var(--accent-soft); }
+  /* Best and worst, four ways. A grid rather than a fifth wide table: each
+     block is a different question, and side by side is what makes "worst at
+     reading" and "worst at extracting" legible as different findings about the
+     same model. */
+  #standoutSum { margin-top: 16px; }
+  .st-grid { display: grid; gap: 12px; margin-top: 6px;
+             grid-template-columns: repeat(auto-fit, minmax(310px, 1fr)); }
+  .st-box { border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px; }
+  .st-box h4 { margin: 0 0 6px; font-size: .8rem; font-weight: 600; }
+  .st-line { font-size: .78rem; margin: 3px 0; line-height: 1.5; }
+  .st-tag { font-size: .66rem; text-transform: uppercase; letter-spacing: .06em;
+            border-radius: 6px; padding: 1px 6px; margin-right: 6px; }
+  .st-good { background: rgba(60, 200, 130, .16); color: #3cc882; }
+  .st-bad { background: rgba(255, 107, 107, .14); color: var(--danger); }
+  .st-box table.queue { min-width: 0; margin-top: 8px; font-size: .76rem; }
+  .st-box table.queue th, .st-box table.queue td { padding: 4px 6px; }
+  .st-thin { color: var(--muted); font-size: .7rem; }
   #caseSum table.queue { min-width: 820px; margin-top: 6px; }
-  #caseSum .cs-title { font-size: .78rem; text-transform: uppercase;
+  #ocrSum table.queue, #extractSum table.queue { min-width: 720px; margin-top: 6px; }
+  /* The model that extracts the most fields correctly, marked in the table
+     rather than pulled out above it: the runner-up is the whole point of a
+     leaderboard, and a chip naming the winner alone says nothing about by how
+     much or over how many documents. */
+  #ocrSum tr.ms-top td, #extractSum tr.ms-top td { background: var(--accent-soft); }
+  #caseSum .cs-title, #ocrSum .cs-title, #extractSum .cs-title,
+  #standoutSum .cs-title { font-size: .78rem; text-transform: uppercase;
     letter-spacing: .07em; color: var(--muted); }
   .cs-val { font-weight: 700; font-variant-numeric: tabular-nums; }
   .cs-of { color: var(--muted); font-weight: 400; font-size: .74rem; }
@@ -456,6 +554,37 @@
   .step-list .t { flex: 1; min-width: 0; }
   .step-list .s { color: var(--muted); font-size: .76rem; text-align: right; }
   .step-list li.waiting { opacity: .45; }
+  /* One step's own reply, under the step that asked for it. The whole-reply pane
+     already holds all of them concatenated; what it cannot say is which of the
+     questions a given block of JSON is answering, and a failed step's text is
+     the one most worth reading. */
+  .step-list li.raw-row { display: block; padding: 0 0 8px; }
+  .step-raw-btn { margin-left: 8px; }
+  .step-raw-head {
+    font-size: .72rem; color: var(--muted); margin: 6px 0 3px;
+    font-family: ui-monospace, Consolas, monospace;
+  }
+  .step-raw pre {
+    margin: 0; max-height: 30vh; overflow: auto; font-size: .76rem; line-height: 1.45;
+    font-family: ui-monospace, Consolas, monospace; white-space: pre-wrap;
+    word-break: break-word; background: var(--bg); border: 1px solid var(--border);
+    border-radius: 6px; padding: 8px 10px;
+  }
+  .step-raw .empty-reply { font-size: .76rem; color: var(--muted); }
+  .step-raw-head .step-prefix-btn { margin-left: 6px; }
+  /* The single-shot prompt, in the whole-reply pane. A <details> rather than a
+     tracked toggle because that pane is repainted only when its checkbox moves,
+     so the browser can keep the open state itself. */
+  .raw-prompt { margin: 4px 0 10px; }
+  .raw-prompt summary {
+    cursor: pointer; font-size: .8rem; color: var(--muted); padding: 2px 0;
+  }
+  .raw-prompt pre {
+    margin: 6px 0 0; max-height: 30vh; overflow: auto; font-size: .76rem;
+    line-height: 1.45; font-family: ui-monospace, Consolas, monospace;
+    white-space: pre-wrap; word-break: break-word; background: var(--bg);
+    border: 1px solid var(--border); border-radius: 6px; padding: 8px 10px;
+  }
   .step-list li.bad .s { color: var(--danger); }
   .step-list li.flagged .s { color: #d9a441; }
   #serverReason:empty { display: none; }
@@ -495,6 +624,8 @@
       <div class="side-tabs" id="sideTabs">
         <button type="button" data-pane="source" class="on">Workspace</button>
         <button type="button" data-pane="queue">Queue<span class="count" id="qCount">0</span></button>
+        <button type="button" data-pane="fields">Fields only</button>
+        <button type="button" data-pane="random">Random test</button>
       </div>
 
       <div class="pane on" id="paneSource">
@@ -521,8 +652,17 @@
           </select>
         </label>
         <label class="field" id="modelField" style="flex:1;min-width:200px;display:none">
-          Model
+          Model &middot; reads the page
           <select id="modelSel"></select>
+        </label>
+        <!-- Pass 2 may run on a different model from pass 1. The two passes ask
+             for different things: reading Thai off an image, and mapping a
+             transcript onto a form. A model can be good at one and bad at the
+             other, and on this project's own fixtures the best extractor cannot
+             read a page at all. -->
+        <label class="field" id="extractModelField" style="flex:1;min-width:200px;display:none">
+          Model &middot; extracts fields
+          <select id="extractModelSel"></select>
         </label>
       </div>
       <div class="row" id="customRow" style="display:none">
@@ -568,6 +708,12 @@
         </label>
       </div>
       <p class="note" id="ocrProfileNote"></p>
+      <p class="note"><b>This follows the model.</b> Picking a reading model
+        selects the shape it needs &mdash; the prompt and whether a system
+        message is sent are properties of the model, and the wrong pairing
+        returns an empty transcript at HTTP&nbsp;200 rather than an error. You
+        can still override it here to compare a prompt against a model; the
+        override stands until the next model switch.</p>
       <div class="row">
         <label class="field" style="flex:1;min-width:200px">
           Field extraction
@@ -656,9 +802,245 @@
         </div>
         <div id="queueBody"></div>
       </div>
+
+      <!-- Pass 2 on its own, fed the hand-written transcript. This is
+           `compare.py --fields-only --from-truth` with a button on it, and it
+           exists because a wrong field is otherwise never attributable: a value
+           that never appears may be one the extractor missed or one the read
+           never produced, and only feeding text that is right by construction
+           tells the two apart. Every pass-2 measurement in CLAUDE.md was taken
+           this way. -->
+      <div class="pane" id="paneRandom">
+        <p class="note">A random document, a random model to read it, a random
+          model to extract from it, a random Detail and shape &mdash; run
+          end&nbsp;to&nbsp;end, as many times as you ask for. The
+          <b>document is not random</b>: each round goes to whichever case the
+          run log has read fewest times, so every fixture is covered eventually
+          rather than whenever it is lucky. The number beside each case is how
+          many reads it already had. This is the only
+          thing here that tests the <b>whole</b> path: the benchmarks feed pass 2
+          a ground-truth transcript on purpose, so nothing else automatically
+          exercises decoding, resizing, the pass-1 profile, the case match and
+          extraction together.</p>
+
+        <div class="row">
+          <!-- One scope for the whole run, not a fourth thing to randomise: the
+               three answer different questions, and a run that mixed them would
+               report a mean over two of them. Fields-only is the shape every
+               pass-2 measurement in CLAUDE.md was taken under. -->
+          <label class="field" style="flex:1;min-width:210px">
+            What each round runs
+            <select id="rtScope">
+              <option value="full">Full &mdash; read the page, then extract</option>
+              <option value="ocr">Read only &mdash; pass 1, no extraction</option>
+              <option value="fields">Fields only &mdash; pass 2 from the ground truth</option>
+            </select>
+          </label>
+          <label class="field" style="flex:0 0 110px">
+            Runs
+            <input id="rtRounds" type="number" min="1" max="50" value="5">
+          </label>
+          <label class="field" style="flex:1;min-width:160px">
+            Seed <span class="muted-inline" style="font-weight:400">&mdash; blank for a new one</span>
+            <input id="rtSeed" type="text" placeholder="e.g. 1787218747">
+          </label>
+        </div>
+        <!-- Locks: an axis pinned is that axis taken out of the experiment,
+             which is what lets a run answer a question about the others.
+             Locking the document is how a model comparison stops being a
+             document comparison as well. A lock this endpoint cannot honour is
+             refused rather than quietly ignored. -->
+        <div class="row">
+          <label class="field" style="flex:1;min-width:150px">
+            Lock document
+            <select id="rtLockCase">
+              <option value="">&mdash; spread over all &mdash;</option>
+              {% for c in cases %}{% if c.field_truth %}
+              <option value="{{ c.id }}">{{ c.id }} &middot; {{ c.kind }}</option>
+              {% endif %}{% endfor %}
+            </select>
+          </label>
+        </div>
+        <div class="row">
+          <label class="field" style="flex:1;min-width:150px" id="rtLockReaderField">
+            Lock OCR model
+            <select id="rtLockReader"><option value="">&mdash; random &mdash;</option></select>
+          </label>
+          <label class="field" style="flex:1;min-width:150px" id="rtLockExtractField">
+            Lock extract model
+            <select id="rtLockExtract"><option value="">&mdash; random &mdash;</option></select>
+          </label>
+          <!-- The shape is a lock like any other: single and agentic are two
+               shapes with different failure modes, not two samples of one, so a
+               sweep of anything else has to hold it still. -->
+          <label class="field" style="flex:1;min-width:130px" id="rtLockModeField">
+            Lock shape
+            <select id="rtLockMode">
+              <option value="">&mdash; random &mdash;</option>
+              <option value="single">single</option>
+              <option value="agentic">agentic</option>
+            </select>
+          </label>
+        </div>
+
+        <!-- Which models may be drawn at all. The complement of a lock: a lock
+             says *only this*, these say *anything but this*, and the two answer
+             different questions. Reading and extracting are separate lists
+             because a model can be poor at one and good at the other -- this
+             project has two of those. -->
+        <div class="rt-ex" id="rtExReadRow">
+          <span class="rt-ex-label">Models that may read</span>
+          <div class="rt-chips" id="rtExRead"></div>
+        </div>
+        <div class="rt-ex" id="rtExExtractRow">
+          <span class="rt-ex-label">Models that may extract</span>
+          <div class="rt-chips" id="rtExExtract"></div>
+        </div>
+
+        <div class="row">
+          <button id="rtRun" class="primary">Run random test</button>
+          <button id="rtStop" class="ghost-sm" disabled>Stop</button>
+        </div>
+        <p class="note" id="rtScopeNote"></p>
+
+        <!-- The contest is the standouts table's rematch button: the ends of one
+             ranking, run again on the same documents with everything else
+             pinned. The random test answers "what breaks"; this answers "was
+             that ranking real", and it cannot be answered by a plan that gives
+             each contender a different Detail and a different page.
+
+             The subject picks WHICH ranking, and with it the scope: a reader
+             contest that also extracted would be scored partly on the other
+             pass. So the scope picker above does not apply here. -->
+        <div class="rt-contest">
+          <div class="row">
+            <label class="field" style="flex:1;min-width:180px">
+              Contest between
+              <select id="rtSubject">
+                {% for s in contest_subjects %}
+                <option value="{{ s.id }}">{{ s.label }}</option>
+                {% endfor %}
+              </select>
+            </label>
+          </div>
+          <div class="row" style="align-items:flex-end">
+            <label class="field" style="flex:0 0 90px">
+              Top
+              <input id="rtTop" type="number" min="1" max="10" value="{{ contest_top }}">
+            </label>
+            <label class="field" style="flex:0 0 130px" id="rtDocsField">
+              Documents
+              <input id="rtDocs" type="number" min="1" max="10" value="1">
+            </label>
+            <label class="check" style="flex:1;min-width:120px">
+              <input id="rtBottom" type="checkbox" checked>
+              and the bottom
+            </label>
+          </div>
+          <div class="row">
+            <button id="rtContest" class="ghost-sm">Run contest</button>
+          </div>
+          <p class="note" id="rtContestNote"></p>
+        </div>
+
+        <p class="note">Every round is a <b>real run</b> and appends its own row
+          to the run log &mdash; a random test whose results were kept out of it
+          would be measuring a path nobody else uses. The settings are left where
+          the last round put them rather than restored, so a combination that
+          broke something is still selected when it stops.</p>
+      </div>
+
+      <div class="pane" id="paneFields">
+        <p class="note">Extraction only, against a document&rsquo;s <b>hand-written
+          ground truth</b>. <code>solution/&lt;id&gt;.md</code> goes straight into
+          pass 2, so no reading error reaches the fields &mdash; what comes back
+          wrong is the extractor&rsquo;s. Pass 1 does not run, and there is no
+          transcript accuracy to score.</p>
+        {% if cases %}
+        <div class="row">
+          <label class="field" style="flex:1">
+            Ground-truth document
+            <select id="fxCase">
+              <option value="">&mdash; pick a case &mdash;</option>
+              {% for c in cases %}
+              <option value="{{ c.id }}">{{ c.id }} &middot; {{ c.kind }}</option>
+              {% endfor %}
+            </select>
+          </label>
+        </div>
+        <p class="note" id="fxTruthNote"></p>
+
+        <div class="row">
+          <label class="field" style="flex:1;min-width:200px">
+            Model server
+            <select id="fxEndpoint">
+              {% for e in endpoints %}
+              <option value="{{ e }}" {% if e == server.url %}selected{% endif %}>{{ e }}</option>
+              {% endfor %}
+            </select>
+          </label>
+          <label class="field" id="fxModelField" style="flex:1;min-width:200px;display:none">
+            Model &middot; reads the page
+            <select id="fxModel"></select>
+          </label>
+          <label class="field" id="fxExtractField" style="flex:1;min-width:200px;display:none">
+            Model &middot; extracts fields
+            <select id="fxExtract"></select>
+          </label>
+        </div>
+        <div class="serverbar">
+          <span class="dot" id="fxDot"></span>
+          <span id="fxServerText"></span>
+        </div>
+        <p class="note" id="fxServerNote"></p>
+
+        <div class="row">
+          <label class="field" style="flex:1;min-width:200px">
+            Field extraction
+            <select id="fxMode">
+              <option value="single">one request for the whole form</option>
+              <option value="agentic">agentic &middot; {{ extract_steps }} steps, 1-3 fields each</option>
+            </select>
+          </label>
+        </div>
+
+        <div class="row">
+          <button id="fxRun" class="primary" disabled>Extract fields</button>
+        </div>
+        <p class="note" id="fxNote"></p>
+        <p class="note">Server, model and extraction shape are the same settings the
+          Workspace pane uses &mdash; one process, one choice, so changing one here
+          changes it there. The results land on the <b>Fields</b> tab with their
+          score against <code>solution/&lt;id&gt;.fields.json</code>, and each run
+          appends its own <code>extract</code> row to the run log.</p>
+        {% else %}
+        <p class="note err">No benchmark cases with ground truth were found, so
+          there is nothing to feed pass 2 here.</p>
+        {% endif %}
+      </div>
     </div>
 
-    <div class="card">
+    <!-- The random test's plan and results, in the Result card's place (moved
+         2026-08-21 at the user's request: *not in compare space, move it to
+         result space since i will not run test parallel with the manual run*).
+         The two take turns rather than stacking: a run is up to fifty rows, and
+         under it would sit a Result card still showing whichever document was
+         read by hand an hour ago. The controls stay in the side pane, because
+         that is where the run is decided.
+
+         `Clear` puts the Result card back. Nothing is lost by it -- every round
+         is a real run and is in the run log below. -->
+    <div class="card" id="rtCard" hidden>
+      <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+        <h2 style="margin:0">Random test</h2>
+        <span id="rtNote" class="muted-inline" style="font-size:.8rem"></span>
+        <button id="rtStop2" class="ghost-sm" style="margin-left:auto" disabled>Stop</button>
+        <button id="rtClear" class="ghost-sm">Clear</button>
+      </div>
+      <div id="rtOut"></div>
+    </div>
+
+    <div class="card" id="resultCard">
       <div style="display:flex;align-items:center">
         <h2 style="margin:0">Result</h2>
         <div class="tabs flow">
@@ -783,13 +1165,89 @@
       <button id="runRefresh" class="ghost-sm" style="margin-left:auto">Refresh</button>
       <a id="runDownload" class="ghost-sm" href="/api/runs.csv" download>Download CSV</a>
     </div>
-    <div class="run-best" id="runBest"></div>
+    <!-- The view every table below is compiled under. **Neither knob writes
+         anything and neither hides a row from the log**: the raw rows are stored
+         and shown whatever these say, and what moves is only what gets averaged.
+         A read that scored 20% still ran, still went to pass 2, and is still in
+         the CSV -- what a floor above 20% decides is that the field score it
+         produced describes the read rather than the extractor. -->
+    <div class="lv-bar">
+      <!-- Which passes a row is a record of. **Not a model filter, and it cannot
+           be one**: "read no page" is a property of the run, and the column that
+           would have to say so holds the EXTRACTING model on those rows. Turning
+           off every reading model to see the extraction half therefore emptied
+           the card instead — the fields-only rows were being matched on a pass
+           they never ran. This is that question asked directly. -->
+      <label class="lv-num" title="which passes a row is a record of. Some runs are
+half a pipeline on purpose — a read-only round never extracts, a fields-only round
+is fed the ground truth and never reads — and each half is worth looking at alone.">Pipeline
+        <div class="seg lv-seg" id="lvPipe">
+          <button data-pipe="" class="on" title="every run">Any</button>
+          <button data-pipe="both" title="runs that read a page AND extracted from it">Both passes</button>
+          <button data-pipe="read" title="runs that read a page and never extracted">Read only</button>
+          <button data-pipe="extract" title="runs that extracted from a transcript they did not read — usually fed the ground truth">Extract only</button>
+        </div>
+      </label>
+      <label class="lv-num" title="transcript accuracy under which a field score is
+not a measurement of the extractor: pass 2 can only map the values pass 1 gave it,
+so a score over a broken transcript is the read's mistake wearing the extractor's
+name. 0 scores every extraction whatever the read did.">Read floor
+        <span><input id="lvFloor" type="number" min="0" max="100" step="5"><span class="u"> %</span></span>
+      </label>
+      <label class="lv-num" title="how many recent runs OF EACH setting, model and
+document each table covers — not a slice off the end of the file. 0 is the whole log.">Runs averaged
+        <span><input id="lvWindow" type="number" min="0" step="5"><span class="u"> each</span></span>
+      </label>
+      <button id="lvApply" class="ghost-sm">Apply</button>
+      <button id="lvReset" class="ghost-sm">Reset</button>
+      <span id="lvNote" class="muted-inline"></span>
+    </div>
+    <!-- Include/exclude per model, document and shape. Filled from the whole
+         log, never from what survived the filter, so a value just excluded is
+         still there to be put back. -->
+    <div id="lvFilters"></div>
+    <!-- Shown only when the filter matches nothing. An empty card is not
+         self-explanatory, and the fix is always "undo one of these". -->
+    <div id="lvEmpty"></div>
+
+    <div class="seg" id="logTabs" style="margin-top:14px">
+      <button data-panel="rank" class="on">Full rank</button>
+      <button data-panel="ocr">Best reading</button>
+      <button data-panel="extract">Best extraction</button>
+      <button data-panel="case">Per document</button>
+      <button data-panel="raw">Raw data</button>
+    </div>
+
+    <!-- Best and worst per model and per document, for each pass, ranked on
+         failures first and accuracy second. Everything in it is derived from
+         the same rows as the tables below; what it adds is the answer said out
+         loud, which a table sorted on accuracy cannot give -- a setting that
+         never finishes sorts nowhere near the bottom of one. -->
+    <div class="lv-panel" id="panelRank">
+      <div class="run-best" id="runBest"></div>
+      <div id="standoutSum"></div>
+    </div>
+    <!-- The runs grouped by setting rather than by document: which setting to
+         run at all. Two panels, because the two passes are scored on different
+         things -- `paintOcrSummary` from `runlog.by_ocr`, `paintExtractSummary`
+         from `runlog.by_extract`. -->
+    <div class="lv-panel" id="panelOcr" hidden><div id="ocrSum"></div></div>
+    <div class="lv-panel" id="panelExtract" hidden><div id="extractSum"></div></div>
     <!-- One row per ground-truth document: the best transcript, the best field
-         score, and the quickest complete run, each with the setting behind it.
-         Filled by `paintCaseSummary` from the same /api/runs payload as the
-         table below. -->
-    <div id="caseSum"></div>
-    <div id="runBody"></div>
+         score, and the quickest complete run, each with the setting behind it. -->
+    <div class="lv-panel" id="panelCase" hidden><div id="caseSum"></div></div>
+    <!-- The log itself. Unfiltered on purpose, and the only place a run can be
+         deleted from -- which is the one operation on this card that changes the
+         file. -->
+    <div class="lv-panel" id="panelRaw" hidden>
+      <div class="lv-bar">
+        <span id="rawSel" class="muted-inline">Nothing selected.</span>
+        <span class="sp"></span>
+        <button id="rawNone" class="ghost-sm" disabled>Clear selection</button>
+        <button id="rawDelete" class="ghost-sm danger" disabled>Delete selected</button>
+      </div>
+      <div id="runBody"></div>
+    </div>
     <p class="note" id="runPath"></p>
   </div>
 </div>
@@ -817,6 +1275,7 @@ const serverText = document.getElementById('serverText');
 const serverReason = document.getElementById('serverReason');
 const recheckBtn = document.getElementById('recheck');
 let server = {{ server | tojson }};
+let extractInfo = {{ extract | tojson }};
 let pageStats = [], ticker = null, runStart = 0, liveTokens = 0, curPage = -1;
 const tabRendered = document.getElementById('tabRendered');
 const tabRaw = document.getElementById('tabRaw');
@@ -834,6 +1293,22 @@ const fldCopy = document.getElementById('fldCopy');
 const fldRawChk = document.getElementById('fldRawChk');
 const fldRaw = document.getElementById('fldRaw');
 let extracted = null;
+/* The Fields-only pane: pass 2 against a fixture's hand-written transcript.
+   Every one of these is absent when no case has ground truth, so everything
+   that touches them checks first. */
+const fxCase = document.getElementById('fxCase');
+const fxMode = document.getElementById('fxMode');
+const fxRun = document.getElementById('fxRun');
+const fxNote = document.getElementById('fxNote');
+const fxTruthNote = document.getElementById('fxTruthNote');
+const fxServerNote = document.getElementById('fxServerNote');
+const fxServerText = document.getElementById('fxServerText');
+const fxDot = document.getElementById('fxDot');
+const FX_CASES = {{ cases | tojson }};
+/* Set while the transcript on screen came out of `solution/<id>.md` rather than
+   out of a read. It is what keeps a Re-extract from the Fields tab scored: the
+   case cannot be recovered from a page job, because no page was ever read. */
+let truthOnlyCase = null;
 const tabAccuracy = document.getElementById('tabAccuracy');
 const accuracyEl = document.getElementById('accuracy');
 const accHead = document.getElementById('accHead');
@@ -885,12 +1360,19 @@ let current = null, controller = null, text = '';
 const sideTabs = document.getElementById('sideTabs');
 const qCount = document.getElementById('qCount');
 const runNote = document.getElementById('runNote');
+/* The pane list is derived from the tabs rather than written out beside them.
+   It used to be a literal ['source', 'queue', 'fields'], and adding a fourth tab
+   left every pane hidden -- the button highlighted, nothing appeared, and there
+   was no error anywhere to say why. A tab and its pane are one thing; naming
+   them in two places means one of them is eventually forgotten. */
 function showPane(name) {
-  [...sideTabs.querySelectorAll('button[data-pane]')].forEach(b =>
-    b.classList.toggle('on', b.dataset.pane === name));
-  ['source', 'queue'].forEach(p =>
-    document.getElementById('pane' + p[0].toUpperCase() + p.slice(1))
-      .classList.toggle('on', p === name));
+  [...sideTabs.querySelectorAll('button[data-pane]')].forEach(b => {
+    const on = b.dataset.pane === name;
+    b.classList.toggle('on', on);
+    const pane = document.getElementById(
+      'pane' + b.dataset.pane[0].toUpperCase() + b.dataset.pane.slice(1));
+    if (pane) pane.classList.toggle('on', on);
+  });
 }
 sideTabs.addEventListener('click', e => {
   const btn = e.target.closest('button[data-pane]');
@@ -1543,8 +2025,15 @@ function fieldScoreNote(fs) {
 // the verbatim reply beside the parsed response answers that without a server
 // log: if the value is in the reply but not the response, the parse dropped it.
 function paintRaw(target, result, reply) {
+  const prompt = result && result.prompt;
   target.innerHTML =
-    (reply ? '<div class="fld-sec">Model reply (verbatim)</div><pre>'
+    // Collapsed: it is the whole transcript with instructions round it, and it
+    // is the same on every run until a prompt in `prompts.py` changes. Worth
+    // being able to read, not worth reading past.
+    (prompt ? '<details class="raw-prompt"><summary>Prompt sent — '
+              + prompt.length.toLocaleString() + ' characters</summary><pre>'
+              + esc(prompt) + '</pre></details>' : '')
+    + (reply ? '<div class="fld-sec">Model reply (verbatim)</div><pre>'
              + esc(reply) + '</pre>' : '')
     + '<div class="fld-sec">Parsed response</div><pre>'
     + esc(JSON.stringify(result, null, 2)) + '</pre>';
@@ -1574,6 +2063,7 @@ function paintMode() {
     : 'Extraction asks for the whole form in one request. Click to extract field by '
       + 'field instead.';
   if (extractSel.value !== extractMode) extractSel.value = extractMode;
+  if (fxMode && fxMode.value !== extractMode) fxMode.value = extractMode;
   extractNote.textContent = on
     ? 'One to three fields per request, against the same transcript. A field can only '
       + 'be filled from the labels its own step names, and a step that answers with '
@@ -1587,6 +2077,7 @@ function paintMode() {
    show what came back from it. */
 async function setMode(next) {
   fldMode.disabled = extractSel.disabled = true;
+  if (fxMode) fxMode.disabled = true;
   try {
     const res = await fetch('/api/extract/mode', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -1596,6 +2087,7 @@ async function setMode(next) {
     if (body.mode) extractMode = body.mode;
   } catch (err) { /* leave it where it was */ }
   fldMode.disabled = extractSel.disabled = false;
+  if (fxMode) fxMode.disabled = false;
   paintMode();
 }
 
@@ -1641,6 +2133,10 @@ paintOcrProfile();
 function stepEvent(msg) {
   if (msg.event === 'extract_steps') {
     extractSteps = msg.steps.map(s => Object.assign({}, s, { status: 'waiting' }));
+    // The block every step's message opens with. Kept here so a step's question
+    // can be read in context while the run is still going; the finished result
+    // carries its own copy for anything loaded after the fact.
+    extractPrefix = msg.prompt_prefix || '';
   } else if (msg.event === 'extract_step') {
     if (!extractSteps) extractSteps = [];
     const i = msg.step - 1;
@@ -1652,6 +2148,23 @@ function stepEvent(msg) {
   return true;
 }
 
+/* Which steps have their reply open. Kept outside the render because the list is
+   repainted on every step event, and a panel that closed itself each time a later
+   step finished would be unreadable during the run it is there to explain. */
+const openStepRaw = new Set();
+/* And which have their question open. Two sets rather than one panel holding
+   both: the question is the same on every run until a prompt changes, the reply
+   is different every time, and wanting one is not wanting the other. */
+const openStepPrompt = new Set();
+/* The shared prefix is opened once for the whole list, not per step -- it is the
+   same string in all of them, and a copy under each step would say the opposite
+   of what the design does. */
+let showStepPrefix = false;
+let extractPrefix = '';
+function stepPrefixText() {
+  return (extracted && extracted.prompt_prefix) || extractPrefix || '';
+}
+
 function stepList(steps) {
   if (!steps || !steps.length) return '';
   return '<div class="fld-sec">Extraction steps</div><ul class="step-list">'
@@ -1660,13 +2173,19 @@ function stepList(steps) {
         // The live events carry a status; the finished record does not, because
         // by the time it is in the result every step it lists has run.
         const status = s.status || 'done';
+        const done = status === 'done';
+        const filled = Object.values(s.values || {})
+          .filter(v => v !== '' && v !== null && v !== undefined).length;
+        // Did this step leave any of what it owns empty? A list step reports its
+        // length instead of its keys, so an empty list is what "empty" means
+        // there -- `values` deliberately excludes lists, and 0/1 on the `other`
+        // step would otherwise call every run short.
+        const short = keys.length ? (s.items ? false : filled < keys.length) : false;
         let note = '', cls = '';
         if (s.error) {
           note = esc(s.error);
           cls = 'bad';
-        } else if (status === 'done') {
-          const filled = Object.values(s.values || {})
-            .filter(v => v !== '' && v !== null && v !== undefined).length;
+        } else if (done) {
           const bits = [];
           // A step that owns a list reports its length; one that owns scalars
           // reports how many of its own keys the page filled, which is not a
@@ -1684,9 +2203,83 @@ function stepList(steps) {
         } else {
           cls = 'waiting';
         }
+        // The reply this step actually got, verbatim: one block per request, so
+        // the plain attempt, the schema-constrained rescue and a re-ask are told
+        // apart rather than concatenated into one wall of JSON.
+        const raws = s.raw || [];
+        const id = s.id || String(i);
+        const open = openStepRaw.has(id);
+        const openAsk = openStepPrompt.has(id);
+        // The questions this step sent, deduplicated: the plain attempt and the
+        // schema-constrained one send identical text and differ only in the
+        // request body, so they are one question, not two. A re-ask is a
+        // different question and appears as one.
+        const asks = [];
+        if (s.prompt) asks.push({ label: 'question', text: s.prompt });
+        raws.forEach(r => {
+          if (r.prompt && !asks.some(a => a.text === r.prompt)) {
+            asks.push({ label: r.label + ' — question', text: r.prompt });
+          }
+        });
+        const btn = (kind, on, label, tip) =>
+          '<button type="button" class="step-' + kind + '-btn ghost-sm' + (on ? ' on' : '')
+          + '" data-step="' + esc(id) + '" aria-expanded="' + on + '" title="' + esc(tip)
+          + '">' + label + '</button>';
+        /* Each button is offered where it answers something, and not otherwise.
+           The question is for rechecking an answer that is already in, so it
+           appears once the step has answered -- there is nothing to check it
+           against while the step is still running. */
+        const askable = done && asks.length;
+        /* The reply is for when the answer is wrong or absent: a step that
+           failed, was re-asked, needed the schema rescue, answered with
+           something that is not on the page, or left one of its own keys empty.
+           A step that answered cleanly has nothing to explain, and its reply is
+           still in the whole-reply pane above if anyone wants it. */
+        const why = s.error ? 'this step failed'
+                  : s.retry_error ? 'the re-ask failed'
+                  : s.ungrounded ? 'it answered with a value that is not on the page'
+                  : s.schema_retry ? 'its first reply would not parse'
+                  : s.retried ? 'it was asked again'
+                  : short ? 'it left ' + (keys.length - filled > 1 ? 'keys' : 'a key')
+                            + ' empty'
+                  : '';
+        const showRaw = done && raws.length && why;
+        const toggles =
+          (askable ? btn('prompt', openAsk, 'prompt',
+             'what this step asked for, exactly as it was sent — to read against '
+             + 'the answer it produced') : '')
+          + (showRaw ? btn('raw', open, 'raw',
+             'shown because ' + why + '. The reply, exactly as it arrived.') : '');
         return '<li class="' + cls + '"><span class="n">' + (i + 1) + '/' + steps.length
           + '</span><span class="t">' + esc(s.title || s.id || '') + '</span>'
-          + '<span class="s">' + note + '</span></li>';
+          + '<span class="s">' + note + '</span>' + toggles + '</li>'
+          // Question first, then answer, in the order they happened. Both panels
+          // are gated on the same test as their button: a panel left open by an
+          // earlier run whose button this one does not offer would have no way
+          // to be closed again.
+          + (openAsk && askable ? '<li class="raw-row"><div class="step-raw">'
+              + '<div class="step-raw-head">shared prefix'
+              + (stepPrefixText()
+                  ? ' · ' + stepPrefixText().length.toLocaleString() + ' chars · the same '
+                    + 'instructions and transcript open every step'
+                    + '<button type="button" class="step-prefix-btn ghost-sm">'
+                    + (showStepPrefix ? 'hide' : 'show') + '</button>'
+                  : ' · not recorded for this run')
+              + '</div>'
+              + (showStepPrefix && stepPrefixText()
+                  ? '<pre>' + esc(stepPrefixText()) + '</pre>' : '')
+              + asks.map(a => '<div class="step-raw-head">' + esc(a.label)
+                  + ' · sent after the prefix · ' + a.text.length.toLocaleString()
+                  + ' chars</div><pre>' + esc(a.text) + '</pre>').join('')
+              + '</div></li>' : '')
+          + (open && showRaw ? '<li class="raw-row"><div class="step-raw">'
+              + raws.map(r => '<div class="step-raw-head">' + esc(r.label || '')
+                  + ' · ' + (r.text || '').length.toLocaleString() + ' chars</div>'
+                  + ((r.text || '').trim()
+                      ? '<pre>' + esc(r.text) + '</pre>'
+                      : '<p class="empty-reply">The model returned nothing at all '
+                        + 'for this request.</p>')).join('')
+              + '</div></li>' : '');
       }).join('') + '</ul>';
 }
 
@@ -1902,21 +2495,37 @@ function paintFieldBody() {
    button that sits silent for two minutes is indistinguishable from one that has
    hung. Single mode sends no step events and this reads it exactly as before. */
 async function runExtract() {
-  if (!text.trim()) return;
+  if (!truthOnlyCase && !text.trim()) return;
+  /* A transcript that came out of `solution/<id>.md` is still that document's,
+     so Re-extract asks for it by case and keeps the field score. It is re-read
+     server-side rather than posted back: the same bytes either way, and the
+     run-log row then names the file that was actually fed in. */
+  return extractInto(truthOnlyCase ? { case: truthOnlyCase, from_truth: true }
+                                   : { text, job });
+}
+/* The streaming half, shared by Re-extract and by the Fields-only pane. */
+async function extractInto(payload) {
   extracted = { pending: true };
   extractSteps = null;
+  // Cleared with the steps: a prefix left from the last document would sit under
+  // this run's questions claiming to be the text they were asked against.
+  extractPrefix = '';
   tabFields.disabled = false;
   paintFields();
   try {
     const res = await fetch('/api/extract/stream', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      // The page job id names the document in the run-log row this writes.
-      body: JSON.stringify({ text, job })
+      // The page job id, or the case, names the document in the run-log row
+      // this writes.
+      body: JSON.stringify(payload)
     });
     if (!res.ok) {
+      // A 400 from the request itself -- an unknown case, an empty transcript --
+      // never opens a stream, so this is the whole reply. Returned as well as
+      // painted: the caller reports it where the button that started it is.
       extracted = await res.json();
       paintFields();
-      return;
+      return extracted;
     }
     const reader = res.body.getReader();
     const decoder = new TextDecoder();
@@ -1951,7 +2560,22 @@ async function runExtract() {
   // moment this finishes -- and the whole point of re-extracting is comparing
   // this run's field counts and grounded ratio with the last one's.
   refreshRuns();
+  return extracted;
 }
+/* Delegated, because the step list is rebuilt by innerHTML on every repaint. */
+fldBody.addEventListener('click', e => {
+  if (e.target.closest('.step-prefix-btn')) {
+    showStepPrefix = !showStepPrefix;
+    paintFields();
+    return;
+  }
+  const btn = e.target.closest('.step-raw-btn, .step-prompt-btn');
+  if (!btn) return;
+  const set = btn.classList.contains('step-raw-btn') ? openStepRaw : openStepPrompt;
+  const id = btn.dataset.step;
+  if (set.has(id)) set.delete(id); else set.add(id);
+  paintFields();
+});
 fldRerun.addEventListener('click', runExtract);
 fldRawChk.addEventListener('change', paintFields);
 fldCopy.addEventListener('click', async () => {
@@ -2193,6 +2817,105 @@ const runBest = document.getElementById('runBest');
 const runStats = document.getElementById('runStats');
 const runPath = document.getElementById('runPath');
 const runRefresh = document.getElementById('runRefresh');
+const runlogCard = document.getElementById('runlogCard');
+const lvFloor = document.getElementById('lvFloor');
+const lvWindow = document.getElementById('lvWindow');
+const lvApply = document.getElementById('lvApply');
+const lvReset = document.getElementById('lvReset');
+const lvNote = document.getElementById('lvNote');
+const lvFilters = document.getElementById('lvFilters');
+const lvPipe = document.getElementById('lvPipe');
+const lvEmpty = document.getElementById('lvEmpty');
+const logTabs = document.getElementById('logTabs');
+const rawSel = document.getElementById('rawSel');
+const rawNone = document.getElementById('rawNone');
+const rawDelete = document.getElementById('rawDelete');
+
+/* ---------- sortable tables ----------
+   **Every column on this card sorts, the ranked one included** (2026-08-24, at
+   the user's request: *allow sort each column, dont lock accuracy sort*). The
+   order the server returns is the DEFAULT -- best first by whatever that table
+   ranks on -- and it is now a starting point rather than the only reading.
+
+   Sort state is per table and lives outside the paint functions, because those
+   repaint on every refresh and a column that reset itself whenever the queue
+   drained would be unusable during exactly the run it was sorting for.
+
+   `logSort[id]` is `{key, dir}`; a table sets its default the first time it
+   paints, so the arrow always says what the order actually is. */
+let logSort = {};
+
+function lvHead(id, cols) {
+  const st = logSort[id] || {};
+  return '<tr>' + cols.map(c => {
+    const on = st.key === c.key;
+    const cls = [c.n ? 'n' : '', c.sortable === false ? '' : 'lv-th',
+                 on ? 'lv-on' : ''].filter(Boolean).join(' ');
+    const arrow = on ? '<span class="lv-arrow">'
+                       + (st.dir === 'asc' ? '&#9650;' : '&#9660;') + '</span>' : '';
+    return '<th' + (cls ? ' class="' + cls + '"' : '')
+      + (c.title ? ' title="' + esc(c.title) + '"' : '')
+      + (c.sortable === false ? ''
+         : ' data-table="' + esc(id) + '" data-key="' + esc(c.key) + '"')
+      + '>' + c.label + arrow + '</th>';
+  }).join('') + '</tr>';
+}
+
+/* Not-measured sorts LAST whichever way the column points. "Not scored" is not a
+   low score -- it is a document with no ground truth, or a run whose figure this
+   view does not trust -- and a table sorted ascending that opened with a column
+   of dashes would bury every row that has a figure. Ties keep the order the
+   server sent, which is that table's own ranking. */
+function lvBlank(v) { return v === null || v === undefined || v === ''; }
+
+function lvSorted(id, rows, cols) {
+  const st = logSort[id] || {};
+  const col = cols.find(c => c.key === st.key && c.value);
+  if (!col) return rows;
+  const dir = st.dir === 'asc' ? 1 : -1;
+  return rows.map((r, i) => [r, i]).sort((a, b) => {
+    const x = col.value(a[0]), y = col.value(b[0]);
+    if (lvBlank(x) && lvBlank(y)) return a[1] - b[1];
+    if (lvBlank(x)) return 1;
+    if (lvBlank(y)) return -1;
+    const cmp = (typeof x === 'number' && typeof y === 'number')
+      ? x - y : String(x).localeCompare(String(y));
+    return cmp * dir || a[1] - b[1];
+  }).map(pair => pair[0]);
+}
+
+/* One table from a column spec. The cells are unchanged from what each summary
+   drew before -- what the spec adds is a sortable VALUE beside the markup, so
+   the two cannot drift: a column that sorted on something other than what it
+   displays would be worse than one that did not sort at all. */
+function lvTable(id, rows, cols, opts) {
+  opts = opts || {};
+  if (!logSort[id] && opts.sort) logSort[id] = Object.assign({}, opts.sort);
+  const body = lvSorted(id, rows, cols).map(e =>
+      '<tr' + (opts.rowClass ? opts.rowClass(e) : '') + '>'
+    + cols.map(c => '<td' + (c.n ? ' class="n"' : '')
+                  + (c.cls ? ' class="' + c.cls + '"' : '') + '>'
+                  + c.cell(e) + '</td>').join('')
+    + '</tr>').join('');
+  return '<table class="queue">' + lvHead(id, cols) + body + '</table>';
+}
+
+/* Delegated, because every table on this card is innerHTML and is replaced
+   whole on each repaint -- a listener bound to a `th` would not survive the
+   first refresh. */
+runlogCard.addEventListener('click', ev => {
+  const th = ev.target.closest ? ev.target.closest('th[data-key]') : null;
+  if (!th || !runlogCard.contains(th)) return;
+  const id = th.dataset.table, key = th.dataset.key;
+  const st = logSort[id];
+  // First click on a column sorts it descending: on this card every column is
+  // "more is more" except the clocks, and a reader chasing the best of anything
+  // wants the top of the list, not the bottom.
+  logSort[id] = (st && st.key === key)
+    ? {key: key, dir: st.dir === 'asc' ? 'desc' : 'asc'}
+    : {key: key, dir: 'desc'};
+  paintLog();
+});
 
 function runRow(r) {
   const acc = r.char_accuracy ? Number(r.char_accuracy) : null;
@@ -2205,6 +2928,14 @@ function runRow(r) {
   // than an em dash, which would read as "nothing was measured".
   const only = r.run_type === 'extract';
   return '<tr class="' + cls + '">'
+    // The row's position in the file, which is the only unique key the log has:
+    // two rows of one batch share a timestamp to the second and a file name. It
+    // is checked against the timestamp and file server-side before anything is
+    // removed, so a stale page deletes nothing rather than its neighbour.
+    // Not escaped, and it does not need to be: `_row` is an integer the server
+    // stamped on with `enumerate`, never anything a document or a model wrote.
+    + '<td class="pick"><input type="checkbox" data-pick="' + Number(r._row)
+      + '"' + (rawPicked.has(r._row) ? ' checked' : '') + '></td>'
     + '<td class="n">' + esc(when) + '</td>'
     + '<td>' + esc(r.file || '—')
       + (only ? ' <span class="tier p2">re-extract</span>' : '')
@@ -2257,6 +2988,15 @@ function runRow(r) {
                                             : 'one request for the whole form')
             + '">' + esc(r.extract_mode) + '</span>'
           : '')
+      // Everything the fourteen keys do not cover comes back here under the
+      // document's own printed label, so a run that found a great deal of the
+      // page and one that found almost none of it are otherwise identical in
+      // this column. Never a percentage: there is no denominator -- the model
+      // decides how many extra fields a page has.
+      + (r.other_fields === '' || r.other_fields === undefined ? ''
+         : '<br><span style="color:var(--muted);font-size:.72rem" title="extra '
+           + 'fields the model named itself, under the labels the page prints">+'
+           + esc(r.other_fields) + ' other</span>')
       // These figures came from a later re-extraction that scored better than
       // the one this read ran with, so the row's timestamp does not describe
       // them. Said here rather than left silent: a coverage count that quietly
@@ -2307,11 +3047,38 @@ function runRow(r) {
    screen because the Accuracy tab compares the run it is showing against it, and
    the two must not be able to disagree. */
 let logBests = {};
+/* Every table on this card is compiled over the most recent runs OF EACH ROW --
+   `settings.SUMMARY_RUNS`, applied per setting, per model and per document, not
+   as a slice off the end of the file. That has to be said on each table rather
+   than once at the top: "best ever" over twenty runs and "best ever" over two
+   hundred are different claims, and nobody reading a ranking is looking at the
+   card header. The noun differs per table because the key does. */
+let logWindow = null, logRows = 0;
+/* **The label does not state the number** (2026-08-21, at the user's request:
+   *if its 20 dont say its 20 in the summary, if not says how many*). The window
+   is a ceiling, not a count: a setting with three runs is summarised over three,
+   and a title reading "last 20 runs" over it is simply false. Every row already
+   prints what it actually covers -- `N run(s)`, `N read(s)`, `2 of 7` -- so the
+   honest label says only that the figures are recent, and the ceiling goes in
+   the tooltip where it belongs. */
+function windowNote(what) {
+  if (!logWindow) return '';
+  return '<span class="cs-of" title="each row is summarised over that ' + what
+    + "'s most recent runs, up to " + logWindow
+    + ' (SUMMARY_RUNS) — the count on each row is what it actually covers">'
+    + ' &middot; recent runs per ' + what + '</span>';
+}
 function paintBests(t) {
+  logWindow = t.window || null;
+  logRows = t.logged || 0;
   logBests = t.best_by_case || {};
   const cases = Object.keys(logBests).sort();
   if (!cases.length) { runBest.innerHTML = ''; return; }
-  runBest.innerHTML = '<span>Best ever, any setting:</span>'
+  runBest.innerHTML = '<span title="'
+      + (logWindow ? "the best score in each document's recent runs (up to "
+                     + logWindow + '), under any setting'
+                   : 'the best score each document has ever reached')
+      + '">Best' + (logWindow ? ' recently' : ' ever') + ', any setting:</span>'
     + cases.map(c => {
         const b = logBests[c];
         // The condition is the tooltip rather than the line: five documents
@@ -2357,80 +3124,1293 @@ function csPct(v) {
   return '<span class="cs-val" style="color:' + accColour(Number(v) / 100) + '">'
     + Number(v).toFixed(1) + '%</span>';
 }
+/* ---------- standouts: best and worst, four ways ---------- */
+/* Ranked on `runlog._standout_score` -- accuracy x (1 - failure rate), which is
+   what one attempt is worth. Read the score as a claim about attempts, not about
+   quality: a model that reads at 95% and fails half the time is worth less per
+   run than one that reads at 70% and always finishes, and that is the ordering
+   the user asked for (failures first, accuracy second). */
+function stFig(e, unit) {
+  if (e.accuracy === null || e.accuracy === undefined) {
+    // Two different absences. Nothing scored AND runs failed is a result -- not
+    // one attempt survived to be measured; nothing scored and nothing failed is
+    // a document nobody has ground truth for.
+    return '<span class="cs-none">' + (e.failed ? 'none survived' : 'not scored') + '</span>';
+  }
+  return '<span class="cs-val" style="color:' + accColour(Number(e.accuracy) / 100) + '">'
+    + Number(e.accuracy).toFixed(1) + unit + '</span>';
+}
+function stFails(e) {
+  if (!e.runs) return '<span class="cs-none">&mdash;</span>';
+  if (!e.failed) return '<span class="cs-none">0 of ' + e.runs + '</span>';
+  return '<span style="color:var(--danger)">' + e.failed + ' of ' + e.runs
+    + ' (' + Number(e.failure_rate).toFixed(0) + '%)</span>';
+}
+function stSentence(e, tag, cls, unit, noun) {
+  if (!e) return '';
+  return '<p class="st-line"><span class="st-tag ' + cls + '">' + tag + '</span>'
+    + '<b title="' + esc(e.key) + '">' + esc(csModel(e.key)) + '</b> &mdash; '
+    // The noun only belongs to a figure. "none survived transcript" is not a
+    // sentence; "none survived" is the whole of what that entry has to say.
+    + stFig(e, unit) + (e.accuracy === null || e.accuracy === undefined ? '' : ' ' + noun)
+    + ', ' + stFails(e) + ' failed'
+    + (e.thin ? ' <span class="st-thin">(only ' + e.runs + ' run)</span>' : '')
+    + '</p>';
+}
+function stBox(id, title, data, unit, noun, hint) {
+  if (!data || !data.ranked || !data.ranked.length) return '';
+  // Best and worst are marked by KEY, not by position and not by identity, so
+  // they stay on the right rows when the reader sorts the table by something
+  // else -- the ranking is a claim the sort must not be able to rewrite by
+  // accident.
+  //
+  // **Identity is what this used to compare and it could never match.** The
+  // server puts the same entry in `ranked` and in `best`, but JSON has no
+  // references: `JSON.parse` hands back two separate objects, so `e === data.best`
+  // was false on every row and neither mark had ever appeared. The key is unique
+  // within a list -- it is the model or the document the row is about -- and it
+  // survives the round trip.
+  const bestKey = data.best ? data.best.key : null;
+  const worstKey = data.worst ? data.worst.key : null;
+  const cols = [
+    {key: 'name', label: 'Name', value: e => csModel(e.key),
+     cell: e => '<b title="' + esc(e.key) + '">' + esc(csModel(e.key)) + '</b>'
+       + (e.thin ? ' <span class="st-thin">' + e.runs + ' run</span>' : '')},
+    {key: 'score', label: 'Score', n: true, value: e => e.score,
+     title: 'accuracy x (1 - failure rate): what one attempt is worth',
+     cell: e => e.score === null || e.score === undefined
+       ? '<span class="cs-none">&mdash;</span>'
+       : '<span class="cs-val">' + Number(e.score).toFixed(1) + '</span>'},
+    {key: 'accuracy', label: 'Accuracy', n: true, value: e => e.accuracy,
+     cell: e => stFig(e, unit)},
+    // **No Runs column, at the user's request**: `stFails` already prints the run
+    // count as its own denominator -- `0 of 47`, `5 of 47 (11%)` -- so a column
+    // beside it repeating 47 was the same number twice in one row.
+    {key: 'failed', label: 'Failed', n: true, value: e => e.failure_rate,
+     title: 'runs that did not finish, out of the runs this row is summarised '
+          + 'over — its own recent ones',
+     cell: e => stFails(e)}
+  ];
+  return '<div class="st-box"><h4 title="' + esc(hint) + '">' + title + '</h4>'
+    + stSentence(data.best, 'best', 'st-good', unit, noun)
+    + stSentence(data.worst, 'worst', 'st-bad', unit, noun)
+    + lvTable(id, data.ranked, cols, {
+        sort: {key: 'score', dir: 'desc'},
+        rowClass: e => e.key === bestKey ? ' class="ms-top"'
+                     : e.key === worstKey ? ' class="q-failed"' : ''
+      })
+    + '</div>';
+}
+function paintStandouts(t) {
+  const s = t.standouts;
+  if (!s) { standoutSum.innerHTML = ''; return; }
+  const boxes = [
+    stBox('st-ocr-model', 'Reading &mdash; by model', s.ocr.models, '%', 'transcript',
+          'Every read this model has done, at any Detail or profile'),
+    stBox('st-ocr-case', 'Reading &mdash; by document', s.ocr.cases, '%', 'transcript',
+          'Every read of this document, by any model'),
+    stBox('st-ext-model', 'Extracting &mdash; by model', s.extract.models, '%', 'fields',
+          'Every extraction this model has done, in either shape'),
+    stBox('st-ext-case', 'Extracting &mdash; by document', s.extract.cases, '%', 'fields',
+          'Every extraction from this document, by any model')
+  ].filter(Boolean).join('');
+  if (!boxes) { standoutSum.innerHTML = ''; return; }
+  standoutSum.innerHTML = '<span class="cs-title">Standouts &mdash; what is '
+    + 'carrying this, and what is failing it' + windowNote('row') + '</span>'
+    + '<div class="st-grid">' + boxes + '</div>'
+    + '<p class="note"><b>Score is accuracy &times; (1 &minus; failure rate)</b> '
+    + '&mdash; what one attempt is worth, so a failed run counts as zero and '
+    + 'failures outweigh a few points of accuracy. Accuracy is taken over the '
+    + 'runs that finished, which is why it is printed beside the failures and '
+    + 'never alone. Models are grouped <b>without</b> their Detail, profile or '
+    + 'shape: the tables below answer which setting to run, this answers which '
+    + 'model is carrying its weight across everything it has been asked to do. '
+    + '<b>A document&rsquo;s row is not a verdict on the document</b> &mdash; a '
+    + 'fixture every model reads badly may be the hardest page here, or its '
+    + 'hand-written ground truth may be wrong.'
+    + (logWindow
+        ? ' Every row on this card covers <b>that model\'s or that document\'s own '
+          + 'recent runs</b> &mdash; up to ' + logWindow + ' each '
+          + '(<code>SUMMARY_RUNS</code>), never the log\'s last ' + logWindow
+          + ' lines. The count beside each row is what it actually covers, which '
+          + 'is often fewer. A mean taken across a change to the scorer, the '
+          + 'schema or the presets describes a build nobody is running, and one '
+          + 'busy evening on one setting must not push every other setting out of '
+          + 'the table. The CSV keeps everything.'
+        : '')
+    + '</p>';
+}
+
 function paintCaseSummary(t) {
   const cases = t.by_case || {};
   const ids = Object.keys(cases).sort();
   if (!ids.length) { caseSum.innerHTML = ''; return; }
-  const rows = ids.map(id => {
-    const c = cases[id];
-    const bc = c.best_char, bf = c.best_field, fast = c.fastest;
-    return '<tr>'
-      + '<td><b>' + esc(id) + '</b><span class="cs-set">' + c.runs + ' read(s)'
-        + (c.extracts ? ' · ' + c.extracts + ' re-extract(s)' : '') + '</span></td>'
-      // Pass 2's correctness. The count of values comes with the percentage
-      // everywhere it is printed: the denominator is this document's truth file
-      // and nothing else, so 40% of 15 and 44% of 18 are not one column.
-      + '<td>' + (bf
-          ? csPct(bf.field_acc) + ' <span class="cs-of">of ' + esc(bf.field_expected)
-            + '</span>' + csSetting(bf)
-            + '<span class="cs-set">transcript '
-            + (bf.char_accuracy === null ? 'not scored'
-               : Number(bf.char_accuracy).toFixed(1) + '%')
-            + ' · ' + csSecs(bf.total_seconds) + '</span>'
-          // Blank is not zero, the same rule the CSV column follows: no field
-          // truth file, or none of this document's runs has been scored against
-          // one yet.
-          : '<span class="cs-none">not scored yet</span>') + '</td>'
-      + '<td>' + (fast
-          ? '<span class="cs-val">' + csSecs(fast.total_seconds) + '</span>'
-            + csSetting(fast)
-            + '<span class="cs-set">' + csSecs(fast.seconds) + ' read + '
-            + csSecs(fast.extract_seconds) + ' extract · transcript '
-            + Number(fast.char_accuracy).toFixed(1) + '%'
-            + (fast.field_acc === null ? ''
-               : ' · fields ' + Number(fast.field_acc).toFixed(0) + '%')
-            + '</span>'
-          : '<span class="cs-none">no complete run</span>') + '</td>'
-      + '<td>' + (bc
-          ? csPct(bc.char_accuracy) + csSetting(bc)
-            + '<span class="cs-set">word '
-            + (bc.word_accuracy ? Number(bc.word_accuracy).toFixed(1) + '%' : '—')
-            + '</span>'
-          : '<span class="cs-none">not scored</span>') + '</td>'
-      + '</tr>';
-  }).join('');
-  caseSum.innerHTML = '<span class="cs-title">Best setting per document</span>'
-    + '<table class="queue"><tr><th>Document</th>'
-    + '<th title="highest field score: the share of the values the field ground '
-      + 'truth says this document prints that came back correct">Best fields</th>'
-    + '<th title="quickest run that finished and did both passes; a read that '
-      + 'skipped extraction is not in this column, because it did less work">'
-      + 'Fastest full run</th>'
-    + '<th title="highest character accuracy of the transcript, over every run '
-      + 'and every setting">Best transcript</th></tr>'
-    + rows + '</table>'
-    + '<p class="note">Each column is the best row in the whole log for that '
+  const rows = ids.map(id => Object.assign({id: id}, cases[id]));
+  const cols = [
+    {key: 'doc', label: 'Document', value: e => e.id,
+     cell: e => '<b>' + esc(e.id) + '</b><span class="cs-set">' + e.runs + ' read(s)'
+       + (e.extracts ? ' · ' + e.extracts + ' re-extract(s)' : '') + '</span>'},
+    // Pass 2's correctness. The count of values comes with the percentage
+    // everywhere it is printed: the denominator is this document's truth file
+    // and nothing else, so 40% of 15 and 44% of 18 are not one column.
+    {key: 'fields', label: 'Best fields',
+     title: 'highest field score: the share of the values the field ground truth '
+          + 'says this document prints that came back correct',
+     value: e => e.best_field ? e.best_field.field_acc : null,
+     cell: e => e.best_field
+       ? csPct(e.best_field.field_acc) + ' <span class="cs-of">of '
+         + esc(e.best_field.field_expected) + '</span>' + csSetting(e.best_field)
+         + '<span class="cs-set">transcript '
+         + (e.best_field.char_accuracy === null ? 'not scored'
+            : Number(e.best_field.char_accuracy).toFixed(1) + '%')
+         + ' · ' + csSecs(e.best_field.total_seconds) + '</span>'
+       // Blank is not zero, the same rule the CSV column follows: no field truth
+       // file, or none of this document's runs has been scored against one yet.
+       : '<span class="cs-none">not scored yet</span>'},
+    {key: 'fastest', label: 'Fastest full run',
+     title: 'quickest run that finished and did both passes; a read that skipped '
+          + 'extraction is not in this column, because it did less work',
+     value: e => e.fastest ? e.fastest.total_seconds : null,
+     cell: e => e.fastest
+       ? '<span class="cs-val">' + csSecs(e.fastest.total_seconds) + '</span>'
+         + csSetting(e.fastest)
+         + '<span class="cs-set">' + csSecs(e.fastest.seconds) + ' read + '
+         + csSecs(e.fastest.extract_seconds) + ' extract · transcript '
+         + Number(e.fastest.char_accuracy).toFixed(1) + '%'
+         + (e.fastest.field_acc === null ? ''
+            : ' · fields ' + Number(e.fastest.field_acc).toFixed(0) + '%')
+         + '</span>'
+       : '<span class="cs-none">no complete run</span>'},
+    // Character accuracy alone. Word accuracy is still computed and logged, and
+    // is a useful diagnostic in the CSV, but it is order-sensitive where this
+    // number deliberately is not -- printing both invites reading the gap as an
+    // error rather than as a page walked in another order.
+    {key: 'transcript', label: 'Best transcript',
+     title: 'highest character accuracy of the transcript, over every run and '
+          + 'every setting in this view',
+     value: e => e.best_char ? e.best_char.char_accuracy : null,
+     cell: e => e.best_char
+       ? csPct(e.best_char.char_accuracy) + csSetting(e.best_char)
+       : '<span class="cs-none">not scored</span>'}
+  ];
+  caseSum.innerHTML = '<span class="cs-title">Best setting per document'
+    + windowNote('document') + '</span>'
+    // Documents in name order by default. Unlike the two setting tables there is
+    // no server ranking here to preserve -- each column is a different question
+    // and the rows are a list, not a leaderboard.
+    + lvTable('case', rows, cols, {sort: {key: 'doc', dir: 'asc'}})
+    + '<p class="note">Each column is the best row <b>in this view</b> for that '
     + 'document, with the setting that produced it — they are three different '
     + 'runs more often than one. Fields and transcript are separate scores: a '
     + 'run can read the page well and still put the values in the wrong keys. '
     + 'Fastest counts reads that finished, scored above zero and ran both '
     + 'passes, and llama.cpp caches prompts, so re-reading the same page again '
-    + 'is quicker than the first time under any setting.</p>';
+    + 'is quicker than the first time under any setting. A run that <b>did not '
+    + 'finish</b> — looped, truncated, cancelled or errored — is counted in the '
+    + 'read count and can hold no record; a run that finished and read badly is '
+    + 'not a failure and is eligible for all three. Any column here sorts.</p>';
 }
 
-async function refreshRuns() {
-  let data;
-  try { data = await (await fetch('/api/runs?limit=50')).json(); } catch { return; }
-  const rows = data.runs || [];
-  const t = data.totals || {};
+
+/* ---------- which setting to run at all ---------- */
+/* The per-document table above answers "what should I run on THIS file"; these
+   two answer "what should I run", which it scatters across one row per document.
+
+   TWO tables, not one, because the two passes are scored on different things and
+   paid for differently: pass 1 is judged on the transcript and costs prefill and
+   decode, pass 2 is judged on whether a value reached the key it belongs in and
+   costs neither. A single row averaging both would answer neither question.
+
+   Everything here is computed in `runlog.by_ocr` and `runlog.by_extract`; the
+   rules about what is eligible live there, beside the file format they read. */
+
+/* One aggregate figure with its two spreads under it.
+
+   The spreads are labelled rather than merged into one ±, because they are not
+   the same claim: `repeat` is how far the setting moved when it was run twice on
+   ONE document -- reproducibility, which under greedy decoding should be near
+   zero -- while `across docs` is how much the documents differ from each other,
+   which is a property of the fixtures as much as of the setting. Printing one
+   number would invite reading it as an error bar on the mean, which neither is. */
+function msFig(block, unit, digits, colour) {
+  if (!block || block.mean === null || block.mean === undefined)
+    return '<span class="cs-none">&mdash;</span>';
+  const d = digits === undefined ? 1 : digits;
+  const text = Number(block.mean).toFixed(d) + (unit || '');
+  const head = '<span class="cs-val"'
+    + (colour ? ' style="color:' + accColour(Number(block.mean) / 100) + '"' : '')
+    + '>' + text + '</span>';
+  const sd = [];
+  if (block.sd_repeat !== null && block.sd_repeat !== undefined)
+    sd.push('&plusmn;' + Number(block.sd_repeat).toFixed(d) + ' repeat');
+  if (block.sd_case !== null && block.sd_case !== undefined)
+    sd.push('&plusmn;' + Number(block.sd_case).toFixed(d) + ' across docs');
+  return head + (sd.length ? '<span class="cs-set">' + sd.join(' &middot; ') + '</span>' : '');
+}
+
+/* The setting itself: the model on top, the knobs that make it a distinct thing
+   to run underneath. The full model name is the tooltip, because two `hf.co/...`
+   repacks of one model differ only in the part `csModel` drops. */
+function msCell(e, knobs, extra) {
+  // A run that failed before it reached a model has none recorded. Named rather
+  // than rendered as an empty cell: the row is a real record of real failures,
+  // and a blank there reads as a rendering bug instead of as what it is.
+  //
+  // Returns the cell's CONTENTS, not the `<td>`: the sortable table renderer
+  // owns the element, so a column cannot quietly grow a second class attribute.
+  return '<b title="' + esc(e.model || '') + '">'
+    + (e.model ? esc(csModel(e.model))
+               : '<span class="cs-none">model not recorded</span>') + '</b>'
+    + '<span class="cs-set">' + knobs.filter(Boolean).map(esc).join(' &middot; ') + '</span>'
+    + '<span class="cs-set">' + e.runs + ' run(s) &middot; ' + e.documents
+    + ' document(s)</span>'
+    // Already-built markup, not text: the caller passes a coloured warning, so
+    // this one is deliberately not escaped. Nothing user-supplied reaches it.
+    + (extra ? '<span class="cs-set">' + extra + '</span>' : '');
+}
+
+function paintOcrSummary(t) {
+  const settings = (t.by_ocr) || [];
+  // An empty table with retired rows behind it is the one case where the note
+  // matters most -- every read this log holds ran at a preset that is gone, and
+  // without it the card reads as a log nobody has written to.
+  if (!settings.length) { ocrSum.innerHTML = emptyPassNote('ocr', t) + retiredNote(t); return; }
+  // The server's ranking, kept before any sort: the top row is the best setting
+  // by transcript accuracy, and it stays marked as such however the reader
+  // reorders the table. A highlight that followed the sort would say "best" of
+  // whatever happens to be on top, which is a different and false claim.
+  const top = settings[0];
+  const cols = [
+    {key: 'setting', label: 'Setting', value: e => csModel(e.model),
+     cell: e => msCell(e, [e.backend, e.detail, e.ocr_profile],
+             // Reads that did not finish, or finished with nothing. Beside the
+             // setting rather than under the clock, because it qualifies every
+             // other number on the row: a mean taken over runs that mostly
+             // looped is a mean of the survivors.
+             //
+             // A failure is a loop or a crash. A run that finished and read the
+             // page badly is neither: it is in the mean, as the score it got.
+             // The two are printed side by side and never added up -- they are
+             // found and fixed in different places.
+             [e.failed
+                ? '<span style="color:var(--danger)">' + e.failed + ' of ' + e.runs
+                  + ' incomplete (' + Number(e.failure_rate).toFixed(0) + '% failure)'
+                  + '</span>'
+                : '',
+              e.empty
+                ? '<span class="cs-none">' + e.empty + ' finished empty (in the mean '
+                  + 'as 0%)</span>'
+                : ''].filter(Boolean).join(' &middot; '))},
+    {key: 'char', label: 'Transcript', n: true, value: e => e.char.mean,
+     title: 'character accuracy against solution/<id>.md, meaned over documents '
+          + '— content in whatever order the model put it',
+     cell: e => msFig(e.char, '%', 1, true)},
+    // Prefill and decode apart, never summed. They move for different reasons --
+    // prefill with pixels, decode with output length -- and the entire Detail
+    // trade lives in the first of them, invisible in a total.
+    {key: 'prefill', label: 'Prefill', n: true, value: e => e.prefill.mean,
+     title: 'vision tower plus prompt encode, paid once per page before the '
+          + 'first token — this is what scales with Detail',
+     cell: e => msFig(e.prefill, 's', 1)},
+    {key: 'decode', label: 'Decode', n: true, value: e => e.decode.mean,
+     title: 'generating the transcript; the rate excludes prefill, so it '
+          + 'compares across pages of different resolutions',
+     cell: e => msFig(e.decode, 's', 1)
+       + '<span class="cs-set">'
+       + (e.tps.mean === null ? '&mdash;' : Number(e.tps.mean).toFixed(1) + ' tok/s')
+       + '</span>'},
+    {key: 'total', label: 'Total', n: true, value: e => e.seconds.mean,
+     title: 'wall clock for the whole document',
+     cell: e => msFig(e.seconds, 's', 1)},
+    {key: 'failure', label: 'Failed', n: true, value: e => e.failure_rate,
+     title: 'runs that did not finish — looped, truncated, cancelled or errored. '
+          + 'A run that finished and scored badly is not one of these.',
+     cell: e => e.failed
+       ? '<span style="color:var(--danger)">' + Number(e.failure_rate).toFixed(0)
+         + '%</span><span class="cs-set">' + e.failed + ' of ' + e.runs + '</span>'
+       : '<span class="cs-none">0 of ' + e.runs + '</span>'}
+    // **There is no Runs column**, at the user's request. This cell already
+    // carries the run count as its denominator, and the setting cell on the left
+    // carries it again with the document count beside it -- so a third copy in a
+    // column of its own said nothing the row was not already saying twice.
+  ];
+  ocrSum.innerHTML = '<span class="cs-title">Pass 1 &mdash; best setting to read a page'
+    + windowNote('setting') + '</span>'
+    + pipeNote('ocr')
+    + lvTable('ocr', settings, cols, {
+        sort: {key: 'char', dir: 'desc'},
+        rowClass: e => e === top ? ' class="ms-top"' : ''
+      })
+    + '<p class="note">A setting is the model, backend, Detail and pass-1 profile '
+    + 'together &mdash; the same model at a different Detail is a different thing '
+    + 'to run, and the profile decides the prompt and the system slot, which on '
+    + 'some models is the difference between a transcript and an empty string at '
+    + 'HTTP&nbsp;200. Repeats of one document are averaged before the documents '
+    + 'are, so a setting run five times on one page is not five samples of it. '
+    + '<b>llama.cpp caches prompts</b>, so a prefill figure that includes a '
+    + 're-read of a page it had already seen is lower than anyone gets cold. '
+    + 'Every column sorts; the highlighted row is the best by transcript '
+    + 'accuracy whichever column you sort by.</p>'
+    + retiredNote(t);
+}
+
+
+/* Rows the log holds at a Detail this build no longer offers.
+   Said here rather than left implicit: this table and the per-document one both
+   drop those rows, and a table quietly missing a quarter of the log reads as a
+   table nobody has run much. `max`, `accurate` and `balanced` are NOT in here --
+   they were renamed, the budget did not move, and their rows are folded onto
+   `original`/`medium`/`low` and counted. Only a preset that was DELETED lands
+   here, and there is one: `fast`, 1 MP, dropped because at that budget the model
+   fabricates rather than misreads. Folding it into `low` would average 1 MP and
+   2 MP under one name. */
+function retiredNote(t) {
+  const gone = t.retired_detail || {};
+  const names = Object.keys(gone);
+  if (!names.length) return '';
+  const parts = names.map(n => gone[n] + ' at <b>' + esc(n) + '</b>');
+  return '<p class="note">' + parts.join(', ')
+    + ' &mdash; ' + (names.length > 1 ? 'presets' : 'a preset')
+    + ' this build no longer offers. Those runs are real and stay in the log, in '
+    + 'the model and document rankings and in the counts above; they are left out '
+    + 'of this table and of the per-document bests, because a setting nobody can '
+    + 'select is not one to recommend.</p>';
+}
+
+function paintExtractSummary(t) {
+  const settings = (t.by_extract) || [];
+  if (!settings.length) { extractSum.innerHTML = emptyPassNote('extract', t); return; }
+  const scored = settings.some(e => e.scored_runs);
+  // The server's ranking, held before any sort. See `paintOcrSummary`.
+  const top = scored ? settings[0] : null;
+  const cols = [
+    {key: 'setting', label: 'Setting', value: e => csModel(e.model),
+     cell: e => msCell(e, [e.backend, e.extract_mode],
+             // Two lines, both about what the row does not otherwise say.
+             //
+             // `read_by` names the model that produced the transcript, where
+             // that is a different model from the one extracting. It matters
+             // because a field score taken over a real transcript is partly a
+             // measurement of PASS 1 -- a value the OCR misread cannot then be
+             // extracted correctly -- so the row is only as good as the read
+             // under it.
+             ((e.read_by || []).length
+               ? 'reading: ' + e.read_by.map(m => esc(csModel(m))).join(', ')
+               : '')
+             // Runs whose reply cycled. They are dropped from the extras contest
+             // rather than allowed to win it, so without this line they would
+             // read as a setting that simply had less to say.
+             + (e.looped
+               ? (((e.read_by || []).length) ? '<br>' : '')
+                 + '<span style="color:var(--danger)">' + e.looped + ' of ' + e.runs
+                 // "incomplete", not "looped": this counts replies that cycled
+                 // AND runs that never produced a reply at all, and calling an
+                 // outright error a loop sends anyone reading it to the wrong
+                 // place.
+                 + ' incomplete (' + Number(e.failure_rate).toFixed(0) + '% failure)</span>'
+               : ''))},
+    // The headline: priority-1 values that are the value the truth file says
+    // belongs in that key. The denominator is about 12 and is per document, so
+    // the raw counts come with the rate.
+    {key: 'field', label: 'Field accuracy', n: true,
+     value: e => e.scored_runs ? e.field.mean : null,
+     title: 'priority-1 values that are the value the field ground truth says '
+          + 'belongs in that key, as a share of the values that file rules on',
+     cell: e => e.scored_runs
+       ? msFig(e.field, '%', 1, true)
+         // A total ACROSS the scored runs, not a single denominator: two runs of
+         // 1/11 read 2/22 here. Said as "over N runs" rather than joined with a
+         // middot, which would read as two separate facts.
+         + '<span class="cs-set">' + e.correct + '/' + e.expected + ' values over '
+         + e.scored_runs + ' scored run(s)</span>'
+       // Blank is not zero, the rule the CSV column follows: no field truth file
+       // for anything this setting has run on -- or every run of it was read too
+       // badly for this view's floor to credit the extractor with the result.
+       : '<span class="cs-none">not scored yet</span>'},
+    // `other_fields` has no ground truth and cannot have one -- the labels are
+    // the model's own wording. So it is scored against the other settings that
+    // read the SAME document: points are how many of them you beat there.
+    //
+    // Shown PER DOCUMENT, because the settings have not entered the same number
+    // of contests: +10 from one document and +26 from five are not the same
+    // achievement, and the raw totals rank whichever setting was run most.
+    {key: 'extras_rank', label: 'Extra fields, ranked', n: true,
+     value: e => e.other_rate,
+     title: 'other_fields has no ground truth, so it is ranked against the other '
+          + 'settings run on the same document: points are how many of them this '
+          + 'setting beat, divided by the documents it was compared on',
+     cell: e => e.other_contests
+       ? '<span class="cs-val">' + Number(e.other_rate).toFixed(1) + '</span>'
+         + '<span class="cs-of"> pts/doc</span>'
+         + '<span class="cs-set">+' + e.other_points + ' of ' + e.other_possible
+         + ' over ' + e.other_contests + ' document(s)</span>'
+       : '<span class="cs-none">nothing to compare</span>'},
+    // Distinct entries, not the raw total: a reply that repeats one invented
+    // line a hundred times returned one field, not a hundred. The raw total is
+    // under it, so a gap between the two is visible where it has not yet crossed
+    // the threshold that flags the run outright.
+    {key: 'extras', label: 'Extra fields', n: true, value: e => e.other_distinct.mean,
+     title: 'distinct entries under other_fields, meaned over documents — a reply '
+          + 'that repeats one line a hundred times returned one field, not a hundred',
+     cell: e => msFig(e.other_distinct, '', 1)
+       + (e.other_count.mean !== null && e.other_distinct.mean !== null
+          && e.other_count.mean > e.other_distinct.mean
+          ? '<span class="cs-set">' + Number(e.other_count.mean).toFixed(1)
+            + ' before de-duplication</span>' : '')},
+    // Coverage, and deliberately not what the table is ranked on: read it
+    // against the score two columns left. Many filled and few correct is a model
+    // inventing; few filled is one giving up, and they share an accuracy.
+    {key: 'filled', label: 'Filled', n: true, value: e => e.filled.mean,
+     title: 'how many of the 14 priority-1 keys came back filled with anything at '
+          + 'all — coverage, not correctness',
+     cell: e => msFig(e.filled, ' of 14', 1)},
+    {key: 'failure', label: 'Failed', n: true, value: e => e.failure_rate,
+     title: 'extractions whose reply cycled, and runs that produced no reply at '
+          + 'all. Both are counted as failures and neither is scored.',
+     cell: e => e.looped
+       ? '<span style="color:var(--danger)">' + Number(e.failure_rate).toFixed(0)
+         + '%</span><span class="cs-set">' + e.looped + ' of ' + e.runs + '</span>'
+       : '<span class="cs-none">0 of ' + e.runs + '</span>'}
+    // No Runs column here either -- see `paintOcrSummary`.
+  ];
+  extractSum.innerHTML = '<span class="cs-title">Pass 2 &mdash; best setting to extract fields'
+    + windowNote('setting') + '</span>'
+    + pipeNote('extract')
+    + lvTable('extract', settings, cols, {
+        sort: {key: 'field', dir: 'desc'},
+        rowClass: e => e === top ? ' class="ms-top"' : ''
+      })
+    + '<p class="note"><b>Single and agentic are separate rows</b>: some '
+    + 'models do well in one shape and badly in the other, so averaging the two '
+    + 'reports a figure neither produces. Everything else about a setting is '
+    + 'pooled, including whether pass&nbsp;2 was fed a ground-truth transcript or '
+    + 'one pass&nbsp;1 produced &mdash; worth remembering when reading a low '
+    + 'score, because a run fed a real transcript is being marked on the OCR as '
+    + 'well as the extraction. That is what the <b>read floor</b> above is for: '
+    + 'a field score from a transcript below it is left out, because it measures '
+    + 'the read rather than the extractor. Repeats of one '
+    + 'document are averaged before the documents are, and the spread of those '
+    + 'repeats is printed as <b>&plusmn; repeat</b>. Restricted agentic runs are '
+    + 'left out &mdash; they answer part of the form. A <b>partial</b> match '
+    + 'scores half a value: the model found the right thing and took too much or '
+    + 'too little of it, which is neither a hit nor a miss. A run whose reply '
+    + '<b>cycled</b>, and one that produced no reply at all, are counted as '
+    + 'failures and <b>not scored</b> &mdash; they stay out of every mean and '
+    + 'out of the extras ranking rather than being allowed to win it. A setting '
+    + 'whose every run failed shows no score at all. '
+    + '<b>Field accuracy</b> and <b>filled</b> are '
+    + 'different claims: a run can fill every key and get most of them wrong, '
+    + 'which is the whole reason the field ground truth exists.</p>';
+}
+
+
+/* ---------- random test ---------- */
+/* Reads the NDJSON stream `/api/randomtest/stream` produces, one event per
+   round, and paints the table as it goes. The rows are the point: a run that
+   only reported a total would say "3 of 6 failed" without saying which
+   combination did it, and the combination IS the finding.
+
+   `rtRows` lives outside the render because the table is repainted on every
+   event -- a round that scrolled away when the next one started would be
+   unreadable during exactly the run it exists to explain. */
+let rtRows = [];
+let rtAbort = null;
+/* The server's own threshold, not a copy of it: `settings.MIN_READ_FOR_FIELDS`
+   is what actually decides, and a page quoting a different number would be
+   describing a build nobody is running. */
+const MIN_READ_FOR_FIELDS = {{ min_read_for_fields }};
+const CONTEST = { top: {{ contest_top }}, bottom: {{ contest_bottom }},
+                  detail: '{{ contest_detail }}' };
+/* Which scope each contest subject implies. Painted from the server's own table
+   so the page cannot describe a subject the planner does not have. */
+const SUBJECT_SCOPE = { {% for s in contest_subjects %}'{{ s.id }}': '{{ s.scope }}',{% endfor %} };
+
+function rtPct(value, digits) {
+  if (value === null || value === undefined) return '<span class="cs-none">&mdash;</span>';
+  return '<span class="cs-val" style="color:' + accColour(Number(value) / 100) + '">'
+    + Number(value).toFixed(digits === undefined ? 1 : digits) + '%</span>';
+}
+/* What a round ran, naming only the settings its scope actually used. A Detail
+   printed under a fields-only round names a setting that had no part in the
+   result -- no image was made -- and an extraction shape under a read-only one
+   reads as a pass that ran and found nothing. */
+function rtPlanLines(p) {
+  const line = t => '<span class="rt-plan">' + t + '</span>';
+  // Which end of the ranking a contender came from. Absent on a random round,
+  // and absent on a contest where every ranked model is running -- there is no
+  // top half when everyone is in it.
+  const rank = p.contender
+    ? '<span class="rt-seen" title="from the ' + p.contender
+      + ' of the Standouts ranking">' + p.contender + '</span> '
+    : '';
+  if (p.scope === 'fields') {
+    return line('fields only &middot; no page read')
+      + line(rank + esc(csModel(p.extractor)) + ' &middot; ' + esc(p.mode));
+  }
+  if (p.scope === 'ocr') {
+    return line('read only &middot; no extraction')
+      + line(rank + esc(csModel(p.reader)) + ' (' + esc(p.profile) + ') &middot; ' + esc(p.detail));
+  }
+  return line(rank + esc(csModel(p.reader)) + ' (' + esc(p.profile) + ')'
+              + ' &rarr; ' + esc(p.extractor ? csModel(p.extractor) : 'same'))
+    + line(esc(p.detail) + ' &middot; ' + esc(p.mode));
+}
+
+/* The two model locks are painted from the same lists the pickers above use, so
+   a lock can only ever name something this endpoint serves -- the server refuses
+   the rest, and a refusal that could have been prevented in the picker is a
+   refusal nobody learns anything from.
+
+   The extraction list depends on the scope: a fields round runs ONE model and
+   any served model may be it, including an OCR fine-tune; every other scope puts
+   pass 2 beside a reader, where `select_extract` refuses a second OCR model. */
+function rtOption(name, chosen, suffix) {
+  return '<option value="' + esc(name) + '"' + (name === chosen ? ' selected' : '')
+    + '>' + esc(csModel(name)) + (suffix || '') + '</option>';
+}
+/* Excluded names live outside the render, like every other set on this page: the
+   chips are repainted whenever the model list is, and a toggle that reset itself
+   on a status refresh would be a control that forgets. A name that stops being
+   served stays in the set harmlessly -- the server ignores an exclusion for a
+   model it does not have. */
+const rtExcluded = { readers: new Set(), extractors: new Set() };
+function rtChips(box, names, set) {
+  box.innerHTML = names.map(name =>
+    '<label class="rt-chip' + (set.has(name) ? ' off' : '') + '" title="'
+    + esc(name) + '"><input type="checkbox" value="' + esc(name) + '"'
+    + (set.has(name) ? '' : ' checked') + '>' + esc(csModel(name)) + '</label>').join('');
+  for (const box_ of box.querySelectorAll('input')) {
+    box_.addEventListener('change', () => {
+      if (box_.checked) set.delete(box_.value); else set.add(box_.value);
+      box_.parentElement.classList.toggle('off', !box_.checked);
+    });
+  }
+}
+function rtPaintLocks() {
+  const models = server.models || [];
+  const keep = (sel, names) => {
+    const chosen = sel.value;
+    sel.innerHTML = '<option value="">— random —</option>'
+      + names.map(n => rtOption(n, chosen)).join('');
+    // A lock that is no longer on the list is dropped rather than silently
+    // pointing at something else.
+    if (sel.value !== chosen) sel.value = '';
+  };
+  keep(rtLockReader, models.filter(m => m.vision !== false).map(m => m.name));
+  keep(rtLockExtract, rtScope.value === 'fields'
+    ? models.map(m => m.name)
+    : ((extractInfo && extractInfo.choices) || []).filter(Boolean));
+  // A read-only run never extracts, and a fields run never reads.
+  rtLockReaderField.style.display = rtScope.value === 'fields' ? 'none' : 'flex';
+  rtLockExtractField.style.display = rtScope.value === 'ocr' ? 'none' : 'flex';
+  // A read-only run never extracts, so it has no shape to pin.
+  rtLockModeField.style.display = rtScope.value === 'ocr' ? 'none' : 'flex';
+  // The chips are painted from the same two pools as the locks, so a model this
+  // endpoint cannot use for a pass is not offered as one to exclude from it.
+  rtChips(rtExRead, models.filter(m => m.vision !== false).map(m => m.name),
+          rtExcluded.readers);
+  rtChips(rtExExtract, rtScope.value === 'fields'
+    ? models.map(m => m.name)
+    : ((extractInfo && extractInfo.choices) || []).filter(Boolean),
+    rtExcluded.extractors);
+  rtExReadRow.style.display = rtScope.value === 'fields' ? 'none' : 'block';
+  rtExExtractRow.style.display = rtScope.value === 'ocr' ? 'none' : 'block';
+}
+
+/* What a contest is about to do, from the controls rather than from the run that
+   already made the choice. The Documents box is hidden for a document contest:
+   there the documents ARE the contenders, and a count of them would be a second,
+   contradictory answer to the same question. */
+function rtPaintContest() {
+  const subject = rtSubject.options[rtSubject.selectedIndex];
+  const label = subject ? subject.text : 'model';
+  const top = Math.max(1, Number(rtTop.value) || CONTEST.top);
+  const isCase = rtSubject.value === 'case';
+  const isPipe = rtSubject.value === 'pipeline';
+  rtDocsField.style.display = isCase ? 'none' : 'flex';
+  rtContestNote.innerHTML = 'Re-runs the <b>top ' + top + '</b>'
+    + (rtBottom.checked ? ' and the <b>bottom ' + top + '</b>' : '')
+    + ' ' + esc(label) + (isPipe ? ' pairs' : 's') + ' from Standouts'
+    + (isCase ? ', read by the model the log ranks first'
+              : ', on the same documents')
+    + (isPipe ? ' — every top reader against every top extractor' : '')
+    + '. Everything but the ' + esc(label) + ' is pinned'
+    + (SUBJECT_SCOPE[rtSubject.value] === 'fields' ? ''
+       : ', Detail included (<b>' + CONTEST.detail + '</b>)')
+    + ', which is what a ranking has to be re-tested on. The scope picker above '
+    + 'does not apply: a contest\'s scope comes from its subject ('
+    + esc(SUBJECT_SCOPE[rtSubject.value] || '') + ').';
+}
+
+/* What the chosen scope will and will not measure, said before the run rather
+   than inferred from empty columns afterwards. */
+const RT_SCOPE_NOTE = {
+  full: 'Both passes. The field score is partly a measurement of the read — a '
+      + 'value pass 1 got wrong cannot then be extracted right — so a round '
+      + 'whose read failed'
+      + (MIN_READ_FOR_FIELDS > 0 ? ' or scored under '
+         + (MIN_READ_FOR_FIELDS * 100).toFixed(0) + '%' : '')
+      + ' still extracts and still logs, and its fields are left '
+      + '<b>unscored</b>.',
+  ocr: 'Pass 1 only. No extraction runs, so the row it logs has blank pass-2 '
+     + 'columns and there is no field score.',
+  fields: 'Pass 2 only, on <code>solution/&lt;id&gt;.md</code>. No page is read, so '
+        + 'nothing the extractor gets wrong belongs to the read — and any model '
+        + 'can be drawn, vision or not.'
+};
+function rtPaintScope() {
+  rtScopeNote.innerHTML = RT_SCOPE_NOTE[rtScope.value] || '';
+}
+
+/* The Result card and the random test take turns in the same place. Both belong
+   to "what just ran", and only one thing runs at a time here -- the alternative
+   was a fifty-row table stacked above a Result card still showing a document
+   somebody read by hand an hour ago. Compare goes with the Result card, since
+   it holds that same read's page images. */
+function rtShowing(on) {
+  rtCard.hidden = !on;
+  resultCard.hidden = on;
+  compareCard.hidden = on;
+}
+function rtPaint() {
+  rtShowing(!!rtRows.length);
+  if (!rtRows.length) { rtOut.innerHTML = ''; return; }
+  const body = rtRows.map(r => {
+    const p = r.plan, out = r.result || {};
+    const cls = r.error ? ' class="rt-bad"' : (r.pending ? ' class="rt-now"' : '');
+    return '<tr' + cls + '>'
+      + '<td><b>' + esc(p.case) + '</b>'
+        // How many times the run log had read this document before the round
+        // was planned. It is why this case was chosen -- rounds go to whatever
+        // is furthest behind -- and without it a plan that reads one fixture
+        // twice and another not at all looks like a bad shuffle.
+        + (p.seen === undefined ? ''
+           : '<span class="rt-seen" title="reads of this document in the run log '
+             + 'before this round — the least-read case is chosen every time">'
+             + p.seen + '</span>')
+        + rtPlanLines(p) + '</td>'
+      + (r.pending
+          ? '<td colspan="4"><span class="cs-none">running&hellip;</span></td>'
+          : !r.result && !r.error
+          // Planned but not reached yet. Shown rather than hidden so the whole
+          // plan is visible from the start -- that is what makes a long run
+          // watchable, and what a seed reproduces.
+          ? '<td colspan="4"><span class="cs-none">queued</span></td>'
+          : r.error
+            ? '<td colspan="4"><span style="color:var(--danger)">' + esc(r.error) + '</span></td>'
+            // A pass the scope did not run is `not run`, never a zero: an
+            // empty field count under a read-only round reads as an extraction
+            // that returned nothing, which is a result and not what happened.
+            : (p.scope === 'fields'
+                ? '<td><span class="cs-none">not run</span></td>'
+                : '<td>' + rtPct(out.char_accuracy === null || out.char_accuracy === undefined
+                    ? null : out.char_accuracy * 100)
+                  // A looped or truncated read scored what it scored, and the
+                  // score alone cannot say the run did not finish.
+                  + (out.status && out.status !== 'ok'
+                     ? '<span class="rt-plan" style="color:var(--danger)">' + esc(out.status)
+                       + '</span>' : '') + '</td>')
+            + (p.scope === 'ocr'
+                ? '<td><span class="cs-none">not run</span></td>'
+                  + '<td><span class="cs-none">&mdash;</span></td>'
+                // A read too poor to judge its own extraction by: the fields
+                // came back and are logged, the score is not. The reason is
+                // printed under it, because `unscored` with no because reads as
+                // a defect in the harness rather than a rule of it.
+                : (out.unscored
+                    ? '<td><span class="cs-none">unscored</span>'
+                      + '<span class="rt-plan">' + esc(out.unscored) + '</span></td>'
+                    : '<td>' + rtPct(out.field)
+                      + '<span class="rt-plan">' + out.correct + '+' + out.partial + 'p/'
+                      + out.expected + '</span></td>')
+                + '<td>' + out.other
+                  + (out.partial_reply
+                     ? '<span class="rt-plan" style="color:var(--danger)">salvaged</span>' : '')
+                  + '</td>')
+            + '<td class="n">' + Number(r.seconds || 0).toFixed(0) + 's</td>')
+      + '</tr>';
+  }).join('');
+  rtOut.innerHTML = '<table class="queue"><tr><th>Round</th>'
+    + '<th title="character accuracy of the transcript against solution/&lt;id&gt;.md">Read</th>'
+    + '<th title="priority-1 fields, a partial counting half">Fields</th>'
+    + '<th title="entries returned under other_fields">Extra</th>'
+    + '<th>Time</th></tr>' + body + '</table>';
+}
+
+/* One runner for both shapes. A contest is not a different stream, a different
+   table or a different row -- it is the same rounds with everything but the
+   model pinned, which is exactly why it can share all three. */
+/* Both Stop buttons and both Run buttons move together: the run is one thing,
+   and a Stop that looks live in the pane while the card's is greyed out is a
+   control that lies about what it will do. */
+function rtBusy(on) {
+  rtRun.disabled = on;
+  rtContest.disabled = on;
+  rtStop.disabled = !on;
+  rtStop2.disabled = !on;
+  // The two share one card, so they cannot share the screen: a read started
+  // mid-test would stream into a Result card the next round event hides again.
+  // `paintServer` owns this button otherwise and puts it back on its own terms.
+  if (on) runBtn.disabled = true; else paintServer();
+}
+/* What a contest actually assembled, said in the run's own note rather than
+   guessed at in advance: which models it found at each end of the ranking, and
+   what it could not run. */
+function rtContestLine(c) {
+  const names = (c.models || []).map(csModel).join(', ')
+    + (c.extractors ? ' × ' + c.extractors.map(csModel).join(', ') : '');
+  return 'Contest (' + esc(c.label || '') + '): ' + (c.all_ranked
+      ? 'every ranked ' + esc(c.label || 'entry') + ' (' + (c.models || []).length + ')'
+      : (c.top || []).length + ' top, ' + (c.bottom || []).length + ' bottom')
+    + ' × ' + c.documents + ' document(s)'
+    + (c.detail ? ' at ' + c.detail : '') + (c.mode ? ' · ' + c.mode : '')
+    + ' — ' + names
+    + ((c.missing || []).length
+        ? '. ' + c.missing.length + ' ranked model(s) not served here, skipped.' : '')
+    + ((c.unranked || []).length
+        ? ' ' + c.unranked.length + ' unranked, not entered.' : '');
+}
+
+async function rtStart(contest) {
+  const rounds = Math.max(1, Math.min(Number(rtRounds.value) || 5, 50));
+  rtRounds.value = rounds;
+  const documents = Math.max(1, Math.min(Number(rtDocs.value) || 1, 10));
+  rtDocs.value = documents;
+  rtRows = [];
+  rtPaint();
+  rtBusy(true);
+  rtNote.classList.remove('err');
+  rtNote.textContent = 'Planning…';
+  rtShowing(true);
+  rtAbort = new AbortController();
+  try {
+    const res = await fetch('/api/randomtest/stream', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      signal: rtAbort.signal,
+      // Exclusions go with both shapes: "do not test that model" is a statement
+      // about the run, not about which button started it.
+      body: JSON.stringify(Object.assign(
+        { exclude: { readers: [...rtExcluded.readers],
+                     extractors: [...rtExcluded.extractors] } },
+        contest
+        ? { contest: true, documents, seed: rtSeed.value.trim() || null,
+            subject: rtSubject.value,
+            top: Math.max(1, Number(rtTop.value) || CONTEST.top),
+            // 0, not false: the planner reads it as "how many from the bottom".
+            bottom: rtBottom.checked
+              ? Math.max(1, Number(rtTop.value) || CONTEST.bottom) : 0 }
+        : { rounds, seed: rtSeed.value.trim() || null, scope: rtScope.value,
+            lock: { case: rtLockCase.value, reader: rtLockReader.value,
+                    extractor: rtLockExtract.value, mode: rtLockMode.value } }))
+    });
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      throw new Error(data.error || ('HTTP ' + res.status));
+    }
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split('\n');
+      buffer = lines.pop();
+      for (const line of lines) {
+        if (!line.trim()) continue;
+        const ev = JSON.parse(line);
+        if (ev.event === 'plan') {
+          // The seed goes into the box, not just the note: the next thing
+          // anyone wants after an interesting run is to run it again.
+          rtSeed.value = ev.seed;
+          const locked = Object.entries(ev.lock || {})
+            .map(([k, v]) => k + '=' + csModel(v)).join(', ');
+          rtNote.textContent = 'Seed ' + ev.seed + ' — ' + ev.rounds.length
+            + ' round(s). ' + (ev.contest ? rtContestLine(ev.contest)
+                                          : 'Re-run with this seed for the same plan.')
+            + (locked ? ' Locked: ' + locked + '.' : '');
+          // Only the round actually in flight is `pending`; the rest are
+          // planned-but-not-started, which is a different thing to show. Every
+          // row read "running…" when this said `pending: true` for all of them.
+          rtRows = ev.rounds.map(p => ({ plan: p }));
+          rtRows[0].pending = true;
+          rtPaint();
+        } else if (ev.event === 'round') {
+          rtRows[ev.index - 1] = { ...ev, pending: false };
+          if (rtRows[ev.index]) rtRows[ev.index].pending = true;
+          rtPaint();
+          // The run log is where these rows land, so it is repainted as they
+          // arrive rather than only at the end.
+          refreshRuns();
+        } else if (ev.event === 'done') {
+          rtNote.textContent = 'Seed ' + ev.seed + ' — ' + ev.completed + '/'
+            + ev.total + ' round(s) completed'
+            + (ev.failed ? ', ' + ev.failed + ' failed' : '')
+            + ' in ' + Math.round(ev.seconds) + 's.';
+          rtNote.classList.toggle('err', ev.failed > 0);
+        }
+      }
+    }
+  } catch (err) {
+    if (err.name === 'AbortError') {
+      // A stop leaves the rounds already finished on screen: they ran, they are
+      // in the run log, and clearing them would throw away the results.
+      rtNote.textContent = 'Stopped. Rounds already finished are above and in '
+        + 'the run log; the one in flight was left to end on its own.';
+    } else {
+      rtNote.textContent = err.message;
+      rtNote.classList.add('err');
+    }
+  } finally {
+    rtAbort = null;
+    rtBusy(false);
+    // Drop rows that never ran -- on a stop or a failure, a "queued" row that
+    // will now never happen reads as part of the result.
+    rtRows = rtRows.filter(r => r.result || r.error);
+    rtPaint();
+    refreshRuns();
+  }
+}
+
+if (rtRun) {
+  rtRun.addEventListener('click', () => rtStart(false));
+  rtContest.addEventListener('click', () => rtStart(true));
+  const stop = () => { if (rtAbort) rtAbort.abort(); };
+  rtStop.addEventListener('click', stop);
+  rtStop2.addEventListener('click', stop);
+  rtClear.addEventListener('click', () => { rtRows = []; rtPaint(); });
+
+  // Painted on change and once at load: the caveat belongs beside the choice,
+  // not in the results of a run that already made it.
+  rtScope.addEventListener('change', () => { rtPaintScope(); rtPaintLocks(); });
+  rtSubject.addEventListener('change', rtPaintContest);
+  rtBottom.addEventListener('change', rtPaintContest);
+  rtTop.addEventListener('change', rtPaintContest);
+  rtPaintScope();
+  rtPaintContest();
+  rtPaintLocks();
+}
+
+/* ---------- the log view ----------
+   **What is stored and what is averaged are two different things**, and this is
+   the whole of the 2026-08-24 request. The CSV keeps every run whatever these
+   controls say -- a read that scored 20% is written, is passed to pass 2, and is
+   in the Raw data panel. What the controls decide is which rows reach a MEAN,
+   and under what rules.
+
+   Four pieces of state, none of which the server remembers between requests:
+
+   - `logView`   -- the read floor and the window, `null` for "use the process
+                    setting", so moving one control cannot silently reset the other.
+   - `logFilters`-- include/exclude per field. A filtered row is ABSENT from the
+                    tables, not merely hidden: `runs`, the failure rate and the
+                    window all behave as though it had never happened, which is
+                    the only reading under which "how does my best model do on
+                    sol001" is answerable.
+   - `logSort`   -- per table, above.
+   - `rawPicked` -- which raw rows are ticked for deletion, by their position in
+                    the file. */
+let logData = null;
+let logView = {window: null, min_read_pct: null};
+let logFilters = {include: {}, exclude: {}};
+let rawPicked = new Set();
+let logBusy = false;
+
+/* The axes worth filtering on, in the user's own terms: model, sol, mode. The
+   two models are separate rows of chips because they are separate questions --
+   this project has a model that reads badly and extracts best, and one that
+   cannot read at all. `runlog.FILTER_FIELDS` knows more fields than these; what
+   is not here is not worth the width. */
+const LV_FIELDS = [
+  {field: 'case', label: 'Document',
+   hint: 'the ground-truth case, or the file name where there is none'},
+  {field: 'model', label: 'Reading model',
+   hint: 'the model that read the page (pass 1)'},
+  {field: 'extract_model', label: 'Extraction model',
+   hint: 'the model that extracted the fields (pass 2) — the reading model, '
+       + 'where the two passes ran on one'},
+  {field: 'extract_mode', label: 'Extraction shape',
+   hint: 'single: one request for the whole form. agentic: a step per group of '
+       + 'one to three fields'}
+];
+
+function lvState(field, value) {
+  if ((logFilters.include[field] || []).indexOf(value) >= 0) return 'inc';
+  if ((logFilters.exclude[field] || []).indexOf(value) >= 0) return 'exc';
+  return '';
+}
+
+/* Neutral -> kept -> dropped -> neutral. One control for both directions,
+   because "only sol001" and "anything but dots.ocr" are the same question asked
+   from opposite ends and a reader switching between them should not have to find
+   a different widget. */
+function lvCycle(field, value) {
+  const inc = logFilters.include[field] || [];
+  const exc = logFilters.exclude[field] || [];
+  const at = lvState(field, value);
+  logFilters.include[field] = inc.filter(v => v !== value);
+  logFilters.exclude[field] = exc.filter(v => v !== value);
+  if (at === '') logFilters.include[field].push(value);
+  else if (at === 'inc') logFilters.exclude[field].push(value);
+  refreshRuns();
+}
+
+function lvActive() {
+  return LV_FIELDS.some(f => (logFilters.include[f.field] || []).length
+                          || (logFilters.exclude[f.field] || []).length);
+}
+
+function paintFilters() {
+  const facets = (logData && logData.facets) || {};
+  const blocks = LV_FIELDS.map(f => {
+    const values = facets[f.field] || [];
+    if (!values.length) return '';
+    return '<div class="lv-field"><b title="' + esc(f.hint) + '">' + esc(f.label)
+      + '</b><div class="lv-chips">'
+      + values.map(v => {
+          const at = lvState(f.field, v.value);
+          return '<span class="lv-chip' + (at ? ' ' + at : '')
+            + '" data-field="' + esc(f.field) + '" data-value="' + esc(v.value)
+            + '" title="' + esc(v.value) + ' — ' + v.runs + ' row(s) in the log. '
+            + (at === 'inc' ? 'Kept. Click to drop it.'
+               : at === 'exc' ? 'Dropped. Click to clear.'
+               : 'Click to keep only this, again to drop it.') + '">'
+            + esc(csModel(v.value)) + '<span class="n">' + v.runs + '</span></span>';
+        }).join('')
+      + '</div></div>';
+  }).filter(Boolean).join('');
+  if (!blocks) { lvFilters.innerHTML = ''; return; }
+  lvFilters.innerHTML = blocks
+    + '<p class="note" style="margin-top:8px">Click a chip to keep <b>only</b> '
+    + 'that value, again to <b>drop</b> it, again to clear. Chips are counted '
+    + 'over the whole log, never over what survived the filter, so a value you '
+    + 'have just dropped is still here to put back. <b>A dropped row is absent '
+    + 'from every table</b> — not hidden but uncounted: it is out of the run '
+    + 'counts, the failure rates and the window, exactly as if it had not been '
+    + 'run. The Raw data panel is never filtered, because a row nobody can see '
+    + 'is a row nobody can delete. <b>Reading model is blank on a run that read '
+    + 'no page</b> — a fields-only run carries the model that extracted, not one '
+    + 'that read — so those runs are not in that picker at all. To see one half '
+    + 'of the pipeline, use <b>Pipeline</b> above rather than turning off every '
+    + 'model.'
+    + (lvActive() ? ' <b>A filter is in force.</b>' : '') + '</p>';
+}
+
+/* ---------- pipeline ----------
+   One choice, not a chip group: the three kinds are mutually exclusive and a row
+   is exactly one of them, so a tri-state chip per kind would let a reader ask for
+   a combination that means the same as "Any" by three different routes.
+
+   It rides in `include.pipeline` like any other filter -- the server treats it as
+   a field like the rest (`runlog._pipeline`), so nothing downstream needs to know
+   it is special. */
+const PIPE_LABEL = {
+  '': 'Any', both: 'Both passes', read: 'Read only', extract: 'Extract only'
+};
+
+function pipeNow() {
+  return (logFilters.include.pipeline || [])[0] || '';
+}
+
+/* What the pipeline choice means for one of the two setting tables. Printed in
+   the panel rather than left to be inferred from an empty table, because both
+   emptinesses have an innocent reading that is wrong here:
+
+   - **Pass 1 under "Extract only" is empty because nothing read a page**, not
+     because no setting has been measured.
+   - **Pass 2 under "Read only" is not empty, and that is the misleading one.**
+     A read-only round that LOOPED is pulled into `by_extract` by its status --
+     the rule there is that an incomplete run is one pass 2 never got to -- and a
+     round that never asked for pass 2 is indistinguishable in the CSV from one
+     that died before reaching it: both have blank pass-2 columns and a blank
+     `extract_mode`. So the table shows a handful of settings at a 100% failure
+     rate and no score, which reads as "these settings cannot extract" when what
+     it means is "these runs never tried". */
+function pipeNote(pass) {
+  const now = pipeNow();
+  if (!now || now === 'both') return '';
+  if (pass === 'ocr' && now === 'extract')
+    return '<p class="note"><b>Nothing to show under &ldquo;Extract only&rdquo;.</b> '
+      + 'Those runs extracted from a transcript they did not read, so they have no '
+      + 'pass-1 figures at all — this table is empty because no page was read, not '
+      + 'because no setting has been measured.</p>';
+  if (pass === 'extract' && now === 'read')
+    return '<p class="note"><b>Under &ldquo;Read only&rdquo; every row here is a '
+      + 'failure, and none of them tried to extract.</b> A read-only run that '
+      + 'looped or errored is counted as an extraction that never got started, '
+      + 'because a run that never asked for pass&nbsp;2 and one that died before '
+      + 'reaching it look identical in the log — both leave the pass-2 columns and '
+      + '<code>extract_mode</code> blank. Read these as pass-1 failures; the '
+      + 'extraction figures to compare are under <b>Both passes</b> or '
+      + '<b>Extract only</b>.</p>';
+  return '';
+}
+
+/* The same explanation for the route that reaches the same place WITHOUT the
+   pipeline picker: excluding every reading model leaves only runs that read no
+   page, which empties this table exactly as "Extract only" does. The note has to
+   fire on the state, not on the control that produced it -- there are two ways
+   in and only one of them was covered. */
+function emptyPassNote(pass, t) {
+  const specific = pipeNote(pass);
+  if (specific) return specific;
+  if (!t || !t.matched) return '';       // the no-rows banner above says it
+  const noun = pass === 'ocr' ? 'read a page' : 'extracted any fields';
+  const fix = pass === 'ocr'
+    ? 'Every run left in this view read no page — check the <b>Reading model</b> '
+      + 'chips and <b>Pipeline</b>.'
+    : 'Every run left in this view extracted nothing — check the <b>Extraction '
+      + 'model</b> chips and <b>Pipeline</b>.';
+  return '<p class="note"><b>No ' + (pass === 'ocr' ? 'pass-1' : 'pass-2')
+    + ' figures in this view.</b> None of the ' + t.matched + ' runs that match '
+    + 'the filter ' + noun + '. ' + fix + '</p>';
+}
+
+function paintPipe() {
+  const now = pipeNow();
+  lvPipe.querySelectorAll('button').forEach(b =>
+    b.classList.toggle('on', (b.dataset.pipe || '') === now));
+}
+
+lvPipe.addEventListener('click', ev => {
+  const btn = ev.target.closest ? ev.target.closest('button[data-pipe]') : null;
+  if (!btn || logBusy) return;
+  const want = btn.dataset.pipe || '';
+  // Clicking the choice already in force clears it, so the control can always be
+  // undone from itself rather than only from Reset.
+  logFilters.include.pipeline = (want && want !== pipeNow()) ? [want] : [];
+  refreshRuns();
+});
+
+/* Every narrowing in force, in the words the controls use. Printed only when the
+   result is empty, where it is the whole of what a reader needs: the card cannot
+   say what is missing, but it can say what it was told to leave out. */
+function lvInForce() {
+  const out = [];
+  const pipe = pipeNow();
+  if (pipe) out.push('<b>' + PIPE_LABEL[pipe] + '</b>');
+  LV_FIELDS.forEach(f => {
+    const inc = logFilters.include[f.field] || [];
+    const exc = logFilters.exclude[f.field] || [];
+    if (inc.length) out.push('only ' + f.label.toLowerCase() + ' <b>'
+      + inc.map(v => esc(csModel(v))).join(', ') + '</b>');
+    if (exc.length) out.push('no ' + f.label.toLowerCase() + ' <b>'
+      + exc.map(v => esc(csModel(v))).join(', ') + '</b>');
+  });
+  return out;
+}
+
+function paintEmpty(t) {
+  if (t.matched !== 0) { lvEmpty.innerHTML = ''; return; }
+  const forced = lvInForce();
+  lvEmpty.innerHTML = '<b>No runs match.</b> Every table below is empty because '
+    + 'nothing in the log got past the filter'
+    + (forced.length ? ' — in force: ' + forced.join(' &middot; ') : '')
+    + '. The log itself is untouched (' + t.logged + ' rows) and the <b>Raw data</b> '
+    + 'panel still shows it. Clear a chip above, or press <b>Reset</b>.';
+}
+
+function paintLogControls() {
+  const t = (logData && logData.totals) || {};
+  const d = (logData && logData.defaults) || {};
+  // Painted from what came BACK, never from what was asked for -- the server
+  // clamps both, and a control showing a figure the tables were not compiled
+  // under is a control that lies. Same rule the model pickers follow.
+  if (document.activeElement !== lvFloor)
+    lvFloor.value = t.min_read_pct === null || t.min_read_pct === undefined
+      ? '' : t.min_read_pct;
+  if (document.activeElement !== lvWindow)
+    lvWindow.value = t.window === null || t.window === undefined ? 0 : t.window;
+  const bits = [];
+  if (t.matched !== undefined && t.logged !== undefined && t.matched !== t.logged)
+    bits.push('<b>' + t.matched + ' of ' + t.logged + ' rows</b> match the filter');
+  else if (t.logged !== undefined)
+    bits.push(t.logged + ' rows in the log');
+  bits.push(t.window ? 'up to ' + t.window + ' recent runs per setting, model and '
+                       + 'document' : 'every run, no window');
+  bits.push(t.min_read_pct
+    ? 'field scores from reads under ' + Number(t.min_read_pct).toFixed(0)
+      + '% are left out'
+    : 'every field score counted, whatever the read scored');
+  const moved = (d.window !== undefined && t.window !== (d.window || null))
+    || (d.min_read_pct !== undefined && t.min_read_pct !== d.min_read_pct);
+  lvNote.innerHTML = bits.join(' &middot; ')
+    + (moved ? ' &middot; <b>not the server default</b> (' + d.window + ' runs, '
+               + Number(d.min_read_pct).toFixed(0) + '%)' : '');
+}
+
+/* ---------- raw rows ---------- */
+function lvNum(v) {
+  if (v === '' || v === null || v === undefined) return null;
+  const n = Number(v);
+  return isNaN(n) ? null : n;
+}
+/* Header labels and sortable values for the log itself. The CELLS come from
+   `runRow`, which is unchanged -- this names what each column is worth so the
+   sort and the display cannot describe different things. */
+const RAW_COLS = [
+  {key: 'pick', label: '', sortable: false, cls: 'pick'},
+  {key: 'when', label: 'When', n: true, value: r => r.timestamp || ''},
+  {key: 'doc', label: 'Document', value: r => r.file || ''},
+  {key: 'model', label: 'Model', value: r => r.model || ''},
+  {key: 'tokens', label: 'Tokens', n: true,
+   value: r => lvNum(r.run_type === 'extract' ? r.extract_tokens : r.tokens)},
+  {key: 'time', label: 'Time', n: true,
+   value: r => lvNum(r.run_type === 'extract' ? r.extract_seconds : r.seconds)},
+  {key: 'fields', label: 'Fields', n: true, value: r => lvNum(r.p1_present)},
+  {key: 'accuracy', label: 'Accuracy', n: true, value: r => lvNum(r.char_accuracy)},
+  {key: 'grounded', label: 'Grounded &middot; fields', n: true,
+   title: 'grounded: found on the page. fields: correct against the field ground '
+        + 'truth, where there is one',
+   value: r => lvNum(r.grounded_pct)},
+  {key: 'status', label: 'Status', value: r => r.status || ''}
+];
+
+function paintRunRows() {
+  const rows = (logData && logData.runs) || [];
+  runBody.innerHTML = rows.length
+    ? '<table class="queue">' + lvHead('raw', RAW_COLS)
+      + lvSorted('raw', rows, RAW_COLS).map(runRow).join('') + '</table>'
+    : '';
+  const n = rawPicked.size;
+  rawSel.textContent = n ? n + ' row(s) selected — deleting archives them to '
+                           + 'logs/runs.deleted.csv'
+                         : 'Tick a row to delete it. Nothing is selected.';
+  rawDelete.disabled = !n || logBusy;
+  rawNone.disabled = !n || logBusy;
+}
+
+runBody.addEventListener('change', ev => {
+  const box = ev.target.closest ? ev.target.closest('input[data-pick]') : null;
+  if (!box) return;
+  const index = Number(box.dataset.pick);
+  if (box.checked) rawPicked.add(index); else rawPicked.delete(index);
+  const n = rawPicked.size;
+  rawSel.textContent = n ? n + ' row(s) selected — deleting archives them to '
+                           + 'logs/runs.deleted.csv'
+                         : 'Tick a row to delete it. Nothing is selected.';
+  rawDelete.disabled = !n;
+  rawNone.disabled = !n;
+});
+
+rawNone.addEventListener('click', () => { rawPicked.clear(); paintRunRows(); });
+
+rawDelete.addEventListener('click', async () => {
+  const rows = ((logData && logData.runs) || [])
+    .filter(r => rawPicked.has(r._row))
+    // The whole key, not the index alone: the server checks it against the row
+    // it finds there and refuses one that has moved. A delete is permanent and
+    // silent when it lands on the wrong row.
+    .map(r => ({_row: r._row, timestamp: r.timestamp, file: r.file}));
+  if (!rows.length) return;
+  if (!confirm('Delete ' + rows.length + ' run(s) from the log?\n\n'
+               + 'They are removed from every table and every mean, and a copy '
+               + 'is kept in logs/runs.deleted.csv.')) return;
+  logBusy = true; rawDelete.disabled = true;
+  let out = null;
+  try {
+    out = await (await fetch('/api/runs/delete', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({rows: rows})
+    })).json();
+  } catch { out = null; }
+  logBusy = false;
+  rawPicked.clear();
+  await refreshRuns();
+  if (!out || out.error) {
+    rawSel.textContent = 'Could not delete: ' + ((out && out.error) || 'no reply.');
+  } else if (out.stale) {
+    // The log moved under the page -- a run finished while rows were ticked.
+    // Named rather than retried: the row that is there now is not the row that
+    // was ticked, and deleting it anyway is the mistake this guard exists for.
+    rawSel.textContent = out.deleted + ' deleted, ' + out.stale
+      + ' skipped — the log changed since this table was drawn. Refreshed.';
+  }
+});
+
+/* ---------- panels ---------- */
+/* Five panels rather than one column, at the user's request. Each answers a
+   different question and only one of them is the log: the four summaries are
+   compiled and filtered, the fifth is what was written. */
+logTabs.addEventListener('click', ev => {
+  const btn = ev.target.closest ? ev.target.closest('button[data-panel]') : null;
+  if (!btn) return;
+  logTabs.querySelectorAll('button').forEach(b => b.classList.toggle('on', b === btn));
+  const want = btn.dataset.panel;
+  ['rank', 'ocr', 'extract', 'case', 'raw'].forEach(name => {
+    const el = document.getElementById('panel' + name[0].toUpperCase() + name.slice(1));
+    if (el) el.hidden = name !== want;
+  });
+});
+
+lvFilters.addEventListener('click', ev => {
+  const chip = ev.target.closest ? ev.target.closest('.lv-chip') : null;
+  if (!chip || logBusy) return;
+  lvCycle(chip.dataset.field, chip.dataset.value);
+});
+
+lvApply.addEventListener('click', () => {
+  const floor = lvFloor.value === '' ? null : Number(lvFloor.value);
+  const window_ = lvWindow.value === '' ? null : Number(lvWindow.value);
+  logView.min_read_pct = floor === null || isNaN(floor) ? null : floor;
+  logView.window = window_ === null || isNaN(window_) ? null : window_;
+  refreshRuns();
+});
+[lvFloor, lvWindow].forEach(el => el.addEventListener('keydown', ev => {
+  if (ev.key === 'Enter') { ev.preventDefault(); lvApply.click(); }
+}));
+
+lvReset.addEventListener('click', () => {
+  // Back to the process settings AND to no filter: "reset" meaning half of it
+  // would leave a view nobody asked for looking like the default one.
+  logView = {window: null, min_read_pct: null};
+  // `include.pipeline` lives in here too, so Reset clears the pipeline choice
+  // with everything else -- a "reset" that left one narrowing standing would
+  // leave a view nobody asked for looking like the default one.
+  logFilters = {include: {}, exclude: {}};
+  refreshRuns();
+});
+
+function paintLog() {
+  if (!logData) return;
+  const t = logData.totals || {};
   paintBests(t);
+  paintStandouts(t);
   paintCaseSummary(t);
+  paintOcrSummary(t);
+  paintExtractSummary(t);
+  paintRunRows();
+  paintFilters();
+  paintPipe();
+  paintEmpty(t);
+  paintLogControls();
+  paintRunStats(t);
+}
+
+function paintRunStats(t) {
+  const rows = (logData && logData.runs) || [];
+  runStats.title = t.window
+    ? 'Every summary on this card covers the most recent runs of that setting, '
+      + 'model or document — up to ' + t.window + ' each. Each row prints how '
+      + 'many it actually covers.'
+    : 'Every summary on this card covers every run in this view.';
   runStats.textContent = [
-    t.runs + ' run(s) logged',
+    // Counted over each document's own window, the same rule the tables use --
+    // a count over "the log's last twenty rows" would be a count of whatever ran
+    // last night. The file's true size is beside it.
+    t.runs + ' run(s)',
     // Counted apart from reads: a re-extraction is a row, but it is not another
     // document read, and every other figure on this line is read against `runs`.
     t.extracts ? t.extracts + ' re-extract(s)' : null,
-    rows.length < (t.runs + (t.extracts || 0)) ? 'showing ' + rows.length : null,
+    // No number here either: this line is read against tables whose rows each
+    // cover a different amount. The ceiling is on the tooltip.
+    t.window ? 'recent runs per setting/document' : null,
+    // Said out loud, because every figure on this line is over the filtered rows
+    // and the raw table below is not.
+    t.matched !== t.logged ? 'filtered to ' + t.matched + ' of ' + t.logged
+                             + ' rows' : null,
+    rows.length < (t.logged || 0)
+      ? 'showing ' + rows.length + ' of ' + t.logged + ' rows' : null,
     t.scored ? t.scored + ' scored' : null,
     t.mean_accuracy !== null && t.mean_accuracy !== undefined
       ? 'mean ' + Number(t.mean_accuracy).toFixed(1) + '%' : null,
@@ -2445,14 +4425,27 @@ async function refreshRuns() {
   runPath.textContent = t.path ? 'Written to ' + t.path
     + ' — time, tokens, model, runtime, file name, file size, accuracy and the field '
     + 'score. No document text.' : '';
-  runBody.innerHTML = rows.length
-    ? '<table class="queue"><tr><th>When</th><th>Document</th><th>Model</th>'
-      + '<th>Tokens</th><th>Time</th><th>Fields</th><th>Accuracy</th>'
-      + '<th title="grounded: found on the page. fields: correct against the field '
-      + 'ground truth, where there is one">Grounded · fields</th>'
-      + '<th>Status</th></tr>'
-      + rows.map(runRow).join('') + '</table>'
-    : '';
+}
+
+async function refreshRuns() {
+  let data;
+  try {
+    data = await (await fetch('/api/runs/query', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({limit: 50, window: logView.window,
+                            min_read_pct: logView.min_read_pct,
+                            include: logFilters.include,
+                            exclude: logFilters.exclude})
+    })).json();
+  } catch { return; }
+  logData = data;
+  // A row that has been deleted, or has fallen off the end of the 50 shown, can
+  // no longer be selected. Dropped rather than kept hopefully: a tick nobody can
+  // see would delete a row nobody chose.
+  const live = {};
+  (data.runs || []).forEach(r => { live[r._row] = true; });
+  Array.from(rawPicked).forEach(i => { if (!live[i]) rawPicked.delete(i); });
+  paintLog();
 }
 runRefresh.addEventListener('click', refreshRuns);
 
@@ -2598,22 +4591,23 @@ function paintAccuracy() {
   accHead.innerHTML = '<span class="case">' + esc(truth.case) + '</span> '
     + '<span class="kind">· ' + esc(truth.pdf) + (truth.kind ? ' · ' + esc(truth.kind) : '') + '</span>';
 
-  const marksGain = truth.char_accuracy_no_marks - truth.char_accuracy;
+  // ONE number, not three. `word_accuracy` and `char_accuracy_no_marks` are
+  // still computed and still logged -- they are useful diagnostics when reading
+  // the CSV -- but on screen they were three bars saying almost the same thing,
+  // and the two extra ones invited being read as scores in their own right when
+  // neither is the score. Character accuracy is the headline everywhere else in
+  // this project; the page now says only that.
   accBars.innerHTML =
       accRow('Character accuracy', truth.char_accuracy,
-             'Edit distance over content characters — whitespace and zero-width marks are removed from both sides first')
-    + accRow('Word accuracy', truth.word_accuracy, 'Word-sequence overlap')
-    + accRow('Characters, marks ignored', truth.char_accuracy_no_marks,
-             'Thai tone marks and upper/lower vowels stripped')
-    + '<p class="acc-note">Expected ' + truth.expected_words + ' words / '
-    + truth.expected_chars + ' chars · got ' + truth.actual_words + ' / '
-    + truth.actual_chars + ' chars.'
-    + (marksGain > 0.01
-        ? ' Ignoring Thai marks gains ' + (marksGain * 100).toFixed(1)
-          + ' points — the letters are largely right and the tone marks are what is being lost.'
-        : ' Ignoring Thai marks changes little, so errors are whole-word rather than diacritic.')
-    + ' Table markup is normalised before scoring, so HTML vs pipe tables do not count against it,'
-    + ' and character accuracy compares content only — spacing and line breaks cannot lower it.</p>'
+             'Content characters only, in whatever order the model put them — '
+             + 'whitespace and zero-width marks come off both sides first, table '
+             + 'markup is normalised, and blocks are matched to the ground truth '
+             + 'by content rather than by position')
+    + '<p class="acc-note">Expected ' + truth.expected_chars + ' content chars · got '
+    + truth.actual_chars + '.'
+    + ' Scored on <b>content, not layout</b>: spacing, line breaks, HTML-vs-pipe'
+    + ' tables and the order the model walked the page in cannot lower it. What'
+    + ' does lower it is content that is missing, invented or misread.</p>'
     + bestNote(truth)
     + fieldAccNote(extracted && extracted.field_score);
 
@@ -2822,6 +4816,12 @@ CMP_PANES.forEach(pane => {
 const endpointSel = document.getElementById('endpointSel');
 const modelSel = document.getElementById('modelSel');
 const modelField = document.getElementById('modelField');
+// The same two pickers again, in the Fields-only pane. Comparing two models on
+// one transcript is most of what that pane is for, so it cannot send you to
+// another tab to choose one -- and there is a single setting behind both pairs.
+const fxEndpoint = document.getElementById('fxEndpoint');
+const fxModel = document.getElementById('fxModel');
+const fxModelField = document.getElementById('fxModelField');
 const customRow = document.getElementById('customRow');
 const endpointCustom = document.getElementById('endpointCustom');
 const endpointUse = document.getElementById('endpointUse');
@@ -2829,62 +4829,138 @@ const serverNote = document.getElementById('serverNote');
 const subKind = document.getElementById('subKind');
 const subUrl = document.getElementById('subUrl');
 
+// Add the active URL to a list if it was typed in rather than configured.
+function addUrlOption(sel, url) {
+  if (!sel || !url || [...sel.options].some(o => o.value === url)) return;
+  const last = sel.options[sel.options.length - 1];
+  // Ahead of "Other address…" where there is one, so a typed-in URL does not sit
+  // under the entry that offers to type one.
+  if (last && last.value === '__custom__') sel.insertBefore(new Option(url, url), last);
+  else sel.add(new Option(url, url));
+}
+/* The extraction model, offered as "same as reading model" plus every model the
+   endpoint serves that is NOT an OCR fine-tune.
+
+   The one combination left out is reading with one OCR model and extracting with
+   a different one: it pays for a second set of weights to get a second model
+   that is bad at pass 2. Extracting with the READING model is always offered,
+   because that is the one-model setup every measurement in this project was
+   taken under -- it is the default, not a fallback.
+
+   The server decides which models qualify (`backends.is_ocr_model`) and refuses
+   the combination outright; this list only makes the refusal visible before it
+   is triggered rather than after. */
+function paintExtractPicker(sel, field, ex) {
+  if (!sel || !field) return;
+  const choices = (ex && ex.choices) || [];
+  // Nothing to choose between when the endpoint serves one model: the picker
+  // would offer "same as reading model" and that same model under two names.
+  field.style.display = choices.length > 1 || (ex && !ex.same_as_reading)
+    ? 'flex' : 'none';
+  if (field.style.display === 'none') return;
+  sel.innerHTML = '<option value="">same as reading model'
+    + (server.model ? ' (' + esc(server.model) + ')' : '') + '</option>'
+    + choices.map(name => '<option value="' + esc(name) + '"'
+        + (name === (ex.chosen || '') ? ' selected' : '') + '>' + esc(name)
+        + (name === server.model ? ' · also reading' : '') + '</option>').join('');
+  sel.value = (ex && ex.chosen) || '';
+}
+
+function paintModelPicker(sel, field, models) {
+  if (!sel) return;
+  // One model is not a choice, it is a fact — shown in the status line instead.
+  field.style.display = models.length > 1 ? 'flex' : 'none';
+  if (models.length < 2) return;
+  sel.innerHTML = models.map(m =>
+    '<option value="' + esc(m.name) + '"' + (m.name === server.model ? ' selected' : '') + '>'
+    + esc(m.name) + (m.vision === false ? ' · no vision' : '')
+    + (m.size_gb ? ' · ' + m.size_gb + ' GB' : '') + '</option>').join('');
+  sel.value = server.model || '';
+}
+/* Both pairs of pickers are painted from the status that came back, never kept
+   in step by each other's change handlers: a switch that is refused -- the 409
+   while the queue is working is the one that bites -- has to leave every picker
+   on the page showing what is really active, not what was asked for. */
 function paintEndpoint() {
   subKind.textContent = server.kind || 'no server';
   subUrl.textContent = server.url || '';
-  // Add the active URL to the list if it was typed in rather than configured.
-  if (server.url && ![...endpointSel.options].some(o => o.value === server.url)) {
-    endpointSel.insertBefore(new Option(server.url, server.url),
-                             endpointSel.options[endpointSel.options.length - 1]);
+  for (const sel of [endpointSel, fxEndpoint]) {
+    if (!sel) continue;
+    addUrlOption(sel, server.url);
+    if (sel.value !== '__custom__') sel.value = server.url || '';
   }
-  if (endpointSel.value !== '__custom__') endpointSel.value = server.url || '';
-
   const models = server.models || [];
-  // One model is not a choice, it is a fact — shown in the status line instead.
-  modelField.style.display = models.length > 1 ? 'flex' : 'none';
-  if (models.length > 1) {
-    modelSel.innerHTML = models.map(m =>
-      '<option value="' + esc(m.name) + '"' + (m.name === server.model ? ' selected' : '') + '>'
-      + esc(m.name) + (m.vision === false ? ' · no vision' : '')
-      + (m.size_gb ? ' · ' + m.size_gb + ' GB' : '') + '</option>').join('');
-    modelSel.value = server.model || '';
-  }
+  paintModelPicker(modelSel, modelField, models);
+  paintModelPicker(fxModel, fxModelField, models);
+  paintExtractPicker(extractModelSel, extractModelField, extractInfo);
+  paintExtractPicker(fxExtract, fxExtractField, extractInfo);
+  // The random test's locks are painted from the same two lists, so a model that
+  // stops being served stops being lockable at the same moment.
+  if (typeof rtPaintLocks === 'function') rtPaintLocks();
 }
 
-async function switchServer(url, model) {
-  serverNote.textContent = 'Switching…';
+/* One switch, two panes: the note goes to both, because the pane you are not
+   looking at is the one that would otherwise hold a stale "Now using …". */
+function setServerNote(msg, bad) {
+  for (const el of [serverNote, fxServerNote]) {
+    if (!el) continue;
+    el.textContent = msg;
+    el.classList.toggle('err', !!bad);
+  }
+}
+/* What pass 2 will run on, as the server last reported it. Held beside `server`
+   rather than inside it because it is a separate choice with its own refusal,
+   and a picker painted from a merged blob cannot show which half was rejected.
+   Seeded at render, so the pickers are right on first paint. */
+
+/* `extractModel` is a tri-state and the distinction matters: undefined means
+   "leave it alone", '' means "same as the reading model", and a name means that
+   model. Sent as a JSON null-vs-string, which the route reads the same way. */
+async function switchServer(url, model, extractModel) {
+  setServerNote('Switching…');
   runBtn.disabled = true;
   try {
+    const body = { url: url || '', model: model || '' };
+    if (extractModel !== undefined) body.extract_model = extractModel;
     const res = await fetch('/api/servers', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ url: url || '', model: model || '' })
+      body: JSON.stringify(body)
     });
     const data = await res.json();
     if (!res.ok) {
-      serverNote.textContent = data.error || 'Could not switch server.';
-      serverNote.classList.add('err');
-      // Put the dropdown back on whatever is really active.
+      setServerNote(data.error || 'Could not switch server.', true);
+      // Put the dropdowns back on whatever is really active.
       paintEndpoint();
       paintServer();
       return;
     }
-    serverNote.classList.remove('err');
     server = data.server;
+    if (data.extract) extractInfo = data.extract;
+    // The pass-1 profile follows the reading model, so the picker has to be
+    // repainted from what came back rather than left on what was selected
+    // before the switch -- the same rule every other picker here follows.
+    if (data.ocr_profile) {
+      ocrProfileSel.value = data.ocr_profile;
+      paintOcrProfile();
+    }
     // The models Ollama was holding are stopped on a switch, so the new one
     // loads onto a free card. Said out loud: an unload that happened and one
     // that did not look the same on this line otherwise, and they leave very
     // different amounts of VRAM behind.
     const stopped = data.unloaded || [];
-    serverNote.textContent = 'Now using ' + server.url
+    setServerNote('Now using ' + server.url
       + (server.model ? ' · ' + server.model : '')
-      + (stopped.length ? ' · stopped ' + stopped.join(', ') + ' to free the GPU' : '');
+      // Named only when the two passes differ, so the usual one-model line stays
+      // as short as it was.
+      + (extractInfo.same_as_reading ? ''
+         : ' · extracting with ' + extractInfo.model)
+      + (stopped.length ? ' · stopped ' + stopped.join(', ') + ' to free the GPU' : ''));
     customRow.style.display = 'none';
     paintEndpoint();
     paintServer();
     initMode();
   } catch (err) {
-    serverNote.textContent = err.message;
-    serverNote.classList.add('err');
+    setServerNote(err.message, true);
     paintServer();
   }
 }
@@ -2906,6 +4982,11 @@ endpointCustom.addEventListener('keydown', e => {
   if (e.key === 'Enter') { e.preventDefault(); endpointUse.click(); }
 });
 modelSel.addEventListener('change', () => switchServer(null, modelSel.value));
+if (fxEndpoint) fxEndpoint.addEventListener('change', () => switchServer(fxEndpoint.value));
+if (fxModel) fxModel.addEventListener('change', () => switchServer(null, fxModel.value));
+for (const sel of [extractModelSel, fxExtract]) {
+  if (sel) sel.addEventListener('change', () => switchServer(null, null, sel.value));
+}
 
 function paintServer() {
   const ok = !!server.available;
@@ -2922,6 +5003,7 @@ function paintServer() {
   runBtn.disabled = !ok || !(current || (benchCase && benchCase.value) || (mockFile && mockFile.value));
   // Whether the context picker does anything depends on which kind is active.
   paintCtx();
+  paintFieldsOnly();
 }
 if (mockFile) {
   mockFile.addEventListener('change', () => {
@@ -2977,6 +5059,7 @@ async function refreshServer() {
     // is what "Re-check" is for after starting or stopping a server.
     const data = await (await fetch('/api/servers?probe=1')).json();
     server = data.server;
+    if (data.extract) extractInfo = data.extract;
     paintEndpoint();
   } catch {
     serverText.textContent = was;
@@ -3020,11 +5103,13 @@ function renderStats(summary) {
 
 /* ---------- detail hint ---------- */
 const DETAIL_NOTE = {
-  fast: 'Caps pages at ~1.0 MP. Fastest, but small tone marks may be lost.',
-  balanced: 'Caps pages at ~2.0 MP.',
-  accurate: 'Caps pages at ~4.0 MP. Good for dense or small print.',
-  max: 'No downscaling — native resolution, highest accuracy. A 300 DPI A4 page '
-     + 'is ~8.7 MP and can take 10+ minutes.'
+  original: 'No downscaling — the page exactly as rasterised. A 300 DPI A4 page '
+          + 'is ~8.7 MP and can take 10+ minutes, and past ~4 MP the extra visual '
+          + 'tokens measurably make this model worse, not better.',
+  medium: 'Caps pages at ~4.0 MP. The measured best for dense or small print, and '
+        + 'the default.',
+  low: 'Caps pages at ~2.0 MP. Roughly half the prefill; small tone marks are the '
+     + 'first thing lost.'
 };
 function updateNote() { detailNote.textContent = DETAIL_NOTE[detailSel.value] || ''; }
 detailSel.addEventListener('change', updateNote);
@@ -3206,6 +5291,7 @@ clearBtn.addEventListener('click', () => {
   meta.textContent = ''; meta.classList.remove('err');
   stopTicker(); pageStats = []; renderStats();
   extracted = null; extractSteps = null; tabFields.disabled = true;
+  truthOnlyCase = null;
   job = null; pageTexts = []; curPage = -1; cmpPage = 0;
   cmpImg.removeAttribute('src');
   enableCompare();
@@ -3224,6 +5310,10 @@ runBtn.addEventListener('click', async () => {
   // A batch cannot be streamed into one panel, which is why the Queue tab exists
   // and why the workspace holds a single file.
   if (!current && !(benchCase && benchCase.value) && !(mockFile && mockFile.value)) return;
+  // A read by hand takes the Result card back. The rounds it replaces are in the
+  // run log, and the Read button is disabled while a random test is in flight,
+  // so this can only ever discard a finished one.
+  if (rtRows.length) { rtRows = []; rtPaint(); }
   runBtn.disabled = true; stopBtn.disabled = false; copyBtn.disabled = true;
   text = ''; pageStats = []; pageTexts = []; curPage = -1; cmpPage = 0;
   layPage = 0; laySel = null; enableLayout();
@@ -3374,6 +5464,121 @@ runBtn.addEventListener('click', async () => {
     stopBtn.disabled = true; controller = null;
   }
 });
+
+/* ---------- Fields only: pass 2 against the hand-written transcript ---------
+   `compare.py --fields-only --from-truth` with a button on it. Feeding
+   `solution/<id>.md` straight into extraction is the only way a wrong field is
+   attributable: a value that never comes back may be one the extractor missed
+   or one the read never produced, and text that is right by construction tells
+   those apart. Every pass-2 measurement in CLAUDE.md was taken this way.
+
+   The server does the reading (`case` + `from_truth`), not this page. What is
+   fetched here is the same file for display -- so the input is on screen beside
+   the fields it produced -- out of the cache the compare view already fills. */
+let fxBusy = false;
+
+function paintFieldsOnly() {
+  if (!fxRun) return;
+  // Vision is deliberately NOT required, unlike the workspace's Run button:
+  // pass 2 sends text and gets text back, so a model that cannot read a page can
+  // still be measured on the form -- and measuring exactly that is what this
+  // pane is for. Hence `text_available`; this read `available` until 2026-08-20,
+  // which greyed the button out for every text-only model while the comment
+  // above claimed otherwise.
+  const ok = !!server.text_available;
+  fxDot.className = 'dot ' + (ok ? 'ok' : 'bad');
+  fxServerText.textContent = ok
+    ? (server.model || server.kind || 'server') + ' · ' + (server.kind || '')
+      + ' · text only, no image'
+    : 'No model server at ' + server.url;
+  fxRun.disabled = !ok || !fxCase.value || fxBusy;
+}
+
+/* What is about to be fed in, and whether the result can be scored. The two are
+   different files -- `solution/<id>.md` is the transcript, `<id>.fields.json`
+   says which value belongs in which key -- and a case can have the first without
+   the second, in which case the fields come back and nothing marks them. */
+async function fxDescribe() {
+  if (!fxCase) return;
+  const id = fxCase.value;
+  fxTruthNote.classList.remove('err');
+  if (!id) { fxTruthNote.textContent = ''; return; }
+  fxTruthNote.textContent = 'Reading ' + id + '.md …';
+  const t = await loadTruth(id);
+  if (fxCase.value !== id) return;   // a second choice overtook this one
+  if (t.error) {
+    fxTruthNote.textContent = t.error;
+    fxTruthNote.classList.add('err');
+    return;
+  }
+  const meta = FX_CASES.find(c => c.id === id) || {};
+  fxTruthNote.textContent = t.file + ' · ' + t.text.length.toLocaleString()
+    + ' characters · ' + (meta.field_truth
+      ? 'scored against ' + id + '.fields.json'
+      : 'no ' + id + '.fields.json — the fields come back unscored');
+}
+
+async function runFieldsOnly() {
+  if (!fxCase) return;
+  const id = fxCase.value;
+  if (!id || fxBusy) return;
+  fxBusy = true; paintFieldsOnly();
+  fxNote.classList.remove('err');
+  fxNote.textContent = 'Extracting from ' + id + '.md …';
+
+  const t = await loadTruth(id);
+  if (t.error) {
+    fxNote.textContent = t.error; fxNote.classList.add('err');
+    fxBusy = false; paintFieldsOnly();
+    return;
+  }
+
+  /* Take down everything that belongs to a read before showing what this run
+     works on. Pass 1 did not run, so a page image, an accuracy bar or a layout
+     left from the last document would be describing something else entirely --
+     and sitting above these fields it reads as a property of them. */
+  if (controller) controller.abort();
+  clearWorkspaceFile();
+  if (benchCase) benchCase.value = '';
+  if (mockFile) mockFile.value = '';
+  stopTicker(); pageStats = []; renderStats();
+  job = null; pageTexts = []; curPage = -1; cmpPage = 0; truth = null;
+  cmpImg.removeAttribute('src');
+  layPage = 0; laySel = null; enableLayout();
+  roPage = 0; enableRawOut();
+  pagebar.textContent = ''; warn.textContent = '';
+  tabAccuracy.disabled = true;
+  enableCompare();
+
+  // The input, shown where a transcript is shown. It is the only thing on the
+  // page that says these values came out of a hand-written page rather than out
+  // of a read, so it is not left as the previous document's text.
+  text = t.text; paint(); copyBtn.disabled = false;
+  meta.classList.remove('err');
+  meta.textContent = 'Ground truth ' + t.file
+    + ' — fed straight to pass 2. The page itself was not read, so there is no '
+    + 'transcript accuracy for this run.';
+  truthOnlyCase = id;
+  showTab('fields');
+
+  const r = await extractInto({ case: id, from_truth: true }) || {};
+  fxBusy = false; paintFieldsOnly();
+  fxNote.classList.toggle('err', !!r.error);
+  if (r.error) { fxNote.textContent = r.error; return; }
+  const o = (r.field_score || {}).overall || {};
+  fxNote.textContent = modeLabel(r) + ' · ' + r.seconds + 's · ' + (r.model || '')
+    + (o.expected
+        ? ' · field score ' + (o.accuracy * 100).toFixed(1) + '% ('
+          + (o.counts || {}).correct + '/' + o.expected + ')'
+        : ' · no field truth to score against')
+    + ' — on the Fields tab.';
+}
+
+if (fxCase) {
+  fxCase.addEventListener('change', () => { fxDescribe(); paintFieldsOnly(); });
+  fxMode.addEventListener('change', () => setMode(fxMode.value));
+  fxRun.addEventListener('click', runFieldsOnly);
+}
 
 paint();
 showTab('raw');

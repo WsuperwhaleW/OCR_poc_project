@@ -31,6 +31,7 @@ import fieldscore
 import grounding
 import jobs
 import normalise
+import randomtest
 import runlog
 import scoring
 import verify
@@ -60,6 +61,7 @@ from settings import (
     AGENTIC_RETRIES,
     DEFAULT_DETAIL,
     DETAIL_PRESETS,
+    resolve_detail,
     EXTRACT,
     EXTRACT_LOOP_MIN_REPEATS,
     EXTRACT_LOOP_TAIL_CHARS,
@@ -78,9 +80,11 @@ from settings import (
     MAX_NEW_TOKENS,
     MAX_PAGES,
     MAX_UPLOAD_MB,
+    MIN_READ_FOR_FIELDS,
     PDF_DPI,
     PROMPT_FIRST,
     PROMPT_FIRST_OLLAMA,
+    SUMMARY_RUNS,
     TRIM_MARGINS,
     TRIM_PAD,
     TRIM_TOLERANCE,
@@ -562,6 +566,15 @@ def _extract_single(text: str, status: dict) -> dict:
         result["seconds"] = retry["seconds"]
         return result
     retry["schema_retry"] = True
+    # Both replies are kept, labelled the way the agentic steps label theirs. The
+    # first one is why the second was asked -- usually the OCR envelope, or a
+    # string that never closed -- and returning only the reply that worked throws
+    # away the one worth reading, which is the same defect `_ask_step`'s `collect`
+    # list was built to fix.
+    retry["raw"] = ("--- " + _reply_label("single", 0, 0, failed=True) + " ---\n"
+                    + (result.get("raw") or "") + "\n\n"
+                    + "--- " + _reply_label("single", 0, 1) + " ---\n"
+                    + (retry.get("raw") or ""))
     return retry
 
 
@@ -573,9 +586,14 @@ def _extract_once(text: str, status: dict, schema) -> dict:
     the prompt, the sampler, the diagnosis of an unusable reply -- is the same
     either way, which is what makes the two attempts comparable.
     """
+    # Named rather than inlined so the reply can be shown beside the exact
+    # message that produced it. Instructions, transcript, instructions again --
+    # the closing repeat is what stops an OCR fine-tune answering with its own
+    # transcript envelope, and seeing that on screen is half of why it is there.
+    message = EXTRACT_PROMPT + text + EXTRACT_REMINDER
     url, payload = backends.structured_request(
         backends.system_prefix(status)
-        + [{"role": "user", "content": EXTRACT_PROMPT + text + EXTRACT_REMINDER}],
+        + [{"role": "user", "content": message}],
         schema, EXTRACT_MAX_TOKENS, status)
 
     started = time.perf_counter()
@@ -603,21 +621,23 @@ def _extract_once(text: str, status: dict, schema) -> dict:
         # transcript, and salvaging it would put a page of prose into a field.
         salvaged = None if flags.get("envelope") else _salvage_json(raw)
         if not salvaged or all(grounding.is_blank(v) for v in salvaged.values()):
-            return {"error": why, **flags, "raw": raw[:2000], "seconds": elapsed}
+            return {"error": why, **flags, "raw": raw[:2000], "prompt": message,
+                    "seconds": elapsed}
         fields = salvaged
         partial = (why + " The fields below are what the reply had finished "
                          "before it stopped; the rest are empty because it never "
                          "got to them, not because the page is silent.")
     if not isinstance(fields, dict):
         return {"error": "model returned JSON that is not an object",
-                "raw": raw[:2000], "seconds": elapsed}
+                "raw": raw[:2000], "prompt": message, "seconds": elapsed}
     # Valid JSON, wrong JSON: a short document's envelope closes inside the cap and
     # would otherwise be stored and scored as if it were the extracted fields.
     if _is_ocr_envelope(raw):
         return {"error": f"'{status['model']}' returned a transcript in its OCR "
                          '{"natural_text": ...} envelope, not the requested fields. '
                          "Re-extract; if it persists, extract one page at a time.",
-                "envelope": True, "raw": raw[:2000], "seconds": elapsed}
+                "envelope": True, "raw": raw[:2000], "prompt": message,
+                "seconds": elapsed}
 
     _, _, tokens = backends.structured_reply(body, status)
     return {
@@ -633,6 +653,11 @@ def _extract_once(text: str, status: dict, schema) -> dict:
         # never wrote it or because the fence-stripping and first-object salvage
         # above cut it off, and only the verbatim text tells those apart.
         "raw": raw,
+        # And the message that produced it. A reply is only readable against the
+        # question, and every prompt in this project is a measurement -- the one
+        # actually sent is worth being able to check against `prompts.py` without
+        # a server log.
+        "prompt": message,
         # Every value traced back to the transcript it came from. The prompt asks
         # the model not to invent; this is the part that checks, because a
         # plausible invented value is indistinguishable from a read one on screen.
@@ -734,6 +759,23 @@ def _chat(content: str, max_tokens: int, status: dict, schema: dict = None):
     return backends.structured_reply(res.json(), status)
 
 
+def _step_prefix(text: str) -> str:
+    """The part of every step's message that is the same for all of them.
+
+    Split out so it can be *shown* once rather than fifteen times, and so nothing
+    can drift: `_step_message` is these two functions joined, which is what the
+    model is actually sent.
+    """
+    return EXTRACT_STEP_PREFIX + text
+
+
+def _step_question(step: dict) -> str:
+    """The part that differs: this step's title, skeleton and rules."""
+    return EXTRACT_STEP_TASK.format(title=step["title"],
+                                    skeleton=step["skeleton"],
+                                    rules=step["rules"])
+
+
 def _step_message(text: str, step: dict) -> str:
     """The message for one step: prefix, transcript, then this step's question.
 
@@ -742,10 +784,7 @@ def _step_message(text: str, step: dict) -> str:
     is what keeps an OCR fine-tune from answering with its own transcript envelope,
     which is the same thing EXTRACT_REMINDER buys the single-shot prompt.
     """
-    return (EXTRACT_STEP_PREFIX + text
-            + EXTRACT_STEP_TASK.format(title=step["title"],
-                                       skeleton=step["skeleton"],
-                                       rules=step["rules"]))
+    return _step_prefix(text) + _step_question(step)
 
 
 def _step_values(step: dict, raw: str):
@@ -834,36 +873,102 @@ def _ungrounded_in(values: dict, source) -> list:
     return bad
 
 
-def _extract_agentic(text: str, status: dict):
+def _reply_label(step_id: str, attempt: int, n: int, failed: bool = False) -> str:
+    """Which request produced one reply: the step, and what was different about it.
+
+    A step can send up to four requests -- plain, schema-constrained, and either
+    of those again as a re-ask -- and the four are not interchangeable when
+    something has gone wrong: the schema attempt only runs because the plain one
+    would not parse, and the re-ask only because the first answer was not on the
+    page. A reply with no label attached is a wall of JSON that cannot be tied
+    back to the question that produced it.
+    """
+    return (step_id + (" (retry)" if attempt else "") + (" (schema)" if n else "")
+            + (" (failed)" if failed else ""))
+
+
+def _steps_for(wanted):
+    """The step table, or the named subset of it, in the table's own order.
+
+    A measurement tool and nothing else: it is what lets one step's prompt be
+    swept over five documents and four models without paying for the six steps
+    the change did not touch. Unknown ids are refused rather than skipped -- a
+    sweep that quietly asked for no steps would report a schema-wide failure.
+
+    The order is always `EXTRACT_STEPS`', never the caller's, so a restricted run
+    is the full run with steps removed rather than a differently ordered one.
+    """
+    if not wanted:
+        return EXTRACT_STEPS
+    ids = [s.strip() for s in wanted if str(s).strip()]
+    known = {s["id"] for s in EXTRACT_STEPS}
+    unknown = [i for i in ids if i not in known]
+    if unknown:
+        raise ValueError(f"unknown extraction step(s): {', '.join(unknown)} -- "
+                         f"have {', '.join(sorted(known))}")
+    if not ids:
+        raise ValueError("no extraction steps named")
+    return tuple(s for s in EXTRACT_STEPS if s["id"] in set(ids))
+
+
+def _extract_agentic(text: str, status: dict, only=None):
     """Walk the step table, yielding progress, and return the merged result.
 
     A generator so that both the browser and the run stream can show which step is
     running without a callback that cannot yield: iterate it for the events, and
     take the finished result from StopIteration.value (`_drain` does this).
+
+    `only` restricts the walk to the named steps. The result then says so in
+    `steps_only`, and everything downstream that would otherwise report the keys
+    nobody asked for as missing -- the field score, the run-log row -- stands
+    down on that key. See `_steps_for`.
     """
+    table = _steps_for(only)
     source = grounding.Source(text)
     started = time.perf_counter()
     fields, steps, replies = {}, [], []
     total_tokens = 0
 
-    yield {"event": "extract_steps", "total": len(EXTRACT_STEPS),
-           "steps": [{"id": s["id"], "title": s["title"], "keys": list(s["keys"])}
-                     for s in EXTRACT_STEPS]}
+    # Sent once because it IS once: every step's message opens with this same
+    # block and the same transcript, and only the question at the end differs.
+    # That is the whole reason the steps are cheap on llama.cpp, and showing it
+    # per step would say the opposite of what the design does.
+    prefix = _step_prefix(text)
 
-    for index, step in enumerate(EXTRACT_STEPS, 1):
-        yield {"event": "extract_step", "step": index, "total": len(EXTRACT_STEPS),
+    yield {"event": "extract_steps", "total": len(table),
+           "steps": [{"id": s["id"], "title": s["title"], "keys": list(s["keys"])}
+                     for s in table],
+           "prompt_prefix": prefix}
+
+    for index, step in enumerate(table, 1):
+        yield {"event": "extract_step", "step": index, "total": len(table),
                "id": step["id"], "title": step["title"], "status": "running"}
 
-        message = _step_message(text, step)
+        question = _step_question(step)
+        message = prefix + question
+        # `raw` holds this step's own replies, verbatim, in the order they were
+        # asked for. They are also concatenated into the result's single `raw`
+        # for the whole-reply pane, and kept per step as well because that pane
+        # cannot say which of fifteen questions a given block of JSON answers --
+        # and a step that failed is exactly the one whose text is worth reading.
         record = {"id": step["id"], "title": step["title"],
-                  "keys": list(step["keys"]), "attempts": 0, "retried": False}
+                  "keys": list(step["keys"]), "attempts": 0, "retried": False,
+                  "raw": [],
+                  # This step's own question, without the shared prefix. Set
+                  # before anything is asked, so a step whose request never came
+                  # back can still show what it was asked -- which is the state
+                  # where "what did we send it?" is the actual question.
+                  "prompt": question}
         values, elapsed = {}, 0.0
         best_bad = None
 
         for attempt in range(AGENTIC_RETRIES + 1):
-            content = message
-            if attempt:
-                content += EXTRACT_STEP_RETRY.format(rejected="\n".join(best_bad))
+            # A re-ask is a different question -- the rejected values quoted back
+            # -- so it is kept beside the reply it produced rather than folded
+            # into the step's base question.
+            asked = question + (EXTRACT_STEP_RETRY.format(
+                rejected="\n".join(best_bad)) if attempt else "")
+            content = prefix + asked
             record["attempts"] = attempt + 1
             at = time.perf_counter()
             truncated = False
@@ -875,17 +980,18 @@ def _extract_agentic(text: str, status: dict):
                 attempt_values, raws, truncated, tokens = _ask_step(
                     content, step, status, raws)
                 for n, raw in enumerate(raws):
-                    replies.append(f"--- {step['id']}"
-                                   + (" (retry)" if attempt else "")
-                                   + (" (schema)" if n else "") + " ---\n" + raw)
+                    label = _reply_label(step["id"], attempt, n)
+                    replies.append(f"--- {label} ---\n" + raw)
+                    record["raw"].append({"label": label, "text": raw,
+                                          "prompt": asked})
                 record["schema_retry"] = len(raws) > 1
                 total_tokens += tokens
             except Exception as err:
                 for n, raw in enumerate(raws):
-                    replies.append(f"--- {step['id']}"
-                                   + (" (retry)" if attempt else "")
-                                   + (" (schema)" if n else "") + " (failed) ---\n"
-                                   + raw)
+                    label = _reply_label(step["id"], attempt, n, failed=True)
+                    replies.append(f"--- {label} ---\n" + raw)
+                    record["raw"].append({"label": label, "text": raw,
+                                          "prompt": asked})
                 elapsed += time.perf_counter() - at
                 # Recorded against the step and then dropped: the remaining steps
                 # do not depend on this one, and the rest of the form is a better
@@ -917,7 +1023,7 @@ def _extract_agentic(text: str, status: dict):
         record["items"] = sum(len(v) for v in values.values() if isinstance(v, list))
         record["ungrounded"] = len(best_bad or [])
         steps.append(record)
-        yield {"event": "extract_step", "step": index, "total": len(EXTRACT_STEPS),
+        yield {"event": "extract_step", "step": index, "total": len(table),
                "id": step["id"], "title": step["title"], "status": "done", **record}
 
     elapsed = round(time.perf_counter() - started, 2)
@@ -926,6 +1032,9 @@ def _extract_agentic(text: str, status: dict):
         return {"error": "Every extraction step failed. First: "
                          + failed[0]["error"],
                 "mode": "agentic", "steps": steps, "seconds": elapsed,
+                "prompt_prefix": prefix,
+                **({"steps_only": [s["id"] for s in table]}
+                   if len(table) < len(EXTRACT_STEPS) else {}),
                 "raw": "\n\n".join(replies)[:4000]}
 
     # Ordered the way the schema lists the keys rather than the way the steps
@@ -938,6 +1047,10 @@ def _extract_agentic(text: str, status: dict):
     return {
         "fields": ordered,
         "raw": "\n\n".join(replies),
+        # On the result as well as on the event that announced the steps: a
+        # result read back from the queue, or from the blocking endpoint, never
+        # saw the event, and a step's question is unreadable without what led it.
+        "prompt_prefix": prefix,
         "grounding": grounding.check(ordered, text),
         "tiers": grounding.tier_counts(ordered),
         "vat_basis": verify.vat_basis(ordered, text),
@@ -950,6 +1063,11 @@ def _extract_agentic(text: str, status: dict):
         "backend": status["kind"],
         "mode": "agentic",
         "steps": steps,
+        # Present only when this run was restricted to part of the step table, so
+        # nothing downstream reads its keys as the whole form. Absent on an
+        # ordinary run rather than holding every id, for the same reason.
+        **({"steps_only": [s["id"] for s in table]} if len(table) < len(EXTRACT_STEPS)
+           else {}),
         # Named separately from the per-step errors because a partial answer is
         # the normal outcome here rather than a failure: the page says which parts
         # of the form were not filled instead of showing them as simply empty.
@@ -1023,7 +1141,8 @@ def set_extract_mode(mode: str) -> str:
     return mode
 
 
-def extract_fields_stream(text: str, mode: str = None, case_id: str = None):
+def extract_fields_stream(text: str, mode: str = None, case_id: str = None,
+                          steps=None):
     """Turn a finished transcript into structured JSON, yielding progress.
 
     A separate text-only pass rather than part of the OCR prompt: mixing
@@ -1041,12 +1160,26 @@ def extract_fields_stream(text: str, mode: str = None, case_id: str = None):
     """
     if not text.strip():
         return {"error": "Nothing to extract from."}
-    status = llama_status()
-    if not status["available"]:
-        return {"error": status["reason"]}
+    # The EXTRACTION model's status, which is the reading model's unless one has
+    # been chosen separately. Handing this dict to the request builders is the
+    # whole of what makes a second model work: they all read `info["model"]`.
+    status = backends.extract_status()
+    # `text_available`, not `available`: pass 2 sends the transcript as text and
+    # gets JSON back, so a model with no vision can still be measured on the
+    # form -- and measuring exactly that is what the Fields pane is for. This
+    # read `available` until 2026-08-20, which refused every text-only model
+    # with a complaint about images.
+    if not status["text_available"]:
+        return {"error": status["text_reason"]}
     if (mode or extract_mode()) == "agentic":
-        result = yield from _extract_agentic(text, status)
+        result = yield from _extract_agentic(text, status, steps)
     else:
+        # Refused rather than ignored: single mode is one request for the whole
+        # schema, so there is no honest way to ask it for part of one, and a
+        # sweep that thought it was measuring one step would be measuring
+        # fourteen keys instead.
+        if steps:
+            return {"error": "steps only apply to agentic extraction."}
         result = _extract_single(text, status)
     return _score_fields(result, case_id)
 
@@ -1062,6 +1195,13 @@ def _score_fields(result: dict, case_id: str) -> dict:
     product, the score is a measurement of it.
     """
     if not (case_id and isinstance(result, dict) and result.get("fields")):
+        return result
+    # A run restricted to some of the steps did not ask for the rest of the
+    # schema, and scoring it would report every key nobody asked for as missed --
+    # a headline accuracy of 3 values out of 43 for a run that got all three
+    # right. The caller that restricted the steps knows which keys it wanted and
+    # scores those itself.
+    if result.get("steps_only"):
         return result
     try:
         if fieldscore.has_truth(case_id):
@@ -1080,9 +1220,10 @@ def _drain(generator):
             return stop.value
 
 
-def extract_fields(text: str, mode: str = None, case_id: str = None) -> dict:
+def extract_fields(text: str, mode: str = None, case_id: str = None,
+                   steps=None) -> dict:
     """`extract_fields_stream` for callers with nowhere to show progress."""
-    return _drain(extract_fields_stream(text, mode, case_id))
+    return _drain(extract_fields_stream(text, mode, case_id, steps))
 
 
 def strip_fence(text: str) -> str:
@@ -1301,7 +1442,7 @@ def trim_margins(image: Image.Image, tolerance: int = TRIM_TOLERANCE,
       untrimmed page are scaled to the same pixel budget, so the model sees the same
       token count either way. What it buys is quality: the budget is spent on content
       instead of margin, rendering text ~1.10x larger at the same cost.
-    * At Detail `max` (uncapped) it is a genuine ~13% pixel, and therefore prefill,
+    * At Detail `original` (uncapped) it is a genuine ~13% pixel, and therefore prefill,
       saving.
 
     Conservative by design: it only trims a genuinely uniform border, never more
@@ -1425,8 +1566,10 @@ def prepare_input(data: bytes, detail: str, case=None, source=None):
     `source` is carried into the job cache rather than only into the run log, so
     a later re-extraction against this transcript can name the same document.
     """
-    if detail not in DETAIL_PRESETS:
-        detail = DEFAULT_DETAIL
+    # Through the alias table, so an old preset name from a saved setting or a
+    # script lands on the nearest preset that still exists rather than silently
+    # on the default. See `settings.resolve_detail`.
+    detail = resolve_detail(detail)
     pages = load_pages(data)
     budget = DETAIL_PRESETS[detail]
     # Trim first, then fit: the pixel budget is spent on content, not margins.
@@ -1462,7 +1605,7 @@ def log_run(summary: dict, source: dict, status: str = None, error=None,
         pass
 
 
-def log_extract(result: dict, job_id: str = None):
+def log_extract(result: dict, job_id: str = None, context: dict = None):
     """Append a row for a pass-2-only run -- the Re-extract button, or a script.
 
     Extraction can be re-run any number of times against one transcript, and each
@@ -1480,15 +1623,27 @@ def log_extract(result: dict, job_id: str = None):
     The pass-1 columns stay blank: nothing re-read the page. `job_id` recovers
     which document this was, from the same cache the compare view reads its
     images out of.
+
+    `context` supplied outright is for the extraction that never had a page job:
+    a fields-only run reads its transcript out of `solution/<id>.md`, so the
+    document is known while nothing in this process ever read a page of it. It
+    carries no `log` key, so `update_extract` below finds no read row to improve
+    -- correctly: those figures belong to a transcript this run did not use.
     """
     result = result or {}
-    context = job_context(job_id)
+    context = job_context(job_id) if context is None else context
     error = result.get("error") or ""
     summary = {
         # Pass 1 did not run, so page_count/seconds/tokens are left out entirely
         # rather than passed as zero -- see the blank-is-not-zero rule in runlog.
         "detail": context.get("detail", ""),
-        "model": result.get("model") or "",
+        # Falls back to the model pass 2 was ABOUT to run on. An extraction that
+        # failed before it began -- a refused model, an unreachable server --
+        # carries no model of its own, and a failure attributed to nobody cannot
+        # be counted against the setting that produced it. That is how ten
+        # straight refusals sat in this file invisible to every failure rate in
+        # it.
+        "model": result.get("model") or backends.extract_status()["model"] or "",
         "backend": result.get("backend") or "",
         "url": backends.active_url(),
         "extracted": result,
@@ -1675,16 +1830,41 @@ def index():
         server=llama_status(),
         details=list(DETAIL_PRESETS),
         default_detail=DEFAULT_DETAIL,
-        cases=[{"id": c["id"], "pdf": c["pdf"], "kind": c.get("kind", "")}
+        # `field_truth` says whether pass 2 can be *scored* on this document, as
+        # opposed to merely run against it: the transcript truth and the field
+        # truth are two different files, and the Fields-only pane is the one
+        # place where having the first without the second is a live case.
+        cases=[{"id": c["id"], "pdf": c["pdf"], "kind": c.get("kind", ""),
+                "field_truth": fieldscore.has_truth(c["id"])}
                for c in scoring.cases_index().values()],
         mock_files=mock_files(),
         endpoints=backends.endpoints(),
+        # What pass 2 will run on, seeded at render so both extraction pickers
+        # are right on first paint rather than only after a switch or Re-check.
+        # Same block `/api/servers` returns, so the page has one shape to read.
+        extract=backends.overview()["extract"],
         ctx_choices=backends.NUM_CTX_CHOICES,
         num_ctx=backends.num_ctx(),
         extract_mode=extract_mode(),
         extract_steps=len(EXTRACT_STEPS),
         ocr_profile=ocr_profile(),
         ocr_profiles=[{"id": pid, **spec} for pid, spec in OCR_PROFILES.items()],
+        # The random test's rule about when a field score is worth writing. Sent
+        # rather than hardcoded in the template: it is a setting, and a page that
+        # says 50% while the process runs at 0 is describing a build nobody has.
+        min_read_for_fields=MIN_READ_FOR_FIELDS,
+        # What a contest pins: how many from each end of the ranking it runs, and
+        # the Detail every contender runs at. Sent rather than repeated in the
+        # template for the same reason as the threshold above -- the page must
+        # describe the build it is talking to.
+        contest_top=randomtest.CONTEST_TOP,
+        contest_bottom=randomtest.CONTEST_BOTTOM,
+        contest_detail=randomtest.CONTEST_DETAIL,
+        # What a contest can be about. The page paints its picker from this so a
+        # subject added here cannot be missing there -- the same failure the
+        # field-label maps had when the schema widened.
+        contest_subjects=[{"id": sid, "label": spec["label"], "scope": spec["scope"]}
+                          for sid, spec in randomtest.SUBJECTS.items()],
     )
 
 
@@ -1728,7 +1908,10 @@ def servers_select():
     body = request.get_json(silent=True) or {}
     url = (body.get("url") or "").strip()
     model = (body.get("model") or "").strip()
-    if not url and not model:
+    # Present and empty means "same as the reading model", which is a real
+    # choice and not a missing field -- hence the sentinel rather than "".
+    extract = body.get("extract_model")
+    if not url and not model and extract is None:
         return jsonify(error="Give a url, a model, or both."), 400
 
     running = job_queue.stats()["counts"].get("running", 0)
@@ -1742,7 +1925,26 @@ def servers_select():
         # allowed mid-queue (it takes effect on the next run), but the eviction
         # is a request to the same scheduler serving the run in flight, so a
         # queue that is working keeps its weights and the next switch frees them.
-        server = backends.select(url or None, model or None, unload=not running)
+        if url or model:
+            server = backends.select(url or None, model or None, unload=not running)
+        else:
+            server = backends.status()
+        # After the reading model, never before: the refusal in `select_extract`
+        # is stated against whatever is reading the page, so it has to be asked
+        # about the choice this request is making, not the one it replaced.
+        if extract is not None:
+            backends.select_extract(extract, unload=not running)
+        # **The pass-1 profile follows the reading model.** The prompt and the
+        # system-message veto are properties of the model rather than
+        # preferences: a dots build given the typhoon profile returns an empty
+        # transcript at HTTP 200 -- a run that logs as `ok`, scores 0.0%, and has
+        # no other symptom. This project's rule was the opposite until
+        # 2026-08-21, on the grounds that coupling them made "this prompt against
+        # that model" unaskable; what changed is that a real run hit the failure.
+        # The comparison is still askable -- POST /api/ocr/profile still sets
+        # whatever you ask for, and it stands until the next model switch.
+        if url or model:
+            set_ocr_profile(backends.profile_for_model(backends.status()["model"]))
     except ValueError as err:
         return jsonify(error=str(err)), 400
 
@@ -1755,7 +1957,11 @@ def servers_select():
     # `unloaded` is on the response and not only in the console: a switch that
     # stopped a model and one that found nothing to stop look identical on the
     # page, and they leave the card in very different states.
-    return jsonify({**backends.overview(), "unloaded": server.get("unloaded", [])})
+    return jsonify({**backends.overview(), "unloaded": server.get("unloaded", []),
+                    # Which pass-1 shape the new model brought with it, so the
+                    # Page reading picker repaints instead of showing the one
+                    # that was selected before the switch.
+                    "ocr_profile": ocr_profile()})
 
 
 @app.get("/api/cases")
@@ -1763,7 +1969,8 @@ def cases():
     """Benchmark documents that have a ground-truth transcript."""
     return jsonify(cases=[
         {"id": c["id"], "pdf": c["pdf"], "kind": c.get("kind", ""),
-         "pages": c.get("pages", 1), "available": c["pdf_path"].exists()}
+         "pages": c.get("pages", 1), "available": c["pdf_path"].exists(),
+         "field_truth": fieldscore.has_truth(c["id"])}
         for c in scoring.cases_index().values()
     ])
 
@@ -1793,12 +2000,81 @@ def truth_text(case_id):
                    pages=case.get("pages", 1), file=path.name, text=text)
 
 
+def _extract_input(body):
+    """What one pass-2 request runs on: the text, the case, and the log context.
+
+    Three shapes arrive here and they differ only in where the transcript comes
+    from: a re-extraction of a page this process read (`job`), a script posting
+    text of its own, and a fields-only run against a fixture's hand-written
+    transcript (`case` + `from_truth`) -- which is `compare.py --from-truth` with
+    a button on it, and the only one of the three that produces a field score
+    without pass 1 having run at all.
+
+    Feeding the ground truth is what makes pass 2 measurable on its own: every
+    pass-2 measurement in CLAUDE.md was taken that way, because a wrong value is
+    otherwise never attributable to extraction rather than to the read behind it.
+
+    The case is what the field score is looked up by, so an explicit one wins
+    over the job's -- a transcript can be pasted from anywhere, and the caller
+    naming the document it belongs to is a stronger statement than a page cache
+    that may since have evicted it.
+    """
+    text = body.get("text", "")
+    case_id = (body.get("case") or "").strip()
+    context = job_context(body.get("job"))
+
+    if case_id:
+        case = scoring.cases_index().get(case_id)
+        if not case:
+            raise ValueError(f"Unknown case '{case_id}'.")
+        if body.get("from_truth"):
+            path = case["ground_truth"]
+            try:
+                text = path.read_text("utf-8")
+            except OSError as err:
+                raise ValueError(f"Could not read {path.name}: {err}")
+            # Nothing about a read belongs on this row: no detail preset, because
+            # no image was made, and the input named as the file actually fed in
+            # rather than as the PDF nobody opened.
+            context = {"case": case_id,
+                       "source": describe_source(path.name,
+                                                 text.encode("utf-8"), "truth")}
+        else:
+            context = {**context, "case": case_id}
+
+    if not text.strip():
+        raise ValueError("No text supplied.")
+    return text, (case_id or context.get("case") or None), context
+
+
 def _requested_mode(body):
     """The extraction shape for one request: what it asked for, or the current one."""
     mode = (body.get("mode") or "").strip().lower() or None
     if mode and mode not in ("single", "agentic"):
         raise ValueError("mode must be 'single' or 'agentic'.")
     return mode
+
+
+def _requested_steps(body):
+    """Which agentic steps one request runs, where it asks for only some.
+
+    A benchmark handle, not a setting: it is what makes a change to one step's
+    prompt measurable over several documents and models without paying for the
+    steps the change did not touch. Held per request rather than in process
+    state, so nothing the page or the queue does next inherits it.
+
+    A restricted result carries `steps_only`, which turns off the field score and
+    fills the run log's `extract_steps` column -- both because the keys the run
+    never asked for are not missing, they were not wanted.
+    """
+    steps = body.get("steps")
+    if steps in (None, "", []):
+        return None
+    if isinstance(steps, str):
+        steps = [s for s in steps.replace(",", " ").split() if s]
+    if not isinstance(steps, list):
+        raise ValueError("steps must be a list of step ids.")
+    return steps
 
 
 @app.post("/api/extract")
@@ -1811,19 +2087,26 @@ def extract_endpoint():
     An optional `job` -- the page id the `page`/`done` events carry -- says which
     document the transcript came from, so the run-log row can name it. Without
     one the row is still written, just anonymous.
+
+    `case` names a benchmark document outright, and with `from_truth` the
+    transcript is read from that case's `solution/<id>.md` instead of being
+    posted: pass 2 alone, on text pass 1 cannot have spoiled.
+
+    `steps` restricts an agentic run to the named steps -- one prompt measured on
+    its own, over several documents and models, without paying for the six steps
+    the change did not touch. See `_requested_steps`.
     """
     body = request.get_json(silent=True) or {}
-    text = body.get("text", "")
-    if not text.strip():
-        return jsonify(error="No text supplied."), 400
     try:
+        # Which document this transcript came from, so a re-extraction of a
+        # benchmark case is scored the same way the read that produced it was.
+        text, case_id, context = _extract_input(body)
         mode = _requested_mode(body)
+        steps = _requested_steps(body)
     except ValueError as err:
         return jsonify(error=str(err)), 400
-    # Which document this transcript came from, so a re-extraction of a
-    # benchmark case is scored the same way the read that produced it was.
-    result = extract_fields(text, mode, job_context(body.get("job")).get("case"))
-    log_extract(result, body.get("job"))
+    result = extract_fields(text, mode, case_id, steps)
+    log_extract(result, body.get("job"), context)
     return jsonify(result)
 
 
@@ -1835,34 +2118,34 @@ def extract_stream_endpoint():
     both modes the same way.
     """
     body = request.get_json(silent=True) or {}
-    text = body.get("text", "")
-    if not text.strip():
-        return jsonify(error="No text supplied."), 400
     try:
+        # The document behind this transcript, for the same reason as above.
+        # Resolved out here rather than inside the generator: the job cache can
+        # evict the page between the request arriving and the stream being
+        # consumed, and a `from_truth` read that fails is a 400, not a stream
+        # that opens and then apologises.
+        text, case_id, context = _extract_input(body)
         mode = _requested_mode(body)
+        steps = _requested_steps(body)
     except ValueError as err:
         return jsonify(error=str(err)), 400
 
     job_id = body.get("job")
-    # The document behind this transcript, for the same reason as above. Resolved
-    # out here rather than inside the generator: the job cache can evict the page
-    # between the request arriving and the stream being consumed.
-    case_id = job_context(job_id).get("case")
 
     def generate():
         try:
-            stream = extract_fields_stream(text, mode, case_id)
+            stream = extract_fields_stream(text, mode, case_id, steps)
             while True:
                 try:
                     yield json.dumps(next(stream)) + "\n"
                 except StopIteration as stop:
                     # Logged before the last event, so a page that refreshes the
                     # run log when the stream ends finds the row already there.
-                    log_extract(stop.value, job_id)
+                    log_extract(stop.value, job_id, context)
                     yield json.dumps({"event": "fields", **stop.value}) + "\n"
                     return
         except Exception as err:  # surface failures inside the stream body
-            log_extract({"error": str(err)}, job_id)
+            log_extract({"error": str(err)}, job_id, context)
             yield json.dumps({"event": "error", "error": str(err)}) + "\n"
 
     return Response(generate(), mimetype="application/x-ndjson")
@@ -2028,9 +2311,7 @@ def queue_add():
     a multi-file upload is a fair concurrency test rather than a head start for
     whichever file was parsed first.
     """
-    detail = request.form.get("detail", DEFAULT_DETAIL)
-    if detail not in DETAIL_PRESETS:
-        detail = DEFAULT_DETAIL
+    detail = resolve_detail(request.form.get("detail", DEFAULT_DETAIL))
 
     specs = []
     # Case ids may be repeated: cases=sol001&cases=sol002
@@ -2133,6 +2414,308 @@ def page_image(job_id: str, index: int):
         mimetype="image/png",
         headers={"Cache-Control": "private, max-age=3600"},
     )
+
+
+def _random_pools():
+    """What this endpoint can currently randomise over.
+
+    Cases need a *transcript* truth to score pass 1 and a *field* truth to score
+    pass 2; both are required here, because a round that can report neither
+    number is a round that only proves the request did not crash.
+    """
+    cases = [c["id"] for c in scoring.cases_index().values()
+             if fieldscore.has_truth(c["id"])]
+    return randomtest.pools(llama_status()["models"], cases)
+
+
+def _random_plan(body: dict) -> dict:
+    """Turn a request into a plan, or raise ValueError with something readable.
+
+    Two shapes, and they are opposite questions asked of the same runner:
+
+    - the random test -- every axis drawn, to find what breaks;
+    - `contest` -- the standouts ranking re-run, every axis pinned except the
+      model, to find out whether that ranking was real.
+
+    The run log goes in as `history` (which spreads the rounds over the documents
+    -- see `randomtest.case_order`) and, for a contest, as the ranking itself.
+    Both are read here rather than inside the planner so that it stays a pure
+    function of its arguments: a plan that read a file could not be reproduced
+    from a seed by anyone who did not have that file.
+    """
+    scope = body.get("scope") or randomtest.DEFAULT_SCOPE
+    # Exclusions narrow the pools before anything is planned, so they hold for a
+    # contest as well: "do not test that model" is a statement about the run, not
+    # about one button on the pane.
+    pools = randomtest.apply_exclusions(_random_pools(), body.get("exclude"), scope)
+    # A lock and an exclusion naming the same model is a contradiction, and the
+    # refusal it would otherwise get -- "not served here" -- would send someone
+    # looking at their model server.
+    excluded = {name for names in (body.get("exclude") or {}).values()
+                for name in (names or [])}
+    for axis, value in (body.get("lock") or {}).items():
+        if value and value in excluded:
+            raise ValueError(f"{value} is locked and excluded at the same time.")
+    if body.get("contest"):
+        # The whole standouts block goes in, not one ranking: the subject decides
+        # which of the four it is contested on, and a `pipeline` contest needs
+        # two of them at once. The scope picker does not apply here -- a contest's
+        # scope is implied by its subject, because a reader contest that also
+        # extracted would be scored partly on the other pass.
+        return randomtest.contest_plan(
+            standouts=runlog.standouts(), mode=extract_mode(),
+            subject=body.get("subject") or randomtest.DEFAULT_SUBJECT,
+            documents=body.get("documents"),
+            top=body.get("top", randomtest.CONTEST_TOP),
+            bottom=body.get("bottom", randomtest.CONTEST_BOTTOM),
+            seed=body.get("seed"), history=runlog.case_counts(), **pools)
+    return randomtest.plan(
+        rounds=body.get("rounds"), seed=body.get("seed"), scope=scope,
+        details=list(DETAIL_PRESETS), modes=["single", "agentic"],
+        lock=body.get("lock"), history=runlog.case_counts(), **pools)
+
+
+@app.get("/api/randomtest")
+@app.post("/api/randomtest")
+def random_test_plan():
+    """The plan a run *would* use, without running it.
+
+    Separate from the stream so the page can show what it is about to do -- and
+    so the CLI can learn the seed before it starts, which is what makes a run
+    repeatable by someone who was not watching it.
+
+    `scope` is how much of the pipeline each round runs -- `full`, `ocr` or
+    `fields` (see `randomtest.SCOPES`). One choice for the whole plan, because
+    the three answer different questions and a run that mixed them would report
+    a mean over two of them.
+    """
+    body = request.get_json(silent=True) or {}
+    try:
+        planned = _random_plan(body)
+    except ValueError as err:
+        return jsonify(error=str(err)), 400
+    # `history` rides along so the page can say what it is balancing against:
+    # a plan that gives one document three rounds and another none is correct
+    # when the log already holds the other one, and unreadable without it.
+    return jsonify({**planned, "pools": _random_pools(),
+                    "history": runlog.case_counts(),
+                    "scopes": list(randomtest.SCOPES),
+                    "max_rounds": randomtest.MAX_ROUNDS})
+
+
+@app.post("/api/randomtest/stream")
+def random_test_stream():
+    """Run a plan, one NDJSON event per round.
+
+    **Every round is a real run and is logged like one.** It switches the server
+    the same way the page does, reads a real page and extracts from it, so the
+    rows it writes are ordinary rows -- which is the point: a random test whose
+    results were kept out of the run log would be measuring a path nobody else
+    uses.
+
+    A `fields` round logs the `run_type=extract` row a fields-only run always
+    writes, and an `ocr` round logs a read whose pass-2 columns are blank -- both
+    correct, and both what the setting tables already know how to read.
+
+    The settings are left where the last round put them rather than restored.
+    That is deliberate and is stated on the page: restoring them would hide
+    which combination was in force when something broke, and the run log records
+    per row what actually ran anyway. A `fields` run can therefore leave a
+    text-only model selected, which the Workspace pane will refuse to read with
+    until something else is picked -- the same visible-state rule, one pane over.
+    """
+    body = request.get_json(silent=True) or {}
+    try:
+        planned = _random_plan(body)
+    except ValueError as err:
+        return jsonify(error=str(err)), 400
+
+    # Refused for the same reason switching server is: a batch half-read on one
+    # model and half on another would be logged as if one had done it, and this
+    # switches models between every round.
+    running = job_queue.stats()["counts"].get("running", 0)
+    if running:
+        return jsonify(error=f"{running} job(s) still running. Wait or cancel "
+                             "them before starting a random test."), 409
+
+    def generate():
+        started = time.perf_counter()
+        yield json.dumps({"event": "plan", **planned}) + "\n"
+        completed = failed = 0
+        for index, round_ in enumerate(planned["rounds"], 1):
+            began = time.perf_counter()
+            event = {"event": "round", "index": index,
+                     "total": len(planned["rounds"]), "plan": round_}
+            try:
+                event["result"] = randomtest.summarise_round(_run_round(round_))
+                completed += 1
+            except Exception as err:                # noqa: BLE001
+                # Reported as a failed round and the run continues. A random
+                # test that stopped at the first failure would find one problem
+                # per invocation, and finding several is the whole point.
+                event["error"] = f"{type(err).__name__}: {err}"[:300]
+                failed += 1
+            event["seconds"] = round(time.perf_counter() - began, 1)
+            yield json.dumps(event, ensure_ascii=False) + "\n"
+        yield json.dumps({"event": "done", "completed": completed,
+                          "failed": failed, "total": len(planned["rounds"]),
+                          "seconds": round(time.perf_counter() - started, 1),
+                          "seed": planned["seed"]}) + "\n"
+
+    return Response(generate(), mimetype="application/x-ndjson")
+
+
+def _run_round(round_: dict) -> dict:
+    """One random-test round: put the settings in force, then run its scope.
+
+    Three shapes, and the split is the reason the scopes exist at all:
+
+    - `full`   -- read the page, extract from what came back. Both passes, and a
+      field score that is therefore partly a measurement of pass 1.
+    - `ocr`    -- read and stop. `extract=False` rather than an extraction whose
+      result is thrown away: the run log would otherwise carry pass-2 columns
+      for a run that was not testing pass 2.
+    - `fields` -- no page, no image, no reader. The drawn model is selected as
+      the ONE model in force and extraction is left pointing at it, which is the
+      one-model setup `select_extract` never refuses -- so an OCR fine-tune can
+      be measured on the form here, exactly as the Fields pane measures it.
+
+    The pass-1 profile is set only where a page is read. Setting it on a
+    fields-only round would leave the process on a profile chosen for a model
+    that never looked at anything.
+    """
+    scope = round_.get("scope", randomtest.DEFAULT_SCOPE)
+    if scope == "fields":
+        backends.select(None, round_["extractor"], unload=True)
+        backends.select_extract("", unload=False)
+        set_extract_mode(round_["mode"])
+        return _extract_case(round_["case"], round_["mode"])
+
+    backends.select(None, round_["reader"], unload=True)
+    backends.select_extract(round_["extractor"], unload=False)
+    set_ocr_profile(round_["profile"])
+    if scope == "ocr":
+        return _read_case(round_["case"], round_["detail"], extract=False)
+    set_extract_mode(round_["mode"])
+    return _read_case(round_["case"], round_["detail"])
+
+
+def _unscorable_read(payload: dict) -> str:
+    """Why this read's fields must not be scored, or "" where they may be.
+
+    **Pass 2 can only map values pass 1 produced.** A field score taken over a
+    broken transcript is a measurement of the read wearing the extractor's name:
+    it marks down whatever extracted and lets whatever read get away with it.
+    That gap is measured -- dots.mocr agentic scored 32.7% over its own reads
+    against 46.8% over the ground truth -- and it is why every pass-2 baseline in
+    CLAUDE.md was taken from truth.
+
+    So the score is dropped, not the extraction: the run still exercises the real
+    path, still writes its row, and still reports coverage, grounding and
+    `other_fields`. What it does not do is put a correctness figure on the board
+    that belongs to the other pass.
+
+    Four ways a read disqualifies its own extraction, and the last is the
+    threshold the user set (0.75 since 2026-08-24):
+
+    - it looped, or was cut off at the token cap -- the transcript is a fragment
+      whatever it scored;
+    - it returned nothing at 0.0%;
+    - it scored under `MIN_READ_FOR_FIELDS`.
+
+    **None of these makes the run a failure.** A read that finished and scored
+    badly is a run, and it is counted and averaged as one -- `runlog._incomplete`
+    calls a loop or a crash a failure and nothing else. What is dropped here is
+    only the pass-2 figure taken over that transcript.
+
+    **A document with no transcript truth is never suppressed.** Nothing here can
+    tell a bad read from an unmeasured one, and refusing to score on a guess
+    would silently blank the figure for every document that has no `.md`.
+    """
+    if payload.get("looped"):
+        return "the read looped"
+    if payload.get("truncated"):
+        return "the read hit the token cap"
+    scored = (payload.get("truth") or {}).get("char_accuracy")
+    if scored is None:
+        return ""
+    if scored <= 0:
+        return "the read returned nothing"
+    if scored < MIN_READ_FOR_FIELDS:
+        return (f"the read scored {scored * 100:.1f}%, under "
+                f"{MIN_READ_FOR_FIELDS * 100:.0f}%")
+    return ""
+
+
+def _extract_case(case_id: str, mode: str) -> dict:
+    """Pass 2 alone, on a document's hand-written transcript.
+
+    The same thing the Fields pane's Run button does -- `_extract_input` with
+    `from_truth`, so the transcript is read from `solution/<id>.md` server-side
+    and pass 1 cannot have spoiled it. Every pass-2 measurement in CLAUDE.md was
+    taken this way, and it is the only shape here whose field score is about the
+    extractor and nothing else.
+
+    Wrapped in the same envelope a read produces (`extracted`, `status`) so
+    `randomtest.summarise_round` reads one shape whatever the round ran. There
+    is deliberately no `truth` key: nothing read a page, and a transcript score
+    of 100% against the text that was fed in would be a lie about what ran.
+    """
+    text, case, context = _extract_input({"case": case_id, "from_truth": True})
+    result = extract_fields(text, mode, case)
+    log_extract(result, None, context)
+    return {"extracted": result,
+            "status": "error" if result.get("error") else "ok"}
+
+
+def _read_case(case_id: str, detail: str, extract: bool = True) -> dict:
+    """One benchmark document, read and extracted, exactly as `/api/ocr` does it.
+
+    Shares `prepare_input`, `summarise`, `evaluate_if_known`, `extract_fields`
+    and `log_run` with the route rather than reimplementing them: a test path
+    that differs from the real one is a test of the test path.
+
+    `extract=False` is the read-only scope: pass 2 does not run and the row's
+    pass-2 columns stay blank, which is the honest record of a run that was
+    testing the read.
+    """
+    data, case = case_bytes(case_id)
+    source = describe_source(case["pdf"], data, "case")
+    pages, detail, job_id, case = prepare_input(data, detail, case, source)
+
+    started = time.perf_counter()
+    page_texts, all_stats = [], []
+    for page in pages:
+        stats = {}
+        page_texts.append(read_page(page, stats))
+        all_stats.append(stats)
+
+    if len(page_texts) > 1:
+        text = "\n\n".join(f"--- page {i} ---\n{t}"
+                            for i, t in enumerate(page_texts, 1) if t)
+    else:
+        text = page_texts[0]
+
+    payload = summarise(all_stats, detail, started, job_id)
+    payload["truth"] = evaluate_if_known(case, text)
+    if extract and EXTRACT and text.strip():
+        payload["extracted"] = extract_fields(text, case_id=case["id"] if case else None)
+        # A field score is only about the extractor when the extractor was given
+        # something to work with. Where the read failed or scored under
+        # MIN_READ_FOR_FIELDS, the extraction still ran and is still logged --
+        # what is dropped is the score, so the row carries coverage, grounding
+        # and `other_fields` and no correctness figure. See `_unscorable_read`.
+        why = _unscorable_read(payload)
+        if why:
+            payload["extracted"].pop("field_score", None)
+            payload["fields_unscored"] = why
+    log_run(payload, source)
+    # The same three-way status the run log derives, so a round that looped says
+    # so on the page instead of reading as a clean run with a low score. Set
+    # after `log_run`, which derives its own from the same two flags.
+    payload["status"] = ("looped" if payload.get("looped")
+                         else "truncated" if payload.get("truncated") else "ok")
+    return payload
 
 
 @app.post("/api/ocr")
@@ -2259,15 +2842,125 @@ def ocr_stream():
     return Response(generate(), mimetype="application/x-ndjson")
 
 
+def _runs_payload(limit: int, window=None, min_read_pct=None,
+                  include: dict = None, exclude: dict = None) -> dict:
+    """The run-log card's whole payload: rows, compiled tables, and the pickers.
+
+    **Built 2026-08-24 at the user's request** -- the tables were compiled under
+    two process settings (`SUMMARY_RUNS`, `MIN_READ_FOR_FIELDS`) and over every
+    row in the file, and neither could be moved without a restart or a hand-edit
+    of the CSV.
+
+    Three things are separated on purpose, and the separation is the whole point:
+
+    - **`runs` is the log and is never filtered.** The raw table shows what ran;
+      a row hidden there would be a row nobody could find to delete. The user's
+      rule in as many words: *raw data will we store no matter what -- e.g. OCR
+      gets 20%, passes to extract, but is not computed in the table if the
+      threshold is above 20%*.
+    - **`totals` is the tables, and is compiled over the FILTERED rows under the
+      requested view.** A filtered row is gone from it entirely -- not shown and
+      uncounted, but absent -- because *how does my best model do on sol001* is
+      not answerable any other way.
+    - **`facets` is built from the unfiltered log**, so a value that has just
+      been excluded is still in the picker to be put back.
+
+    Nothing here writes: a view is a way of reading the file, and the file is the
+    same afterwards. That is what makes any threshold safe to try.
+    """
+    everything = runlog.read(limit=10 ** 6)
+    matched = runlog.filter_rows(everything, include=include, exclude=exclude)
+    # A percentage on the wire and a fraction in the setting. Named for its unit
+    # because the log's own column is a percentage and the setting is not --
+    # `runlog._field_trusted` carries the same warning, and getting it wrong
+    # trusts everything or nothing.
+    floor = None if min_read_pct is None else max(0.0, min(min_read_pct, 100.0)) / 100.0
+    with runlog.view(window=window, min_read=floor):
+        totals = runlog.totals(matched, logged=len(everything))
+    return {
+        "runs": everything[:limit],
+        "columns": runlog.COLUMNS,
+        "totals": totals,
+        "facets": runlog.facets(everything),
+        # What the process would have used, so the page can say which of its
+        # controls is at the server's own default and which the reader moved.
+        "defaults": {"window": SUMMARY_RUNS,
+                     "min_read_pct": round(MIN_READ_FOR_FIELDS * 100, 1)},
+        "filters": {"include": include or {}, "exclude": exclude or {}},
+    }
+
+
+def _run_limit(value, fallback: int = 50) -> int:
+    try:
+        return max(1, min(int(value), 1000))
+    except (TypeError, ValueError):
+        return fallback
+
+
 @app.get("/api/runs")
 def runs_list():
-    """Recent rows of the run log, newest first."""
-    try:
-        limit = max(1, min(int(request.args.get("limit", 50)), 1000))
-    except ValueError:
-        limit = 50
-    return jsonify(runs=runlog.read(limit), columns=runlog.COLUMNS,
-                   totals=runlog.totals())
+    """Recent rows of the run log, newest first, under the process settings."""
+    return jsonify(**_runs_payload(_run_limit(request.args.get("limit", 50))))
+
+
+@app.post("/api/runs/query")
+def runs_query():
+    """The same payload, recompiled under a different window, floor and filter.
+
+    Body: `{limit, window, min_read_pct, include: {field: [...]},
+    exclude: {field: [...]}}`. Every key is optional and `null` means *use the
+    process setting* -- so a page moving one control does not silently reset the
+    other. `runlog.FILTER_FIELDS` names the fields; an unknown one is ignored
+    rather than refused, because a stale bookmark should return the table.
+
+    A POST because the body is a nested filter, not because it changes anything:
+    **this route writes nothing.**
+    """
+    body = request.get_json(silent=True) or {}
+
+    def number(name, cast):
+        value = body.get(name)
+        if value is None or value == "":
+            return None
+        try:
+            return cast(value)
+        except (TypeError, ValueError):
+            return None
+
+    include = body.get("include") if isinstance(body.get("include"), dict) else None
+    exclude = body.get("exclude") if isinstance(body.get("exclude"), dict) else None
+    window = number("window", int)
+    if window is not None:
+        window = max(0, min(window, 100000))
+    return jsonify(**_runs_payload(_run_limit(body.get("limit", 50)),
+                                   window=window,
+                                   min_read_pct=number("min_read_pct", float),
+                                   include=include, exclude=exclude))
+
+
+@app.post("/api/runs/delete")
+def runs_delete():
+    """Remove named rows from the log. The one destructive route on this card.
+
+    Body: `{rows: [{_row, timestamp, file}, ...]}` -- the keys the page received
+    from `/api/runs`. `_row` is the row's position in the file and is checked
+    against the timestamp and file found there before anything is removed, so a
+    page holding a stale list deletes nothing rather than deleting its neighbour
+    (`runlog.delete`).
+
+    **The rows are archived, not destroyed**: they are appended to
+    `logs/runs.deleted.csv` on the way out. A delete is how a reader takes a run
+    out of every table and every mean, which the filters cannot do permanently;
+    it is not a reason to lose the record that the run happened.
+    """
+    body = request.get_json(silent=True) or {}
+    rows = body.get("rows")
+    if not isinstance(rows, list) or not rows:
+        return jsonify(error="Name the rows to delete."), 400
+    outcome = runlog.delete(rows)
+    if outcome is None:
+        return jsonify(error="The run log could not be rewritten."), 500
+    return jsonify(**outcome)
 
 
 @app.get("/api/runs.csv")

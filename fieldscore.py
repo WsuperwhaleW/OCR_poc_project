@@ -669,6 +669,15 @@ def _tally(rows) -> dict:
     returned = counts["correct"] + counts["partial"] + counts["wrong"] + counts["spurious"]
     accuracy = counts["correct"] / expected if expected else None
     loose = (counts["correct"] + counts["partial"]) / expected if expected else None
+    # Half credit for a partial: the model found the right thing and took too
+    # much or too little of it, which is neither a hit nor a miss. Added
+    # 2026-08-20 at the user's request as the figure the setting comparison is
+    # ranked on. It sits BESIDE the strict and loose rates rather than replacing
+    # either -- those two are the documented pair whose *gap* is the diagnosis
+    # (over-capture against misreading), and collapsing them into one number
+    # would throw that away.
+    half = ((counts["correct"] + 0.5 * counts["partial"]) / expected
+            if expected else None)
     precision = counts["correct"] / returned if returned else None
     return {
         "counts": counts,
@@ -678,6 +687,7 @@ def _tally(rows) -> dict:
         "returned": returned,
         "accuracy": round(accuracy, 4) if accuracy is not None else None,
         "accuracy_loose": round(loose, 4) if loose is not None else None,
+        "accuracy_half": round(half, 4) if half is not None else None,
         "precision": round(precision, 4) if precision is not None else None,
     }
 
@@ -942,6 +952,7 @@ def format_report(result: dict, show: int = 40) -> list:
     counts = overall["counts"]
     lines.append(f"  field accuracy       {pct(overall['accuracy'])}"
                  f"   ({counts['correct']}/{overall['expected']} values"
+                 f", half {pct(overall['accuracy_half']).strip()}"
                  f", loose {pct(overall['accuracy_loose']).strip()})")
     lines.append(f"  field precision      {pct(overall['precision'])}"
                  f"   ({counts['correct']}/{overall['returned']} of what it filled)")
