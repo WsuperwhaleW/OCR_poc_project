@@ -290,6 +290,31 @@ def sampler_extras():
 # cycling.
 LOOP_TAIL_CHARS = 600
 LOOP_MIN_REPEATS = 4
+# A repeated line/block that carries no actual *word* -- blank table markup
+# (<tr><td></td></tr>), a pipe rule, a row of identical numbers or dashes -- is
+# "low information". A run of these is what a blank or uniform region of a big
+# gridded form looks like, and it is LEGITIMATE content: the count-based checks
+# (whole-line, block, counter) never flag a low-information unit at any repeat
+# count, because a blank table is a table, and the only thing separating a bounded
+# one from a runaway is total volume, not a per-row count. Volume is the density
+# backstop below. A word-bearing repeat (real prose, `ปี 1 ปี 2 ...`) is a loop at
+# LOOP_MIN_REPEATS as before -- real content never repeats verbatim.
+#
+# Shape-agnostic backstop for a structural runaway -- a long tail carrying almost
+# no word at all. This is the ONLY thing that flags a blank-row region, and it
+# does so on volume: once LOOP_DEAD_TAIL_CHARS characters have gone by with
+# <= LOOP_DEAD_MAX_LETTERS readable letters left after tags and backslash-escapes
+# are stripped, the model is emitting structure, not reading. This catches the two
+# real runaways measured here -- dots.mocr + sol003 (~185 escaped empty rows to the
+# cap) and typhoon + sol009 cold at `original` (~335 empty rows on one HTML line) --
+# while passing a bounded blank table. At ~29 chars per empty row the default
+# tolerates ~roughly LOOP_DEAD_TAIL_CHARS/29 rows before it trips; raise it (env
+# LOOP_DEAD_TAIL_CHARS) if a real form's blank grid is larger, at the cost of more
+# wasted tokens on a true runaway. It is deliberately letter-based, so a single
+# 2000-char stretch of pure digits with no label could false-trip; the fixtures
+# here all carry Thai labels in their rows, so none does.
+LOOP_DEAD_TAIL_CHARS = config.env_int("LOOP_DEAD_TAIL_CHARS", 3000, minimum=400)
+LOOP_DEAD_MAX_LETTERS = 5
 # Counter loops ("ปี 1 ปี 2 ปี 3 ...") never repeat exactly, so they are caught by
 # normalising digit runs first. That is only applied *within a single line* with a
 # short unit -- a table whose rows differ only by their numbers is legitimate, and
@@ -445,3 +470,67 @@ MIN_READ_FOR_FIELDS = config.env_float("MIN_READ_FOR_FIELDS", 0.75,
 # rule needs the whole history -- a document read thirty rows ago has been read,
 # and windowing that would send every round back to the same few fixtures.
 SUMMARY_RUNS = config.env_int("SUMMARY_RUNS", 50, minimum=0)
+
+# --------------------------------------------------------------------------
+# Classifying a read: where it ran, and whether it was warm
+# --------------------------------------------------------------------------
+#
+# The log records no hardware and no warm/cold flag -- the app talks HTTP to a
+# server it did not launch, so it cannot know how many layers are on the GPU or
+# whether the model was resident. Both are INFERRED from measurements already in
+# the row, which is a heuristic and is labelled as one everywhere it shows.
+#
+# **GPU vs CPU, from decode tok/s.** A GPU decodes this workload at tens of
+# tokens a second (an RTX 3060 laptop runs ~18-150 here depending on the model);
+# CPU-only llama.cpp on a 2-4B vision model is single digits. A read whose
+# `tokens_per_second` is at or above this is called `gpu`, below it `cpu`. The
+# default sits well under every GPU figure this log has ever held and well above
+# any plausible CPU one, so it separates the two without a run to tune it on --
+# but it is a proxy, not a probe, and a very small model on a slow GPU could dip
+# under it.
+GPU_MIN_TPS = config.env_float("GPU_MIN_TPS", 15.0, minimum=0.0)
+
+# **Warm vs cold, from prefill.** A warm read reuses state -- llama.cpp's KV
+# cache for a repeated prefix, or a model already resident -- and pays almost no
+# prefill (a cached page 2 measured 0.07 s against 33 s cold). A read whose
+# `prefill_seconds` is below this is `hot`, at or above it `cold`. It is an
+# absolute threshold rather than one relative to the setting, so it is a per-row
+# fact the filters can use: cold prefill is seconds even at the lowest Detail,
+# and a sub-second prefill is a cache hit whatever read it. A read with no
+# prefill figure (Ollama sometimes omits it, and re-extractions read no page) is
+# neither -- it is left blank, not guessed.
+WARM_PREFILL_MAX = config.env_float("WARM_PREFILL_MAX", 1.0, minimum=0.0)
+
+# **Outlier fence for the time analysis.** A cold model load or a runaway loop
+# puts a read's time far above the rest of its (model, document) cell -- 1489 s
+# against a 30 s median in this log -- and one such point drags a correlation or
+# a mean on its own. The analysis tab drops a read whose time is more than this
+# many median-absolute-deviations from its cell's median (a robust fence: MAD is
+# not itself moved by the outlier it is measuring). Applied only where a cell has
+# enough runs to have a shape (`ANALYSIS_OUTLIER_MIN_RUNS`); 0 disables it.
+ANALYSIS_OUTLIER_MADS = config.env_float("ANALYSIS_OUTLIER_MADS", 3.5, minimum=0.0)
+# **3, not 4, and only because the ratio test above backs it up.** At n=3 the
+# median is a real middle value and the fence works well -- it is what catches
+# [85, 87, 1028]. The danger of a small cell is that a tight cluster makes the
+# MAD tiny and ordinary jitter look extreme, and that is exactly what the ratio
+# floor refuses: [17.2, 17.4, 30] is 42 MADs out and only 1.7x, so it stays.
+# n=2 cannot be tested at all and is not a threshold choice -- the median sits
+# between the two points, so neither is far from it however different they are.
+# Those reads are counted and reported as untested rather than silently kept.
+ANALYSIS_OUTLIER_MIN_RUNS = config.env_int("ANALYSIS_OUTLIER_MIN_RUNS", 3, minimum=3)
+
+# **And a read must also be this many times off the median before it counts**,
+# which is what stops the MAD fence firing on ordinary jitter. MAD is
+# scale-free: a cell whose reads cluster tightly (17.2, 17.4, 17.5, 17.6) has a
+# MAD of ~0.2 s, so a perfectly ordinary 24 s read is "15 MADs out" and would be
+# dropped. Timing data does not work that way -- a few seconds of wall clock is
+# noise, not a finding, however reproducible the rest of the cell was.
+#
+# So both tests must pass: the shape test above, and this ratio. Measured here
+# it separates the two populations cleanly -- the genuine runaways are 8x to 16x
+# their cell median (1411 s against 141 s, 562 s against 35 s) while every false
+# positive was between 0.67x and 1.4x. Two-sided, because a read far FASTER than
+# its cell is equally not representative: a cached prefix or a truncated reply.
+ANALYSIS_OUTLIER_MIN_RATIO = config.env_float("ANALYSIS_OUTLIER_MIN_RATIO", 2.0,
+                                              minimum=1.0)
+

@@ -619,6 +619,29 @@ def read(limit: int = 100) -> list:
     return _read_all()[-limit:][::-1]
 
 
+def signature() -> dict:
+    """A cheap "has the log changed" token: the file's size and mtime.
+
+    **Two stat fields, not a parse.** The summary payload is ~90 KB and compiling
+    it walks every table; a page that wanted to notice new rows would otherwise
+    have to build all of that on a timer and throw it away unchanged nearly every
+    time. This is one `stat()` call.
+
+    It catches an append and also an in-place rewrite -- `update_extract` and
+    `delete` both move mtime -- so "changed" means every way this file changes.
+    Size alone would miss a rewrite that happened to preserve the length.
+
+    Zeroes for a log that does not exist yet, which is a real state (nothing has
+    been run) and not an error: the page shows an empty card either way, and the
+    signature starts moving as soon as the first row lands.
+    """
+    try:
+        st = LOG_PATH.stat()
+        return {"size": st.st_size, "mtime": round(st.st_mtime, 3)}
+    except OSError:
+        return {"size": 0, "mtime": 0}
+
+
 # --------------------------------------------------------------------------
 # Asking the log a narrower question
 #
@@ -666,6 +689,46 @@ def _pipeline(row: dict) -> str:
     return "both" if ran_pass_2 else "read"
 
 
+# --------------------------------------------------------------------------
+# Inferred marks: where a read ran, and whether it was warm
+#
+# **Neither is in the log, and neither can be** -- the app talks HTTP to a server
+# it did not launch, so it never knows the GPU layer count or whether the model
+# was resident. Both are read off measurements the row already carries, which is
+# a heuristic; the page labels them "inferred" wherever they show, and the
+# thresholds live in `settings` beside the reasoning. Both are blank -- not
+# guessed -- where the figure they need is missing, so they drop out of the
+# facets rather than offering an empty bucket to filter on.
+
+def run_hardware(row: dict) -> str:
+    """`gpu` or `cpu` from the decode rate, or `` where there is no rate.
+
+    A GPU decodes this workload at tens of tokens a second and a CPU at single
+    digits, so `tokens_per_second` separates them cleanly -- see
+    `settings.GPU_MIN_TPS`. A proxy, not a probe.
+    """
+    tps = _num(row.get("tokens_per_second"), None)
+    if tps is None or tps <= 0:
+        return ""
+    return "gpu" if tps >= settings.GPU_MIN_TPS else "cpu"
+
+
+def run_start(row: dict) -> str:
+    """`hot` or `cold` from prefill, or `` where there is no prefill.
+
+    A warm read reuses cached state and pays almost no prefill; a cold one pays
+    it in full. Absolute threshold, so it is a per-row fact -- see
+    `settings.WARM_PREFILL_MAX`. A re-extraction read no page and has no prefill,
+    so it is neither.
+    """
+    if (row.get("run_type") or "ocr") == "extract":
+        return ""
+    prefill = _num(row.get("prefill_seconds"), None)
+    if prefill is None:
+        return ""
+    return "hot" if prefill < settings.WARM_PREFILL_MAX else "cold"
+
+
 FILTER_FIELDS = {
     "case": lambda r: r.get("case") or r.get("file") or "",
     # **The READING model, and blank where nothing was read.** A
@@ -710,6 +773,12 @@ FILTER_FIELDS = {
     "status": lambda r: r.get("status") or "",
     "run_type": lambda r: r.get("run_type") or "ocr",
     "source": lambda r: r.get("source") or "",
+    # Inferred, not recorded -- see `run_hardware` / `run_start`. Filterable like
+    # any other field, so "GPU cold reads only" is one pair of chips, and blank
+    # (no rate / no prefill) drops out of the facets rather than offering an
+    # empty bucket.
+    "hardware": run_hardware,
+    "start": run_start,
 }
 
 
@@ -982,6 +1051,26 @@ DETAIL_RENAMES = {"max": "original", "accurate": "medium", "balanced": "low"}
 # exist and cannot be run again. Naming one is the confidently-wrong label this
 # project refuses everywhere else.
 RETIRED_DETAILS = frozenset({"fast"})
+
+# The presets in PIXEL-BUDGET order, cheapest first -- `low` (2 MP), `medium`
+# (4 MP), `original` (uncapped). Derived from `settings.DETAIL_PRESETS` rather
+# than written out, so a preset added or re-budgeted there cannot leave a
+# hard-coded list here disagreeing with it.
+#
+# **The order is what makes a Detail sweep readable**: Detail is the one
+# category on this card that is ORDERED, so a table of it read left to right is
+# "more pixels ->" and the trend in the row is the finding. Alphabetical would
+# put `original` first and `medium` last, which reads as noise. `0` means
+# uncapped and is therefore the LARGEST budget, not the smallest -- sorted with
+# infinity, or `original` would sort to the cheap end and invert every trend.
+def _detail_budget(name: str) -> float:
+    budget = settings.DETAIL_PRESETS.get(name)
+    if budget is None:
+        return float("inf")
+    return float("inf") if budget == 0 else float(budget)
+
+
+DETAIL_ORDER = sorted(settings.DETAIL_PRESETS, key=_detail_budget)
 
 
 def detail_of(row: dict) -> str:
@@ -2047,6 +2136,554 @@ def errors(rows: list = None) -> dict:
     return out
 
 
+def single_source_failures(rows: list) -> set:
+    """`_row` ids of the failing runs a single-source error row is made of.
+
+    **The set the toggle removes from every table but `errors` itself** (built
+    2026-08-24 at the user's request: *the single-source toggle excludes from the
+    other tables too, and the error table highlights the single source instead*).
+
+    A failing run is single-source when, among a model's windowed failures, every
+    one came from the same document -- or, among a document's windowed failures,
+    every one came from the same model. That is exactly the `sources == 1` an
+    `errors` row carries, computed the same way over the same window
+    (`recent_by` reads the view context), so the runs named here are precisely
+    the rows that table highlights. Whole runs, keyed by `_row`: a run has one
+    identity in the file, and dropping it from a mean is the honest reading of
+    "exclude this error".
+
+    Both passes and both axes are unioned. A run that is single-source for its
+    read is dropped whichever table would have counted it -- a looped read has no
+    honest extraction figure to keep either.
+    """
+    ids = set()
+    for pass_, model_of in (("read", FILTER_FIELDS["model"]),
+                            ("extract", FILTER_FIELDS["extract_model"])):
+        mine = [r for r in rows if model_of(r)]
+        for key_of, blame_of in ((model_of, _document_key),
+                                 (_document_key, model_of)):
+            windowed = recent_by(mine, key_of)
+            groups = {}
+            for row in windowed:
+                key = key_of(row)
+                if key:
+                    groups.setdefault(key, []).append(row)
+            for runs in groups.values():
+                bad = [r for r in runs if _error_kind(r, pass_)]
+                if bad and len({blame_of(r) or "" for r in bad}) == 1:
+                    ids.update(r.get(ROW_INDEX) for r in bad
+                               if r.get(ROW_INDEX) is not None)
+    return ids
+
+
+def drop_single_source(rows: list) -> list:
+    """`rows` without the failing runs a single-source error row is made of.
+
+    See `single_source_failures`. Only the FAILING runs of a single-source group
+    are removed -- a model's clean runs stay, so a model that loops on sol004
+    five times and reads everything else is still ranked on everything else,
+    minus the one pairing that was dragging it. That is the whole point of the
+    toggle: a document dominated by one bad model is not a hard document, and its
+    other runs should still speak for it.
+    """
+    ids = single_source_failures(rows)
+    return [r for r in rows if r.get(ROW_INDEX) not in ids] if ids else rows
+
+
+# --------------------------------------------------------------------------
+# Do time, document and accuracy depend on each other? (2026-08-24, at the
+# user's request: *a tab for time vs file type vs accuracy analysis -- compare
+# whether these 3 vars depend on each other or not; it depends on the model and
+# doc*).
+#
+# **Pass 1 only.** Every figure here is a read: `char_accuracy` is the transcript
+# score, `seconds` is the wall clock for the read, and the document is the
+# ground-truth case. Extraction has its own tables; folding it in would mix two
+# quantities scored on different things, the same reason `by_ocr` and
+# `by_extract` are separate.
+#
+# **The correlation and share-of-spread figures are gone** (2026-08-25, at the
+# user's request: the two bar blocks at the top of the tab were removed as
+# nonsense, and `_pearson`/`_eta_squared` went with them). What ships is grouped
+# figures over the same reads -- the model x document grid, the Detail tables,
+# time per model, the per-document and per-model spreads -- which is the material
+# an r or an eta-squared was computed from, read directly. Do not reinstate them
+# without being asked.
+#
+# Nothing here is a claim of cause. A document that takes longer is mostly a
+# longer document -- page count and file size, whatever reads it -- and the page
+# says so.
+
+# Reads only, scored, timed, and finished -- the three variables all have to be
+# present for a row to be a point in any of these, and a looped read's accuracy
+# is not a measurement (the same rule the tables apply). A 0% read that FINISHED
+# is kept: it is a real measurement and its point is a real one.
+def _analysis_reads(rows: list) -> list:
+    return [r for r in rows
+            if (r.get("run_type") or "ocr") != "extract"
+            and (r.get("case") or "")
+            and not _blank(r.get("char_accuracy"))
+            and not _blank(r.get("seconds"))
+            and not _incomplete(r)
+            and _current_detail(r)]
+
+
+def _median(values: list):
+    """The middle value, or None over nothing. Robust where a mean is not."""
+    s = sorted(v for v in values if v is not None)
+    n = len(s)
+    if not n:
+        return None
+    m = n // 2
+    return s[m] if n % 2 else (s[m - 1] + s[m]) / 2
+
+
+def _flag_time_outliers(points: list) -> int:
+    """Mark reads whose time is a robust outlier within their (model, case) cell.
+
+    Sets `p["outlier"]` on every point and returns how many were flagged. A cold
+    model load or a runaway loop puts one read's time far above the rest of its
+    cell -- 1489 s against a 30 s median -- and a single such point moves a
+    correlation or a mean by itself. The fence is median +/- k x MAD (scaled by
+    1.4826 so k is in standard deviations for normal data): MAD is not itself
+    dragged by the outlier it is measuring, which a standard deviation would be.
+
+    **The cell is (model, document, DETAIL) and the Detail is not optional.**
+    Pooling the presets was the first shape and it is wrong in a way that biases
+    the very table it feeds: raising Detail legitimately costs x1.5 to x2.6 of
+    the wall clock, so a cell mixing presets has a bimodal time distribution, and
+    a median dragged towards whichever preset was run most flags the others as
+    outliers. Measured here, `dots.mocr x sol008 x original` is [114.2, 136.8] --
+    two reads agreeing with each other -- and pooling put them against a 24.8 s
+    median made mostly of `low` reads, so both were dropped. Removing the
+    expensive `original` reads would then have made `original` look cheaper than
+    it is, in the Detail-cost table, silently.
+
+    Only within a cell, and only where the cell has enough runs to have a shape
+    (`ANALYSIS_OUTLIER_MIN_RUNS`) -- a two-run cell has no middle to be far from,
+    and an inherently long document is not an outlier for taking long. The finer
+    cell means fewer reads are tested at all, which is the right way to be wrong:
+    an untested read stays in, and this fence should never drop a legitimate one
+    to catch a stray. `MADS` 0 disables it, which is how to see the analysis with
+    every point in.
+    """
+    for p in points:
+        p["outlier"] = False
+        # Set on every point that was actually TESTED, not only on the ones that
+        # failed the test: a read sitting comfortably inside its cell should be
+        # able to say so, and a cell too small to test says that instead.
+        p["cell_median"] = None
+        p["cell_mads"] = None
+        p["cell_ratio"] = None
+    mads = settings.ANALYSIS_OUTLIER_MADS
+    ratio = settings.ANALYSIS_OUTLIER_MIN_RATIO
+    if not mads:
+        return 0
+    groups = {}
+    for p in points:
+        if p["seconds"] is not None:
+            groups.setdefault((p["model"], p["case"], p["detail"]), []).append(p)
+    flagged = 0
+    for pts in groups.values():
+        if len(pts) < settings.ANALYSIS_OUTLIER_MIN_RUNS:
+            continue
+        med = _median([p["seconds"] for p in pts])
+        mad = _median([abs(p["seconds"] - med) for p in pts])
+        if not mad or mad <= 0:      # more than half the cell share one time
+            continue
+        for p in pts:
+            # How far out, in the fence's own units, so an excluded read can be
+            # shown with the evidence against it rather than merely named. A
+            # reader has to be able to see that 1519 s against a 97 s median is
+            # not a borderline call -- and to spot it when one is.
+            p["cell_median"] = round(med, 2)
+            p["cell_mads"] = round(abs(p["seconds"] - med) / (1.4826 * mad), 1)
+            # The ratio the second test uses, kept so an excluded read can show
+            # both reasons it was dropped and not just the scale-free one.
+            p["cell_ratio"] = round(p["seconds"] / med, 2) if med else None
+            # BOTH tests, never either: the MAD fence finds the shape and the
+            # ratio insists the difference is big enough to be worth calling an
+            # outlier at all. See `ANALYSIS_OUTLIER_MIN_RATIO` -- a tightly
+            # clustered cell makes the first test fire on a few seconds of
+            # ordinary wall-clock jitter.
+            far = abs(p["seconds"] - med) > mads * 1.4826 * mad
+            big = (ratio and med > 0
+                   and (p["seconds"] >= med * ratio or p["seconds"] <= med / ratio))
+            if far and big:
+                p["outlier"] = True
+                flagged += 1
+    return flagged
+
+
+def ocr_analysis(rows: list = None) -> dict:
+    """Whether read time, document and transcript accuracy depend on each other.
+
+    Pass 1 only. See the block above for what each figure means and why a ratio
+    is not a cause. Windowed per (model, document) cell, the same
+    recent-runs-of-that-thing rule the other tables use, so the analysis
+    describes how the current builds behave rather than the whole history.
+
+    **Time outliers are excluded before anything is computed** (2026-08-24, at
+    the user's request), per cell and robustly -- see `_flag_time_outliers`. A
+    cold-load or looped read's time is not representative of the setting, and one
+    of them drags a correlation on its own. The count removed is reported, and
+    the excluded reads are still in the raw table and the CSV.
+
+    **Each read is marked GPU or CPU and hot or cold** (`run_hardware` /
+    `run_start`), both inferred and both filterable card-wide. The breakdown
+    counts and a per-mark split of the accuracy-vs-time correlation are returned,
+    because the whole reason to mark them is the question *does the relationship
+    hold on a GPU / when cold as well* -- a link that only appears cold is the
+    cache talking, not the model.
+
+    The grid of cells is the raw material the correlations summarise: one cell
+    per model x document, with the mean time and mean accuracy in it. Reading
+    across a row (one model, every document) is accuracy-vs-document by eye;
+    reading down a column (one document, every model) is accuracy-vs-model.
+    """
+    rows = _for_summary(read(limit=10 ** 6) if rows is None else rows)
+    reads = _analysis_reads(rows)
+    reads = recent_by(reads, lambda r: (r.get("model") or "", r.get("case") or ""))
+
+    # One point per read: the two numbers, the two categories, and the two marks.
+    points = []
+    for row in reads:
+        points.append({
+            "model": row.get("model") or "",
+            "case": row.get("case") or "",
+            "seconds": _num(row.get("seconds"), None),
+            "char": _num(row.get("char_accuracy"), None),
+            "hardware": run_hardware(row),
+            "start": run_start(row),
+            # Already folded to this build's spelling by `_for_summary`, and
+            # `_analysis_reads` has dropped the retired presets -- so this is one
+            # of the three current names, and the ORDER of them is meaningful
+            # (see `DETAIL_ORDER`), which is what makes a Detail sweep readable.
+            "detail": detail_of(row),
+        })
+
+    excluded = _flag_time_outliers(points)
+    kept = [p for p in points if not p["outlier"]]
+    # Reads in a cell too small for the fence to test -- `cell_mads` is None on
+    # exactly those. **Reported rather than quietly kept**: a cell of two reads
+    # cannot be tested at all (the median sits between them, so neither is far
+    # from it however different they are), and this log has a 25-minute read
+    # surviving for that reason. A fence that says how much it could not check is
+    # the only kind anyone should trust a mean behind.
+    # Zero when the fence is switched off entirely: nothing was tested then, and
+    # reporting every read as "not tested" would raise an alarm about a rule the
+    # reader has deliberately disabled. The count means *the fence ran and could
+    # not check these*, which is only a claim worth making while it is running.
+    untested = (sum(1 for p in kept if p["cell_mads"] is None)
+                if settings.ANALYSIS_OUTLIER_MADS else 0)
+    # **The excluded reads are LISTED, not just counted** (2026-08-24, at the
+    # user's request: *shows them too*). An exclusion nobody can inspect is
+    # indistinguishable from a bug, and this fence is the one thing on the tab
+    # that silently changes every figure -- so each dropped read comes back with
+    # the evidence against it: its time, its cell's median, and how many MADs out
+    # it was. Worst first, because the question is always "what got dropped and
+    # was that right".
+    dropped = sorted((p for p in points if p["outlier"]),
+                     key=lambda p: -(p["cell_mads"] or 0))
+
+    models = sorted({p["model"] for p in kept if p["model"]})
+    cases = sorted({p["case"] for p in kept if p["case"]})
+
+    # model x document cells, each its own mean and spread, over the kept reads.
+    cell_groups = {}
+    for p in kept:
+        cell_groups.setdefault((p["model"], p["case"]), []).append(p)
+    cells = []
+    for (model, case), pts in cell_groups.items():
+        char_mean, char_sd = _stats([p["char"] for p in pts])
+        time_mean, time_sd = _stats([p["seconds"] for p in pts])
+        # The cell's own dominant hardware and warmth, for the grid marks. Where
+        # a cell mixes the two -- some reads cold, some warm -- the mark is the
+        # majority and the tooltip carries the split.
+        cells.append({"model": model, "case": case, "runs": len(pts),
+                      "char_mean": char_mean, "char_sd": char_sd,
+                      "time_mean": time_mean, "time_sd": time_sd,
+                      "hardware": _dominant(pts, "hardware"),
+                      "start": _dominant(pts, "start")})
+
+    # Counts by mark, blank folded into `unknown` so they still sum to the total.
+    def marks(field):
+        out = {}
+        for p in kept:
+            out[p[field] or "unknown"] = out.get(p[field] or "unknown", 0) + 1
+        return out
+
+    return {
+        "points": len(kept),
+        "runs": len(kept),
+        "excluded": excluded,           # time outliers dropped before computing
+        "untested": untested,           # kept, but in a cell too small to test
+        "total": len(points),           # kept + excluded
+        "documents": len(cases),
+        "models": models,
+        "cases": cases,
+        "cells": cells,
+        "hardware_counts": marks("hardware"),
+        "start_counts": marks("start"),
+        "outliers": [{"model": p["model"], "case": p["case"], "detail": p["detail"],
+                      "seconds": p["seconds"], "char": p["char"],
+                      "hardware": p["hardware"], "start": p["start"],
+                      "cell_median": p["cell_median"], "cell_mads": p["cell_mads"],
+                      "cell_ratio": p["cell_ratio"]}
+                     for p in dropped],
+        # What each mark is worth, so the two inferred marks are SHOWN rather
+        # than only used to split a correlation. A degenerate split -- one bucket
+        # holding everything -- is legible here as a single row, which is the
+        # honest picture of a log measured on one machine.
+        "mark_stats": _mark_stats(kept),
+        # Per document and per model, both numbers, with the range beside the
+        # spread. See `_figure` for why min/max are there at all.
+        "case_stats": _entity_stats(kept, "case"),
+        "model_stats": _entity_stats(kept, "model"),
+        # The thresholds these marks and the fence were drawn at. Returned rather
+        # than repeated in the template for the reason the read floor already is:
+        # a page quoting a figure the process is not running describes a build
+        # nobody has, and all three are env-tunable.
+        "gpu_min_tps": settings.GPU_MIN_TPS,
+        "warm_prefill_max": settings.WARM_PREFILL_MAX,
+        "outlier_mads": settings.ANALYSIS_OUTLIER_MADS,
+        "outlier_ratio": settings.ANALYSIS_OUTLIER_MIN_RATIO,
+        **_detail_tables(kept),
+    }
+
+
+def _figure(points: list, pick) -> dict:
+    """One number over a set of reads: mean, spread, range, and what fed it.
+
+    `runs` is beside every mean for the reason the whole card follows -- a mean
+    with no count is not a figure anyone can read, and these cells are often one
+    or two runs deep.
+
+    **`min` and `max` are here because a mean and an SD do not describe a small
+    sample** (2026-08-24, at the user's request: *show average sd min max in each
+    case/model*). An SD over three reads is barely a statistic, and the range is
+    the honest way to say how far apart they actually were -- it is a fact about
+    the reads rather than an estimate from them. The two disagree usefully: a
+    tight SD with a wide range is one stray read, which is exactly the shape the
+    outlier fence is looking for one level down.
+
+    `runs` and `measured` differ where a read carries no value for this
+    particular number, so a mean is never read against a count that did not feed
+    it.
+    """
+    values = [v for v in (pick(p) for p in points) if v is not None]
+    mean, sd = _stats(values)
+    return {"mean": mean, "sd": sd, "runs": len(points), "measured": len(values),
+            "min": round(min(values), 2) if values else None,
+            "max": round(max(values), 2) if values else None}
+
+
+def _detail_tables(points: list) -> dict:
+    """The three Detail and model questions, asked as tables rather than ratios.
+
+    **Built 2026-08-24 at the user's request** -- *time vs detail for each doc*,
+    *time in each model*, *detail vs accuracy*. All three are grouped means and
+    none is a correlation, because the thing being varied is a preset with three
+    values: an r over three points says nothing, while the three means read
+    against each other say the whole of it.
+
+    | key | rows x columns | the question |
+    |---|---|---|
+    | `time_detail_by_case` | document x Detail | what does raising Detail COST on this page |
+    | `acc_detail` | Detail | what does raising Detail BUY -- and it is not monotone |
+    | `model_time` | model | which model is expensive, at what accuracy |
+
+    **The first two are the two halves of one trade and are deliberately not one
+    table.** Detail is the project's headline accuracy/cost knob and the standing
+    finding is that it is NOT monotone -- past ~4 MP the extra visual tokens
+    degrade this model, so `original` can cost more and score less than `medium`.
+    A single table of "Detail vs both" hides that by inviting a diagonal reading;
+    two tables, cost and benefit, make the non-monotone case visible as a row
+    that rises in one and falls in the other.
+
+    **Per document for the cost, pooled for the benefit.** Time scales with the
+    page -- a long document takes longer at every preset -- so a pooled time
+    column would mostly rank the fixtures by length and say nothing about the
+    preset. Accuracy has no such offset, so pooling it is what makes the trend
+    legible; `by_case` under it keeps the per-document reading available.
+
+    `model_time` carries accuracy beside the clock for the reason `by_case`'s
+    speed column does: fast is a claim about cost alone, and the cheapest model
+    here is not the one to run.
+    """
+    def group(pts, field):
+        out = {}
+        for p in pts:
+            if p.get(field):
+                out.setdefault(p[field], []).append(p)
+        return out
+
+    def secs(p):
+        return p["seconds"]
+
+    def char(p):
+        return p["char"]
+
+    # Every Detail actually present, in pixel-budget order -- the columns of the
+    # two Detail tables, so both read left to right as "more pixels ->" and a
+    # preset nothing ran at is simply not a column.
+    present = {p["detail"] for p in points if p.get("detail")}
+    details = [d for d in DETAIL_ORDER if d in present]
+
+    # 1. Time vs Detail, per document. One row per document, one cell per preset.
+    time_detail = []
+    for case, pts in sorted(group(points, "case").items()):
+        cells = {d: _figure(g, secs) for d, g in group(pts, "detail").items()}
+        # The cheapest and dearest preset this document actually ran at, so the
+        # row can say what raising Detail cost it without the reader diffing two
+        # cells by eye. None where it only ran at one preset -- there is no
+        # "raising" to price.
+        ran = [d for d in details if d in cells and cells[d]["mean"] is not None]
+        factor = None
+        if len(ran) > 1:
+            lo, hi = cells[ran[0]]["mean"], cells[ran[-1]]["mean"]
+            factor = round(hi / lo, 2) if lo else None
+        time_detail.append({"case": case, "runs": len(pts), "cells": cells,
+                            "from": ran[0] if len(ran) > 1 else None,
+                            "to": ran[-1] if len(ran) > 1 else None,
+                            "factor": factor})
+
+    # 2. Detail vs accuracy, pooled, with the per-document split under it.
+    acc_detail = []
+    for d in details:
+        pts = [p for p in points if p.get("detail") == d]
+        acc_detail.append({
+            "detail": d,
+            "accuracy": _figure(pts, char),
+            "seconds": _figure(pts, secs),
+            "documents": len({p["case"] for p in pts}),
+            # Per document, so a preset that looks better only because it was
+            # run on the easy fixtures is visible as such. This is the same
+            # confound `_per_case` exists for, and the same fix.
+            "by_case": {c: _figure(g, char)
+                        for c, g in sorted(group(pts, "case").items())},
+            # **And per model, which is where the confound actually lives.**
+            # The models have not been run equally at every preset, so a pooled
+            # Detail trend is partly a ranking of whichever models were run most
+            # at each -- measured here, the pooled figures fall steadily with
+            # more pixels while the main OCR model is FLAT across all three and
+            # two others collapse only at `original`. That is the same mixing
+            # effect the accuracy-vs-time split exists for, and it is why the
+            # page draws this as a model x Detail grid rather than three numbers.
+            "by_model": {m: _figure(g, char)
+                         for m, g in sorted(group(pts, "model").items())},
+        })
+
+    # 3. Time per model, with accuracy beside it.
+    model_time = []
+    for model, pts in sorted(group(points, "model").items()):
+        model_time.append({
+            "model": model,
+            "seconds": _figure(pts, secs),
+            "accuracy": _figure(pts, char),
+            "documents": len({p["case"] for p in pts}),
+            # Per document again: models have not all been run on the same
+            # fixtures, and a model that only ever read the short ones would
+            # otherwise look fast.
+            "by_case": {c: _figure(g, secs)
+                        for c, g in sorted(group(pts, "case").items())},
+        })
+
+    return {"details": details,
+            "time_detail_by_case": time_detail,
+            "acc_detail": acc_detail,
+            "model_time": model_time}
+
+
+def _mark_counts(points: list, field: str) -> dict:
+    """How a set of reads splits across one mark, blanks folded into `unknown`."""
+    out = {}
+    for p in points:
+        key = p.get(field) or "unknown"
+        out[key] = out.get(key, 0) + 1
+    return out
+
+
+def _entity_stats(points: list, field: str) -> list:
+    """Per document or per model: both numbers, with mean, SD and range.
+
+    **Built 2026-08-24 at the user's request** -- *show average sd min max in
+    each case/model*. Everything here could be read off the model x document
+    grid by eye; what a row adds is the POOLED figure for one document across
+    every model that read it, or for one model across every document it read,
+    which the grid deliberately does not compute.
+
+    The marks ride along so the two inferred ones are visible per row rather than
+    only in aggregate -- a document every model read cold is a different thing
+    from one with a warm read in the mean, and the composition strip cannot say
+    which document.
+    """
+    groups = {}
+    for p in points:
+        if p.get(field):
+            groups.setdefault(p[field], []).append(p)
+    out = []
+    for key, pts in sorted(groups.items()):
+        out.append({
+            "key": key,
+            "runs": len(pts),
+            "accuracy": _figure(pts, lambda p: p["char"]),
+            "seconds": _figure(pts, lambda p: p["seconds"]),
+            # How many of the OTHER axis this row is made of -- documents for a
+            # model, models for a document. A mean over one of them is not a
+            # general claim, and this is the only thing on the row that says so.
+            "others": len({p["model" if field == "case" else "case"] for p in pts}),
+            "details": sorted({p["detail"] for p in pts if p.get("detail")},
+                              key=lambda d: DETAIL_ORDER.index(d)
+                              if d in DETAIL_ORDER else 99),
+            "hardware": _mark_counts(pts, "hardware"),
+            "start": _mark_counts(pts, "start"),
+        })
+    return out
+
+
+def _mark_stats(points: list) -> list:
+    """What each inferred mark is worth: accuracy and time, meaned per bucket.
+
+    One row per value of each mark (`GPU`, `CPU`, `cold`, `hot`), so the marks
+    are shown as figures rather than only used to split a correlation.
+
+    **A one-row mark is the expected case on a single-machine log and is still
+    worth printing**: it says outright that this mark explains nothing here,
+    which is a finding a reader would otherwise have to infer from a missing
+    table. Blanks are excluded -- `unknown` is not a bucket anything can be
+    concluded about.
+    """
+    out = []
+    for kind in ("hardware", "start"):
+        groups = {}
+        for p in points:
+            if p.get(kind):
+                groups.setdefault(p[kind], []).append(p)
+        for value, pts in sorted(groups.items()):
+            out.append({
+                "kind": kind,
+                "key": value,
+                "runs": len(pts),
+                "accuracy": _figure(pts, lambda p: p["char"]),
+                "seconds": _figure(pts, lambda p: p["seconds"]),
+                "models": len({p["model"] for p in pts}),
+                "documents": len({p["case"] for p in pts}),
+            })
+    return out
+
+
+def _dominant(points: list, field: str) -> str:
+    """The most common non-blank value of `field` in `points`, or `` if none."""
+    counts = {}
+    for p in points:
+        if p.get(field):
+            counts[p[field]] = counts.get(p[field], 0) + 1
+    if not counts:
+        return ""
+    return max(counts, key=lambda k: (counts[k], k))
+
+
 def totals(rows: list = None, logged: int = None) -> dict:
     """Headline counts and every compiled table, over the most recent rows.
 
@@ -2141,6 +2778,10 @@ def totals(rows: list = None, logged: int = None) -> dict:
         # themselves and says whether a row's errors came from one contributor
         # or from many. See `errors`.
         "errors": errors(everything),
+        # And the same reads asked whether their three variables move together:
+        # does accuracy depend on time, on the document, or on the model? Pass 1
+        # only, because the question is about reading a page. See `ocr_analysis`.
+        "ocr_analysis": ocr_analysis(everything),
         "seconds": round(seconds, 1),
         "tokens": tokens,
         # What this is a summary OF. `logged` is the file; `window` is how many

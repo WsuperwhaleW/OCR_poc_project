@@ -306,6 +306,11 @@
             color: var(--muted); }
   .lv-num input { width: 88px; padding: 5px 7px; font-size: .82rem; }
   .lv-num .u { color: var(--muted); }
+  /* A view-affecting checkbox, aligned to the bottom of the bar like the numeric
+     controls (the labels above them push those down, so it needs the padding). */
+  .lv-check { display: inline-flex; align-items: center; gap: 6px; font-size: .78rem;
+              color: var(--muted); cursor: pointer; padding-bottom: 5px; }
+  .lv-check input { cursor: pointer; }
   .lv-bar .sp { flex: 1; }
   #lvNote, #rawSel { font-size: .76rem; }
   button.ghost-sm.danger { border-color: var(--danger); color: var(--danger); }
@@ -373,9 +378,20 @@
      block is a different question, and side by side is what makes "worst at
      reading" and "worst at extracting" legible as different findings about the
      same model. */
-  #standoutSum { margin-top: 16px; }
+  #standoutSum, #errorSum { margin-top: 16px; }
   .st-grid { display: grid; gap: 12px; margin-top: 6px;
              grid-template-columns: repeat(auto-fit, minmax(310px, 1fr)); }
+  /* The error table reuses the standouts box shell. A single-source row -- every
+     failure from one contributor on the other axis -- is HIGHLIGHTED, not hidden:
+     it is the finding, dominated by one pairing rather than a hard model or
+     document. The toggle it drives removes those failures from every OTHER table
+     on the card, but leaves them on display here where they are pointed at. */
+  #errorSum tr.err-dom td { background: rgba(255,107,107,.10); }
+  #errorSum tr.err-dom td:first-child { box-shadow: inset 3px 0 0 var(--danger); }
+  .err-dom-tag { font-size: .64rem; text-transform: uppercase; letter-spacing: .05em;
+    border-radius: 6px; padding: 1px 6px; background: rgba(255,107,107,.14);
+    color: var(--danger); }
+  .err-head { font-size: .82rem; font-weight: 600; margin: 14px 0 2px; }
   .st-box { border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px; }
   .st-box h4 { margin: 0 0 6px; font-size: .8rem; font-weight: 600; }
   .st-line { font-size: .78rem; margin: 3px 0; line-height: 1.5; }
@@ -386,6 +402,73 @@
   .st-box table.queue { min-width: 0; margin-top: 8px; font-size: .76rem; }
   .st-box table.queue th, .st-box table.queue td { padding: 4px 6px; }
   .st-thin { color: var(--muted); font-size: .7rem; }
+  /* ---- Time x Doc x Accuracy analysis ---- */
+  #analysisSum { margin-top: 16px; }
+  #analysisSum .cs-title { font-size: .78rem; text-transform: uppercase;
+    letter-spacing: .07em; color: var(--muted); }
+  .an-none { color: var(--muted); }
+  /* The model x document heatmap. Accuracy tints the cell; the time sits under
+     it in small type. Sticky first column and header so a wide grid stays
+     legible while it scrolls. */
+  .an-grid { overflow-x: auto; margin-top: 8px;
+    border: 1px solid var(--border); border-radius: 10px; }
+  table.an-heat { border-collapse: collapse; font-size: .74rem; width: 100%; }
+  table.an-heat th, table.an-heat td { padding: 6px 8px; text-align: center;
+    white-space: nowrap; border-bottom: 1px solid var(--border);
+    border-right: 1px solid var(--border); }
+  table.an-heat th { color: var(--muted); font-weight: 500; text-transform: uppercase;
+    letter-spacing: .04em; font-size: .68rem; position: sticky; top: 0;
+    background: var(--card); z-index: 1; }
+  table.an-heat td.an-rowh, table.an-heat th.an-corner {
+    position: sticky; left: 0; background: var(--card); text-align: left;
+    font-weight: 600; z-index: 1; }
+  table.an-heat th.an-corner { z-index: 2; }
+  table.an-heat td.an-cell { font-variant-numeric: tabular-nums; font-weight: 700; }
+  table.an-heat td.an-cell .an-t { display: block; font-weight: 400;
+    color: var(--muted); font-size: .68rem; margin-top: 1px; }
+  table.an-heat td.an-empty { color: var(--muted); font-weight: 400; }
+  table.an-heat tr.an-mean-row td, table.an-heat td.an-mean-col {
+    background: var(--accent-soft); font-style: italic; }
+  /* The composition strip at the top of the tab: how many reads survived the
+     outlier fence, and how they split across the two inferred marks. It
+     qualifies every figure below, so it sits before them. */
+  .an-marks { display: flex; flex-wrap: wrap; align-items: center; gap: 6px;
+    margin: 10px 0 2px; font-size: .74rem; }
+  .an-marks-label { color: var(--muted); font-weight: 600; }
+  .an-marks-sep { width: 1px; height: 14px; background: var(--border); margin: 0 2px; }
+  .an-chip { border: 1px solid var(--border); border-radius: 999px;
+    padding: 2px 9px; color: var(--muted); }
+  .an-chip b { color: var(--fg); font-variant-numeric: tabular-nums; }
+  .an-chip-un { opacity: .65; }
+  .an-chip-out { border-color: rgba(217,164,65,.5); color: #d9a441; }
+  /* "inferred", wherever a mark is shown. These two are read off measurements,
+     not reported by the server, and a reader must never take them for recorded
+     fact -- the same discipline as marking a re-extraction's setting. */
+  .an-inf { font-size: .64rem; text-transform: uppercase; letter-spacing: .05em;
+    border-radius: 6px; padding: 1px 6px; margin-left: 4px;
+    background: rgba(124,92,255,.14); color: #9b83ff; }
+  .an-h { font-size: .82rem; font-weight: 600; margin: 20px 0 2px; }
+  #analysisSum table.queue { min-width: 640px; margin-top: 6px; }
+  #analysisSum .an-t { display: block; font-weight: 400; color: var(--muted);
+    font-size: .68rem; margin-top: 1px; }
+  #analysisSum .an-t2 { display: block; font-weight: 400; font-size: .74rem; }
+  /* The card refreshed itself because rows arrived from elsewhere. A brief mark
+     rather than a banner: a table changing silently under the reader is
+     indistinguishable from having misread it, but a permanent notice about the
+     normal case is noise. */
+  /* What the tab is for, stated before the tables. The tables below can be
+     misread as a model ranking and there are three better places for that on
+     this card, so the scope is said out loud rather than left implicit. */
+  .an-scope { font-size: .78rem; line-height: 1.6; margin: 10px 0 2px;
+    padding: 8px 11px; border-left: 3px solid var(--accent);
+    background: var(--accent-soft); border-radius: 0 8px 8px 0; }
+  .an-scope-not { color: var(--danger); font-weight: 600; }
+  @keyframes lvFresh { from { background: var(--accent-soft); } to { background: transparent; } }
+  .lv-fresh { animation: lvFresh 1.6s ease-out; border-radius: 6px; }
+  @media (prefers-reduced-motion: reduce) { .lv-fresh { animation: none; } }
+  /* The range, one step fainter than the count above it: it is the widest claim
+     in the cell and the least precise, so it must not read as the headline. */
+  #analysisSum .an-rng { opacity: .8; font-variant-numeric: tabular-nums; }
   #caseSum table.queue { min-width: 820px; margin-top: 6px; }
   #ocrSum table.queue, #extractSum table.queue { min-width: 720px; margin-top: 6px; }
   /* The model that extracts the most fields correctly, marked in the table
@@ -394,7 +477,7 @@
      much or over how many documents. */
   #ocrSum tr.ms-top td, #extractSum tr.ms-top td { background: var(--accent-soft); }
   #caseSum .cs-title, #ocrSum .cs-title, #extractSum .cs-title,
-  #standoutSum .cs-title { font-size: .78rem; text-transform: uppercase;
+  #standoutSum .cs-title, #errorSum .cs-title { font-size: .78rem; text-transform: uppercase;
     letter-spacing: .07em; color: var(--muted); }
   .cs-val { font-weight: 700; font-variant-numeric: tabular-nums; }
   .cs-of { color: var(--muted); font-weight: 400; font-size: .74rem; }
@@ -406,7 +489,13 @@
     border-bottom: 1px solid var(--border); padding: 7px 9px; text-align: left; }
   table.queue th { color: var(--muted); font-weight: 500; font-size: .76rem;
     text-transform: uppercase; letter-spacing: .05em; }
-  table.queue td.n { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  /* A figure column is CENTRED, and its header with it (2026-08-25, at the
+     user's request: the numbers read as off because a right-aligned column sat
+     under a left-aligned heading). `lvHead` already tags the header `n`, so one
+     rule keeps the two ends of a column on the same axis. The first column is
+     the row's name and stays left, which is what a reader scans down. */
+  table.queue td.n, table.queue th.n { text-align: center; }
+  table.queue td.n { font-variant-numeric: tabular-nums; white-space: nowrap; }
   table.queue tr.q-running { background: var(--accent-soft); }
   table.queue tr.q-failed { background: rgba(255,107,107,.07); }
   table.queue tr.q-cancelled { opacity: .5; }
@@ -1198,6 +1287,17 @@ name. 0 scores every extraction whatever the read did.">Read floor
 document each table covers — not a slice off the end of the file. 0 is the whole log.">Runs averaged
         <span><input id="lvWindow" type="number" min="0" step="5"><span class="u"> each</span></span>
       </label>
+      <!-- Applies on its own change (like Pipeline), not via Apply: it is a
+           run-level narrowing, and it changes every table except the raw log and
+           the Errors one. Lives here rather than on the Errors tab because it
+           governs the whole card; the Errors tab is only where the rows it drops
+           are pointed at, highlighted. -->
+      <label class="lv-check" title="drop failures that came entirely from one
+pairing — a document all of whose failures are one model, or a model all of whose
+failures are one document — from every table except the Errors one, where they stay
+highlighted. Dominated by a pairing, not itself hard.">
+        <input type="checkbox" id="errDomToggle"> Drop single-source failures
+      </label>
       <button id="lvApply" class="ghost-sm">Apply</button>
       <button id="lvReset" class="ghost-sm">Reset</button>
       <span id="lvNote" class="muted-inline"></span>
@@ -1215,6 +1315,8 @@ document each table covers — not a slice off the end of the file. 0 is the who
       <button data-panel="ocr">Best reading</button>
       <button data-panel="extract">Best extraction</button>
       <button data-panel="case">Per document</button>
+      <button data-panel="analysis">Time × Doc × Accuracy</button>
+      <button data-panel="error">Errors</button>
       <button data-panel="raw">Raw data</button>
     </div>
 
@@ -1236,6 +1338,18 @@ document each table covers — not a slice off the end of the file. 0 is the who
     <!-- One row per ground-truth document: the best transcript, the best field
          score, and the quickest complete run, each with the setting behind it. -->
     <div class="lv-panel" id="panelCase" hidden><div id="caseSum"></div></div>
+    <!-- Pass 1 only: whether read time, the document and transcript accuracy
+         depend on each other, and whether that dependence is a property of the
+         model or of the document. A correlation for the two continuous numbers
+         (accuracy vs time) split by model and by document, correlation ratios
+         for the categorical pairings, and the model x document grid the numbers
+         summarise. From `runlog.ocr_analysis`. -->
+    <div class="lv-panel" id="panelAnalysis" hidden><div id="analysisSum"></div></div>
+    <!-- What is FAILING, ranked on the failures rather than folded into an
+         accuracy score: the most-error model, the most-error document, and the
+         most-error pairing of the two -- the last of which neither of the first
+         two can be read off. From `runlog.errors`. -->
+    <div class="lv-panel" id="panelError" hidden><div id="errorSum"></div></div>
     <!-- The log itself. Unfiltered on purpose, and the only place a run can be
          deleted from -- which is the one operation on this card that changes the
          file. -->
@@ -2826,6 +2940,7 @@ const lvNote = document.getElementById('lvNote');
 const lvFilters = document.getElementById('lvFilters');
 const lvPipe = document.getElementById('lvPipe');
 const lvEmpty = document.getElementById('lvEmpty');
+const errDomToggle = document.getElementById('errDomToggle');
 const logTabs = document.getElementById('logTabs');
 const rawSel = document.getElementById('rawSel');
 const rawNone = document.getElementById('rawNone');
@@ -3241,6 +3356,149 @@ function paintStandouts(t) {
     + '</p>';
 }
 
+/* ---------- errors: what is failing, ranked three ways ---------- */
+/* From `runlog.errors`. The setting tables print a failure RATE per setting and
+   the standouts fold failures into a score with accuracy; neither answers *what
+   is failing, and is it one model, one document, or one pairing*. Ranked on the
+   count -- "most error" -- with the rate beside it and every column sortable.
+
+   A document that fails nine times all under one model is an artefact of that
+   pairing, not a hard document, and it would sit at the top of the by-document
+   list looking like one. `sources` is how many distinct contributors on the
+   OTHER axis produced a row's failures, so `sources === 1` is exactly "dominated
+   by one". Those rows are HIGHLIGHTED here, never hidden -- they are the finding.
+
+   The toggle does not touch this table. It asks the server to recompile every
+   OTHER table on the card -- the ranking, standouts, best reading, best
+   extraction and per-document -- with those single-source failures removed, so a
+   bad pairing stops skewing the tables that answer "which model, which document".
+   That is a round-trip (`runlog.drop_single_source`), not a client filter, which
+   is why it goes through `refreshRuns`. */
+let errDropSingle = false;
+
+const ERR_LABEL = {
+  error: 'crashed', cancelled: 'cancelled', truncated: 'hit the token cap',
+  looped: 'read looped', extract_loop: 'extraction cycled'
+};
+function errKindsNote(kinds) {
+  return Object.keys(kinds || {}).sort((a, b) => kinds[b] - kinds[a])
+    .map(k => kinds[k] + ' ' + (ERR_LABEL[k] || k)).join(', ');
+}
+// "Dominated by one": every failure this row has came from a single contributor
+// on the other axis. Only meaningful where a row HAS another axis -- the pairs
+// list carries no concentration, so it is never asked.
+function errDominated(e) { return e.sources === 1; }
+
+function errBox(id, title, entries, opts) {
+  opts = opts || {};
+  if (!entries || !entries.length) return '';
+  const rows = entries;   // never filtered here -- single-source rows are the finding
+  const cols = [
+    {key: 'name', label: 'Name', value: e => e.key,
+     cell: e => '<b title="' + esc(e.key) + '">'
+       + esc(opts.pair ? e.parts.map(csModel).join(' · ') : csModel(e.key)) + '</b>'
+       + '<span class="cs-set">' + e.runs + ' run' + (e.runs === 1 ? '' : 's') + '</span>'},
+    {key: 'failed', label: 'Errors', n: true, value: e => e.failed,
+     title: 'runs that failed — a crash, cancellation, truncation, a read loop '
+          + 'or a cycled extraction',
+     cell: e => (e.failed
+         ? '<span class="cs-val" style="color:var(--danger)">' + e.failed + '</span>'
+           + ' <span class="cs-of">of ' + e.runs
+           + (e.failure_rate !== null ? ' · ' + Number(e.failure_rate).toFixed(0) + '%' : '')
+           + '</span>'
+         : '<span class="cs-none">0 of ' + e.runs + '</span>')
+       + (e.failed ? '<span class="cs-set">' + esc(errKindsNote(e.kinds)) + '</span>' : '')}
+  ];
+  if (opts.blame) {
+    cols.push({key: 'top', label: 'Mostly from', value: e => e.top ? e.top.share : -1,
+      title: 'the single ' + opts.blame + ' behind most of this row’s failures, '
+           + 'and how many ' + opts.blame + 's produced any — one is dominated, '
+           + 'not difficult',
+      cell: e => e.top
+        ? '<b title="' + esc(e.top.key) + '">' + esc(csModel(e.top.key)) + '</b>'
+          + ' <span class="cs-of">' + e.top.failed + ' (' + Number(e.top.share).toFixed(0)
+          + '%)</span><span class="cs-set">' + e.sources + ' ' + opts.blame
+          + (e.sources === 1 ? '' : 's')
+          + (errDominated(e) ? ' · <span class="err-dom-tag">single source</span>' : '')
+          + '</span>'
+        : '<span class="cs-none">—</span>'});
+  }
+  if (opts.empty) {
+    cols.push({key: 'empty', label: 'Empty', n: true, value: e => e.empty || 0,
+      title: 'runs that finished at HTTP 200 and returned an empty transcript — '
+           + 'not a failure, a different problem, and fixed in a different place',
+      cell: e => e.empty
+        ? '<span class="cs-val">' + e.empty + '</span>'
+        : '<span class="cs-none">0</span>'});
+  }
+  cols.push({key: 'share', label: 'Share', n: true, value: e => e.share === null ? -1 : e.share,
+    title: 'this row’s share of all the failures in this list',
+    cell: e => e.share === null || e.share === undefined
+      ? '<span class="cs-none">—</span>'
+      : '<span class="cs-val">' + Number(e.share).toFixed(0) + '%</span>'});
+  return '<div class="st-box"><h4>' + title + '</h4>'
+    + lvTable(id, rows, cols, {
+        sort: {key: 'failed', dir: 'desc'},
+        rowClass: e => (opts.blame && errDominated(e)) ? ' class="err-dom"' : ''
+      })
+    + '</div>';
+}
+
+function errPass(prefix, data, isRead) {
+  if (!data) return '';
+  const head = '<p class="st-line" style="margin-bottom:2px">'
+    + (data.failed
+        ? '<b style="color:var(--danger)">' + data.failed + '</b> of ' + data.runs
+          + ' runs failed'
+          + (Object.keys(data.kinds || {}).length ? ' — ' + esc(errKindsNote(data.kinds)) : '')
+        : '<span class="cs-none">no failures in ' + data.runs + ' runs</span>')
+    + '</p>';
+  // Models blame the document behind their failures; documents blame the model.
+  // Pairs carry no concentration -- they are already one of each.
+  const boxes = [
+    errBox(prefix + '-model', 'By model', data.models, {blame: 'document', empty: isRead}),
+    errBox(prefix + '-case', 'By document', data.cases, {blame: 'model', empty: isRead}),
+    errBox(prefix + '-pair', 'By pairing', data.pairs, {pair: true})
+  ].filter(Boolean).join('');
+  return head + '<div class="st-grid">' + boxes + '</div>';
+}
+
+function paintErrors(t) {
+  const e = t.errors;
+  if (!e || (!e.read && !e.extract)) { errorSum.innerHTML = ''; return; }
+  errorSum.innerHTML = '<span class="cs-title">Errors — what is failing'
+      + windowNote('row') + '</span>'
+    + (e.read ? '<p class="err-head" style="margin-top:12px">Reading</p>'
+        + errPass('err-r', e.read, true) : '')
+    + (e.extract ? '<p class="err-head">Extracting</p>'
+        + errPass('err-x', e.extract, false) : '')
+    + '<p class="note"><b>Ranked on the failure COUNT</b>, not the rate — “most '
+    + 'error” is what a count answers, and one run that failed is 100% and rarely '
+    + 'the thing to look at first. Every column sorts, so either reading is a '
+    + 'click away. <b>By pairing</b> is the row the other two cannot be read off: '
+    + 'a document at the top of <i>by document</i> and a model at the top of <i>by '
+    + 'model</i> may be one pairing failing repeatedly or two separate problems, '
+    + 'and only the pair says which. <b>Mostly from</b> names the single '
+    + 'contributor on the other axis behind most of a row’s failures; a row whose '
+    + 'every failure came from one contributor is a <i>single source</i> — '
+    + 'dominated by that pairing rather than a hard model or document, and it is '
+    + '<b>highlighted</b> above. <b>Drop single-source failures</b> (in the '
+    + 'controls at the top of the card) leaves those rows here and removes their '
+    + 'failures from every <b>other</b> table, so a bad pairing stops skewing '
+    + 'which model and which document look worst. A run counts under every pass it '
+    + 'performed, so a two-model run is a failure of whichever pass broke.</p>';
+}
+
+// The toggle asks the server to recompile the other tables without the
+// single-source failures, so it goes through `refreshRuns` rather than a local
+// repaint. It lives in the general control bar (static markup), so a direct
+// listener is enough -- unlike the numeric controls, a checkbox applies on its
+// own change rather than waiting for Apply, the same as the Pipeline segment.
+errDomToggle.addEventListener('change', () => {
+  errDropSingle = errDomToggle.checked;
+  refreshRuns();
+});
+
 function paintCaseSummary(t) {
   const cases = t.by_case || {};
   const ids = Object.keys(cases).sort();
@@ -3309,6 +3567,600 @@ function paintCaseSummary(t) {
     + 'finish</b> — looped, truncated, cancelled or errored — is counted in the '
     + 'read count and can hold no record; a run that finished and read badly is '
     + 'not a failure and is eligible for all three. Any column here sorts.</p>';
+}
+
+
+/* ---------- time x document x accuracy ---------- */
+/* Pass 1 only. Figures over reads, grouped: the model x document grid, the two
+   Detail tables, time per model, the per-document and per-model spreads, what
+   each inferred mark is worth, and the reads the outlier fence dropped.
+
+   **There are no correlation or share-of-spread bars, removed 2026-08-25 at the
+   user's request.** They summarised the same reads the grid and the tables show
+   directly, in two abstractions (Pearson r, eta-squared) that a reader has to
+   translate back into reads before they mean anything -- and on a log measured
+   on one machine the splits behind them were degenerate. Do not put them back
+   without being asked; the grouped figures below are the material they were
+   computed from.
+
+   From `runlog.ocr_analysis`; the eligibility rules live there. */
+
+// A hex colour with an alpha, for the heatmap tint. accColour returns hex.
+function hexA(hex, a) {
+  const n = parseInt(String(hex).slice(1), 16);
+  return 'rgba(' + ((n >> 16) & 255) + ',' + ((n >> 8) & 255) + ',' + (n & 255) + ',' + a + ')';
+}
+// Strength as a colour: four neutral tiers, used by the Detail cost table and
+// the outlier list. Neutral on purpose -- a strong effect is neither good nor
+// bad, only strong.
+function anTierColour(t) {
+  return ['#5b6270', '#d9a441', '#4c8dff', '#7c5cff'][t] || '#5b6270';
+}
+// Read time for a heatmap cell: minutes past 100s, so a grid of 300s reads is
+// legible without a column of five-digit second counts.
+function anSecs(s) {
+  if (s === null || s === undefined) return '—';
+  return s >= 100 ? (s / 60).toFixed(1) + 'm' : s.toFixed(0) + 's';
+}
+function anMeanOf(vals) {
+  const v = vals.filter(x => x !== null && x !== undefined);
+  return v.length ? v.reduce((a, b) => a + b, 0) / v.length : null;
+}
+
+function paintAnalysis(t) {
+  const a = t.ocr_analysis;
+  if (!a || !a.points) {
+    analysisSum.innerHTML = '<span class="cs-title">Time × document × accuracy'
+      + windowNote('cell') + '</span>'
+      + '<p class="note">Nothing to analyse yet. This needs pass-1 reads that '
+      + 'finished, are timed, and have a ground-truth document to score against '
+      + '&mdash; drop a benchmark file, or run the random test in <code>ocr</code> '
+      + 'scope, and the reads will appear here.</p>';
+    return;
+  }
+  analysisSum.innerHTML = '<span class="cs-title">Time × document × accuracy '
+      + '— pass 1' + windowNote('cell') + '</span>'
+    + pipeNote('ocr')
+    + anScopeNote()
+    + anMarksBar(a)
+    + anHeat(a)
+    + anDetailAcc(a)
+    + anTimeDetail(a)
+    + anModelTime(a)
+    + anSpread(a)
+    + anMarkStats(a)
+    + anOutliers(a)
+    + '<p class="note">Each cell in the grid is one model on one document, '
+    + 'over that pairing’s recent reads; the tint is accuracy and the small figure '
+    + 'is time. Reading across a row is how one model fared on every document, '
+    + 'down a column is how every model fared on one. <b>Nothing here is a claim '
+    + 'of cause</b> — a document that takes longer is mostly a longer document. '
+    + '<b>Time outliers are excluded</b> before any figure here is computed: a '
+    + 'read whose time is more than ' + esc(String(a.outlier_mads || '')) + '×MAD '
+    + 'from the middle of its own model×document cell — a cold model load or a '
+    + 'runaway — is dropped, because one of them moves a mean on its own. '
+    + 'They are still in the raw table and the CSV. '
+    + '<b>GPU/CPU and cold/hot are inferred</b>, not recorded: the app talks HTTP '
+    + 'to a server it did not launch, so hardware is read off the decode rate '
+    + '(≥' + esc(String(a.gpu_min_tps || '')) + ' tok/s reads as GPU) and warmth '
+    + 'off prefill (under ' + esc(String(a.warm_prefill_max || '')) + 's reads as '
+    + 'hot, i.e. a cache hit or a resident model). Both are proxies and both are '
+    + 'filterable from the chips at the top of the card.</p>';
+}
+
+/* ---- what this tab is for, and what it is not ----
+   Set 2026-08-25 at the user's request: *this page focuses on comparing the
+   detail, time and accuracy across the same model and the same doc -- model
+   accuracy comparison is already on another page*.
+
+   Said at the top rather than left implicit, because the tables below CAN be
+   misread as a model ranking and there are three better places for that on this
+   very card.
+
+   **The per-(model x document) table that held both still was removed the same
+   day**, at the user's request: *I only want detail vs accuracy and time vs
+   detail*. So every table here pools one axis -- Detail-vs-accuracy pools a
+   model's documents, Detail-vs-time pools a document's models -- and the notes
+   under them say which. */
+function anScopeNote() {
+  return '<p class="an-scope">What the <b>Detail</b> preset buys and what it '
+    + 'costs: accuracy per model across the presets, time per document across '
+    + 'them. <span class="an-scope-not">Not a model ranking</span> — for which '
+    + 'model reads best, use <b>Full rank</b>, <b>Best reading</b> or <b>Per '
+    + 'document</b>, which compare like with like. Pass 1 only.</p>';
+}
+/* The two inferred marks as readable words. `unknown` is a real third state --
+   a run with no decode rate or no prefill figure -- and is never folded into
+   either bucket: guessing is the one thing these marks must not do. */
+const AN_MARK = {
+  hardware: {gpu: 'GPU', cpu: 'CPU', unknown: 'unrecorded'},
+  start: {cold: 'cold start', hot: 'warm start', unknown: 'unrecorded'}
+};
+function anMarkLabel(kind, key) {
+  return (AN_MARK[kind] || {})[key] || key;
+}
+/* The composition of what is being analysed, above the tables: how many reads
+   survived the outlier fence, and how they split across the two marks. It is
+   here rather than in the note because it QUALIFIES every figure below -- an
+   all-cold, all-GPU log means the marks explain nothing and the splits will be
+   degenerate, and that should be visible before the tables, not after them. */
+function anMarksBar(a) {
+  const chip = (kind, counts) => Object.keys(counts || {})
+    .sort((x, y) => counts[y] - counts[x])
+    .map(k => '<span class="an-chip' + (k === 'unknown' ? ' an-chip-un' : '') + '">'
+      + esc(anMarkLabel(kind, k)) + ' <b>' + counts[k] + '</b></span>').join('');
+  const hw = chip('hardware', a.hardware_counts);
+  const st = chip('start', a.start_counts);
+  if (!hw && !st && !a.excluded) return '';
+  return '<div class="an-marks">'
+    + '<span class="an-marks-label">' + a.points + ' read(s) analysed</span>'
+    + (a.excluded
+        ? '<span class="an-chip an-chip-out" title="reads whose time was a robust '
+          + 'outlier within their own model×document×Detail cell — a cold load or '
+          + 'a runaway. Dropped from every figure on this tab; still in the log. '
+          + 'Listed in full at the bottom of this tab.">'
+          + a.excluded + ' outlier(s) excluded</span>'
+        : '')
+    // What the fence could NOT check. A cell of two reads cannot be tested at
+    // all -- the median sits between them, so neither is far from it however
+    // different they are -- and this log has a 25-minute read surviving for
+    // exactly that reason. A fence that hid how much it skipped would be worse
+    // than none, because the mean behind it would look guarded when it is not.
+    + (a.untested
+        ? '<span class="an-chip an-chip-un" title="reads in a cell with too few '
+          + 'runs at that model, document and Detail for the outlier test to '
+          + 'mean anything — a two-read cell cannot be tested at all. They are '
+          + 'kept, so a runaway in one of them is still in the figures above. '
+          + 'Repeat a setting to make its cell testable.">'
+          + a.untested + ' not tested</span>'
+        : '')
+    + (hw ? '<span class="an-marks-sep"></span>' + hw : '')
+    + (st ? '<span class="an-marks-sep"></span>' + st : '')
+    + '<span class="an-inf" title="GPU/CPU is inferred from the decode rate and '
+    + 'cold/warm from prefill — neither is recorded by the server">inferred</span>'
+    + '</div>';
+}
+
+/* A mean with its run count under it, the shape every figure on this card uses:
+   a mean with no denominator is not a figure anyone can read, and these cells
+   are often one or two runs deep. */
+function anFig(f, fmt) {
+  if (!f || f.mean === null || f.mean === undefined)
+    return '<span class="an-none">—</span>';
+  return '<b>' + fmt(f.mean) + '</b><span class="an-t">n=' + f.runs
+    + (f.sd !== null && f.sd !== undefined ? ' ±' + Number(f.sd).toFixed(1) : '')
+    + '</span>' + anRange(f, fmt);
+}
+/* The range under the mean. **Printed even when it is a single run**, as a
+   dash — a cell that cannot show a spread should say so rather than leave the
+   reader wondering whether it was omitted or was zero. Suppressed only when min
+   and max are the same value, where a range says nothing the mean did not. */
+function anRange(f, fmt) {
+  if (!f || f.min === null || f.min === undefined) return '';
+  if (f.min === f.max) return '';
+  return '<span class="an-t an-rng">' + fmt(f.min) + '–' + fmt(f.max) + '</span>';
+}
+/* Mean, SD and range as four cells of one row, for the spread tables. Kept apart
+   from `anFig` because a table whose whole point is the four figures should put
+   them in four sortable columns, not stack them in one. */
+function anStatCols(prefix, label, pick, fmt, colour) {
+  const val = (f, k) => (f && f[k] !== null && f[k] !== undefined) ? f[k] : null;
+  return [
+    {key: prefix + '_mean', label: label + ' avg', n: true,
+     title: 'mean ' + label.toLowerCase() + ' over this row’s reads',
+     value: e => val(pick(e), 'mean'),
+     cell: e => {
+       const f = pick(e), m = val(f, 'mean');
+       if (m === null) return '<span class="an-none">—</span>';
+       return '<b' + (colour ? ' style="color:' + accColour(m / 100) + '"' : '')
+         + '>' + fmt(m) + '</b><span class="an-t">n=' + f.measured + '</span>';
+     }},
+    {key: prefix + '_sd', label: label + ' SD', n: true,
+     title: 'sample standard deviation — blank where the row has a single read, '
+          + 'because one read has no spread (which is not the same as zero)',
+     value: e => val(pick(e), 'sd'),
+     cell: e => {
+       const s = val(pick(e), 'sd');
+       return s === null ? '<span class="an-none">—</span>'
+         : '<b>' + fmt(s) + '</b>';
+     }},
+    {key: prefix + '_min', label: label + ' min', n: true,
+     value: e => val(pick(e), 'min'),
+     cell: e => {
+       const v = val(pick(e), 'min');
+       return v === null ? '<span class="an-none">—</span>' : fmt(v);
+     }},
+    {key: prefix + '_max', label: label + ' max', n: true,
+     value: e => val(pick(e), 'max'),
+     cell: e => {
+       const v = val(pick(e), 'max');
+       return v === null ? '<span class="an-none">—</span>' : fmt(v);
+     }}
+  ];
+}
+/* The two inferred marks as a compact cell: the split where a row mixes them,
+   the single value where it does not. `unknown` is shown rather than dropped --
+   a row half of whose reads carry no rate is not a row whose hardware is known. */
+function anMarkCell(counts, kind) {
+  const keys = Object.keys(counts || {});
+  if (!keys.length) return '<span class="an-none">—</span>';
+  if (keys.length === 1) return esc(anMarkLabel(kind, keys[0]));
+  return keys.sort((a, b) => counts[b] - counts[a])
+    .map(k => esc(anMarkLabel(kind, k)) + '&nbsp;<b>' + counts[k] + '</b>')
+    .join('<span class="an-t"></span>');
+}
+function anPct(v) { return Number(v).toFixed(1) + '%'; }
+
+/* ---- Spread per document and per model ----
+   Mean, SD, min and max for both numbers, at the user's request. Everything
+   here could be read off the model × document grid by eye; what a row adds is
+   the POOLED figure for one document across every model that read it (or one
+   model across every document), which the grid deliberately does not compute.
+
+   **The range is not decoration beside the SD.** An SD over three reads is
+   barely a statistic, while min and max are facts about the reads rather than
+   estimates from them, and the two disagree usefully: a tight SD with a wide
+   range is one stray read. The marks ride along per row so the inferred pair is
+   visible where it might vary, not only in aggregate. */
+function anSpread(a) {
+  const build = (id, rows, label, hint) => {
+    if (!rows || !rows.length) return '';
+    const cols = [
+      {key: 'name', label: label, value: e => csModel(e.key),
+       cell: e => '<b title="' + esc(e.key) + '">' + esc(csModel(e.key)) + '</b>'
+         + '<span class="cs-set">' + e.runs + ' read(s) · ' + e.others + ' '
+         + (label === 'Document' ? 'model' : 'document') + (e.others === 1 ? '' : 's')
+         + (e.details && e.details.length
+             ? ' · ' + e.details.map(esc).join(', ') : '') + '</span>'}
+    ]
+      .concat(anStatCols('acc', 'Accuracy', e => e.accuracy, anPct, true))
+      .concat(anStatCols('t', 'Time', e => e.seconds, anSecs))
+      .concat([
+        {key: 'marks', label: 'Run type', sortable: false,
+         title: 'GPU/CPU and cold/warm, both inferred — a split is shown where '
+              + 'this row mixes them',
+         cell: e => '<span class="an-t2">' + anMarkCell(e.hardware, 'hardware')
+           + '</span><span class="an-t">' + anMarkCell(e.start, 'start') + '</span>'}
+      ]);
+    return '<p class="an-h">' + hint + '</p>'
+      + lvTable(id, rows, cols, {sort: {key: 'name', dir: 'asc'}});
+  };
+  const doc = build('an-sp-case', a.case_stats, 'Document',
+    'Spread per document — every model that read it');
+  const mod = build('an-sp-model', a.model_stats, 'Model',
+    'Spread per model — every document it read');
+  if (!doc && !mod) return '';
+  return doc + mod
+    + '<p class="note"><b>Average, SD, min and max</b> for both numbers. The SD '
+    + 'is a sample one and is blank on a single read — one read has no spread, '
+    + 'which is not the same claim as a spread of zero. <b>Read the range beside '
+    + 'the SD, not instead of it</b>: min and max are facts about the reads while '
+    + 'an SD over three of them is barely a statistic, and a tight SD with a wide '
+    + 'range is one stray read. A document row pools every model that read it and '
+    + 'a model row pools every document it read, so the other axis’s count is on '
+    + 'every row — a mean over one model, or one document, is not a general '
+    + 'claim. Outliers are already excluded. Every column sorts.</p>';
+}
+
+/* ---- What each inferred mark is worth ----
+   The marks shown as figures rather than only used to split a correlation. A
+   single-row mark is the expected case on a one-machine log and is still worth
+   printing: it says outright that the mark explains nothing here, which a
+   missing table would leave the reader to infer. */
+function anMarkStats(a) {
+  const rows = a.mark_stats || [];
+  if (!rows.length) return '';
+  const cols = [
+    {key: 'mark', label: 'Mark', value: e => e.kind + e.key,
+     cell: e => '<b>' + esc(anMarkLabel(e.kind, e.key)) + '</b>'
+       + '<span class="cs-set">' + (e.kind === 'hardware' ? 'hardware' : 'start')
+       + ' · ' + e.runs + ' read(s) · ' + e.models + ' model'
+       + (e.models === 1 ? '' : 's') + ', ' + e.documents + ' document'
+       + (e.documents === 1 ? '' : 's') + '</span>'}
+  ]
+    .concat(anStatCols('acc', 'Accuracy', e => e.accuracy, anPct, true))
+    .concat(anStatCols('t', 'Time', e => e.seconds, anSecs));
+  // Whether either mark actually splits this log. A mark with one bucket cannot
+  // explain anything, and saying so is more useful than a table that looks like
+  // a comparison but has nothing to compare.
+  const kinds = {};
+  rows.forEach(r => { kinds[r.kind] = (kinds[r.kind] || 0) + 1; });
+  const flat = Object.keys(kinds).filter(k => kinds[k] < 2)
+    .map(k => k === 'hardware' ? 'hardware' : 'start');
+  return '<p class="an-h">What each run type is worth <span class="an-inf">inferred</span></p>'
+    + lvTable('an-marks', rows, cols, {sort: {key: 'mark', dir: 'asc'}})
+    + '<p class="note">Each row is every read carrying that mark, so the two '
+    + 'kinds are two separate splits of the same reads and their counts both sum '
+    + 'to the total. '
+    + (flat.length
+        ? '<b>This log has only one ' + flat.join(' and one ') + ' value</b>, so '
+          + 'that mark explains nothing here and its row is a restatement of the '
+          + 'whole set — expected on a single machine, and the reason the '
+          + 'correlation split above it is degenerate rather than absent. '
+        : '')
+    + '<b>Both marks are inferred</b>, not reported: hardware from the decode '
+    + 'rate and warmth from prefill. A difference between two rows here is a '
+    + 'difference between the reads that happened to carry each mark — the '
+    + 'models and documents behind them are not held equal, and the counts on '
+    + 'each row are what says so.</p>';
+}
+
+/* ---- The excluded reads, shown ----
+   An exclusion nobody can inspect is indistinguishable from a bug, and this
+   fence is the one thing on the tab that silently changes every figure. Each
+   dropped read comes back with the evidence against it: its time, its cell's
+   median, the ratio and the MADs. Worst first. */
+function anOutliers(a) {
+  const rows = a.outliers || [];
+  if (!rows.length) return '';
+  const cols = [
+    {key: 'run', label: 'Excluded read', value: e => csModel(e.model) + e.case,
+     cell: e => '<b title="' + esc(e.model) + '">' + esc(csModel(e.model)) + '</b>'
+       + '<span class="cs-set">' + esc(e.case) + ' · ' + esc(e.detail || '—')
+       + ' · ' + esc(anMarkLabel('hardware', e.hardware || 'unknown'))
+       + ', ' + esc(anMarkLabel('start', e.start || 'unknown')) + '</span>'},
+    {key: 'time', label: 'Its time', n: true, value: e => e.seconds,
+     title: 'wall clock for this read',
+     cell: e => '<b style="color:var(--danger)">' + anSecs(e.seconds) + '</b>'},
+    {key: 'median', label: 'Cell median', n: true, value: e => e.cell_median,
+     title: 'the middle time of the reads at this model, document AND Detail — '
+          + 'the group this read was judged against',
+     cell: e => anSecs(e.cell_median)},
+    {key: 'ratio', label: 'Times off', n: true, value: e => e.cell_ratio,
+     title: 'how many times the cell median this read took. Both this and the '
+          + 'MAD figure must be past their thresholds before a read is dropped.',
+     cell: e => e.cell_ratio === null || e.cell_ratio === undefined
+       ? '<span class="an-none">—</span>'
+       : '<b>×' + Number(e.cell_ratio).toFixed(2) + '</b>'},
+    {key: 'mads', label: 'MADs out', n: true, value: e => e.cell_mads,
+     title: 'distance from the cell median in median-absolute-deviations — the '
+          + 'scale-free shape test',
+     cell: e => e.cell_mads === null || e.cell_mads === undefined
+       ? '<span class="an-none">—</span>' : Number(e.cell_mads).toFixed(1)},
+    {key: 'char', label: 'It scored', n: true, value: e => e.char,
+     title: 'the transcript accuracy of the excluded read — a slow read that '
+          + 'still scored well is worth a second look',
+     cell: e => e.char === null || e.char === undefined
+       ? '<span class="an-none">—</span>'
+       : '<b style="color:' + accColour(e.char / 100) + '">' + anPct(e.char) + '</b>'}
+  ];
+  return '<p class="an-h">Excluded as time outliers — ' + rows.length + ' read(s)</p>'
+    + lvTable('an-outliers', rows, cols, {sort: {key: 'ratio', dir: 'desc'}})
+    + '<p class="note">These are left out of <b>every figure on this tab</b> and '
+    + 'are still in the run log, the raw table and the CSV — nothing is deleted. '
+    + 'A read is dropped only when it fails <b>both</b> tests: more than '
+    + esc(String(a.outlier_mads || '')) + '×MAD from its cell median '
+    + '<i>and</i> at least ×' + esc(String(a.outlier_ratio || '')) + ' (or ÷'
+    + esc(String(a.outlier_ratio || '')) + ') of it. The second test is what '
+    + 'stops a tightly clustered cell — where the MAD is a fraction of a second '
+    + '— flagging ordinary wall-clock jitter as a runaway. <b>The cell includes '
+    + 'the Detail</b>, because raising Detail legitimately costs ×1.5 to ×2.6 of '
+    + 'the clock: judging an <code>original</code> read against a median made of '
+    + '<code>low</code> ones would drop it for being exactly what it should be, '
+    + 'and would make <code>original</code> look cheaper than it is. '
+    + (a.untested
+        ? '<b>' + a.untested + ' read(s) were not tested at all</b> — their cell '
+          + 'has too few runs at that model, document and Detail for the test to '
+          + 'mean anything, and a two-read cell cannot be tested in principle '
+          + '(the median sits between the pair, so neither is far from it however '
+          + 'different they are). Those reads are kept, so a runaway among them is '
+          + 'still in the figures above; repeating a setting is what makes its '
+          + 'cell testable. '
+        : '')
+    + 'Set <code>ANALYSIS_OUTLIER_MADS=0</code> to turn the fence off entirely.</p>';
+}
+
+/* ---- Detail vs accuracy: what raising Detail BUYS ----
+   Drawn as a model × Detail grid rather than three pooled numbers, because the
+   pooled trend is a mixing effect: the models have not been run equally at each
+   preset, so pooling ranks whichever models were run most at each. Measured on
+   this log the pooled figures fall steadily with more pixels while the main OCR
+   model is flat across all three and two others collapse only at `original` --
+   the same trap the accuracy-vs-time split exists for. The pooled row is kept as
+   a row of the same table, marked, so it can be compared with the models rather
+   than read instead of them. */
+function anDetailAcc(a) {
+  const details = a.details || [], rows = a.acc_detail || [];
+  if (!details.length || !rows.length) return '';
+  const at = {};
+  rows.forEach(r => { at[r.detail] = r; });
+  const models = Object.keys((rows[0] || {}).by_model || {}).sort();
+
+  const head = '<tr><th class="an-corner">Model \\ Detail</th>'
+    + details.map(d => '<th title="' + esc(anDetailHint(d)) + '">' + esc(d)
+        + '</th>').join('')
+    + '<th title="best minus worst across the presets this model ran at">Range</th></tr>';
+
+  const body = models.map(m => {
+    const vals = details.map(d => ((at[d] || {}).by_model || {})[m] || null);
+    const real = vals.filter(v => v && v.mean !== null && v.mean !== undefined);
+    const cells = vals.map(v => v && v.mean !== null && v.mean !== undefined
+      ? '<td class="an-cell" style="background:' + hexA(accColour(v.mean / 100), 0.16)
+        + '"><b style="color:' + accColour(v.mean / 100) + '">' + anPct(v.mean)
+        + '</b><span class="an-t">n=' + v.runs + '</span></td>'
+      : '<td class="an-empty">—</td>').join('');
+    // The spread across presets is the per-model finding: near zero means Detail
+    // does not matter for this model, and a big one means it does.
+    let range = '<td class="an-mean-col an-empty">—</td>';
+    if (real.length > 1) {
+      const hi = Math.max(...real.map(v => v.mean)), lo = Math.min(...real.map(v => v.mean));
+      const d = hi - lo;
+      range = '<td class="an-mean-col"><b style="color:'
+        + anTierColour(d >= 20 ? 3 : d >= 8 ? 2 : d >= 3 ? 1 : 0) + '">'
+        + d.toFixed(1) + ' pts</b></td>';
+    }
+    return '<tr><td class="an-rowh" title="' + esc(m) + '">' + esc(csModel(m))
+      + '</td>' + cells + range + '</tr>';
+  }).join('');
+
+  // **There is no pooled "All models" row, and its removal is the point**
+  // (2026-08-25, at the user's request). It averaged every model at a preset,
+  // which is a cross-model accuracy figure -- the comparison this tab explicitly
+  // defers to Full rank, Best reading and Per document. It was also the most
+  // misleading number on the page: pooled, accuracy fell steadily with more
+  // pixels, while the main OCR model is flat across all three presets and the
+  // decline was two other models collapsing at `original`. A row that has to be
+  // argued with in its own tooltip is a row to delete.
+  return '<p class="an-h">Detail vs accuracy — what more pixels buy</p>'
+    + '<div class="an-grid"><table class="an-heat">' + head + body
+    + '</table></div>'
+    + '<p class="note">Presets run cheapest first, so read each row left to right '
+    + 'as <b>more pixels →</b>. <b>Read along a row, never down a column</b> — a '
+    + 'row is one model across the presets, which is the comparison this tab is '
+    + 'for; a column is several models that were not run equally at each preset, '
+    + 'and ranking them is another tab’s job. This is why there is no pooled '
+    + '“all models” row: it fell steadily with more pixels while the main OCR '
+    + 'model is flat across all three, and the decline was two other models '
+    + 'collapsing at <code>original</code>. <b>Range</b> is how much that model '
+    + 'moved across the presets it ran at: near zero means Detail does not decide '
+    + 'accuracy for it, a large one means it does. More pixels is <b>not '
+    + 'monotonically better</b> — past roughly 4 MP the extra visual tokens '
+    + 'degrade some models rather than helping. <b>Each row pools that model’s '
+    + 'documents</b>, so a row is that model over everything it read at each '
+    + 'preset, not one page.</p>';
+}
+function anDetailHint(d) {
+  return {low: 'low — 2 MP', medium: 'medium — 4 MP, the default',
+          original: 'original — uncapped, the page at native resolution'}[d] || d;
+}
+
+/* ---- Time vs Detail per document: what raising Detail COSTS ----
+   Per document rather than pooled, because time scales with the page: a pooled
+   time column would mostly rank the fixtures by length and say nothing about the
+   preset. The factor column prices the whole climb in one number, which is the
+   thing anyone choosing a preset actually wants. */
+function anTimeDetail(a) {
+  const details = a.details || [], rows = a.time_detail_by_case || [];
+  if (!details.length || !rows.length) return '';
+  const cols = [
+    {key: 'doc', label: 'Document', value: e => e.case,
+     cell: e => '<b>' + esc(e.case) + '</b><span class="cs-set">' + e.runs
+       + ' read(s)</span>'}
+  ];
+  details.forEach(d => cols.push({
+    key: 'd_' + d, label: d, n: true,
+    title: anDetailHint(d) + ' — mean wall clock for the whole document',
+    value: e => (e.cells[d] || {}).mean,
+    cell: e => anFig(e.cells[d], anSecs)
+  }));
+  cols.push({key: 'factor', label: 'Cost of the climb', n: true,
+    title: 'how many times longer the dearest preset this document ran at took '
+         + 'than the cheapest one',
+    value: e => e.factor,
+    cell: e => e.factor === null || e.factor === undefined
+      ? '<span class="an-none">one preset only</span>'
+      : '<b style="color:' + anTierColour(e.factor >= 3 ? 3 : e.factor >= 2 ? 2 : 1)
+        + '">×' + Number(e.factor).toFixed(2) + '</b><span class="an-t">'
+        + esc(e.from) + ' → ' + esc(e.to) + '</span>'});
+  return '<p class="an-h">Time vs Detail, per document — what more pixels cost</p>'
+    + lvTable('an-time-detail', rows, cols, {sort: {key: 'doc', dir: 'asc'}})
+    + '<p class="note">Per document because <b>time scales with the page</b> — '
+    + 'pooling these would mostly rank the fixtures by length rather than say '
+    + 'anything about the preset. Each cell is the mean wall clock over that '
+    + 'document’s recent reads at that preset, across whatever models read it, so '
+    + 'a cell mixing a fast and a slow model is an average of both. Read it '
+    + 'beside the accuracy table above: those two are the cost and the benefit of '
+    + 'the same knob, and they are deliberately separate because the trade is '
+    + 'not monotone. Every column sorts.</p>';
+}
+
+/* ---- Time per model, with accuracy beside it ----
+   Accuracy rides along for the reason `by_case`'s speed column carries it: fast
+   is a claim about cost alone, and the cheapest model here is not the one to
+   run. */
+function anModelTime(a) {
+  const rows = a.model_time || [];
+  if (!rows.length) return '';
+  const cols = [
+    {key: 'model', label: 'Model', value: e => csModel(e.model),
+     cell: e => '<b title="' + esc(e.model) + '">' + esc(csModel(e.model)) + '</b>'
+       + '<span class="cs-set">' + e.seconds.runs + ' read(s) · ' + e.documents
+       + ' document(s)</span>'},
+    {key: 'time', label: 'Mean time', n: true, value: e => e.seconds.mean,
+     title: 'wall clock for the whole document, meaned over this model’s reads',
+     cell: e => anFig(e.seconds, anSecs)},
+    {key: 'acc', label: 'Accuracy', n: true, value: e => e.accuracy.mean,
+     title: 'transcript accuracy over the same reads — fast is a claim about '
+          + 'cost alone, so it is never printed without this beside it',
+     cell: e => e.accuracy.mean === null || e.accuracy.mean === undefined
+       ? '<span class="an-none">—</span>'
+       : '<b style="color:' + accColour(e.accuracy.mean / 100) + '">'
+         + anPct(e.accuracy.mean) + '</b><span class="an-t">n='
+         + e.accuracy.runs + '</span>'},
+    {key: 'perpt', label: 'Seconds per point', n: true,
+     title: 'mean time divided by mean accuracy — what a point of transcript '
+          + 'accuracy costs on this model. Lower is better value; it is a ratio '
+          + 'of two means, not a measured rate.',
+     value: e => (e.seconds.mean && e.accuracy.mean) ? e.seconds.mean / e.accuracy.mean : null,
+     cell: e => (e.seconds.mean && e.accuracy.mean)
+       ? '<b>' + (e.seconds.mean / e.accuracy.mean).toFixed(2) + 's</b>'
+       : '<span class="an-none">—</span>'}
+  ];
+  return '<p class="an-h">Time per model</p>'
+    + lvTable('an-model-time', rows, cols, {sort: {key: 'time', dir: 'asc'}})
+    + '<p class="note">Meaned over each model’s recent reads, outliers excluded. '
+    + '<b>The models have not all read the same documents</b> — the document '
+    + 'count is on every row for that reason, and a model that has only read the '
+    + 'short fixtures will look fast. <b>Seconds per point</b> divides the two '
+    + 'means to price what accuracy costs on each model; it is a ratio of means '
+    + 'rather than a measured rate, so read it as a rough value ranking and not '
+    + 'as a per-run figure. Every column sorts.</p>';
+}
+
+// The model x document grid the numbers above summarise, with a per-model and
+// per-document average in the margins (unweighted over the documents / models,
+// the same "average over documents" the setting tables use).
+function anHeat(a) {
+  const models = a.models || [], cases = a.cases || [];
+  if (!models.length || !cases.length) return '';
+  const at = {};
+  (a.cells || []).forEach(c => { (at[c.model] = at[c.model] || {})[c.case] = c; });
+
+  const head = '<tr><th class="an-corner">Model \\ Document</th>'
+    + cases.map(c => '<th>' + esc(c) + '</th>').join('')
+    + '<th title="this model’s mean accuracy over the documents it read">Avg</th></tr>';
+
+  const body = models.map(m => {
+    const rowCells = cases.map(c => {
+      const cell = (at[m] || {})[c];
+      if (!cell || cell.char_mean === null || cell.char_mean === undefined)
+        return '<td class="an-empty">—</td>';
+      const acc = cell.char_mean;
+      const tip = m + ' · ' + c + ' — ' + cell.runs + ' read(s)'
+        + (cell.char_sd !== null && cell.char_sd !== undefined
+           ? ', ±' + Number(cell.char_sd).toFixed(1) + '% accuracy' : '')
+        + ', ' + anSecs(cell.time_mean) + ' mean';
+      return '<td class="an-cell" title="' + esc(tip) + '" style="background:'
+        + hexA(accColour(acc / 100), 0.16) + '"><b style="color:'
+        + accColour(acc / 100) + '">' + acc.toFixed(0) + '%</b>'
+        + '<span class="an-t">' + anSecs(cell.time_mean) + '</span></td>';
+    }).join('');
+    const rowMean = anMeanOf(cases.map(c => {
+      const cell = (at[m] || {})[c];
+      return cell ? cell.char_mean : null;
+    }));
+    const meanCell = rowMean === null ? '<td class="an-mean-col an-empty">—</td>'
+      : '<td class="an-mean-col"><b style="color:' + accColour(rowMean / 100) + '">'
+        + rowMean.toFixed(0) + '%</b></td>';
+    return '<tr><td class="an-rowh" title="' + esc(m) + '">' + esc(csModel(m))
+      + '</td>' + rowCells + meanCell + '</tr>';
+  }).join('');
+
+  // The per-document average, over the models that read it.
+  const foot = '<tr class="an-mean-row"><td class="an-rowh">Avg</td>'
+    + cases.map(c => {
+        const mean = anMeanOf(models.map(m => {
+          const cell = (at[m] || {})[c];
+          return cell ? cell.char_mean : null;
+        }));
+        return mean === null ? '<td class="an-empty">—</td>'
+          : '<td><b style="color:' + accColour(mean / 100) + '">'
+            + mean.toFixed(0) + '%</b></td>';
+      }).join('')
+    + '<td class="an-mean-col"></td></tr>';
+
+  return '<div class="an-grid"><table class="an-heat">' + head + body + foot
+    + '</table></div>';
 }
 
 
@@ -4031,8 +4883,28 @@ const LV_FIELDS = [
        + 'where the two passes ran on one'},
   {field: 'extract_mode', label: 'Extraction shape',
    hint: 'single: one request for the whole form. agentic: a step per group of '
-       + 'one to three fields'}
+       + 'one to three fields'},
+  {field: 'detail', label: 'Detail',
+   hint: 'the pixel budget the page was rasterised to: low 2 MP, medium 4 MP '
+       + '(the default), original uncapped'},
+  // The two inferred marks. Filterable like anything else, so "GPU cold reads
+  // only" is one pair of chips -- and worth having as chips rather than only as
+  // a column, because the question they answer is usually "show me the rest".
+  {field: 'hardware', label: 'Hardware (inferred)',
+   hint: 'GPU or CPU, inferred from the decode rate — the server does not '
+       + 'report it, so this is a proxy and not a probe'},
+  {field: 'start', label: 'Start (inferred)',
+   hint: 'cold or warm, inferred from prefill: a warm read reuses a cached '
+       + 'prefix or an already-resident model and pays almost none'}
 ];
+
+/* A chip's visible text. Model names get shortened; the two inferred marks get
+   the same words the analysis tab prints for them, so one vocabulary covers the
+   chips and the tables rather than `gpu` in one place and `GPU` in the other. */
+function lvChipLabel(field, value) {
+  if (field === 'hardware' || field === 'start') return anMarkLabel(field, value);
+  return csModel(value);
+}
 
 function lvState(field, value) {
   if ((logFilters.include[field] || []).indexOf(value) >= 0) return 'inc';
@@ -4075,7 +4947,8 @@ function paintFilters() {
             + (at === 'inc' ? 'Kept. Click to drop it.'
                : at === 'exc' ? 'Dropped. Click to clear.'
                : 'Click to keep only this, again to drop it.') + '">'
-            + esc(csModel(v.value)) + '<span class="n">' + v.runs + '</span></span>';
+            + esc(lvChipLabel(f.field, v.value)) + '<span class="n">' + v.runs
+            + '</span></span>';
         }).join('')
       + '</div></div>';
   }).filter(Boolean).join('');
@@ -4221,6 +5094,15 @@ function paintLogControls() {
       ? '' : t.min_read_pct;
   if (document.activeElement !== lvWindow)
     lvWindow.value = t.window === null || t.window === undefined ? 0 : t.window;
+  // The single-source toggle is client state, so it is reflected here rather than
+  // read back from the server. Disabled when the current view has no single-source
+  // failure to drop -- a live checkbox that would change nothing is a control that
+  // lies -- but never while it is on, or it could not be turned back off.
+  const anyDom = t.errors && ['read', 'extract'].some(p => t.errors[p]
+    && [...(t.errors[p].models || []), ...(t.errors[p].cases || [])]
+        .some(r => r.sources === 1));
+  errDomToggle.checked = errDropSingle;
+  errDomToggle.disabled = !anyDom && !errDropSingle;
   const bits = [];
   if (t.matched !== undefined && t.logged !== undefined && t.matched !== t.logged)
     bits.push('<b>' + t.matched + ' of ' + t.logged + ' rows</b> match the filter');
@@ -4232,6 +5114,13 @@ function paintLogControls() {
     ? 'field scores from reads under ' + Number(t.min_read_pct).toFixed(0)
       + '% are left out'
     : 'every field score counted, whatever the read scored');
+  // A run-level narrowing set from the Errors tab, worth naming here because it
+  // changes every table except the raw log and the Errors one, and nothing else
+  // on the card would say why the numbers moved.
+  if (errDropSingle)
+    bits.push('<b>' + (t.single_source_dropped || 0) + ' single-source failure'
+      + ((t.single_source_dropped === 1) ? '' : 's') + '</b> excluded from these '
+      + 'tables (Errors tab)');
   const moved = (d.window !== undefined && t.window !== (d.window || null))
     || (d.min_read_pct !== undefined && t.min_read_pct !== d.min_read_pct);
   lvNote.innerHTML = bits.join(' &middot; ')
@@ -4337,7 +5226,7 @@ logTabs.addEventListener('click', ev => {
   if (!btn) return;
   logTabs.querySelectorAll('button').forEach(b => b.classList.toggle('on', b === btn));
   const want = btn.dataset.panel;
-  ['rank', 'ocr', 'extract', 'case', 'raw'].forEach(name => {
+  ['rank', 'ocr', 'extract', 'case', 'analysis', 'error', 'raw'].forEach(name => {
     const el = document.getElementById('panel' + name[0].toUpperCase() + name.slice(1));
     if (el) el.hidden = name !== want;
   });
@@ -4368,6 +5257,10 @@ lvReset.addEventListener('click', () => {
   // with everything else -- a "reset" that left one narrowing standing would
   // leave a view nobody asked for looking like the default one.
   logFilters = {include: {}, exclude: {}};
+  // The single-source exclusion is a narrowing like any other, so Reset clears it
+  // too -- a "reset" that left it on would leave tables nobody asked for looking
+  // like the default ones.
+  errDropSingle = false;
   refreshRuns();
 });
 
@@ -4376,7 +5269,9 @@ function paintLog() {
   const t = logData.totals || {};
   paintBests(t);
   paintStandouts(t);
+  paintErrors(t);
   paintCaseSummary(t);
+  paintAnalysis(t);
   paintOcrSummary(t);
   paintExtractSummary(t);
   paintRunRows();
@@ -4435,7 +5330,8 @@ async function refreshRuns() {
       body: JSON.stringify({limit: 50, window: logView.window,
                             min_read_pct: logView.min_read_pct,
                             include: logFilters.include,
-                            exclude: logFilters.exclude})
+                            exclude: logFilters.exclude,
+                            drop_single_source: errDropSingle})
     })).json();
   } catch { return; }
   logData = data;
@@ -4448,6 +5344,68 @@ async function refreshRuns() {
   paintLog();
 }
 runRefresh.addEventListener('click', refreshRuns);
+
+/* ---------- the card keeps itself current ----------
+   **Every refresh used to be tied to something this page had started** — a read,
+   a queue drain, a filter change — so rows arriving from anywhere else sat
+   unread until somebody reloaded. A `curl` against /api/ocr, a random test, a
+   second tab, another process: all invisible. This watches for them.
+
+   It polls a two-number signature (`/api/runs/stat`, one `stat()` call) and
+   fetches the real payload only when the file has actually moved. The summary is
+   ~90 KB with every table walked, so polling THAT on a timer would build and
+   discard all of it every few seconds.
+
+   **This is not the never-poll rule being broken.** That rule is about the model
+   server — llama.cpp serves /slots from the same queue as inference, so polling
+   it cancels work. This touches the app's own CSV and no model server.
+
+   Three things it will not do:
+   - poll while the tab is hidden, since nobody is reading the answer;
+   - refresh while a run of ours is streaming, because the `logged` event already
+     does that and a repaint mid-stream fights the live card;
+   - refresh while a fetch is already in flight (`logBusy`).
+
+   Sort, filter and open-panel state all live outside the render, so a repaint
+   that lands under the reader keeps their column order and their chips. */
+const RUNS_POLL_MS = 5000;
+let logSig = null;
+let logPolling = false;
+
+async function pollRuns() {
+  if (logPolling || logBusy || document.hidden) return;
+  // A run of our own is mid-flight; its own `logged` event will refresh us, and
+  // repainting underneath it would fight the live Result card. Read off the
+  // controls that already track it — an enabled Stop means a read is streaming —
+  // rather than a second flag of our own, which could drift out of step with
+  // the buttons on exactly the paths that forgot to set it.
+  if (stopBtn && !stopBtn.disabled) return;
+  logPolling = true;
+  try {
+    const sig = await (await fetch('/api/runs/stat')).json();
+    const token = sig.size + ':' + sig.mtime;
+    if (logSig === null) { logSig = token; return; }   // first look: adopt, don't repaint
+    if (token !== logSig) {
+      logSig = token;
+      await refreshRuns();
+      flashNewData();
+    }
+  } catch { /* a failed poll is not worth surfacing; the next one retries */ }
+  finally { logPolling = false; }
+}
+
+/* A quiet mark that the card moved on its own. Without it a table silently
+   changing under the reader is indistinguishable from having misread it. */
+function flashNewData() {
+  if (!runStats) return;
+  runStats.classList.remove('lv-fresh');
+  void runStats.offsetWidth;              // restart the animation
+  runStats.classList.add('lv-fresh');
+}
+
+setInterval(pollRuns, RUNS_POLL_MS);
+// Catch up the moment the tab comes back, rather than waiting out the interval.
+document.addEventListener('visibilitychange', () => { if (!document.hidden) pollRuns(); });
 
 /* ---------- run mode ---------- */
 const modeSeg = document.getElementById('modeSeg');

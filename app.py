@@ -74,6 +74,8 @@ from settings import (
     LOOP_COUNTER_MAX_UNIT,
     LOOP_COUNTER_MIN_LINE,
     LOOP_COUNTER_MIN_REPEATS,
+    LOOP_DEAD_MAX_LETTERS,
+    LOOP_DEAD_TAIL_CHARS,
     LOOP_MIN_REPEATS,
     LOOP_TAIL_CHARS,
     MAX_JOBS,
@@ -182,6 +184,13 @@ def _counter_loop(text: str) -> bool:
     Digits are collapsed so successive iterations compare equal. Restricted to a
     single long line with a short repeating unit, so a table whose rows differ only
     by their amounts -- newline separated, and longer -- is never flagged.
+
+    Only a *word*-bearing unit (`ปี #`) is the enumerating loop this is for. A
+    low-information unit -- an empty `<tr><td></td></tr>` row that typhoon emits as
+    one un-broken HTML line -- is deliberately NOT flagged here at any count: a
+    blank table is legitimate content, and the only thing that separates a bounded
+    one from a runaway is total volume, which is `_structural_runaway`'s job, not a
+    per-line repeat count. So a blank table of any number of rows passes here.
     """
     for line in text[-LOOP_TAIL_CHARS * 2 :].splitlines():
         if len(line) < LOOP_COUNTER_MIN_LINE:
@@ -189,44 +198,104 @@ def _counter_loop(text: str) -> bool:
         norm = _DIGITS.sub("#", line)
         for unit in range(4, LOOP_COUNTER_MAX_UNIT + 1):
             block = norm[-unit:]
-            if block.strip() and norm.endswith(block * LOOP_COUNTER_MIN_REPEATS):
+            if not block.strip() or _low_information(block):
+                continue
+            if norm.endswith(block * LOOP_COUNTER_MIN_REPEATS):
                 return True
     return False
+
+
+# Any Unicode letter, Thai included (\w minus digits and underscore). A repeated
+# line with no letter carries no readable word -- it is blank table markup, a rule,
+# or a row of identical numbers, all of which large forms produce legitimately.
+_LETTER = re.compile(r"[^\W\d_]", re.UNICODE)
+# Strip everything that is structure, not content, before looking for a letter:
+# complete tags, a backslash-escape (`\n`, `\t` -- the dots layout reply escapes
+# the table's newlines into a JSON string, and the `n` of every `\n` would
+# otherwise read as a word), and a tag fragment left dangling when a slice cuts
+# mid-tag (`...<td` at the end, `td>...` at the start).
+_STRUCTURE = re.compile(r"<[^>]*>|\\.|<[^<>]*$|^[^<>]*>")
+
+
+def _readable(s: str) -> str:
+    """`s` with markup, escapes and dangling tag fragments removed."""
+    return _STRUCTURE.sub("", s)
+
+
+def _low_information(s: str) -> bool:
+    """A repeated unit that is structure, not content.
+
+    Blank `<tr><td></td></tr>` rows, pipe rules, and rows of identical numbers or
+    dashes all carry no word. A stretch of them is what a blank or uniform region
+    of a big gridded form looks like, and from the tail alone it is identical to a
+    runaway empty-row loop -- so it is held to a much higher repeat count than a
+    line containing actual words, which never repeats legitimately. `_readable`
+    drops the markup first: a letter inside a `<td>`, or the `n` of an escaped
+    `\\n`, is structure, not content, so an empty cell reads as low information.
+    """
+    return not _LETTER.search(_readable(s))
+
+
+def _structural_runaway(text: str) -> bool:
+    """A long tail carrying no words -- a structural loop whatever its shape.
+
+    The per-line and block checks both key off newlines and a bounded repeat
+    count; the dots layout profile defeats them by escaping the whole table onto
+    one JSON line (see LOOP_DEAD_TAIL_CHARS). This is the shape-agnostic backstop:
+    once this many characters have gone by with almost no letter left after the
+    markup is removed, the model is emitting structure, not reading -- a bounded
+    blank grid is far shorter than this, so it is a runaway, not a real table.
+    """
+    tail = text[-LOOP_DEAD_TAIL_CHARS:]
+    if len(tail) < LOOP_DEAD_TAIL_CHARS:
+        return False
+    return len(_LETTER.findall(_readable(tail))) <= LOOP_DEAD_MAX_LETTERS
 
 
 def looks_repetitive(text: str, tail_chars: int = LOOP_TAIL_CHARS,
                      min_repeats: int = LOOP_MIN_REPEATS) -> bool:
     """True when the tail of the output is cycling on the same block.
 
-    Checks whether the last LOOP_TAIL_CHARS characters are built from a single
-    repeated unit. Only long runs trip it, so a document that legitimately repeats
-    a short value a few times is left alone.
+    A repeated unit that carries a *word* is a loop at `min_repeats` -- real
+    content never repeats verbatim. A **low-information** unit -- an empty table
+    row, a rule, a line of identical numbers -- is left to `_structural_runaway`
+    and never counted here, so a blank or uniform table region (common on the
+    uncapped `original` detail, and legitimate) is not called a loop however many
+    rows it runs to. Only a genuinely huge dead run -- far larger than any real
+    form's blank grid -- trips, and it trips on volume, not on a row count. See
+    `_low_information` and `_structural_runaway`.
     """
-    if _counter_loop(text):
+    if _counter_loop(text) or _structural_runaway(text):
         return True
 
     tail = text[-tail_chars:]
-    if len(tail) < tail_chars:
-        return False
 
-    # Whole-line cycling: look for a consecutive run of identical lines anywhere in
-    # the tail, not just at the very end -- a loop often trails a stray closing tag.
+    # Whole-line cycling: a consecutive run of identical *substantive* lines -- a
+    # loop often trails a stray closing tag. Runs on whatever is available, so a
+    # short prose loop is caught as it streams rather than only after 600 chars. A
+    # run of blank/structural rows is skipped: it is a table, not a loop.
     lines = [l.strip() for l in tail.splitlines() if l.strip()]
     run = 1
     for prev, cur in zip(lines, lines[1:]):
         if cur == prev and len(cur) > 3:
             run += 1
-            if run >= min_repeats:
+            if run >= min_repeats and not _low_information(cur):
                 return True
         else:
             run = 1
 
-    # Block cycling, which also catches loops with no newlines at all. Anchored at
-    # the end, which is where a loop always is while streaming; a periodic string
-    # stays periodic from the end even if the check lands mid-block.
+    # Block cycling, which also catches loops with no newlines at all -- but it
+    # needs a full tail to be meaningful, since a short periodic string is not yet
+    # distinguishable from a value that will change on the next token. Anchored at
+    # the end, where a loop always is while streaming. Structural blocks are
+    # skipped for the same reason as the lines above.
+    if len(tail) < tail_chars:
+        return False
     for unit in range(4, len(tail) // min_repeats + 1):
         block = tail[-unit:]
-        if block.strip() and tail.endswith(block * min_repeats):
+        if not block.strip() or _low_information(block):
+            continue
+        if tail.endswith(block * min_repeats):
             return True
     return False
 
@@ -2843,7 +2912,8 @@ def ocr_stream():
 
 
 def _runs_payload(limit: int, window=None, min_read_pct=None,
-                  include: dict = None, exclude: dict = None) -> dict:
+                  include: dict = None, exclude: dict = None,
+                  drop_single_source: bool = False) -> dict:
     """The run-log card's whole payload: rows, compiled tables, and the pickers.
 
     **Built 2026-08-24 at the user's request** -- the tables were compiled under
@@ -2876,7 +2946,24 @@ def _runs_payload(limit: int, window=None, min_read_pct=None,
     # trusts everything or nothing.
     floor = None if min_read_pct is None else max(0.0, min(min_read_pct, 100.0)) / 100.0
     with runlog.view(window=window, min_read=floor):
-        totals = runlog.totals(matched, logged=len(everything))
+        if drop_single_source:
+            # The toggle's own words: exclude single-source failures from every
+            # table BUT the errors one. So the ranking, standouts, reading,
+            # extraction and per-document tables are compiled without those runs,
+            # while `errors` is computed over the full filtered set -- it is where
+            # the single-source rows are pointed AT, so it must still show them.
+            # Computed inside the view so the window that decides "single source"
+            # is the window the tables are read under.
+            reduced = runlog.drop_single_source(matched)
+            totals = runlog.totals(reduced, logged=len(everything))
+            totals["errors"] = runlog.errors(matched)
+            totals["single_source_dropped"] = len(matched) - len(reduced)
+            # `matched` is the filter count, not the post-drop one, so the status
+            # line keeps saying how many rows the FILTER matched -- the drop is a
+            # separate figure reported beside it.
+            totals["matched"] = len(matched)
+        else:
+            totals = runlog.totals(matched, logged=len(everything))
     return {
         "runs": everything[:limit],
         "columns": runlog.COLUMNS,
@@ -2908,8 +2995,8 @@ def runs_query():
     """The same payload, recompiled under a different window, floor and filter.
 
     Body: `{limit, window, min_read_pct, include: {field: [...]},
-    exclude: {field: [...]}}`. Every key is optional and `null` means *use the
-    process setting* -- so a page moving one control does not silently reset the
+    exclude: {field: [...]}, drop_single_source: bool}`. Every key is optional
+    and `null` means *use the process setting* -- so a page moving one control does not silently reset the
     other. `runlog.FILTER_FIELDS` names the fields; an unknown one is ignored
     rather than refused, because a stale bookmark should return the table.
 
@@ -2935,7 +3022,31 @@ def runs_query():
     return jsonify(**_runs_payload(_run_limit(body.get("limit", 50)),
                                    window=window,
                                    min_read_pct=number("min_read_pct", float),
-                                   include=include, exclude=exclude))
+                                   include=include, exclude=exclude,
+                                   drop_single_source=bool(body.get("drop_single_source"))))
+
+
+@app.get("/api/runs/stat")
+def runs_stat():
+    """Whether the run log has changed, in one `stat()` call.
+
+    **This is what makes the card refresh itself when rows arrive from somewhere
+    else** -- a `curl` against `/api/ocr`, the random test, a second tab, or
+    another process entirely. Until now every refresh was tied to something the
+    page itself had started, so a log filled from outside sat unread until
+    somebody reloaded.
+
+    It is deliberately not `/api/runs` with a small limit: that route compiles
+    the whole summary (~90 KB, every table walked) and a poll would build and
+    discard all of it on a timer. This reads two numbers off the filesystem, and
+    the page fetches the real payload only when they move.
+
+    **Not a violation of the never-poll rule.** That rule is about the MODEL
+    SERVER: llama.cpp serves `/slots` from the same task queue as inference, so
+    polling it cancels work in flight. This is the app's own CSV on local disk
+    and touches no model server.
+    """
+    return jsonify(**runlog.signature())
 
 
 @app.post("/api/runs/delete")
