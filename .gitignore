@@ -25,10 +25,6 @@ solution/out/
 # Build output from package.py.
 dist/
 
-# Generated reports. Written from the run log and the measurements in CLAUDE.md,
-# neither of which ships -- so these are regenerated output, not source.
-*.docx
-
 # Editor and local tooling state -- developer machine, not deployment.
 .claude/
 .vscode/
