@@ -46,6 +46,7 @@ FILES = [
     "scoring.py",
     "verify.py",
     "normalise.py",
+    "machine.py",
     "compare.py",
     "randomtest.py",
     "package.py",

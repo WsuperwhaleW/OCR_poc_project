@@ -197,8 +197,36 @@ def _probe_ollama(url):
             "vision": None, "slots": None, "reason": None}
 
 
+def known(url: str = None) -> dict:
+    """The last probe of `url`, however old, or None if it has never been probed.
+
+    **Never touches the network.** It exists for callers that want to DESCRIBE
+    the server rather than use it -- the Summary tab's environment card, which
+    is repainted whenever the run-log card refreshes itself, every five seconds
+    while the tab is open.
+
+    That is the whole reason it is not `probe(force=False)`: a miss or an expired
+    entry makes `probe` go and ask, and on an unreachable endpoint asking costs
+    two connect timeouts. Measured, that took the run-log summary from
+    milliseconds to **5.1 s**, which is both a slow card and a standing violation
+    of this file's own rule -- *never poll the model server*. A display has no
+    business making a request.
+
+    Staleness is the caller's to handle: the entry carries no timestamp here
+    because everything that uses it says "as last seen" rather than "now".
+    """
+    with _lock:
+        url = clean_url(url) if url else _active
+    hit = _cache.get(url)
+    return hit[1] if hit else None
+
+
 def probe(url: str, force: bool = False) -> dict:
-    """What is listening at `url`. Cached for CACHE_TTL seconds."""
+    """What is listening at `url`. Cached for CACHE_TTL seconds.
+
+    **This can make a network request**, so nothing on a polling path may call
+    it -- see `known`.
+    """
     url = clean_url(url)
     if not force:
         hit = _cache.get(url)

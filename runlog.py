@@ -2238,7 +2238,7 @@ def _median(values: list):
     return s[m] if n % 2 else (s[m - 1] + s[m]) / 2
 
 
-def _flag_time_outliers(points: list) -> int:
+def _flag_time_outliers(points: list, cell=None) -> int:
     """Mark reads whose time is a robust outlier within their (model, case) cell.
 
     Sets `p["outlier"]` on every point and returns how many were flagged. A cold
@@ -2279,10 +2279,17 @@ def _flag_time_outliers(points: list) -> int:
     ratio = settings.ANALYSIS_OUTLIER_MIN_RATIO
     if not mads:
         return 0
+    # The cell a read is judged against. Defaults to the pass-1 one; the
+    # presentation summary passes its own for pass 2, where the shape of the
+    # request (single or agentic) plays the part Detail plays here -- an agentic
+    # extraction is fifteen requests and legitimately costs several times what a
+    # single one does, so pooling the two would flag the dearer shape wholesale
+    # for exactly the reason pooling the Detail presets did.
+    cell = cell or (lambda p: (p["model"], p["case"], p["detail"]))
     groups = {}
     for p in points:
         if p["seconds"] is not None:
-            groups.setdefault((p["model"], p["case"], p["detail"]), []).append(p)
+            groups.setdefault(cell(p), []).append(p)
     flagged = 0
     for pts in groups.values():
         if len(pts) < settings.ANALYSIS_OUTLIER_MIN_RUNS:
@@ -2682,6 +2689,417 @@ def _dominant(points: list, field: str) -> str:
     if not counts:
         return ""
     return max(counts, key=lambda k: (counts[k], k))
+
+
+# --------------------------------------------------------------------------
+# The presentation summary (2026-08-25, at the user's request: *1 page tab on
+# summarization for presentation ... try be bias by default in this page --
+# exclude bad product, outlier, single error case and some old error case*).
+#
+# **Every other table on this card is built to be defensible; this one is built
+# to be SHOWN.** The difference is not the numbers -- they come from the same
+# rows through the same helpers -- it is that this one is allowed to leave
+# things out, and says which. Six blocks, in the order they were asked for:
+# reading ranked, reading timed, Detail priced, extraction ranked, the two
+# extraction shapes, extraction timed.
+#
+# Three things it does NOT do, each of which the other tabs do:
+#
+# - **No failure flags in the setting cell.** `by_ocr` prints a red incomplete
+#   count beside the model because it qualifies every other figure on the row;
+#   here the failure rate is one column and nothing else, as asked. A slide with
+#   a warning under every row reads as a system that does not work.
+# - **No pooled cross-model Detail row.** That number was deleted from the
+#   analysis tab as the most misleading on the page -- the models have not been
+#   run equally at each preset, so a pooled trend is partly a ranking of
+#   whichever model was run most at each. The Detail block is a model x preset
+#   grid for exactly that reason, and the bias makes it small enough to read.
+# - **No claim that a rate is comparable across denominators.** Every mean here
+#   carries the runs and documents behind it, the rule the whole card follows.
+
+
+def _pres_weak(grouped: list) -> dict:
+    """Models one pass's own figures disqualify: name -> why.
+
+    **A rule over the rows, never a list of model names.** The project's own
+    conclusions -- dots.ocr is dead, typhoon is the wrong tool for pass 2, qwen
+    and phi were pulled for extraction and are not the readers -- are all
+    reachable from `_standout_score` and a failure rate, and reaching them that
+    way means the summary updates when a model does instead of when this file
+    does.
+
+    **It judges the rows the summary PRINTS.** `grouped` is the same
+    `_pres_group` output the table is drawn from, so the score that disqualifies
+    a model is the score beside its name. Reading it off a differently windowed
+    figure was the first shape, and it kept a model showing 41% failure in the
+    table because the rule had seen 39% somewhere else.
+
+    Two tests, disqualifying different products. `PRESENT_MIN_SHARE` is relative
+    to the best model in this pass -- *delivers less than 60% of what the leader
+    delivers* -- because no absolute cut is right for both passes at once.
+    `PRESENT_MAX_FAILURE` is absolute, because reliability is not graded on a
+    curve: a model that reads well on the attempts it completes and does not
+    complete enough of them is out whatever the leader manages.
+
+    A model with fewer than `PRESENT_MIN_RUNS` runs is never dropped -- thin
+    evidence is not a verdict, the same rule `STANDOUT_MIN_RUNS` applies one
+    level down. It is also never the leader the share is taken against, or one
+    lucky run would set the bar for everything else.
+    """
+    scores = {}
+    for entry in grouped:
+        if not entry["key"]:
+            continue
+        scores[entry["key"]] = _standout_score(entry["value"]["mean"],
+                                               entry["failure_rate"])
+    solid = [e for e in grouped if e["runs"] >= settings.PRESENT_MIN_RUNS
+             and scores.get(e["key"]) is not None]
+    best = max((scores[e["key"]] for e in solid), default=None)
+    out = {}
+    for entry in grouped:
+        key = entry["key"]
+        if not key or entry["runs"] < settings.PRESENT_MIN_RUNS:
+            continue
+        score, rate = scores.get(key), entry["failure_rate"]
+        why = []
+        if best and score is not None and score < best * settings.PRESENT_MIN_SHARE:
+            why.append("delivers %.0f%% of the leader's %.1f per attempt"
+                       % (100.0 * score / best, best))
+        if rate is not None and rate > settings.PRESENT_MAX_FAILURE:
+            why.append("fails %.0f%% of its runs, over %g%%"
+                       % (rate, settings.PRESENT_MAX_FAILURE))
+        if why:
+            out[key] = {"model": key, "reason": " and ".join(why),
+                        "score": score, "accuracy": entry["value"]["mean"],
+                        "failure_rate": rate, "runs": entry["runs"]}
+    return out
+
+
+def _pres_points(rows: list, pass_: str) -> list:
+    """One point per run of `pass_`, with the number, the clock and the knobs.
+
+    Pass 1 is a read: `char_accuracy` and `seconds`. Pass 2 is an extraction:
+    the priority-1 field rate and `extract_seconds`. Neither is scored where the
+    run did not finish -- the standing rule, and the reason the failure rate is
+    a column rather than a footnote -- but the run is still a point, so the
+    failure rate has a denominator.
+    """
+    points = []
+    for row in rows:
+        if pass_ == "ocr":
+            if (row.get("run_type") or "ocr") == "extract":
+                continue
+            if not _current_detail(row):
+                continue
+            model, case = row.get("model") or "", _document_key(row)
+            if not model or not case:
+                continue
+            failed = _incomplete(row)
+            points.append({
+                "model": model, "case": case, "detail": detail_of(row),
+                "mode": "", "failed": failed,
+                "seconds": None if failed else _num(row.get("seconds"), None),
+                "value": None if failed else _num(row.get("char_accuracy"), None),
+                "tps": None if failed else _num(row.get("tokens_per_second"), None),
+                # Tokens GENERATED -- `predicted_n` / `completion_tokens`, summed
+                # over the document's pages. **Not the prompt**: the image's
+                # visual tokens and the instruction are prefill and are counted
+                # nowhere in this column, so it is the length of the transcript
+                # and not the cost of the request. Named for that on the page.
+                "tokens": None if failed else _num(row.get("tokens"), None),
+            })
+        else:
+            # The same test `by_extract` uses to decide a row has a pass-2
+            # figure at all, plus the shape: a run that never reached pass 2
+            # carries no `extract_mode`, and grouping it under a blank shape
+            # would put a column on the slide for a request nobody made.
+            if _pipeline(row) == "read":
+                continue
+            mode = row.get("extract_mode") or ""
+            model = row.get("extract_model") or row.get("model") or ""
+            case = _document_key(row)
+            if not model or not case or not mode:
+                continue
+            failed = _extract_incomplete(row)
+            points.append({
+                "model": model, "case": case, "detail": "", "mode": mode,
+                "failed": failed,
+                "seconds": None if failed else _num(row.get("extract_seconds"), None),
+                "value": None if failed else _p1_rate(row),
+                "tps": None,
+                # Pass 2 has `extract_tokens`, and it is deliberately not read
+                # here: nothing on the tab shows it, and a populated field no
+                # column draws is a field the next reader has to work out the
+                # status of. Add it when a column wants it.
+                "tokens": None,
+            })
+    return points
+
+
+def _pres_group(points: list, key_of) -> list:
+    """Points grouped, then meaned per document and only then across documents.
+
+    `_per_case`'s rule applied to a flat point list: a model run five times on
+    one fixture is not five samples of it. The mean is over the documents, the
+    counts are over the runs, and both are on the row.
+    """
+    groups = {}
+    for point in points:
+        key = key_of(point)
+        groups.setdefault(key, {}).setdefault(point["case"], []).append(point)
+    out = []
+    for key, cases in groups.items():
+        runs = [p for pts in cases.values() for p in pts]
+        failed = [p for p in runs if p["failed"]]
+        ok = {c: [p for p in pts if not p["failed"]] for c, pts in cases.items()}
+        ok = {c: pts for c, pts in ok.items() if pts}
+
+        def per_case(pick, ok=ok, runs=runs):
+            # Mean of the per-document means, with the spread of the documents
+            # beside it -- `_figure` over one value per document rather than
+            # over every run, so a repeat cannot weight its fixture twice.
+            means = []
+            for pts in ok.values():
+                values = [v for v in (pick(p) for p in pts) if v is not None]
+                if values:
+                    means.append(sum(values) / len(values))
+            figure = _figure([{"v": m} for m in means], lambda d: d["v"])
+            figure["runs"] = len(runs)
+            figure["documents"] = len(means)
+            return figure
+
+        out.append({
+            "key": key,
+            "runs": len(runs),
+            "documents": len(cases),
+            "failed": len(failed),
+            # One column, as asked. A run that did not finish is counted here
+            # and scored nowhere -- so a high mean beside a high rate is one
+            # good run among several bad ones, which is the only reading of
+            # this pair.
+            "failure_rate": round(100.0 * len(failed) / len(runs), 1) if runs else None,
+            "value": per_case(lambda p: p["value"]),
+            "seconds": per_case(lambda p: p["seconds"]),
+            "tps": per_case(lambda p: p["tps"]),
+            "tokens": per_case(lambda p: p["tokens"]),
+        })
+    return out
+
+
+def _pres_cost(entry: dict):
+    """Seconds per point of accuracy: a ratio of two means, not a measured rate.
+
+    It prices accuracy roughly and ranks value, and it is not a per-run figure
+    -- the same caveat the analysis tab's own `s/point` column carries. None
+    where either half is missing or the accuracy is zero, because dividing by
+    nothing read is not a cost anyone pays.
+    """
+    secs, acc = entry["seconds"]["mean"], entry["value"]["mean"]
+    if secs is None or not acc or acc <= 0:
+        return None
+    return round(secs / acc, 2)
+
+
+def presentation(rows: list = None, bias: bool = True) -> dict:
+    """The six-block summary, biased by default and saying so.
+
+    `bias=False` returns the same six blocks over every row that survived the
+    card's own filters, which is what makes the bias arguable rather than
+    load-bearing: the toggle is one click and the difference is the argument.
+
+    Applied in this order, and the order matters -- the weak-model rule is
+    computed over the rows a single-source drop has already left, or a model
+    whose whole failure record is one bad pairing would be disqualified by
+    failures the summary is about to stop counting.
+    """
+    everything = _for_summary(read(limit=10 ** 6) if rows is None else rows)
+    steps = []
+    rows = everything
+    if bias:
+        # 1. Single-source failures. A document dominated by one bad model is
+        # not a hard document, and a model that loops on one fixture and reads
+        # everything else is not an unreliable model. Only the FAILING runs of
+        # such a group go; the clean ones stay and still speak for it.
+        reduced = drop_single_source(rows)
+        if len(reduced) != len(rows):
+            steps.append({"rule": "single_source", "pass": "",
+                          "dropped": len(rows) - len(reduced), "models": []})
+        rows = reduced
+    weak = {"ocr": {}, "extract": {}}
+
+    blocks = {}
+    for pass_ in ("ocr", "extract"):
+        points = _pres_points(rows, pass_)
+        if bias:
+            # Grouped once unbiased to decide, then again below over what is
+            # left. The first grouping is thrown away -- it exists only so the
+            # rule sees the same figures the reader would have.
+            weak[pass_] = _pres_weak(_pres_group(points, lambda p: p["model"]))
+        if bias and weak[pass_]:
+            # 2. Models the log disqualifies for THIS pass. Per pass, because
+            # this project has a model that reads best and extracts second
+            # worst, and one with no vision at all that ranks near the top of
+            # the form -- a single list of "good models" would be wrong about
+            # both.
+            kept = [p for p in points if p["model"] not in weak[pass_]]
+            steps.append({"rule": "weak_model", "pass": pass_,
+                          "dropped": len(points) - len(kept),
+                          "models": sorted(weak[pass_])})
+            points = kept
+        if bias:
+            # 3. Time outliers, per cell and robustly -- a cold model load or a
+            # runaway puts one run's clock far above the rest of its cell and
+            # moves a mean on its own. The cell carries the knob that
+            # legitimately changes the clock: Detail for a read, the request
+            # shape for an extraction. **Only the TIME is discounted**; the run
+            # still counts and still scores, because nothing about its accuracy
+            # was in question.
+            cell = ((lambda p: (p["model"], p["case"], p["detail"]))
+                    if pass_ == "ocr" else
+                    (lambda p: (p["model"], p["case"], p["mode"])))
+            marked = [dict(p) for p in points]
+            flagged = _flag_time_outliers(marked, cell=cell)
+            if flagged:
+                steps.append({"rule": "time_outlier", "pass": pass_,
+                              "dropped": flagged, "models": []})
+            for point, mark in zip(points, marked):
+                if mark["outlier"]:
+                    point["seconds"] = None
+        blocks[pass_] = points
+
+    ocr, ext = blocks["ocr"], blocks["extract"]
+
+    def ranked(points, key_of):
+        out = _pres_group(points, key_of)
+        out.sort(key=lambda e: (e["value"]["mean"] if e["value"]["mean"] is not None
+                                else -1.0, e["documents"]), reverse=True)
+        return out
+
+    models = ranked(ocr, lambda p: p["model"])
+    ex_models = ranked(ext, lambda p: p["model"])
+    shapes = [{**e, "model": e["key"][0], "mode": e["key"][1]}
+              for e in ranked(ext, lambda p: (p["model"], p["mode"]))]
+    for entry in models + ex_models:
+        entry["model"] = entry["key"]
+    for entry in models + ex_models + shapes:
+        entry["cost"] = _pres_cost(entry)
+
+    # The Detail grid: one row per model, one cell per preset, and what raising
+    # the preset bought and cost THAT MODEL. Never pooled across models -- see
+    # the block comment above.
+    present = {p["detail"] for p in ocr if p["detail"]}
+    details = [d for d in DETAIL_ORDER if d in present]
+    by_model = {}
+    for cell in _pres_group(ocr, lambda p: (p["model"], p["detail"])):
+        by_model.setdefault(cell["key"][0], {})[cell["key"][1]] = cell
+    order = [e["model"] for e in models]
+    detail_rows = []
+    for model in sorted(by_model, key=lambda m: order.index(m) if m in order else 99):
+        cells = by_model[model]
+        ran = [d for d in details
+               if d in cells and cells[d]["value"]["mean"] is not None]
+        timed = [d for d in details
+                 if d in cells and cells[d]["seconds"]["mean"] is not None]
+        row = {"model": model, "cells": cells,
+               "from": ran[0] if len(ran) > 1 else None,
+               "to": ran[-1] if len(ran) > 1 else None,
+               "acc_delta": None, "time_factor": None,
+               "time_from": None, "time_to": None,
+               "runs": sum(c["runs"] for c in cells.values()),
+               "documents": max((c["documents"] for c in cells.values()), default=0)}
+        if len(ran) > 1:
+            row["acc_delta"] = round(cells[ran[-1]]["value"]["mean"]
+                                     - cells[ran[0]]["value"]["mean"], 1)
+        if len(timed) > 1:
+            low = cells[timed[0]]["seconds"]["mean"]
+            row["time_factor"] = (round(cells[timed[-1]]["seconds"]["mean"] / low, 2)
+                                  if low else None)
+            row["time_from"], row["time_to"] = timed[0], timed[-1]
+        detail_rows.append(row)
+
+    return {
+        "biased": bool(bias),
+        # What the bias did, rule by rule, so the page can print it and a reader
+        # can put any of it back. Empty on an unbiased view, and empty on a
+        # biased one that found nothing to drop -- which is a real and different
+        # statement about the log.
+        "bias": steps,
+        "weak": {k: sorted(v.values(), key=lambda e: e["score"] or 0.0)
+                 for k, v in weak.items()},
+        "thresholds": {"min_share": settings.PRESENT_MIN_SHARE,
+                       "max_failure": settings.PRESENT_MAX_FAILURE,
+                       "min_runs": settings.PRESENT_MIN_RUNS},
+        # 1 + 2: ranked on the transcript, and timed. One aggregation, two
+        # tables -- the page sorts and columns them differently, because *which
+        # reader is best* and *what does each reader cost* are two questions and
+        # a reader looking for the second should not have to find it inside the
+        # first.
+        "ocr_models": models,
+        # 3: what raising Detail bought and cost, per model.
+        "ocr_details": details,
+        "ocr_detail": detail_rows,
+        # 4 + 6: the same pair for pass 2.
+        "extract_models": ex_models,
+        # 5: single against agentic, per model, with the clock.
+        "extract_shapes": shapes,
+        "window": window_size() or None,
+        "runs": len(rows),
+    }
+
+
+def conditions(rows: list = None) -> dict:
+    """What the runs in view were made UNDER, as opposed to what they scored.
+
+    **Built 2026-08-25 for the Summary tab's environment card** (*have a banner
+    card for my hardware and this env*). The card's other half is
+    `machine.describe`, which reports the box this PROCESS is running on. These
+    two must never be merged, and the card keeps them apart on purpose: the log
+    outlives the machine, so a row read on another box would otherwise be
+    described by this one's CPU.
+
+    Everything here is counted from the rows, so it narrows with the card's
+    filters like every other table. The hardware and warmth marks are the
+    INFERRED ones (`run_hardware` / `run_start`) and are labelled as such
+    wherever they are shown -- the app talks HTTP to a server it did not launch
+    and knows neither the GPU layer count nor whether the model was resident.
+    """
+    rows = _for_summary(_read_all() if rows is None else rows)
+
+    def tally(value_of, keep=None):
+        counts = {}
+        for row in rows:
+            if keep and not keep(row):
+                continue
+            value = value_of(row)
+            if value:
+                counts[value] = counts.get(value, 0) + 1
+        return [{"value": v, "runs": counts[v]}
+                for v in sorted(counts, key=lambda k: (-counts[k], k))]
+
+    stamps = sorted(r.get("timestamp") or "" for r in rows)
+    stamps = [s for s in stamps if s]
+    return {
+        "runs": len(rows),
+        # The window these runs were read under, so the card cannot claim to
+        # describe more of the log than the tables beside it do.
+        "first": stamps[0] if stamps else None,
+        "last": stamps[-1] if stamps else None,
+        "backends": tally(lambda r: r.get("backend") or ""),
+        "servers": tally(lambda r: r.get("server") or ""),
+        # The two model questions kept apart, the same rule `FILTER_FIELDS`
+        # follows: a fields-only row has no reading model because it read no
+        # page, and counting it as one is what emptied the card once already.
+        "read_models": tally(FILTER_FIELDS["model"]),
+        "extract_models": tally(FILTER_FIELDS["extract_model"]),
+        "details": tally(lambda r: detail_of(r),
+                         lambda r: (r.get("run_type") or "ocr") != "extract"),
+        "profiles": tally(lambda r: r.get("ocr_profile") or ""),
+        "modes": tally(lambda r: r.get("extract_mode") or ""),
+        # Inferred, never recorded. Named `_inferred` in the payload so nothing
+        # downstream can print them as fact by accident.
+        "hardware_inferred": tally(run_hardware),
+        "start_inferred": tally(run_start),
+    }
 
 
 def totals(rows: list = None, logged: int = None) -> dict:

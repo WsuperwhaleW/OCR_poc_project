@@ -5,6 +5,21 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Thai Document OCR</title>
 <style>
+  /* ---- theme ----
+     **Three states, not two** (2026-08-25, at the user's request: *allow toggle
+     white background for more clean look*). The page followed the OS and nothing
+     else until now, which is no use to somebody on a dark desktop who wants a
+     white page to project or screenshot.
+
+     - bare `:root` is the dark palette and the fallback for everything
+     - `prefers-color-scheme: light` flips it for a light desktop, but ONLY while
+       no explicit choice has been made -- hence the `:not([data-theme="dark"])`,
+       without which choosing dark on a light desktop would do nothing
+     - `[data-theme]` on the root wins over both, in either direction
+
+     Every colour is defined on the bare `:root` and only REDEFINED in the two
+     blocks below, so no variable has its single definition inside a conditional
+     -- a rule that would otherwise leave a token undefined on one path. */
   :root {
     /* Native widgets (the option popup above all) are painted by the OS, not by
        this stylesheet. color-scheme is what tells it which set to paint. */
@@ -18,13 +33,41 @@
     --accent-soft: rgba(79, 140, 255, 0.12);
     --danger: #ff6b6b;
     --code-bg: rgba(127, 140, 170, 0.14);
+    /* A faint wash over the page, for the chips and blocks that want to sit a
+       shade off the card without a border. **It has to flip with the theme**:
+       white at 6% is invisible on a white card, which is what every one of these
+       looked like the first time the toggle was tried. */
+    --tint: rgba(255, 255, 255, 0.06);
+    /* The amber of the accuracy scale, which is the one hard-coded colour that
+       does not survive the flip: #d9a441 on white is a pale smear at the size
+       these numbers are printed. Darkened for light, and named so the scale is
+       set in one place rather than at each of its call sites. */
+    --warn: #d9a441;
+    --ok: #3fb950;
+    /* The neutral half of the scale: time, cost and volume, which are neither
+       good nor bad in themselves. Kept apart from the red/amber/green so a
+       clock can be coloured without implying a verdict on it. */
+    --info: #4fb3c4;
   }
   @media (prefers-color-scheme: light) {
-    :root {
+    :root:not([data-theme="dark"]) {
       color-scheme: light;
-      --bg: #f6f7f9; --panel: #ffffff; --border: #e2e5ea;
-      --text: #1b1f27; --muted: #667085; --accent-soft: rgba(79, 140, 255, 0.1);
+      --bg: #e4e7ec; --panel: #f4f6f8; --border: #ccd2db;
+      --text: #232936; --muted: #5c6675; --accent: #2f6fe0;
+      --accent-soft: rgba(47, 111, 224, 0.11);
+      --tint: rgba(16, 24, 40, 0.055);
+      --warn: #9a6410; --ok: #1a7f37; --danger: #c0392f; --info: #2a6f7a;
+      --code-bg: rgba(16, 24, 40, 0.07);
     }
+  }
+  :root[data-theme="light"] {
+    color-scheme: light;
+    --bg: #e4e7ec; --panel: #f4f6f8; --border: #ccd2db;
+    --text: #232936; --muted: #5c6675; --accent: #2f6fe0;
+    --accent-soft: rgba(47, 111, 224, 0.11);
+    --tint: rgba(16, 24, 40, 0.055);
+    --warn: #9a6410; --ok: #1a7f37; --danger: #c0392f; --info: #2a6f7a;
+    --code-bg: rgba(16, 24, 40, 0.07);
   }
   * { box-sizing: border-box; }
   body {
@@ -37,6 +80,9 @@
      controls are kept to a fixed, narrow column beside it. */
   .wrap { max-width: 1720px; margin: 0 auto; }
   header { margin-bottom: 16px; }
+  .page-head { display: flex; align-items: flex-start; gap: 16px;
+    flex-wrap: wrap; justify-content: space-between; }
+  .theme-seg button { padding: 5px 12px; font-size: .78rem; }
   h1 { font-size: 1.4rem; margin: 0 0 4px; }
   .sub { color: var(--muted); font-size: 0.9rem; }
   .sub code { background: var(--accent-soft); padding: 2px 6px; border-radius: 5px; }
@@ -78,10 +124,19 @@
     font-size: .9rem; word-break: break-all;
   }
   #filechip strong { display: block; font-size: 1.5rem; margin-bottom: 4px; }
+  /* The prepared-page bar under the workspace preview. It is a statement ABOUT
+     the picture above it, so it reads as a caption rather than as another
+     control -- the only thing on it that clicks is the download. */
+  #prepBar { display: none; margin-top: 6px; gap: 10px; align-items: baseline; flex-wrap: wrap; }
+  #prepBar.on { display: flex; }
+  #prepCap { font-size: .78rem; color: var(--muted); flex: 1; min-width: 140px; }
+  #prepCap.err { color: var(--danger); }
+  #prepCap b { color: var(--text); font-weight: 600; }
+  #prepDl[hidden] { display: none; }
   #mapchip:empty { display: none; }
   #mapchip {
     margin-top: 8px; padding: 8px 11px; border-radius: 8px; font-size: .8rem;
-    border: 1px solid #3fb950; background: rgba(63, 185, 80, .10); color: #3fb950;
+    border: 1px solid var(--ok); background: rgba(63, 185, 80, .10); color: var(--ok);
   }
   #mapchip.none { border-color: var(--border); background: transparent; color: var(--muted); }
   #mapchip .how { opacity: .8; }
@@ -202,7 +257,7 @@
   /* Grounding: a value the transcript does not carry must not read like one it
      does, so it is marked at the value rather than only in a summary above. */
   .fld-grid dd.ungrounded, .fld-grid dd.computed { color: var(--danger); }
-  .fld-grid dd.computed { color: #d9a441; }
+  .fld-grid dd.computed { color: var(--warn); }
   .fld-tag { font-size: .68rem; font-weight: 700; padding: 1px 6px; border-radius: 4px;
              margin-left: 7px; white-space: nowrap; vertical-align: 1px;
              text-transform: uppercase; letter-spacing: .04em; }
@@ -214,9 +269,9 @@
           padding: .05rem .28rem; border-radius: 3px; margin-left: .35rem;
           vertical-align: .08rem; }
   .tier.p1 { background: rgba(110,168,254,.18); color: #6ea8fe; }
-  .tier.p2 { background: rgba(255,255,255,.08); color: var(--muted); }
-  .tier.p3 { background: rgba(255,255,255,.05); color: var(--muted); }
-  .fld-tag.computed { background: rgba(217,164,65,.18); color: #d9a441; }
+  .tier.p2 { background: var(--tint); color: var(--muted); }
+  .tier.p3 { background: var(--tint); color: var(--muted); }
+  .fld-tag.computed { background: rgba(217,164,65,.18); color: var(--warn); }
   #fields td.ungrounded { color: var(--danger); text-decoration: underline wavy var(--danger); }
   /* Scored against the hand-written truth file, marked at the value itself. A
      list of paths below the fields says a value is wrong; a mark beside it says
@@ -226,8 +281,8 @@
   .sc { font-size: .68rem; font-weight: 700; padding: 1px 6px; border-radius: 4px;
         margin-left: 7px; white-space: nowrap; vertical-align: 1px;
         text-transform: uppercase; letter-spacing: .04em; }
-  .sc.correct { background: rgba(63,185,80,.16); color: #3fb950; }
-  .sc.partial { background: rgba(217,164,65,.18); color: #d9a441; }
+  .sc.correct { background: rgba(63,185,80,.16); color: var(--ok); }
+  .sc.partial { background: rgba(217,164,65,.18); color: var(--warn); }
   .sc.wrong, .sc.missed, .sc.spurious { background: rgba(255,107,107,.18); color: var(--danger); }
   .sc.absent { background: var(--border); color: var(--muted); }
   /* The value the truth says belongs there, under the one that came back. */
@@ -235,7 +290,7 @@
   .truth b { color: var(--text); font-weight: 600; }
   .truth i { font-style: normal; opacity: .8; }
   #fields td.sc-wrong, #fields td.sc-missed, #fields td.sc-spurious { color: var(--danger); }
-  #fields td.sc-partial { color: #d9a441; }
+  #fields td.sc-partial { color: var(--warn); }
   #fields td .truth { display: block; }
   /* A row the page prints and the extraction never returned. Dashed, because
      nothing in it came from the model -- it is the truth file talking. */
@@ -440,7 +495,7 @@
     padding: 2px 9px; color: var(--muted); }
   .an-chip b { color: var(--fg); font-variant-numeric: tabular-nums; }
   .an-chip-un { opacity: .65; }
-  .an-chip-out { border-color: rgba(217,164,65,.5); color: #d9a441; }
+  .an-chip-out { border-color: rgba(217,164,65,.5); color: var(--warn); }
   /* "inferred", wherever a mark is shown. These two are read off measurements,
      not reported by the server, and a reader must never take them for recorded
      fact -- the same discipline as marking a re-extraction's setting. */
@@ -469,6 +524,149 @@
   /* The range, one step fainter than the count above it: it is the widest claim
      in the cell and the least precise, so it must not read as the headline. */
   #analysisSum .an-rng { opacity: .8; font-variant-numeric: tabular-nums; }
+  /* ---- the presentation summary ----
+     Its own colour scale (red under 70, green at 90) lives in `presColour`, not
+     here: the numbers are coloured inline so a cell carries its own verdict
+     wherever it is drawn -- in a table, in the Detail grid, or in a tooltip.
+
+     **Everything here is a size up from the rest of the card** (2026-08-25, at
+     the user's request: *this summary part is for presentation so bigger text*).
+     The rest of the page is a working surface read by one person at a desk; this
+     tab is read by a room, often projected. The scale-up is applied to the
+     shared classes SCOPED to `#presentSum` rather than by raising the base font,
+     so `table.queue`, `.cs-val` and `.cs-set` keep their own proportions and
+     nothing outside this panel moves. */
+  #presentSum { margin-top: 4px; }
+  #presentSum table.queue { min-width: 640px; margin-top: 8px; font-size: .98rem; }
+  #presentSum table.queue th { font-size: .82rem; }
+  #presentSum table.queue th, #presentSum table.queue td { padding: 11px 12px; }
+  #presentSum .cs-val { font-size: 1.22rem; }
+  #presentSum .cs-set { font-size: .82rem; margin-top: 5px; }
+  #presentSum .cs-of { font-size: .84rem; }
+  #presentSum .note { font-size: .86rem; line-height: 1.7; }
+  #presentSum tr.ms-top td { background: var(--accent-soft); }
+  #presentSum table.an-heat { font-size: .95rem; }
+  #presentSum table.an-heat th, #presentSum table.an-heat td { padding: 11px 13px; }
+  #presentSum table.an-heat th { font-size: .78rem; }
+  #presentSum table.an-heat td.an-cell .an-t { font-size: .8rem; }
+  /* A numbered heading per block, because six tables in one column are
+     unreadable without one -- and the numbers are the ones they were asked for,
+     so a reader can check the tab against the request. */
+  /* A numbered accent chip and the question. The chip is where this tab gets
+     its structure from now that the explanatory paragraphs under each block are
+     gone -- six headings in a column need to be countable at a glance. */
+  .pr-h { font-size: 1.06rem; font-weight: 700; letter-spacing: .01em;
+    margin: 34px 0 0; padding-bottom: 8px; border-bottom: 1px solid var(--border);
+    display: flex; align-items: center; gap: 10px; cursor: help; }
+  .pr-h:first-of-type { margin-top: 18px; }
+  .pr-n { flex: 0 0 auto; width: 26px; height: 26px; border-radius: 8px;
+    background: var(--accent); color: #fff; font-size: .84rem; font-weight: 700;
+    display: inline-flex; align-items: center; justify-content: center; }
+  .pr-empty { color: var(--muted); font-size: .88rem; padding: 14px 2px; }
+  /* The magnitude bar under every figure. One weight, one hue per column, and
+     deliberately thin: it is there to be compared down the column out of the
+     corner of the eye, not to be read. */
+  .pr-bar { display: block; height: 4px; border-radius: 3px; margin: 5px auto 0;
+    width: 78%; background: var(--tint); overflow: hidden; }
+  .pr-bar > span { display: block; height: 100%; border-radius: 3px; opacity: .78; }
+  /* Rank, model, counts. The badge carries the SERVER's ordering and never the
+     row's position after a sort -- see `prModel`. */
+  .pr-model { white-space: nowrap; }
+  #presentSum td.pr-model { display: flex; align-items: baseline; gap: 10px; }
+  .pr-rank { flex: 0 0 auto; min-width: 22px; height: 22px; padding: 0 5px;
+    border-radius: 7px; border: 1px solid var(--border); color: var(--muted);
+    font-size: .76rem; font-weight: 700; display: inline-flex;
+    align-items: center; justify-content: center; }
+  .pr-rank-1 { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .pr-name { min-width: 0; white-space: normal; }
+  /* The two request shapes, told apart by colour rather than by reading the
+     word. Both neutral hues: neither shape is better in general, which is the
+     entire point of that block. */
+  .pr-shape { display: inline-block; font-size: .8rem; font-weight: 600;
+    border-radius: 999px; padding: 2px 11px; border: 1px solid var(--border); }
+  .pr-shape-agentic { background: color-mix(in srgb, var(--info) 16%, transparent);
+    border-color: color-mix(in srgb, var(--info) 45%, transparent); }
+  .pr-shape-single { background: var(--accent-soft);
+    border-color: color-mix(in srgb, var(--accent) 40%, transparent); }
+  /* What the bias excluded, as one strip of chips. It replaced a four-line
+     paragraph and says the same thing: which models are missing, and why on
+     hover. Nothing at all renders when the bias is off. */
+  .pr-excl { display: flex; flex-wrap: wrap; align-items: center; gap: 7px;
+    margin: 14px 0 2px; padding: 9px 13px; border-radius: 10px;
+    background: var(--tint); font-size: .84rem; }
+  .pr-excl-k { color: var(--muted); font-weight: 700; text-transform: uppercase;
+    letter-spacing: .06em; font-size: .74rem; margin-right: 2px; }
+  .pr-chip { border: 1px solid var(--border); border-radius: 999px;
+    padding: 2px 10px; font-size: .8rem; cursor: help; }
+  .pr-chip b { margin-left: 6px; color: var(--muted); font-variant-numeric: tabular-nums; }
+  .pr-chip-out { border-color: color-mix(in srgb, var(--danger) 45%, transparent);
+    color: var(--danger); text-decoration: line-through; }
+  /* A block with more than one table needs each one named, or the second reads
+     as a continuation of the first. Quieter than `.pr-h`: it is a label inside
+     a block, not another block. */
+  .pr-sub { font-size: .84rem; font-weight: 600; color: var(--muted);
+    text-transform: uppercase; letter-spacing: .06em; margin: 16px 0 -2px; }
+
+  /* ---- the two headline cards ----
+     The one thing a table cannot do is be read from across a room, so the two
+     results this tab exists to deliver are lifted out at the top at a size that
+     needs no leaning in. They are the SERVER's ranking and never the sorted
+     table -- see `prHero`. */
+  .pr-heroes { display: grid; gap: 12px; margin: 14px 0 4px;
+    grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); }
+  .pr-hero { border: 1px solid var(--border); border-radius: 12px;
+    padding: 16px 18px; background: var(--accent-soft);
+    display: flex; flex-direction: column; gap: 2px;
+    border-top: 3px solid var(--hero, var(--accent)); }
+  .pr-hero-label { font-size: .78rem; text-transform: uppercase;
+    letter-spacing: .07em; color: var(--muted); font-weight: 600; }
+  .pr-hero-model { font-size: 1.1rem; font-weight: 700; margin-top: 4px;
+    word-break: break-word; }
+  /* `clamp` rather than a fixed size: this is the one number on the page that
+     has to survive both a 380px column and a projector, and a fixed 2.8rem
+     overflows the first. */
+  .pr-hero-num { font-size: clamp(2.1rem, 5.5vw, 3rem); font-weight: 800;
+    line-height: 1.05; font-variant-numeric: tabular-nums; margin: 2px 0;
+    color: var(--hero, var(--text)); }
+  .pr-hero-sub { font-size: .84rem; color: var(--muted); line-height: 1.6; }
+  /* Nothing scored is not a low score, so the card is drawn flat rather than in
+     the red an empty number would otherwise borrow from the scale. */
+  .pr-hero-none { background: transparent; }
+  .pr-hero-none .pr-hero-num { color: var(--muted); }
+
+  /* ---- the environment card ----
+     Three columns because there are three claims and none implies another: the
+     machine this process runs on, the server it would use now, and what the rows
+     in view were actually made under. The headings are what keep them apart and
+     are not decoration -- see `prEnvCard`. */
+  .pr-env { display: grid; gap: 0; margin: 14px 0 2px;
+    border: 1px solid var(--border); border-radius: 12px; overflow: hidden;
+    grid-template-columns: repeat(auto-fit, minmax(290px, 1fr)); }
+  .pr-env-col { padding: 14px 16px; border-right: 1px solid var(--border); }
+  .pr-env-col:last-child { border-right: 0; }
+  .pr-env-h { font-size: .78rem; text-transform: uppercase; letter-spacing: .07em;
+    color: var(--muted); font-weight: 700; margin-bottom: 9px;
+    padding-bottom: 7px; border-bottom: 1px solid var(--border); }
+  .pr-env-row { display: flex; gap: 10px; align-items: baseline;
+    padding: 5px 0; font-size: .88rem; line-height: 1.55; }
+  .pr-env-k { flex: 0 0 108px; color: var(--muted); font-size: .8rem; }
+  .pr-env-v { flex: 1; min-width: 0; word-break: break-word; }
+  .pr-pill { display: inline-block; font-size: .78rem; border-radius: 999px;
+    border: 1px solid var(--border); padding: 1px 9px; margin: 2px 4px 2px 0; }
+  .pr-pill .n { color: var(--muted); font-size: .72rem; margin-left: 5px; }
+  .pr-pill-more { color: var(--muted); border-style: dashed; }
+  /* What the bias dropped. Above the tables, because it qualifies every figure
+     on the tab, and in the accent rather than the danger colour: this is the
+     view working as intended, not a warning. */
+  .pr-bias { font-size: .86rem; line-height: 1.7; margin: 14px 0 2px;
+    padding: 11px 14px; border-left: 3px solid var(--accent);
+    background: var(--accent-soft); border-radius: 0 8px 8px 0; }
+  .pr-bias ul { margin: 6px 0 0; padding-left: 18px; }
+  .pr-bias li { margin: 2px 0; }
+  /* Bias off is a different claim and looks like one: the tables below are then
+     the survey rather than the recommendation. */
+  .pr-bias-off { border-left-color: var(--muted); background: var(--tint); }
+  #presentSum .an-grid { margin-top: 8px; }
   #caseSum table.queue { min-width: 820px; margin-top: 6px; }
   #ocrSum table.queue, #extractSum table.queue { min-width: 720px; margin-top: 6px; }
   /* The model that extracts the most fields correctly, marked in the table
@@ -503,14 +701,14 @@
             text-transform: uppercase; letter-spacing: .04em; }
   .qbadge.queued { background: var(--border); color: var(--muted); }
   .qbadge.running { background: rgba(79,140,255,.2); color: var(--accent); }
-  .qbadge.done { background: rgba(63,185,80,.18); color: #3fb950; }
+  .qbadge.done { background: rgba(63,185,80,.18); color: var(--ok); }
   .qbadge.failed { background: rgba(255,107,107,.18); color: var(--danger); }
   .qbadge.cancelled { background: var(--border); color: var(--muted); }
   /* A reply that was salvaged from a cut-off body: it has real values in it, so
      it is not a failure, but the keys it never reached are empty for a reason
      the fields themselves cannot show. Amber, between done and failed. */
   .qbadge.partial, .qbadge.truncated, .qbadge.looped {
-    background: rgba(217,164,65,.18); color: #d9a441;
+    background: rgba(217,164,65,.18); color: var(--warn);
   }
   .qbar { height: 5px; border-radius: 4px; background: var(--border); overflow: hidden; min-width: 70px; }
   .qbar span { display: block; height: 100%; background: var(--accent); transition: width .3s; }
@@ -551,7 +749,7 @@
     word-break: break-word;
   }
   .raw-pane .fld-sec:first-child { margin-top: 4px; }
-  #accDiff .add { color: #3fb950; }
+  #accDiff .add { color: var(--ok); }
   #accDiff .del { color: var(--danger); }
   #accDiff .hunk { color: var(--accent); }
   .pagebar { font-size: .8rem; color: var(--muted); margin: 10px 0 0; }
@@ -626,7 +824,7 @@
   }
   .serverbar #serverText { flex: 1; word-break: break-word; }
   .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--muted); flex: none; }
-  .dot.ok { background: #3fb950; }
+  .dot.ok { background: var(--ok); }
   .dot.bad { background: var(--danger); }
   button.ghost-sm { padding: 4px 10px; font-size: .78rem; border-radius: 6px; }
   button.ghost-sm.on { background: var(--accent-soft); border-color: var(--accent); }
@@ -675,7 +873,7 @@
     border: 1px solid var(--border); border-radius: 6px; padding: 8px 10px;
   }
   .step-list li.bad .s { color: var(--danger); }
-  .step-list li.flagged .s { color: #d9a441; }
+  .step-list li.flagged .s { color: var(--warn); }
   #serverReason:empty { display: none; }
   #stats { width: 100%; border-collapse: collapse; font-size: .8rem; margin-top: 12px; }
   #stats:empty { display: none; }
@@ -686,7 +884,7 @@
   .warn:empty { display: none; }
   .warn {
     margin: 10px 0 0; padding: 9px 12px; border-radius: 8px; font-size: .82rem;
-    border: 1px solid #d9a441; background: rgba(217, 164, 65, .12); color: #d9a441;
+    border: 1px solid var(--warn); background: rgba(217, 164, 65, .12); color: var(--warn);
   }
   #meta { color: var(--muted); font-size: .82rem; margin-top: 14px; min-height: 1.2em; }
   .err { color: var(--danger); }
@@ -696,16 +894,28 @@
   }
   @keyframes sp { to { transform: rotate(360deg); } }
   .note { font-size: .78rem; color: var(--muted); margin-top: 12px; line-height: 1.45; }
-  .note.err { color: #d9a441; border-left: 3px solid #d9a441; padding-left: 10px; }
+  .note.err { color: var(--warn); border-left: 3px solid var(--warn); padding-left: 10px; }
   .muted-inline { color: var(--muted); font-weight: 400; }
 </style>
 </head>
 <body>
 <div class="wrap">
-  <header>
-    <h1>Thai Document OCR</h1>
-    <p class="sub">Full-page transcription via <span id="subKind">{{ server.kind or 'no server' }}</span> ·
-      <code id="subUrl">{{ server.url }}</code></p>
+  <header class="page-head">
+    <div>
+      <h1>Thai Document OCR</h1>
+      <p class="sub">Full-page transcription via <span id="subKind">{{ server.kind or 'no server' }}</span> ·
+        <code id="subUrl">{{ server.url }}</code></p>
+    </div>
+    <!-- Three states in one control, because "follow the desktop" is a real
+         choice and not the absence of one: a two-way switch would silently
+         freeze the page on whichever theme the OS happened to be showing the
+         first time anybody pressed it. -->
+    <div class="seg theme-seg" id="themeSeg" title="the page background. Auto
+follows your desktop; Light is the one to pick for projecting or screenshotting.">
+      <button data-theme="auto">Auto</button>
+      <button data-theme="light">Light</button>
+      <button data-theme="dark">Dark</button>
+    </div>
   </header>
 
   <div class="grid">
@@ -727,6 +937,10 @@
       <input id="file" type="file"
              accept="image/*,application/pdf,.pdf,.heic,.heif,.tif,.tiff,.webp,.bmp" hidden>
       <img id="preview" alt="preview">
+      <div id="prepBar">
+        <span id="prepCap"></span>
+        <a id="prepDl" class="ghost-sm" download hidden>Download</a>
+      </div>
       <div id="filechip"><strong>📄</strong><span id="filechipname"></span></div>
       <div id="mapchip"></div>
 
@@ -803,6 +1017,13 @@
         returns an empty transcript at HTTP&nbsp;200 rather than an error. You
         can still override it here to compare a prompt against a model; the
         override stands until the next model switch.</p>
+      <div class="row">
+        <label class="check" style="flex:1;min-width:200px">
+          <input id="loopGuardChk" type="checkbox" {% if loop_guard %}checked{% endif %}>
+          Stop a read that starts repeating
+        </label>
+      </div>
+      <p class="note" id="loopGuardNote"></p>
       <div class="row">
         <label class="field" style="flex:1;min-width:200px">
           Field extraction
@@ -1221,6 +1442,7 @@
         <label class="cmp-opt"><input type="checkbox" id="cmpRaw"> Markdown</label>
         <label class="cmp-opt"><input type="checkbox" id="cmpSync" checked> Sync scroll</label>
         <a id="cmpOpen" class="ghost-sm" style="margin-left:auto" target="_blank" rel="noopener">Open image</a>
+        <a id="cmpDl" class="ghost-sm" download>Download</a>
       </div>
       <div class="cmp-grid" id="cmpGrid">
         <div class="cmp-col" id="cmpColImg">
@@ -1311,7 +1533,8 @@ highlighted. Dominated by a pairing, not itself hard.">
     <div id="lvEmpty"></div>
 
     <div class="seg" id="logTabs" style="margin-top:14px">
-      <button data-panel="rank" class="on">Full rank</button>
+      <button data-panel="present" class="on" title="the six tables worth showing, at presentation size: which model reads best, which extracts best, what each costs, and what raising Detail buys. Shows everything unless you exclude models with the chips or the toggle.">Summary</button>
+      <button data-panel="rank">Full rank</button>
       <button data-panel="ocr">Best reading</button>
       <button data-panel="extract">Best extraction</button>
       <button data-panel="case">Per document</button>
@@ -1320,12 +1543,29 @@ highlighted. Dominated by a pairing, not itself hard.">
       <button data-panel="raw">Raw data</button>
     </div>
 
+    <!-- The presentation summary: six tables, one colour scale, one error
+         column each, and a bias that is on by default and named. The one view
+         on this card meant to be SHOWN rather than argued from -- which is why
+         it is the tab that opens, and why the bias toggle lives on it rather
+         than in the bar above: it changes this tab and nothing else. -->
+    <div class="lv-panel" id="panelPresent">
+      <div class="lv-bar">
+        <label class="lv-check" title="drop by rule instead of by hand: models
+this log disqualifies for that pass, failures that came entirely from one pairing,
+and runs whose clock was a robust outlier in its own cell. Everything dropped is
+named below. OFF — the default — shows every model and every run the filters
+matched.">
+          <input type="checkbox" id="presBias"> Exclude weak models
+        </label>
+      </div>
+      <div id="presentSum"></div>
+    </div>
     <!-- Best and worst per model and per document, for each pass, ranked on
          failures first and accuracy second. Everything in it is derived from
          the same rows as the tables below; what it adds is the answer said out
          loud, which a table sorted on accuracy cannot give -- a setting that
          never finishes sorts nowhere near the bottom of one. -->
-    <div class="lv-panel" id="panelRank">
+    <div class="lv-panel" id="panelRank" hidden>
       <div class="run-best" id="runBest"></div>
       <div id="standoutSum"></div>
     </div>
@@ -1370,6 +1610,9 @@ highlighted. Dominated by a pairing, not itself hard.">
 const drop = document.getElementById('drop');
 const fileInput = document.getElementById('file');
 const preview = document.getElementById('preview');
+const prepBar = document.getElementById('prepBar');
+const prepCap = document.getElementById('prepCap');
+const prepDl = document.getElementById('prepDl');
 const chip = document.getElementById('filechip');
 const chipName = document.getElementById('filechipname');
 const runBtn = document.getElementById('run');
@@ -1447,6 +1690,7 @@ const cmpLabel = document.getElementById('cmpLabel');
 const cmpPrev = document.getElementById('cmpPrev');
 const cmpNext = document.getElementById('cmpNext');
 const cmpOpen = document.getElementById('cmpOpen');
+const cmpDl = document.getElementById('cmpDl');
 const cmpModes = document.getElementById('cmpModes');
 const cmpGrid = document.getElementById('cmpGrid');
 const cmpColImg = document.getElementById('cmpColImg');
@@ -2242,6 +2486,47 @@ async function setOcrProfile(next) {
 ocrProfileSel.addEventListener('change', () => setOcrProfile(ocrProfileSel.value));
 paintOcrProfile();
 
+/* ---------- the loop backstop ------------------------------------------------
+   Unticked turns off the ABORT and nothing else. A read that cycles the whole way
+   is still detected and still comes back flagged `looped`, so it still reads as a
+   failed run and still stays out of every mean -- what changes is that the
+   transcript is all of what the model produced rather than the part before the
+   backstop fired, and that a true runaway costs the whole token budget. */
+const loopGuardChk = document.getElementById('loopGuardChk');
+const loopGuardNote = document.getElementById('loopGuardNote');
+const READ_TOKEN_CAP = {{ max_new_tokens }};
+
+function paintLoopGuard() {
+  loopGuardNote.innerHTML = loopGuardChk.checked
+    ? 'A read whose tail is cycling is stopped where it starts repeating and '
+      + 'flagged <b>looped</b>. Leave this on unless it is cutting short a read '
+      + 'you want to see in full &mdash; lowering Detail is the usual fix for a '
+      + 'page that loops.'
+    : '<b>Off.</b> A cycling read now runs to the ' + READ_TOKEN_CAP + '-token '
+      + 'cap, which on a real runaway is minutes of wall clock. It is still '
+      + 'detected: the transcript comes back whole and still flagged '
+      + '<b>looped</b>, so it still counts as a failed run and is kept out of '
+      + 'every mean.';
+}
+
+async function setLoopGuard(on) {
+  loopGuardChk.disabled = true;
+  try {
+    const res = await fetch('/api/ocr/loop-guard', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ loop_guard: on })
+    });
+    const body = await res.json();
+    /* Show what the server accepted, never what was clicked. */
+    if (typeof body.loop_guard === 'boolean') loopGuardChk.checked = body.loop_guard;
+  } catch (err) { /* leave it where it was */ }
+  loopGuardChk.disabled = false;
+  paintLoopGuard();
+}
+
+loopGuardChk.addEventListener('change', () => setLoopGuard(loopGuardChk.checked));
+paintLoopGuard();
+
 /* Step progress, from either the Re-extract stream or a full run's stream.
    Returns true when the message was a step message and has been consumed. */
 function stepEvent(msg) {
@@ -2942,6 +3227,8 @@ const lvPipe = document.getElementById('lvPipe');
 const lvEmpty = document.getElementById('lvEmpty');
 const errDomToggle = document.getElementById('errDomToggle');
 const logTabs = document.getElementById('logTabs');
+const presentSum = document.getElementById('presentSum');
+const presBias = document.getElementById('presBias');
 const rawSel = document.getElementById('rawSel');
 const rawNone = document.getElementById('rawNone');
 const rawDelete = document.getElementById('rawDelete');
@@ -3008,9 +3295,17 @@ function lvTable(id, rows, cols, opts) {
   if (!logSort[id] && opts.sort) logSort[id] = Object.assign({}, opts.sort);
   const body = lvSorted(id, rows, cols).map(e =>
       '<tr' + (opts.rowClass ? opts.rowClass(e) : '') + '>'
-    + cols.map(c => '<td' + (c.n ? ' class="n"' : '')
-                  + (c.cls ? ' class="' + c.cls + '"' : '') + '>'
-                  + c.cell(e) + '</td>').join('')
+    // One class attribute, built from both sources. `n` and `cls` used to emit
+    // two, and a second `class=` on an element is silently ignored by every
+    // parser -- so a column that wanted both got whichever came first and
+    // nothing said so. No column set both until the Summary tab's model column
+    // did; the comment above already claimed this invariant, so it is made true
+    // rather than documented around.
+    + cols.map(c => {
+        const cls = [c.n ? 'n' : '', c.cls || ''].filter(Boolean).join(' ');
+        return '<td' + (cls ? ' class="' + cls + '"' : '') + '>'
+             + c.cell(e) + '</td>';
+      }).join('')
     + '</tr>').join('');
   return '<table class="queue">' + lvHead(id, cols) + body + '</table>';
 }
@@ -3375,6 +3670,18 @@ function paintStandouts(t) {
    That is a round-trip (`runlog.drop_single_source`), not a client filter, which
    is why it goes through `refreshRuns`. */
 let errDropSingle = false;
+/* **Off by default, like every other control on this card** (2026-08-25, at the
+   user's request: *show all if i do not toggle to exclude them like the other
+   page*). It shipped defaulting ON earlier the same day and that was reversed:
+   a page whose whole job is to be read at a glance must not also be a page you
+   have to remember is hiding something. Excluding a model is the chips' job
+   here as everywhere else, and this toggle is the shortcut that does it by
+   rule instead of by hand.
+
+   It stays a request parameter rather than a client-side filter because the
+   rule needs the whole set to decide -- "delivers less than 60% of what the
+   leader delivers" is not a question a page holding one table can answer. */
+let presBiased = false;
 
 const ERR_LABEL = {
   error: 'crashed', cancelled: 'cancelled', truncated: 'hit the token cap',
@@ -3496,6 +3803,11 @@ function paintErrors(t) {
 // own change rather than waiting for Apply, the same as the Pipeline segment.
 errDomToggle.addEventListener('change', () => {
   errDropSingle = errDomToggle.checked;
+  refreshRuns();
+});
+
+presBias.addEventListener('change', () => {
+  presBiased = presBias.checked;
   refreshRuns();
 });
 
@@ -4456,6 +4768,616 @@ function paintExtractSummary(t) {
 }
 
 
+/* ---------- the presentation summary ----------
+   Six blocks on one tab, at the user's request, in the order they were asked
+   for: reading ranked, reading timed, Detail priced, extraction ranked, the two
+   extraction shapes, extraction timed. Everything comes from
+   `runlog.presentation`, which does the grouping and applies the bias.
+
+   **This tab is the one on this card that is meant to be SHOWN**, and three
+   things follow from that which the other tabs deliberately do the other way:
+
+   - **No failure flags in the setting cell.** `paintOcrSummary` prints a red
+     incomplete count under the model because it qualifies every other figure on
+     that row. Here the failure rate is one column and nothing else, as asked --
+     a slide with a warning under every row reads as a system that does not work,
+     whatever the numbers beside it say.
+   - **Its own colour scale**, at the user's request: red under 70, amber to 90,
+     green at 90 and above. `accColour`'s 80/95 stays everywhere else, because
+     changing it there would silently re-mark the accuracy bars and every other
+     table on the page against a scale nobody asked to move.
+   - **No prose** (2026-08-25, at the user's request: *less useless text, more
+     summary for easy presentation / no text note*). Every explanatory paragraph
+     is gone and what it said lives in `title` attributes on the headings and
+     column headers instead. The rule for this tab is that a reader gets the
+     answer from the figures and the colour, and the caveats on hover -- the
+     opposite of the analysis tab, where the caveat IS the finding.
+
+   **Colour is carried by a bar beside every number**, not by more coloured text
+   (*more color but keep it formal and clean*). A bar is comparable down a column
+   at a glance and stays formal because it is one weight of one hue per column;
+   colouring more words would have made the tab louder without making it faster
+   to read.
+
+   **Every bar reads "longer is better" except the error column**, which is the
+   rate itself and is the only one drawn from the danger end of the scale, so
+   that reads as deliberate rather than as an inconsistency. There is no
+   inverted column any more: `cost of accuracy` was removed on 2026-08-25 at the
+   user's request as useless, and it was -- a ratio of two means that are both
+   already columns on the same row, so it added a number to read without adding
+   anything to know. */
+
+/* Red under 70, amber to 90, green at 90 and above -- this tab only.
+   **Returns CSS variables, not hex**, so the scale darkens on a light page --
+   the amber especially, which at #d9a441 is a pale smear on white at the size
+   this tab prints numbers. Safe here and NOT safe in `accColour`, which the
+   analysis heatmap feeds to `hexA` to make a tint from: that one has to stay a
+   parsable hex string. Two functions with two jobs, and the reason is one line
+   of arithmetic in `hexA`. */
+function presColour(pct) {
+  if (pct === null || pct === undefined) return 'inherit';
+  if (pct >= 90) return 'var(--ok)';
+  if (pct >= 70) return 'var(--warn)';
+  return 'var(--danger)';
+}
+
+/* An error rate on the same scale read from the other end: 10% error is 90%
+   clean and green, over 30% is red. One rule for both columns rather than a
+   second set of thresholds nobody could hold in mind beside the first. */
+function presErrColour(rate) {
+  return rate === null || rate === undefined ? 'inherit' : presColour(100 - rate);
+}
+
+/* The magnitude bar under a figure. `share` is 0..1 of the column's own scale,
+   so a bar is only ever comparable DOWN its column -- which is the one reading
+   it is for. Clamped at both ends: a zero-width bar reads as a missing cell
+   rather than as a small value, and an over-long one would break the column. */
+function prBar(share, colour) {
+  const w = Math.max(3, Math.min(100, (share || 0) * 100));
+  return '<span class="pr-bar"><span style="width:' + w.toFixed(1) + '%;background:'
+    + colour + '"></span></span>';
+}
+
+/* One figure: the number, its bar, and everything else on hover.
+   **The spread and the range moved into the tooltip** -- they are detail, and
+   this tab is a summary. Nothing is lost: `±sd` and the min-max are still one
+   pointer away, and the count that a mean must never be read without is still
+   printed under the model name. */
+function prFig(block, unit, digits, colour, share) {
+  if (!block || block.mean === null || block.mean === undefined)
+    return '<span class="cs-none">&mdash;</span>';
+  const d = digits === undefined ? 1 : digits;
+  const hint = [];
+  if (block.sd !== null && block.sd !== undefined)
+    hint.push('±' + Number(block.sd).toFixed(d) + ' across documents');
+  if (block.min !== null && block.min !== undefined
+      && block.max !== null && block.max !== undefined
+      && Number(block.max) - Number(block.min) > 0)
+    hint.push('range ' + Number(block.min).toFixed(d) + '–' + Number(block.max).toFixed(d));
+  if (block.measured) hint.push(block.measured + ' document(s) measured');
+  const tone = colour ? colour(Number(block.mean)) : 'var(--accent)';
+  return '<span class="cs-val"' + (hint.length ? ' title="' + esc(hint.join(' · ')) + '"' : '')
+    + (colour ? ' style="color:' + tone + '"' : '') + '>'
+    + Number(block.mean).toFixed(d) + (unit || '') + '</span>'
+    + (share === null || share === undefined ? '' : prBar(share, tone));
+}
+
+/* The one error column every table here carries. The bar is the rate itself, so
+   a long red bar is a bad row -- the only column on the tab where more bar is
+   worse, which is why it is the only one drawn from the danger end of the scale.
+   The denominator stays printed: a rate with no count under it is not a figure
+   anyone can read. */
+function prErr(e) {
+  if (e.failure_rate === null || e.failure_rate === undefined)
+    return '<span class="cs-none">&mdash;</span>';
+  const tone = presErrColour(e.failure_rate);
+  return '<span class="cs-val" style="color:' + tone + '">'
+    + Number(e.failure_rate).toFixed(0) + '%</span>'
+    + prBar(e.failure_rate / 100, tone)
+    + '<span class="cs-set">' + e.failed + ' of ' + e.runs + '</span>';
+}
+
+/* The model, with its rank and its counts. The rank badge is the server's
+   ordering, passed in -- it is NOT the row's position after a sort, for the same
+   reason the highlight is not: a badge that renumbered when somebody sorted by
+   time would be ranking models on the clock. */
+function prModel(e, rank) {
+  return '<span class="pr-rank' + (rank === 1 ? ' pr-rank-1' : '') + '">'
+    + (rank || '·') + '</span>'
+    + '<span class="pr-name"><b title="' + esc(e.model || '') + '">'
+    + esc(csModel(e.model)) + '</b>'
+    + '<span class="cs-set">' + e.runs + ' run(s) &middot; ' + e.documents
+    + ' doc(s)</span></span>';
+}
+
+/* Rank by the order the server returned, keyed by the row object, so a column
+   spec can look one up without knowing where the row ended up on screen. */
+function prRanks(list) {
+  const at = new Map();
+  (list || []).forEach((e, i) => at.set(e, i + 1));
+  return at;
+}
+
+/* The largest value in a column, for the bars. Zero and a missing column both
+   give 1, so a bar divides by something rather than by nothing. */
+function prMax(list, pick) {
+  let top = 0;
+  (list || []).forEach(e => {
+    const v = pick(e);
+    if (v !== null && v !== undefined && v > top) top = v;
+  });
+  return top || 1;
+}
+
+/* What the bias dropped, as chips rather than as a paragraph.
+   **Nothing at all when the bias is off**, which is the default: a banner
+   explaining that a page is showing everything is the "useless text" this tab
+   was told to lose. When it IS on, the models it removed have to be named --
+   a summary that leaves things out and cannot say what is indistinguishable from
+   a broken one -- so they are named, in the smallest form that still names
+   them. */
+const PR_RULE = {
+  single_source: 'failures from one pairing',
+  weak_model: 'weak models',
+  time_outlier: 'time outliers'
+};
+
+function prBiasNote(p) {
+  if (!p.biased) return '';
+  const why = {};
+  ['ocr', 'extract'].forEach(pass => (p.weak[pass] || []).forEach(w => {
+    why[w.model] = (why[w.model] ? why[w.model] + '; ' : '')
+      + (pass === 'ocr' ? 'reading' : 'extraction') + ': ' + w.reason;
+  }));
+  const chips = Object.keys(why).sort().map(m =>
+    '<span class="pr-chip pr-chip-out" title="' + esc(why[m]) + '">'
+    + esc(csModel(m)) + '</span>').join('');
+  const counts = (p.bias || []).map(s =>
+    '<span class="pr-chip" title="' + esc(PR_RULE[s.rule] || s.rule)
+    + (s.pass ? ' — ' + esc(s.pass === 'ocr' ? 'reading' : 'extraction') : '')
+    + '">' + esc(PR_RULE[s.rule] || s.rule) + '<b>' + s.dropped + '</b></span>').join('');
+  return '<div class="pr-excl"><span class="pr-excl-k">Excluded</span>'
+    + (chips || '<span class="cs-none">nothing met the rules</span>')
+    + counts + '</div>';
+}
+
+/* The Detail grids. **Two, not one** (2026-08-25, at the user's request:
+   *separate to 2 table, 1 is accuracy another will be time*). It was one grid
+   with the accuracy in each cell and the clock in small type under it, plus a
+   change column and a cost column side by side -- four numbers per row read in
+   two directions, one table doing two jobs.
+
+   Split, each grid asks one question and reads straight across: what did the
+   presets SCORE, and what did they COST. Same reasoning the analysis tab's own
+   Detail tables follow -- a single table of "Detail vs both" invites a diagonal
+   reading that hides the case where more pixels cost more and scored less, and
+   here that case IS the finding.
+
+   **Cells are tinted, not just coloured.** The accuracy grid tints by the score
+   and the time grid by the cost RELATIVE TO THAT ROW's cheapest preset, so a row
+   darkens left to right exactly as far as it actually got dearer. Per row rather
+   than per grid, because the models differ in absolute speed by 3x and a
+   grid-wide scale would paint the fast model's whole row the same shade.
+
+   Still model x preset, never pooled across models: the pooled row was deleted
+   from the analysis tab as the most misleading number on the page. */
+function prDetailGrid(p, which) {
+  const details = p.ocr_details || [];
+  const rows = p.ocr_detail || [];
+  if (!details.length || !rows.length) return '';
+  const acc = which === 'accuracy';
+  const head = '<tr><th class="an-corner">Model</th>'
+    + details.map(d => '<th title="the pixel budget the page was rasterised to">'
+        + esc(d) + '</th>').join('')
+    + (acc
+       ? '<th title="what the dearest preset this model ran at scored, minus '
+         + 'what the cheapest one scored. Negative means more pixels read WORSE.">'
+         + 'Change</th>'
+       : '<th title="what the dearest preset this model ran at cost in wall '
+         + 'clock, as a multiple of the cheapest">Cost</th>')
+    + '</tr>';
+  const body = rows.map(r => {
+    // The row's own cheapest timed preset, which is what the time tint is a
+    // multiple of. Undefined on the accuracy grid, where the tint is the score.
+    let base = null;
+    if (!acc) {
+      details.forEach(d => {
+        const c = r.cells[d];
+        if (c && c.seconds.mean !== null && base === null) base = c.seconds.mean;
+      });
+    }
+    const cells = details.map(d => {
+      const c = r.cells[d];
+      const figure = c && (acc ? c.value : c.seconds);
+      if (!figure || figure.mean === null)
+        return '<td class="an-empty">&mdash;</td>';
+      const tint = acc
+        ? 'background:' + presTint(figure.mean)
+        : 'background:' + prCostTint(base ? figure.mean / base : 1);
+      return '<td class="an-cell" style="' + tint
+        + (acc ? ';color:' + presColour(figure.mean) : '') + '"'
+        + ' title="' + esc(csModel(r.model)) + ' at ' + esc(d) + ' — '
+        + c.runs + ' run(s) over ' + c.documents + ' document(s)">'
+        + Number(figure.mean).toFixed(1) + (acc ? '%' : 's')
+        + '<span class="an-t">' + c.runs + ' run(s)</span></td>';
+    }).join('');
+    let tail;
+    if (acc) {
+      // Signed, and green only where more pixels actually bought something. The
+      // standing finding is that they usually do not, and a delta drawn in one
+      // colour would let that read as noise.
+      tail = r.acc_delta === null || r.acc_delta === undefined
+        ? '<td class="an-empty">&mdash;</td>'
+        : '<td class="an-cell" style="color:' + (r.acc_delta > 0.5 ? 'var(--ok)'
+            : r.acc_delta < -0.5 ? 'var(--danger)' : 'inherit') + '"'
+          + ' title="' + esc(r.from) + ' → ' + esc(r.to) + '">'
+          + (r.acc_delta > 0 ? '+' : '') + Number(r.acc_delta).toFixed(1)
+          + '<span class="an-t">' + esc(r.from) + ' → ' + esc(r.to) + '</span></td>';
+    } else {
+      tail = r.time_factor === null || r.time_factor === undefined
+        ? '<td class="an-empty">&mdash;</td>'
+        : '<td class="an-cell" style="color:var(--info)" title="' + esc(r.time_from)
+          + ' → ' + esc(r.time_to) + '">&times;' + Number(r.time_factor).toFixed(2)
+          + '<span class="an-t">' + esc(r.time_from) + ' → ' + esc(r.time_to)
+          + '</span></td>';
+    }
+    return '<td class="an-rowh" title="' + esc(r.model) + '">'
+      + esc(csModel(r.model)) + '</td>' + cells + tail;
+  }).map(r => '<tr>' + r + '</tr>').join('');
+  return '<div class="an-grid"><table class="an-heat">' + head + body + '</table></div>';
+}
+
+/* Cell washes for the two grids. Deliberately weak (10-18%): the number on top
+   has to stay the thing being read, and a saturated grid is the opposite of
+   formal. Both return `color-mix` against the card so the wash sits on the
+   panel in either theme rather than on an assumed dark ground. */
+function presTint(pct) {
+  const tone = pct >= 90 ? 'var(--ok)' : pct >= 70 ? 'var(--warn)' : 'var(--danger)';
+  return 'color-mix(in srgb, ' + tone + ' 14%, transparent)';
+}
+
+/* The time grid's wash: how many times the row's cheapest preset this cell cost.
+   x1 is clear, x4 and over is full strength. */
+function prCostTint(factor) {
+  const share = Math.max(0, Math.min(1, ((factor || 1) - 1) / 3));
+  return 'color-mix(in srgb, var(--info) ' + (share * 22).toFixed(1)
+    + '%, transparent)';
+}
+
+/* ---------- the headline cards ----------
+   **Added 2026-08-25 at the user's request**: *have a summerize banner card for
+   best ocr at x% and also have a banner card for my hardware and this env*.
+
+   The six tables answer *which and by how much*; a slide also has to answer
+   *what is the number* from across a room, and a table cannot do that. So the
+   two results this tab exists to deliver are lifted out at the top, at a size
+   that reads without leaning in.
+
+   **The winner is the server's ranking, never the sorted table.** `lvTable`
+   reorders on a click and the card must not follow it -- a headline that changed
+   when somebody sorted by time would be naming the fastest model "best". Same
+   rule as the `ms-top` highlight, which is why both read `[0]` of the list the
+   server returned rather than anything in the DOM. */
+function prHero(label, entry, unit, extra) {
+  if (!entry || entry.value.mean === null || entry.value.mean === undefined)
+    return '<div class="pr-hero pr-hero-none"><span class="pr-hero-label">'
+      + esc(label) + '</span><span class="pr-hero-num">&mdash;</span>'
+      + '<span class="pr-hero-sub">nothing scored in this view</span></div>';
+  const pct = Number(entry.value.mean);
+  return '<div class="pr-hero" style="--hero:' + presColour(pct) + '">'
+    + '<span class="pr-hero-label">' + esc(label) + '</span>'
+    + '<span class="pr-hero-model" title="' + esc(entry.model || '') + '">'
+      + esc(csModel(entry.model)) + '</span>'
+    + '<span class="pr-hero-num">' + pct.toFixed(1) + (unit || '') + '</span>'
+    + '<span class="pr-hero-sub">' + (extra ? extra + ' &middot; ' : '')
+      + entry.runs + ' run(s) &middot; ' + entry.documents + ' doc(s)'
+      + ' &middot; <span style="color:' + presErrColour(entry.failure_rate) + '">'
+      + (entry.failure_rate === null ? '&mdash;'
+         : Number(entry.failure_rate).toFixed(0) + '% error')
+      + '</span></span></div>';
+}
+
+function prHeroes(p) {
+  const ocr = (p.ocr_models || [])[0];
+  const ex = (p.extract_models || [])[0];
+  // The best shape for the winning extractor, which is the one thing the field
+  // number alone does not say and the whole of what block 5 is about.
+  const shape = (p.extract_shapes || []).find(s => ex && s.model === ex.model);
+  return '<div class="pr-heroes">'
+    + prHero('Best at reading a page', ocr, '%',
+             ocr && ocr.seconds.mean !== null
+               ? Number(ocr.seconds.mean).toFixed(0) + 's per doc' : '')
+    + prHero('Best at extracting fields', ex, '%',
+             shape ? esc(shape.mode) : '')
+    + '</div>';
+}
+
+/* ---------- the environment card ----------
+   **Three claims, drawn as three columns, and the separation is the point.**
+   The machine is the box this PROCESS runs on; the server is what it would send
+   a request to NOW; the runs are what the rows in view were actually made under.
+   None of the three implies another -- the log outlives the machine, and
+   switching the endpoint does not rewrite a row -- so a reader must never be
+   able to take "this machine has an RTX 3060" together with "these runs used
+   Ollama" as "these runs used this card". The column headings are what keep
+   those apart, and they are not decoration: the paragraph that used to say it in
+   words is gone with the rest of the prose, so the headings and their tooltips
+   now carry it alone. */
+
+/* The top few values of a tally, with the rest counted rather than listed. */
+function prTally(list, shorten) {
+  if (!list || !list.length) return '<span class="cs-none">&mdash;</span>';
+  const shown = list.slice(0, 3).map(v =>
+    '<span class="pr-pill" title="' + esc(v.value) + ' — ' + v.runs + ' run(s)">'
+    + esc(shorten ? csModel(v.value) : v.value)
+    + '<span class="n">' + v.runs + '</span></span>').join('');
+  return shown + (list.length > 3
+    ? '<span class="pr-pill pr-pill-more" title="'
+      + esc(list.slice(3).map(v => v.value + ' (' + v.runs + ')').join(', '))
+      + '">+' + (list.length - 3) + ' more</span>' : '');
+}
+
+/* **Neither `label` nor `value` is escaped**, and both are literal markup written
+   in `prEnvCard` below -- the label so it can carry the `inferred` badge, the
+   value because every one of them is assembled there with `esc` already applied
+   to each piece of text that came from the log or the machine. Nothing
+   user-supplied reaches this function directly, and the badge was being printed
+   as its own source until this was split out. */
+function prEnvRow(label, value, hint) {
+  return '<div class="pr-env-row"><span class="pr-env-k"'
+    + (hint ? ' title="' + esc(hint) + '"' : '') + '>' + label + '</span>'
+    + '<span class="pr-env-v">' + value + '</span></div>';
+}
+
+function prEnvCard(env) {
+  if (!env) return '';
+  const m = env.machine || {}, sv = env.server || {}, st = env.settings || {};
+  const runs = env.runs || {};
+  const gpus = (m.gpus || []).length
+    ? m.gpus.map(g => '<b>' + esc(g.name) + '</b>'
+        + (g.memory_gb ? ' ' + g.memory_gb + ' GB' : '')
+        + (g.driver ? '<span class="cs-of"> driver ' + esc(g.driver) + '</span>' : ''))
+        .join('<br>')
+    // Not an empty cell: "no GPU" and "could not ask" are different states, and
+    // `nvidia-smi` is the only probe here, so an AMD or Apple machine lands in
+    // the same branch as a missing binary. Saying which probe was used is what
+    // lets a reader tell those apart.
+    : '<span class="cs-none">not detected <span class="cs-of">('
+      + esc(m.gpu_probe || 'no probe') + ')</span></span>';
+  const when = runs.first && runs.last
+    ? esc(String(runs.first).slice(0, 10)) + ' &rarr; ' + esc(String(runs.last).slice(0, 10))
+    : '<span class="cs-none">&mdash;</span>';
+  return '<div class="pr-env">'
+    + '<div class="pr-env-col">'
+      + '<div class="pr-env-h" title="probed on the machine this app is running '
+        + 'on, right now. It says nothing about where the rows were produced — '
+        + 'the log outlives the machine.">This machine</div>'
+      + prEnvRow('GPU', gpus)
+      + prEnvRow('CPU', '<b>' + esc(m.cpu || '—') + '</b>'
+          + (m.cpu_threads ? '<span class="cs-of"> ' + m.cpu_threads
+             + ' threads</span>' : ''),
+          'logical processors, which is what llama.cpp’s -t is counted in — '
+          + 'not the P-core count the performance notes recommend pinning to')
+      + prEnvRow('Memory', m.memory_gb
+          ? '<b>' + m.memory_gb + ' GB</b>' : '<span class="cs-none">&mdash;</span>')
+      + prEnvRow('System', esc(m.os || '—')
+          + '<span class="cs-of"> ' + esc(m.arch || '') + ' &middot; Python '
+          + esc(m.python || '') + '</span>')
+    + '</div>'
+    + '<div class="pr-env-col">'
+      + '<div class="pr-env-h" title="the model server this process would send a '
+        + 'request to now, and the settings it would send. Switching the endpoint '
+        + 'does not rewrite a row, so this does not describe the runs either.">'
+        + 'Server now</div>'
+      // Three states, not two. **Never probed** and **probed and not answering**
+      // are different problems -- the first is a card drawn before anything
+      // asked, the second a server that is down -- and this card is forbidden
+      // from asking, so it must be able to say the first out loud.
+      + prEnvRow('Endpoint',
+          '<b>' + (sv.backend ? esc(sv.backend)
+                   : sv.probed ? '<span class="cs-none">not reachable</span>'
+                   : '<span class="cs-none">not probed yet</span>') + '</b>'
+          + '<span class="cs-of"> ' + esc(sv.url || '') + '</span>',
+          'as last seen. This card never contacts the model server — it is '
+          + 'repainted every few seconds, and polling a llama.cpp server cancels '
+          + 'work in flight. Use Re-check beside the server picker to refresh it.')
+      + prEnvRow('Reading model', sv.model
+          ? '<b title="' + esc(sv.model) + '">' + esc(csModel(sv.model)) + '</b>'
+          : '<span class="cs-none">none resolved</span>')
+      + prEnvRow('Extracting model', sv.extract_model
+          ? '<b title="' + esc(sv.extract_model) + '">' + esc(csModel(sv.extract_model))
+            + '</b>'
+          // Blank means the one-model setup every measurement in this project
+          // was taken under, not "unknown" -- the same rule the CSV column
+          // follows, said in words because a dash here would read as missing.
+          : '<span class="cs-of">same as reading</span>',
+          'blank in the log means the two passes ran on one model, which is the '
+          + 'normal case')
+      + prEnvRow('Context', (sv.num_ctx ? '<b>' + sv.num_ctx + '</b> tokens' : '—')
+          + (sv.slots ? '<span class="cs-of"> ' + sv.slots + ' slot(s)</span>' : ''))
+      + prEnvRow('Defaults', '<b>' + esc(st.detail || '—') + '</b>'
+          + '<span class="cs-of"> Detail &middot; ' + esc(st.ocr_profile || '')
+          + ' &middot; ' + esc(st.extract_mode || '') + ' &middot; DRY '
+          + (st.dry === undefined ? '—' : st.dry) + '</span>')
+    + '</div>'
+    + '<div class="pr-env-col">'
+      + '<div class="pr-env-h" title="counted from the rows this view matched, so '
+        + 'it narrows with the chips above like every table here. This is the only '
+        + 'one of the three columns that describes the numbers below.">'
+        + 'These runs <span class="cs-of">(' + (runs.runs || 0) + ')</span></div>'
+      + prEnvRow('Dates', when)
+      + prEnvRow('Backend', prTally(runs.backends))
+      + prEnvRow('Read by', prTally(runs.read_models, true))
+      + prEnvRow('Extracted by', prTally(runs.extract_models, true))
+      + prEnvRow('Detail', prTally(runs.details))
+      // Inferred, and marked as such wherever it appears -- the app talks HTTP
+      // to a server it did not launch and knows neither the GPU layer count nor
+      // whether the model was resident.
+      + prEnvRow('Ran on <span class="an-inf">inferred</span>',
+                 prTally(runs.hardware_inferred),
+                 'read off the decode rate, not reported by the server')
+      + prEnvRow('Start <span class="an-inf">inferred</span>',
+                 prTally(runs.start_inferred),
+                 'read off prefill: a warm read reuses a cached prefix or an '
+                 + 'already-resident model and pays almost none')
+    + '</div>'
+    + '</div>';
+}
+
+/* A block heading: a numbered accent chip and the question it answers. The
+   caveats that used to sit under each block are on the heading's tooltip now. */
+function prHead(n, text, hint) {
+  return '<div class="pr-h"' + (hint ? ' title="' + esc(hint) + '"' : '') + '>'
+    + '<span class="pr-n">' + n + '</span>' + esc(text) + '</div>';
+}
+
+function paintPresent(t) {
+  const p = (t && t.presentation) || null;
+  if (!presentSum) return;
+  if (!p) { presentSum.innerHTML = ''; return; }
+  presBias.checked = presBiased;
+  const ocr = p.ocr_models || [];
+  const ex = p.extract_models || [];
+  const shapes = p.extract_shapes || [];
+  const ocrRank = prRanks(ocr), exRankAt = prRanks(ex), shapeRank = prRanks(shapes);
+  // Column scales for the bars. Accuracy is a percentage and scales to 100, so
+  // a 60% row is visibly two thirds of a 90% one; the clocks scale to their own
+  // column's slowest, because seconds have no natural ceiling.
+  const ocrSecsMax = prMax(ocr, e => e.seconds.mean);
+  const ocrTpsMax = prMax(ocr, e => e.tps.mean);
+  const ocrTokMax = prMax(ocr, e => e.tokens.mean);
+  const exSecsMax = prMax(ex, e => e.seconds.mean);
+  const shapeSecsMax = prMax(shapes, e => e.seconds.mean);
+
+  // 1. Which model to read a page with.
+  const rank = [
+    {key: 'model', label: 'Model', cls: 'pr-model', value: e => csModel(e.model),
+     cell: e => prModel(e, ocrRank.get(e))},
+    {key: 'char', label: 'Transcript accuracy', n: true, value: e => e.value.mean,
+     title: 'character accuracy against the hand-written transcript ground '
+          + 'truth, meaned over each document first and then across documents',
+     cell: e => prFig(e.value, '%', 1, presColour, (e.value.mean || 0) / 100)},
+    {key: 'err', label: 'Error rate', n: true, value: e => e.failure_rate,
+     title: 'runs that did not finish — looped, truncated, cancelled or errored. '
+          + 'A run that finished and read the page badly is not one of these; it '
+          + 'is in the accuracy column as the score it got.',
+     cell: prErr}
+  ];
+  // 2. What each of them costs.
+  const time = [
+    {key: 'model', label: 'Model', cls: 'pr-model', value: e => csModel(e.model),
+     cell: e => prModel(e, ocrRank.get(e))},
+    {key: 'secs', label: 'Time per document', n: true, value: e => e.seconds.mean,
+     title: 'wall clock for the whole document, meaned over documents',
+     cell: e => prFig(e.seconds, 's', 1, null, (e.seconds.mean || 0) / ocrSecsMax)},
+    {key: 'tps', label: 'Decode rate', n: true, value: e => e.tps.mean,
+     title: 'tokens per second, excluding prefill — so it compares across pages '
+          + 'of different resolutions',
+     cell: e => prFig(e.tps, ' tok/s', 1, null, (e.tps.mean || 0) / ocrTpsMax)},
+    // **Accuracy is not in this table** (2026-08-25, at the user's request:
+    // *change accuracy to average token generated*). It was here to say "fast
+    // is a claim about cost alone", which the heading now says at no width --
+    // and it is the whole of block 1 two rows up, so the column was the same
+    // number printed twice. What replaces it is the other half of what a read
+    // costs: how much the model actually wrote.
+    {key: 'tokens', label: 'Tokens generated', n: true, value: e => e.tokens.mean,
+     title: 'output tokens per document, meaned over documents — the length of '
+          + 'the transcript the model produced. The page image and the prompt '
+          + 'are prefill and are NOT in this figure, so it is what the model '
+          + 'wrote, not what the request cost.',
+     cell: e => prFig(e.tokens, '', 0, null, (e.tokens.mean || 0) / ocrTokMax)}
+  ];
+  // 4. Which model to extract with.
+  const exRank = [
+    {key: 'model', label: 'Model', cls: 'pr-model', value: e => csModel(e.model),
+     cell: e => prModel(e, exRankAt.get(e))},
+    {key: 'field', label: 'Field accuracy', n: true, value: e => e.value.mean,
+     title: 'priority-1 values that are the value the field ground truth says '
+          + 'belongs in that key. A partial match counts half.',
+     cell: e => prFig(e.value, '%', 1, presColour, (e.value.mean || 0) / 100)},
+    {key: 'err', label: 'Error rate', n: true, value: e => e.failure_rate,
+     title: 'extractions whose reply cycled, and runs that produced no reply at '
+          + 'all. Neither is scored.',
+     cell: prErr}
+  ];
+  // 5. Single against agentic, per model, with the clock -- the shape is a row
+  // rather than something averaged over, because the two are not two samples of
+  // one setting and some models prefer one and some the other.
+  const shape = [
+    {key: 'model', label: 'Model', cls: 'pr-model', value: e => csModel(e.model),
+     cell: e => prModel(e, shapeRank.get(e))},
+    {key: 'mode', label: 'Shape', value: e => e.mode,
+     title: 'single: one request for the whole form. agentic: a step per group '
+          + 'of one to three fields, then the answers merged.',
+     cell: e => '<span class="pr-shape pr-shape-' + esc(e.mode) + '">'
+       + esc(e.mode) + '</span>'},
+    {key: 'field', label: 'Field accuracy', n: true, value: e => e.value.mean,
+     title: 'the same score as the table above, split by the shape of the request',
+     cell: e => prFig(e.value, '%', 1, presColour, (e.value.mean || 0) / 100)},
+    {key: 'secs', label: 'Time per document', n: true, value: e => e.seconds.mean,
+     title: 'wall clock for the extraction alone — the read is not in this figure',
+     cell: e => prFig(e.seconds, 's', 1, null, (e.seconds.mean || 0) / shapeSecsMax)},
+    {key: 'err', label: 'Error rate', n: true, value: e => e.failure_rate,
+     cell: prErr}
+  ];
+  // 6. What each extractor costs.
+  const exTime = [
+    {key: 'model', label: 'Model', cls: 'pr-model', value: e => csModel(e.model),
+     cell: e => prModel(e, exRankAt.get(e))},
+    {key: 'secs', label: 'Time per document', n: true, value: e => e.seconds.mean,
+     title: 'wall clock for the extraction alone, meaned over documents',
+     cell: e => prFig(e.seconds, 's', 1, null, (e.seconds.mean || 0) / exSecsMax)},
+    {key: 'field', label: 'Field accuracy', n: true, value: e => e.value.mean,
+     cell: e => prFig(e.value, '%', 1, presColour, (e.value.mean || 0) / 100)}
+  ];
+
+  const none = '<div class="pr-empty">Nothing in this view.</div>';
+  presentSum.innerHTML = prHeroes(p)
+    + prEnvCard((t || {}).environment)
+    + prBiasNote(p)
+    + prHead(1, 'Which model reads a page best',
+             'Every mean is taken over each document first and then across the '
+             + 'documents, so a model run five times on one page is not five '
+             + 'samples of it. A run that did not finish is counted in the error '
+             + 'column and scored nowhere. Every column sorts; the highlighted '
+             + 'row and the rank badges stay the server ranking whichever column '
+             + 'you sort by.')
+    + (ocr.length ? lvTable('prOcr', ocr, rank,
+        {sort: {key: 'char', dir: 'desc'},
+         rowClass: e => e === ocr[0] ? ' class="ms-top"' : ''}) : none)
+    + prHead(2, 'What each reader costs',
+             'The clock, the decode rate, and how much the model actually wrote. '
+             + 'Fast is a claim about cost alone — read it beside block 1, '
+             + 'because the cheapest reader here is not the one to run. Tokens '
+             + 'generated is output only: the page image and the prompt are '
+             + 'prefill and are not counted in it.')
+    + (ocr.length ? lvTable('prOcrTime', ocr, time, {sort: {key: 'secs', dir: 'asc'}}) : none)
+    + prHead(3, 'What raising Detail buys, and what it costs',
+             'Read along a row, never down a column: the models have not been '
+             + 'run equally at every preset, so a figure pooled across them is '
+             + 'partly a ranking of whichever model was run most at each — which '
+             + 'is why there is no pooled row. A row that falls in the first grid '
+             + 'and rises in the second is a preset paying for nothing.')
+    + '<div class="pr-sub">Accuracy at each preset</div>'
+    + (prDetailGrid(p, 'accuracy') || none)
+    + '<div class="pr-sub">Time at each preset</div>'
+    + (prDetailGrid(p, 'time') || none)
+    + prHead(4, 'Which model extracts fields best',
+             'Scored against hand-written field ground truth. A partial match '
+             + 'counts half a value.')
+    + (ex.length ? lvTable('prExtract', ex, exRank,
+        {sort: {key: 'field', dir: 'desc'},
+         rowClass: e => e === ex[0] ? ' class="ms-top"' : ''}) : none)
+    + prHead(5, 'Single against agentic',
+             'The two shapes are separate rows, never averaged: some models do '
+             + 'well in one and badly in the other.')
+    + (shapes.length ? lvTable('prShape', shapes, shape, {sort: {key: 'field', dir: 'desc'}}) : none)
+    + prHead(6, 'What each extractor costs',
+             'The pass-2 clock alone — reading the page is not in these figures.')
+    + (ex.length ? lvTable('prExtractTime', ex, exTime, {sort: {key: 'secs', dir: 'asc'}}) : none);
+}
+
+
 /* ---------- random test ---------- */
 /* Reads the NDJSON stream `/api/randomtest/stream` produces, one event per
    round, and paints the table as it goes. The rows are the point: a run that
@@ -5218,15 +6140,23 @@ rawDelete.addEventListener('click', async () => {
 });
 
 /* ---------- panels ---------- */
-/* Five panels rather than one column, at the user's request. Each answers a
-   different question and only one of them is the log: the four summaries are
-   compiled and filtered, the fifth is what was written. */
+/* One panel per question rather than one long column, at the user's request.
+   Only one of them is the log: the summaries are compiled and filtered, the last
+   is what was written.
+
+   **The list is derived from the buttons, never written out beside them.** It
+   was a literal array until 2026-08-25, and adding the Summary tab is exactly
+   the edit that array was waiting for -- the same failure the side tabs already
+   hit, where a fourth tab left every pane hidden with the button highlighted and
+   no error anywhere. A tab and its pane are one thing; naming them in two places
+   means one is eventually forgotten. */
 logTabs.addEventListener('click', ev => {
   const btn = ev.target.closest ? ev.target.closest('button[data-panel]') : null;
   if (!btn) return;
   logTabs.querySelectorAll('button').forEach(b => b.classList.toggle('on', b === btn));
   const want = btn.dataset.panel;
-  ['rank', 'ocr', 'extract', 'case', 'analysis', 'error', 'raw'].forEach(name => {
+  logTabs.querySelectorAll('button[data-panel]').forEach(b => {
+    const name = b.dataset.panel;
     const el = document.getElementById('panel' + name[0].toUpperCase() + name.slice(1));
     if (el) el.hidden = name !== want;
   });
@@ -5261,6 +6191,11 @@ lvReset.addEventListener('click', () => {
   // too -- a "reset" that left it on would leave tables nobody asked for looking
   // like the default ones.
   errDropSingle = false;
+  // Cleared like every other narrowing, now that showing everything is this
+  // tab's default too. It was deliberately exempt while the bias was the
+  // default and that exemption went with it -- a Reset that left one narrowing
+  // standing leaves a view nobody asked for looking like the default one.
+  presBiased = false;
   refreshRuns();
 });
 
@@ -5274,6 +6209,7 @@ function paintLog() {
   paintAnalysis(t);
   paintOcrSummary(t);
   paintExtractSummary(t);
+  paintPresent(t);
   paintRunRows();
   paintFilters();
   paintPipe();
@@ -5322,7 +6258,21 @@ function paintRunStats(t) {
     + 'score. No document text.' : '';
 }
 
+/* **Responses are applied in request order, not arrival order** (2026-08-25).
+   Two refreshes can be in flight at once -- a chip clicked while the five-second
+   poll is fetching, or two clicks in a row -- and the reply that lands LAST used
+   to win whichever was asked first. The symptom is a card that is exactly one
+   change behind: tick a box, watch the previous state paint. Found on the
+   Summary tab's toggle, but it was never specific to it -- every control here
+   goes through this one function.
+
+   A counter rather than an AbortController: the request is cheap and read-only,
+   and abandoning a reply is simpler than cancelling a request that may already
+   have been served. */
+let logSeq = 0;
+
 async function refreshRuns() {
+  const seq = ++logSeq;
   let data;
   try {
     data = await (await fetch('/api/runs/query', {
@@ -5331,9 +6281,13 @@ async function refreshRuns() {
                             min_read_pct: logView.min_read_pct,
                             include: logFilters.include,
                             exclude: logFilters.exclude,
-                            drop_single_source: errDropSingle})
+                            drop_single_source: errDropSingle,
+                            bias: presBiased})
     })).json();
   } catch { return; }
+  // A newer refresh has been asked for since this one went out, so this answer
+  // is about a view nobody is looking at any more. Dropped rather than painted.
+  if (seq !== logSeq) return;
   logData = data;
   // A row that has been deleted, or has fallen off the end of the 50 shown, can
   // no longer be selected. Dropped rather than kept hopefully: a tick nobody can
@@ -5408,6 +6362,42 @@ setInterval(pollRuns, RUNS_POLL_MS);
 document.addEventListener('visibilitychange', () => { if (!document.hidden) pollRuns(); });
 
 /* ---------- run mode ---------- */
+/* ---------- theme ----------
+   Three states: `auto` follows the desktop and is the default, `light` and
+   `dark` stamp `data-theme` on the root and win over it. **`auto` REMOVES the
+   attribute rather than setting it to "auto"** -- the CSS keys off the attribute
+   being absent, so a stored "auto" written into the DOM would pin the page to
+   the dark fallback on a light desktop, which is the exact bug the three-state
+   design exists to avoid.
+
+   Stored in `localStorage`, so a projector session survives a reload. A read
+   that throws (private mode, a locked-down browser) falls back to `auto` rather
+   than taking the page with it -- a theme is not worth an exception. */
+const themeSeg = document.getElementById('themeSeg');
+
+function applyTheme(name) {
+  if (name === 'light' || name === 'dark')
+    document.documentElement.setAttribute('data-theme', name);
+  else
+    document.documentElement.removeAttribute('data-theme');
+  themeSeg.querySelectorAll('button').forEach(b =>
+    b.classList.toggle('on', b.dataset.theme === (name || 'auto')));
+}
+
+function storedTheme() {
+  try { return localStorage.getItem('ocrTheme') || 'auto'; } catch { return 'auto'; }
+}
+
+themeSeg.addEventListener('click', ev => {
+  const btn = ev.target.closest ? ev.target.closest('button[data-theme]') : null;
+  if (!btn) return;
+  const name = btn.dataset.theme;
+  try { localStorage.setItem('ocrTheme', name); } catch { /* not worth failing over */ }
+  applyTheme(name);
+});
+
+applyTheme(storedTheme());
+
 const modeSeg = document.getElementById('modeSeg');
 // How many documents can genuinely run at once depends on the server:
 // llama-server states its slot count, Ollama's parallelism is an environment
@@ -5474,6 +6464,10 @@ workersInput.addEventListener('change', () =>
 /* ---------- accuracy vs ground truth ---------- */
 function accColour(v) {
   // red below 80%, amber to 95%, green above — matches how these read in practice.
+  // **Hex, deliberately**: `hexA` parses this to build the analysis heatmap's
+  // cell tint, so a `var(--ok)` here would be an unparsable colour rather than a
+  // theme-aware one. `presColour` is the theme-aware twin, on a different scale
+  // and with no heatmap behind it.
   if (v >= 0.95) return '#3fb950';
   if (v >= 0.80) return '#d9a441';
   return '#ff6b6b';
@@ -5685,6 +6679,10 @@ function paintCompare() {
   // "Open image" belongs to the image column, not to paging: it is meaningless
   // in the view that shows the transcript beside the fixture.
   cmpOpen.hidden = cmpColImg.hidden || !paged;
+  // The page in this pane is the PREPARED one -- trimmed and scaled to the Detail
+  // that ran -- so this saves the picture the model was actually given, which is
+  // the same thing the workspace bar offers before a read.
+  cmpDl.hidden = cmpOpen.hidden;
 
   if (paged) {
     cmpPage = Math.max(0, Math.min(cmpPage, total - 1));
@@ -5695,6 +6693,8 @@ function paintCompare() {
     const src = `/api/page/${job}/${cmpPage}`;
     if (cmpImg.getAttribute('src') !== src) cmpImg.src = src;
     cmpOpen.href = src;
+    cmpDl.href = src;
+    cmpDl.download = (matchedCase || 'page') + '-p' + (cmpPage + 1) + '.png';
     cmpImgCap.textContent = total > 1 ? '· page ' + (cmpPage + 1) : '';
     cmpModelCap.textContent = total > 1 ? '· page ' + (cmpPage + 1) : '';
 
@@ -5985,6 +6985,7 @@ if (mockFile) {
     paintServer();
     // The ground-truth pane follows the selection, so it can be read before a run.
     enableCompare();
+    refreshPrepared();
   });
 }
 if (benchCase) {
@@ -6006,6 +7007,7 @@ if (benchCase) {
     }
     paintServer();
     enableCompare();
+    refreshPrepared();
   });
 }
 async function refreshServer() {
@@ -6071,6 +7073,9 @@ const DETAIL_NOTE = {
 };
 function updateNote() { detailNote.textContent = DETAIL_NOTE[detailSel.value] || ''; }
 detailSel.addEventListener('change', updateNote);
+// The preset IS the picture: moving this picker changes what the model is given,
+// so the preview follows it rather than describing the last one chosen.
+detailSel.addEventListener('change', refreshPrepared);
 updateNote();
 
 /* ---------- context window ----------
@@ -6163,21 +7168,140 @@ function dropPreview() {
   if (previewUrl) { URL.revokeObjectURL(previewUrl); previewUrl = null; }
   preview.style.display = 'none'; preview.removeAttribute('src');
 }
+/* The workspace preview with nothing prepared: the uploaded file as it is, or
+   the chip naming whatever cannot be drawn as an image (a PDF, a HEIC, a
+   fixture the server holds). Split out of `previewOne` because the prepared
+   preview has to be able to put it BACK -- switching Detail to `original` after
+   looking at `low` would otherwise leave a scaled-down picture on screen with
+   nothing left on the page to say so. */
+function localPreview() {
+  dropPreview();
+  const fixture = (benchCase && benchCase.value)
+    ? benchCase.options[benchCase.selectedIndex].text
+    : ((mockFile && mockFile.value) || '');
+  if (!current) {
+    if (fixture) showChip(fixture); else chip.style.display = 'none';
+    return;
+  }
+  if (current.type === 'application/pdf' || /\.(pdf|heic|heif)$/i.test(current.name)) {
+    showChip(current.name);
+    return;
+  }
+  preview.onerror = () => showChip(current.name);
+  preview.onload = () => { chip.style.display = 'none'; preview.style.display = 'block'; };
+  previewUrl = URL.createObjectURL(current);
+  preview.src = previewUrl;
+}
 function previewOne(file) {
   mapFile(file);
   chip.style.display = 'none';
-  preview.onerror = () => showChip(file.name);
-  preview.onload = () => { chip.style.display = 'none'; preview.style.display = 'block'; };
-  if (file.type === 'application/pdf' || /\.(pdf|heic|heif)$/i.test(file.name)) {
-    dropPreview();
-    showChip(file.name);
-  } else {
-    dropPreview();
-    previewUrl = URL.createObjectURL(file);
-    preview.src = previewUrl;
-  }
+  localPreview();
   meta.textContent = file.name + ' · ' + (file.size / 1024 / 1024).toFixed(2) + ' MB';
   meta.classList.remove('err');
+  // The local blob above is instant feedback on the file. What the model gets is
+  // a different picture at every Detail but `original`, and that one comes back
+  // from the server.
+  refreshPrepared();
+}
+
+/* ---------- the page as the model will actually see it ----------
+   A capped Detail trims the margins and scales the page down before anything is
+   sent, so at `medium` and `low` the file on disk is NOT what gets read -- and
+   the difference is the whole reason this project deleted its 1 MP preset, where
+   the model stopped misreading and started inventing. The preview is therefore
+   fetched back from `/api/preview`, prepared by the same two functions the read
+   calls, and offered as a download.
+
+   It is never resized in the browser. A canvas downscale here would be plausible,
+   free and WRONG -- a picture no run ever saw, differing from the real one by
+   whatever Pillow does that canvas does not.
+
+   `original` is uncapped, so there is nothing to show: the local preview stands
+   and the bar stays hidden. (The margin trim still applies there; the bar is
+   about the pixel budget, and a trim of 0-18% of blank border is not a thing
+   anyone needs to inspect before paying for a read.) */
+let prepSeq = 0;                 // a stale reply must never overwrite a newer one
+let prepCtl = null;
+function prepBody() {
+  // The same three shapes `request_input` resolves, chosen the same way the Read
+  // button chooses them, so the preview cannot be of a different document.
+  const body = new FormData();
+  if (benchCase && benchCase.value) body.append('case', benchCase.value);
+  else if (mockFile && mockFile.value) body.append('file', mockFile.value);
+  else if (current) body.append('image', current);
+  else return null;
+  body.append('detail', detailSel.value);
+  return body;
+}
+function prepStem() {
+  const raw = (benchCase && benchCase.value) || (mockFile && mockFile.value)
+    || (current && current.name) || 'page';
+  // Only the extension comes off. The browser sanitises a `download` name
+  // itself, and these documents have Thai names worth keeping.
+  return raw.replace(/\.[^.]+$/, '');
+}
+function hidePrepared() {
+  prepSeq++;                                   // orphan whatever is in flight
+  if (prepCtl) { prepCtl.abort(); prepCtl = null; }
+  prepBar.classList.remove('on');
+  // Emptied, not just hidden: a caption left behind describes a Detail nobody is
+  // on any more, and it is one CSS class away from being read.
+  prepCap.textContent = '';
+  prepCap.classList.remove('err');
+  prepDl.hidden = true;
+  prepDl.removeAttribute('href');
+}
+async function refreshPrepared() {
+  hidePrepared();
+  const body = prepBody();
+  if (!body) return;
+  // Uncapped: the file itself is what gets sent, so there is nothing to prepare
+  // and the plain preview stands.
+  if (detailSel.value === 'original') { localPreview(); return; }
+  const mine = ++prepSeq;
+  prepCtl = new AbortController();
+  prepBar.classList.add('on');
+  prepCap.textContent = 'Preparing this page at ' + detailSel.value + '…';
+  try {
+    const res = await fetch('/api/preview', { method: 'POST', body, signal: prepCtl.signal });
+    if (!res.ok) {
+      const e = await res.json().catch(() => ({}));
+      throw new Error(e.error || ('Could not prepare the preview (' + res.status + ').'));
+    }
+    const blob = await res.blob();
+    if (mine !== prepSeq) return;
+    const head = n => res.headers.get(n) || '';
+    const w = head('X-Preview-Width'), h = head('X-Preview-Height');
+    const sw = head('X-Preview-Source-Width'), sh = head('X-Preview-Source-Height');
+    const pages = Number(head('X-Preview-Pages')) || 1;
+    dropPreview();
+    previewUrl = URL.createObjectURL(blob);
+    // This one cannot fail to decode -- the server just encoded it -- so the
+    // upload's fall-back-to-a-chip handler would only ever fire on the next file.
+    preview.onerror = null;
+    preview.onload = () => { preview.style.display = 'block'; };
+    preview.src = previewUrl;
+    // A fixture keeps its chip: nothing else on the pane names it. An upload has
+    // its name and size on the meta line already.
+    if (current) chip.style.display = 'none';
+    prepCap.innerHTML = 'The model will see this — <b>' + esc(head('X-Preview-Detail'))
+      + '</b> · ' + esc(w + '×' + h)
+      + (sw && sw + 'x' + sh !== w + 'x' + h
+          ? ' <span class="muted-inline">(from ' + esc(sw + '×' + sh) + ')</span>'
+          : ' <span class="muted-inline">(unchanged — under the cap)</span>')
+      + (pages > 1 ? ' · page 1 of ' + pages : '');
+    prepDl.href = previewUrl;
+    prepDl.download = prepStem() + '.' + head('X-Preview-Detail') + '.png';
+    prepDl.hidden = false;
+  } catch (err) {
+    if (mine !== prepSeq) return;              // superseded, including by an abort
+    // A preview that will not build must not stop anyone reading the document,
+    // so this says so quietly and leaves the Read button alone.
+    prepCap.textContent = err.message || 'Could not prepare the preview.';
+    prepCap.classList.add('err');
+  } finally {
+    if (mine === prepSeq) prepCtl = null;
+  }
 }
 /* The workspace holds exactly one file, and a new one replaces it. Reading a
    document is a measurement -- one page, one set of settings, one row in the log
@@ -6206,6 +7330,7 @@ function addFiles(list) {
 function clearWorkspaceFile() {
   current = null;
   dropPreview();
+  hidePrepared();
   chip.style.display = 'none';
   mapChip.textContent = ''; mapChip.className = '';
   matchedCase = null;

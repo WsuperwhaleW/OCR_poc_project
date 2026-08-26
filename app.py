@@ -30,6 +30,7 @@ import config
 import fieldscore
 import grounding
 import jobs
+import machine
 import normalise
 import randomtest
 import runlog
@@ -61,6 +62,7 @@ from settings import (
     AGENTIC_RETRIES,
     DEFAULT_DETAIL,
     DETAIL_PRESETS,
+    DRY_MULTIPLIER,
     resolve_detail,
     EXTRACT,
     EXTRACT_LOOP_MIN_REPEATS,
@@ -76,6 +78,7 @@ from settings import (
     LOOP_COUNTER_MIN_REPEATS,
     LOOP_DEAD_MAX_LETTERS,
     LOOP_DEAD_TAIL_CHARS,
+    LOOP_GUARD,
     LOOP_MIN_REPEATS,
     LOOP_TAIL_CHARS,
     MAX_JOBS,
@@ -319,8 +322,12 @@ def stream_page(image: Image.Image, stats: dict | None = None,
     if not status["available"]:
         raise ValueError(status["reason"])
     spec = profile_spec(profile)
+    # Resolved once, like the profile: a read is aborted, or is not, under one
+    # rule for the whole of it, whatever the switch does mid-stream.
+    guard = loop_guard()
     if stats is not None:
         stats["ocr_profile"] = profile or ocr_profile()
+        stats["loop_guard"] = guard
 
     # Prompt BEFORE image on llama.cpp: it reuses the longest common KV prefix
     # between requests, so with the image first every request differs from token 0
@@ -421,12 +428,20 @@ def stream_page(image: Image.Image, stats: dict | None = None,
                 collected.append(piece)
                 yield piece
                 # Check periodically, not per token -- the scan is O(tail^2).
-                if (pieces % LOOP_CHECK_EVERY == 0
+                if (guard and pieces % LOOP_CHECK_EVERY == 0
                         and looks_repetitive("".join(collected))):
                     looped = True
                     break
 
     finished = time.perf_counter()
+    # With the guard down nothing interrupted the stream, so the tail is tested
+    # once, here, on what actually came back. The switch turns off the ABORT and
+    # not the detection: a read that cycled the whole way to the token cap is a
+    # looped read and has to say so, or it would log `ok` and be averaged as a
+    # transcript.
+    if not guard and looks_repetitive("".join(collected)):
+        looped = True
+
     if stats is not None:
         total = finished - started
         # llama.cpp reports authoritative prompt/predict splits; fall back to
@@ -1196,6 +1211,32 @@ def profile_spec(name: str = None) -> dict:
     return OCR_PROFILES[name or ocr_profile()]
 
 
+# Whether a cycling read is ABORTED. Held for the process and switched from the
+# page for the same reason the two above are: it is a thing you flip while looking
+# at a read that was cut short, and the next read should honour it without a
+# restart.
+#
+# It does not turn detection off, only the abort -- see `settings.LOOP_GUARD`. A
+# read that loops with the guard down still comes back flagged `looped`, so it
+# still reads as a failure and still stays out of every mean; what changes is that
+# the transcript is the whole of what the model produced rather than the part
+# before the backstop fired.
+_loop_guard = LOOP_GUARD
+_loop_guard_lock = threading.Lock()
+
+
+def loop_guard() -> bool:
+    with _loop_guard_lock:
+        return _loop_guard
+
+
+def set_loop_guard(on: bool) -> bool:
+    global _loop_guard
+    with _loop_guard_lock:
+        _loop_guard = bool(on)
+    return _loop_guard
+
+
 def extract_mode() -> str:
     with _mode_lock:
         return _extract_mode
@@ -1756,28 +1797,42 @@ def describe_source(name: str, data: bytes, origin: str) -> dict:
     return {"name": name, "size_bytes": len(data or b""), "origin": origin}
 
 
+def request_input(request_files, form, match: bool = True):
+    """The bytes a request is asking about, however the request named them.
+
+    Three shapes -- a benchmark case, a file in mockOcr/, an upload -- resolve to
+    one `(data, case, source)`. Shared by the read endpoints and by the preview,
+    so a preview cannot be of a different document from the read that follows it.
+
+    `match=False` skips the ground-truth lookup for callers that do not score. It
+    hashes the upload, and the page asks `POST /api/match` for that separately.
+    """
+    case_id = (form.get("case") or "").strip()
+    mock_name = (form.get("file") or "").strip()
+    if case_id:
+        data, case = case_bytes(case_id)
+        return data, case, describe_source(case["pdf"], data, "case")
+    if mock_name:
+        data, case = resolve_mock(mock_name)
+        return data, case, describe_source(mock_name, data, "folder")
+    upload = request_files.get("image")
+    if upload is None or not upload.filename:
+        raise ValueError("No file uploaded.")
+    data = upload.read()
+    source = describe_source(upload.filename, data, "upload")
+    case = None
+    if match:
+        # Match on contents as well as name, so a renamed copy still scores.
+        case, _how = scoring.case_for_upload(filename=upload.filename, data=data)
+    return data, case, source
+
+
 def prepare(request_files, form):
     """Request-shaped wrapper around `prepare_input`.
 
     Returns (pages, detail, page_job_id, case, source).
     """
-    case = None
-    case_id = (form.get("case") or "").strip()
-    mock_name = (form.get("file") or "").strip()
-    if case_id:
-        data, case = case_bytes(case_id)
-        source = describe_source(case["pdf"], data, "case")
-    elif mock_name:
-        data, case = resolve_mock(mock_name)
-        source = describe_source(mock_name, data, "folder")
-    else:
-        upload = request_files.get("image")
-        if upload is None or not upload.filename:
-            raise ValueError("No file uploaded.")
-        data = upload.read()
-        source = describe_source(upload.filename, data, "upload")
-        # Match on contents as well as name, so a renamed copy still scores.
-        case, _how = scoring.case_for_upload(filename=upload.filename, data=data)
+    data, case, source = request_input(request_files, form)
     return (*prepare_input(data, form.get("detail", DEFAULT_DETAIL), case, source),
             source)
 
@@ -1918,6 +1973,11 @@ def index():
         extract_steps=len(EXTRACT_STEPS),
         ocr_profile=ocr_profile(),
         ocr_profiles=[{"id": pid, **spec} for pid, spec in OCR_PROFILES.items()],
+        # Whether a cycling read is cut short, and what it would cost if it were
+        # not: the page prints the cap rather than repeating a number, for the
+        # same reason the read floor below is sent instead of hardcoded.
+        loop_guard=loop_guard(),
+        max_new_tokens=MAX_NEW_TOKENS,
         # The random test's rule about when a field score is worth writing. Sent
         # rather than hardcoded in the template: it is a setting, and a page that
         # says 50% while the process runs at 0 is describing a build nobody has.
@@ -2270,6 +2330,28 @@ def ocr_profile_set():
     return jsonify(profile=name)
 
 
+@app.get("/api/ocr/loop-guard")
+def loop_guard_get():
+    """Whether a cycling read is cut short, and what turning that off costs."""
+    return jsonify(loop_guard=loop_guard(), max_tokens=MAX_NEW_TOKENS)
+
+
+@app.post("/api/ocr/loop-guard")
+def loop_guard_set():
+    """Turn the read backstop on or off for everything this process reads next.
+
+    Not refused while the queue is busy, for the same reason the profile and the
+    extraction mode are not: every page stamps the guard it ran under onto its own
+    stats, so a batch split across the switch still says which page ran under
+    which rule.
+    """
+    body = request.get_json(silent=True) or {}
+    on = body.get("loop_guard")
+    if not isinstance(on, bool):
+        return jsonify(error="loop_guard must be true or false."), 400
+    return jsonify(loop_guard=set_loop_guard(on), max_tokens=MAX_NEW_TOKENS)
+
+
 MOCK_DIR = scoring.MOCK
 
 
@@ -2483,6 +2565,69 @@ def page_image(job_id: str, index: int):
         mimetype="image/png",
         headers={"Cache-Control": "private, max-age=3600"},
     )
+
+
+@app.post("/api/preview")
+def preview_prepared():
+    """One page, prepared exactly as a read would prepare it. No model involved.
+
+    A capped Detail is a real edit to the document: the page is trimmed and
+    scaled down before it is ever sent, and every number a run produces is a
+    measurement of THAT picture rather than of the file on disk. At 1 MP this
+    project measured the model switching from misreading to *fabricating*, which
+    is why that preset was deleted -- so being able to look at what the model is
+    about to be given, before paying for the read, is worth a route.
+
+    It goes through `trim_margins` and `fit_pixels`, the same two functions
+    `prepare_input` calls, rather than letting the browser resize the file for
+    display: a preview the read did not produce would show a page no run ever
+    saw, which is the one thing a preview must not do.
+
+    Deliberately does NOT `register_job`. `MAX_JOBS` is a RAM ceiling for the
+    compare view (~40 MB for a 10-page document at `medium`), and flicking
+    through the Detail picker would evict the pages of reads that have actually
+    happened.
+
+    Sizes ride in headers rather than in a JSON envelope so the body is the PNG
+    itself and the page can hand it straight to a download link. **Nothing
+    derived from a filename goes in a header** -- WSGI headers are latin-1 and
+    the documents here have Thai names.
+    """
+    try:
+        data, _case, _source = request_input(request.files, request.form, match=False)
+        pages = load_pages(data)
+    except ValueError as err:
+        return jsonify(error=str(err)), 400
+    detail = resolve_detail(request.form.get("detail", DEFAULT_DETAIL))
+    try:
+        index = int(request.form.get("page", 0))
+    except (TypeError, ValueError):
+        index = 0
+    if not 0 <= index < len(pages):
+        return jsonify(error="No such page."), 404
+
+    page = pages[index]
+    # Measured before the trim, so the caption can report the whole reduction --
+    # for a PDF this is what PDF_DPI rasterised, not anything on disk.
+    was = page.size
+    prepared = fit_pixels(trim_margins(page) if TRIM_MARGINS else page,
+                          DETAIL_PRESETS[detail])
+    buf = io.BytesIO()
+    prepared.save(buf, format="PNG")
+    return Response(buf.getvalue(), mimetype="image/png", headers={
+        # The prepared page depends on the Detail asked for, and the picker moves
+        # between requests to the same URL.
+        "Cache-Control": "no-store",
+        "X-Preview-Pages": str(len(pages)),
+        "X-Preview-Page": str(index),
+        # The RESOLVED name: an unknown preset falls back to the default rather
+        # than raising, so the caption has to say what actually ran.
+        "X-Preview-Detail": detail,
+        "X-Preview-Width": str(prepared.width),
+        "X-Preview-Height": str(prepared.height),
+        "X-Preview-Source-Width": str(was[0]),
+        "X-Preview-Source-Height": str(was[1]),
+    })
 
 
 def _random_pools():
@@ -2911,9 +3056,79 @@ def ocr_stream():
     return Response(generate(), mimetype="application/x-ndjson")
 
 
+def _environment(rows: list) -> dict:
+    """The Summary tab's environment card: the machine, the server, the runs.
+
+    **Three claims, kept apart on purpose**, because merging any two of them is a
+    lie the card would have no way to signal:
+
+    - `machine` -- the box THIS PROCESS is running on, probed locally. It says
+      nothing about where the rows were produced: the log outlives the machine.
+    - `server` -- the model server in force NOW, and the settings this process
+      would send. Also not a property of the rows; switching the endpoint does
+      not rewrite them.
+    - `runs` -- what the rows in view were actually made under, counted from the
+      log itself and narrowing with the card's filters. The hardware and warmth
+      marks in there are INFERRED and labelled as such.
+
+    So a card showing an RTX 3060 beside a row of Ollama runs is saying "this
+    machine has one" and "those runs used Ollama", never "those runs used this
+    card" -- which is a claim nothing in this project can make.
+
+    **The server half never makes a request** -- `backends.known` returns the
+    last probe or nothing at all. This route is on a polling path: the run-log
+    card re-fetches itself every five seconds while the tab is open, and
+    `llama_status()` here took the summary from milliseconds to **5.1 s** against
+    an unreachable endpoint, two connect timeouts at a time. It is also the rule
+    this project has had since the beginning -- *never poll the model server*,
+    because llama.cpp serves `/slots` from the same task queue as inference and a
+    background poll cancels work in flight. A card that describes the server must
+    not be the thing that pesters it.
+
+    So the endpoint is reported **as last seen**, and `probed` is false until
+    something that legitimately talks to the server has done so -- the page's own
+    status fetch, a read, or startup.
+    """
+    info = backends.known()
+    extract_model = backends.extract_model()
+    return {
+        "machine": machine.describe(),
+        "server": {
+            # The endpoint that WOULD be used, which is known without asking
+            # anyone -- unlike everything else here, which is only as fresh as
+            # the last probe.
+            "url": backends.active_url(),
+            "probed": info is not None,
+            "backend": (info or {}).get("kind"),
+            "model": (info or {}).get("model"),
+            # Only where pass 2 runs on a different model -- blank reads as "the
+            # same as the reading model", the rule the CSV column follows.
+            "extract_model": extract_model or None,
+            "slots": (info or {}).get("slots"),
+            "reachable": (info or {}).get("reachable"),
+            # Not from the probe: it is what this process sends, and it is true
+            # whether or not anything is listening.
+            "num_ctx": backends.num_ctx(),
+        },
+        # The knobs in force, so a slide can say what the numbers beside it were
+        # produced under. Read from `settings` rather than from the environment,
+        # for the reason that module exists: a second read of an env var can
+        # disagree with the first after a clamp.
+        "settings": {
+            "detail": DEFAULT_DETAIL,
+            "ocr_profile": ocr_profile(),
+            "extract_mode": "agentic" if AGENTIC_EXTRACT else "single",
+            "dry": DRY_MULTIPLIER,
+            "max_new_tokens": MAX_NEW_TOKENS,
+            "extract_max_tokens": EXTRACT_MAX_TOKENS,
+        },
+        "runs": runlog.conditions(rows),
+    }
+
+
 def _runs_payload(limit: int, window=None, min_read_pct=None,
                   include: dict = None, exclude: dict = None,
-                  drop_single_source: bool = False) -> dict:
+                  drop_single_source: bool = False, bias: bool = False) -> dict:
     """The run-log card's whole payload: rows, compiled tables, and the pickers.
 
     **Built 2026-08-24 at the user's request** -- the tables were compiled under
@@ -2964,6 +3179,19 @@ def _runs_payload(limit: int, window=None, min_read_pct=None,
             totals["matched"] = len(matched)
         else:
             totals = runlog.totals(matched, logged=len(everything))
+        # The presentation summary, compiled over the same filtered rows under
+        # the same view -- so the card's chips reach it like every other table.
+        # **Its own bias is applied on top and is its own toggle**: it drops
+        # single-source failures, weak models and time outliers whether or not
+        # the card-wide one is on, because that tab is the one view here that is
+        # meant to be shown rather than argued from. `bias=False` returns the
+        # same six blocks over everything, which is what makes the bias
+        # inspectable rather than load-bearing.
+        totals["presentation"] = runlog.presentation(matched, bias=bias)
+        # Beside it rather than inside it: the environment describes the runs
+        # under every view, biased or not, and a card that changed its machine
+        # when a checkbox moved would be describing a different computer.
+        totals["environment"] = _environment(matched)
     return {
         "runs": everything[:limit],
         "columns": runlog.COLUMNS,
@@ -3023,7 +3251,17 @@ def runs_query():
                                    window=window,
                                    min_read_pct=number("min_read_pct", float),
                                    include=include, exclude=exclude,
-                                   drop_single_source=bool(body.get("drop_single_source"))))
+                                   drop_single_source=bool(body.get("drop_single_source")),
+                                   # **Defaults OFF, like every other control
+                                   # here** (2026-08-25, at the user's request:
+                                   # *show all if i do not toggle to exclude
+                                   # them like the other page*). It shipped
+                                   # defaulting on earlier the same day and that
+                                   # was reversed: a summary that quietly leaves
+                                   # models out is one more thing to remember
+                                   # about a page whose whole job is to be read
+                                   # at a glance.
+                                   bias=bool(body.get("bias"))))
 
 
 @app.get("/api/runs/stat")
@@ -3112,6 +3350,10 @@ def preflight():
         say(f"[ocr] WARNING: bound to {config.HOST}, reachable from other hosts. "
             "This app has no authentication -- put it behind a reverse proxy or "
             "keep it on a trusted network.")
+
+    # The machine before the model server: every timing in the run log is a wall
+    # clock on THIS box, and until now nothing recorded which box that was.
+    machine.report()
 
     status = llama_status()
     say(f"[ocr] {status['kind'] or 'server'} {status['url']} "

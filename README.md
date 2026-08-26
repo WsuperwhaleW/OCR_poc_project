@@ -319,6 +319,23 @@ one; the card says how many, because a setting nobody can select is not one to r
 PDFs are rasterised at 300 DPI (`PDF_DPI`) so the downscale resamples from real detail.
 Uniform blank margins are cropped before the cap is applied; disable with `TRIM_MARGINS=0`.
 
+#### Seeing the page the model will get
+
+At `medium` and `low` the workspace preview shows the **prepared** page rather than the file
+you picked: trimmed, scaled to the cap, and produced by the same code the read uses, so it is
+the picture the model is about to be given. Under it, the preset, the prepared size and the
+size it came down from, and a **Download** button that saves that exact PNG.
+
+It follows the Detail picker, so switching between the presets shows what each one costs the
+page. It also works for PDFs and for a selected benchmark case, which have no browser preview
+of their own — page 1, with the page count beside it. At `original` there is nothing to
+prepare, so the preview goes back to the file itself and the bar disappears.
+
+No model server is needed for this, and nothing is read: `POST /api/preview` takes the same
+`image` / `case` / `file` field the read takes, plus `detail` and an optional `page`, and
+answers with the PNG (sizes in `X-Preview-*` headers). Unlike a real read it is not cached, so
+previewing does not evict prepared pages the Compare card is still showing.
+
 **Neither end of the range is safe by default.** Too few pixels and fine detail is lost;
 too many is not reliably better either. `medium` is the default because it scored best on
 the bundled cases — score a case yourself before moving off it.
@@ -347,6 +364,28 @@ Two things to know:
 Set the starting profile with `OCR_PROFILE` (`typhoon` or `dots`). Switching it applies to
 this process — the queue and any other browser tab included — and takes effect on the next
 page read; a page already streaming finishes under the profile it started with.
+
+### Stop a read that starts repeating (the loop backstop)
+
+A small model decoding greedily can lock onto one line or one table row and repeat it until it
+burns the whole token budget — minutes of wall clock for a transcript that stopped saying
+anything new near the top. The checkbox under **Page reading** is the backstop: ticked, a read
+whose tail is cycling is stopped where it starts repeating and reported as `looped`.
+
+Untick it to let such a read run to `MAX_NEW_TOKENS` (4096). **Only the abort is turned off.**
+The transcript is still tested when it arrives and is still flagged `looped`, so a run that
+cycled the whole way still reads as a failure, is still kept out of every mean, and still has
+its field score suppressed — what you get is all of what the model produced instead of the part
+before the backstop fired. Extraction's own loop reporting is not affected either way.
+
+Turn it off to read a page the backstop is cutting short; turn it back on for anything timed or
+scored in bulk, because a true runaway then costs the full budget on every page of a batch. If
+a document loops repeatedly, **lower Detail first** — a huge image is the usual trigger — and
+raising the token cap does not help.
+
+Set the starting state with `LOOP_GUARD` (`1`/`0`). Like the profile, switching it applies to
+the whole process and takes effect on the next page read; a page already streaming finishes
+under the rule it started with, and the run log's `status` says which.
 
 ### Raw output (the reply before anything touched it)
 
@@ -561,7 +600,8 @@ appear as the same shape of table.
   truth is one file for the whole document and its caption says so.
 - **Markdown** checkbox swaps the text panels between rendered output and raw text.
 - **Sync scroll** links whichever two panels are showing, proportionally.
-- **Open image** opens the prepared page full size in a new tab.
+- **Open image** opens the prepared page full size in a new tab, and **Download** saves it —
+  the same picture the workspace preview offers, for the run that actually happened.
 - Available while a run is still streaming.
 
 Prepared pages are cached in memory per upload (`MAX_JOBS = 5`, oldest evicted) and served
@@ -708,7 +748,7 @@ set OLLAMA_CONTEXT_LENGTH=16384
 | Reported as | Means |
 |---|---|
 | `truncated` | the reply hit `MAX_NEW_TOKENS` (4096) and was cut off; a warning banner shows on the page |
-| `looped` | the output was cycling and the app aborted it, rather than letting a repeating transcript pass as a complete one |
+| `looped` | the output was cycling. With the backstop on the read was aborted there; with it off the read ran to the cap and is flagged all the same, rather than letting a repeating transcript pass as a complete one |
 | `error` | the request itself failed — see the message and [Server status](#server-status) |
 
 Extraction has the same two failure modes and reports them the same way, so an unterminated
@@ -1136,16 +1176,27 @@ every run and every setting, with the model, backend, detail and mode that reach
 hover. The mean moves with whatever was being tried lately; the best says what the document
 is known to be capable of, which is the number to beat.
 
-### Reading the card: five panels, sortable, filterable
+### Light or dark
 
-The card is five panels, and only the last of them is the log:
+**Auto / Light / Dark**, top right of the page. `Auto` follows your desktop and is the
+default; the other two override it in either direction and are remembered across reloads.
+Pick **Light** for projecting or screenshotting — it is what the Summary panel is meant to be
+shown in. Light is a soft grey ground with an off-white card rather than white-on-white, so it
+does not glare on a projector.
+
+### Reading the card: eight panels, sortable, filterable
+
+The card is eight panels, and only the last of them is the log:
 
 | Panel | |
 |---|---|
+| **Summary** | the six tables worth showing, at presentation size, with two banner cards above them. Opens by default |
 | **Full rank** | best and worst per model and per document, for each pass. The chips above it are each document's best score |
 | **Best reading** | pass 1 per setting — which model, backend, Detail and profile to read a page with |
 | **Best extraction** | pass 2 per setting — which model and shape to extract fields with |
 | **Per document** | one row per ground-truth document: the best transcript, the best fields, the quickest complete run |
+| **Time × Doc × Accuracy** | pass 1 only: read time against the document against the transcript score, with the Detail tables and the outlier list |
+| **Errors** | what is failing, ranked on the failures rather than folded into an accuracy |
 | **Raw data** | the rows of `logs/runs.csv` themselves — unfiltered, and the only place a run can be deleted |
 
 **Every column sorts**, including the one each table is ranked by. Click a header to sort
@@ -1153,6 +1204,86 @@ descending, again for ascending. The highlighted row stays the best by the table
 ranking however you sort it, so re-ordering never re-labels the winner. Rows with nothing to
 sort — *not scored*, *no complete run* — go last in both directions: no score is not a low
 score.
+
+#### The Summary panel
+
+Built for showing — projected, or read from across a room — so everything on it is a size up
+from the rest of the card. Two banner cards, then six numbered tables.
+
+**The headline cards** answer the two questions the tab exists for, at a size that needs no
+leaning in: **best at reading a page** and **best at extracting fields**, each with the model,
+the percentage, its error rate, and what it was measured over. They name the *ranking's*
+winner and never the sorted table's top row, so re-sorting a table by time cannot re-label the
+fastest model "best".
+
+**The environment card** is three columns, and the split is the point — none of them implies
+another:
+
+| Column | |
+|---|---|
+| **This machine** | GPU, CPU, memory and OS, detected on the box this app is running on now. On NVIDIA hardware the card, its memory and the driver come from `nvidia-smi`; anything else reads *not detected*, and the probe is named so you can tell "no GPU" from "could not ask" |
+| **Server now** | the endpoint, models, context and defaults this process *would* use for the next run |
+| **These runs** | what the rows in view were actually made under — dates, backend, models, Detail, and the inferred hardware and warm/cold split. **Only this column describes the numbers below**, and it narrows with the chips like every table |
+
+The log outlives the other two: a row read on a different machine, or against a server since
+switched, is still in it and is still counted. So the card never says *these runs used this
+GPU* — nothing in this project can. Hardware and warm start are **inferred** from the decode
+rate and the prefill, and are labelled as such wherever they appear.
+
+**The card never contacts the model server.** It reports the endpoint *as last seen* and says
+*not probed yet* if nothing has asked — the panel refreshes itself every few seconds, and
+polling a llama.cpp server cancels work in flight. Press **Re-check** beside the server picker
+to refresh it.
+
+**Colour carries the comparison**, not just the numbers: every figure has a magnitude bar
+under it, comparable **down its own column** — accuracy against 100%, the clocks against the
+slowest in that column. The error column is the one place a longer bar is worse, which is why
+it is the only one drawn in red. The Detail grids tint each cell too: by the score in the
+accuracy grid, and by how many times that row's cheapest preset it cost in the time grid. Rank
+badges beside each model are the **ranking's** order and do not renumber when you sort a
+column.
+
+Then the six tables:
+
+| | |
+|---|---|
+| **1** | which model reads a page best — transcript accuracy and error rate |
+| **2** | what each reader costs — time per document, decode rate, and average tokens generated |
+| **3** | what raising **Detail** buys and what it costs, as **two** model × preset grids — accuracy in one, time in the other |
+| **4** | which model extracts fields best — field accuracy and error rate |
+| **5** | **single against agentic**, per model, with the extraction clock |
+| **6** | what each extractor costs |
+
+Three things are deliberately different here from every other panel:
+
+- **One error column, and no failure flags anywhere else.** The other tables print a red
+  incomplete count beside the setting, because there it qualifies every figure on the row.
+  Here the error rate is a column and nothing else.
+- **Its own colour scale**: red under 70%, amber to 90%, green at 90% and above. Error rates
+  are coloured on the same scale read from the other end, so 10% error is green and 30% is
+  red. The rest of the page keeps its own scale.
+- **It shows everything by default**, like every other panel. Exclude models with the chips
+  above, exactly as elsewhere — or tick **Exclude weak models** to do it by rule instead of by
+  hand. A strip of chips then names every model that was dropped and why on hover; unticking it
+  puts all of them back and the strip disappears.
+- **No explanatory text.** Every caveat is on the heading's or the column header's tooltip
+  instead, so the panel is figures, colour and headings — and the spread and range behind each
+  mean are one hover away rather than printed under it.
+
+Three rules make up that toggle, and all three are computed from the log rather than from a
+list of model names, so the result changes when a model does:
+
+| Rule | |
+|---|---|
+| **single-source failures** | failures that came entirely from one pairing — a document all of whose failures are one model, or a model all of whose failures are one document. Only the failing runs go; that model's clean runs stay |
+| **weak models** | a model that delivers less than `PRESENT_MIN_SHARE` (**60%**) of what the best model *in that pass* delivers, or fails more than `PRESENT_MAX_FAILURE` (**40%**) of its runs. Judged per pass, on the same figures the tables print, and never on fewer than `PRESENT_MIN_RUNS` (**3**) runs |
+| **time outliers** | a run whose clock is a robust outlier within its own cell — a cold model load or a runaway. **Only its time is discounted**; the run still counts and still scores |
+
+Because the weak-model bar is relative, dropping the leading model with a chip can let a
+previously excluded one back in: the bar moves with the field. That is the rule working, and
+the banner will say so.
+
+**Reset clears it**, like every other narrowing on the card.
 
 #### Filtering
 
@@ -1495,6 +1626,14 @@ Two things follow from `derived` sitting outside `fields`, and both are delibera
 accepted. `400` for an unknown name. Not refused while the queue is busy: every page records
 the profile it ran under, so a batch split across two is still readable afterwards.
 
+`GET /api/ocr/loop-guard` — whether a cycling read is cut short, and the cap it would run to
+without it: `{"loop_guard":true,"max_tokens":4096}`.
+
+`POST /api/ocr/loop-guard` — `{"loop_guard":false}` switches it, and answers with what was
+accepted. `400` for anything that is not `true` or `false`. Not refused while the queue is
+busy, for the same reason as the profile. Turning it off stops reads being **aborted**; it does
+not stop them being **detected**, so a run that cycled still comes back `looped`.
+
 `POST /api/ocr/stream` — multipart form, fields `image` and `detail`
 (`original`/`medium`/`low`; the old four names are accepted and mapped). Returns NDJSON:
 
@@ -1526,6 +1665,7 @@ everything else, which is most documents.
 | `POST /api/extract/stream` | the same as `/api/extract`, as NDJSON: `extract_steps` once, then an `extract_step` per step as it starts and finishes, then `fields`. Agentic mode only emits the step events; single mode emits `fields` alone |
 | `GET` · `POST /api/extract/mode` | read or set the extraction shape for everything this process extracts next. Body `{"mode": "single"}` or `{"mode": "agentic"}` |
 | `GET /api/page/<job>/<n>` | PNG of prepared page `n` (0-based). `job` is returned on the `page` and `done` events. 404s once the upload falls out of the cache |
+| `POST /api/preview` | the prepared page **before** any read, so the Detail can be seen rather than guessed at. Multipart, taking the same `image` / `case` / `file` field as `/api/ocr` plus `detail` and an optional `page` (0-based). Answers with the PNG; `X-Preview-Pages`, `X-Preview-Detail` (as resolved), `X-Preview-Width`/`-Height` and `X-Preview-Source-Width`/`-Height` carry the numbers. No model server needed, and nothing is cached or logged |
 | `GET /api/health` | active server status (reachable, kind, model, vision) and whether the PDF/HEIF decoders are available |
 | `GET /api/servers` | every configured endpoint, what each one is, and which is active. `?probe=1` bypasses the status cache |
 | `POST /api/servers` | `{"url": "...", "model": "..."}`, either field optional. 409 while the queue has a job running |

@@ -129,6 +129,31 @@ def current_profile(app):
         return None
 
 
+def select_loop_guard(app, on):
+    """Turn the read backstop on or off for the sweep, and say which it is.
+
+    A third axis again: it decides whether a cycling read is CUT SHORT, not what
+    is read or who reads it. A sweep taken with it off is not comparable with one
+    taken with it on -- a runaway costs the full token budget and comes back
+    longer -- so it is stated on the status line beside the model and the profile.
+    """
+    res = requests.post(f"{app}/api/ocr/loop-guard",
+                        json={"loop_guard": on}, timeout=30)
+    body = res.json()
+    if not res.ok or body.get("error"):
+        raise RuntimeError(body.get("error", f"HTTP {res.status_code}"))
+    return body["loop_guard"]
+
+
+def current_loop_guard(app):
+    try:
+        return requests.get(f"{app}/api/ocr/loop-guard",
+                            timeout=30).json()["loop_guard"]
+    except Exception:
+        # Same as current_profile: an older deployment simply has no such route.
+        return None
+
+
 def select_server(app, url, model):
     """Point the running app at a server, and at one of its models.
 
@@ -188,6 +213,10 @@ def main():
                     help="pass-1 shape for this run: typhoon|dots "
                          "(default: the app's). Sets the OCR prompt and whether "
                          "a system message is sent")
+    ap.add_argument("--loop-guard", default=None, choices=["on", "off"],
+                    help="whether a cycling read is aborted (default: the "
+                         "app's). off lets it run to the token cap; it is still "
+                         "detected and still logged as looped")
     ap.add_argument("--model", default=None,
                     help="switch to this model first; a unique substring of the "
                          "name is enough (e.g. dots.ocr). Ollama only -- "
@@ -212,17 +241,21 @@ def main():
             server = select_server(app, args.server, args.model)
             profile = (select_profile(app, args.profile) if args.profile
                        else current_profile(app))
+            guard = (select_loop_guard(app, args.loop_guard == "on")
+                     if args.loop_guard else current_loop_guard(app))
         except Exception as err:
             say(f"server: {err}", sys.stderr)
             return 2
         say(f"server: {server.get('kind') or 'no server'} at {server.get('url')}"
             + (f"  {server['model']}" if server.get("model") else "")
-            + (f"  profile {profile}" if profile else ""))
+            + (f"  profile {profile}" if profile else "")
+            + ("" if guard is None else
+               "  loop guard on" if guard else "  loop guard OFF"))
         if not server.get("available"):
             say(f"  warning: {server.get('reason') or 'not available'}", sys.stderr)
-    elif args.server or args.model or args.profile:
-        say("--server/--model/--profile ignored: this run makes no model call.",
-            sys.stderr)
+    elif args.server or args.model or args.profile or args.loop_guard:
+        say("--server/--model/--profile/--loop-guard ignored: this run makes no "
+            "model call.", sys.stderr)
 
     index = scoring.cases_index()
     if not index:

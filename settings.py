@@ -288,6 +288,18 @@ def sampler_extras():
 # Belt and braces: even with DRY a model can lock into a loop, burning the full
 # token budget and minutes of wall clock. Stop the stream when the tail is clearly
 # cycling.
+#
+# LOOP_GUARD is the off switch, and it disables exactly one thing: ABORTING a read
+# that is cycling. Detection is never disabled -- a stream that ran to the token
+# cap while looping is still flagged `looped`, so a run that would have been cut
+# short is still attributable and still kept out of every mean, and the extraction
+# pass's "the model repeated itself and never closed the JSON" diagnosis is
+# untouched. Turning it off is for reading the whole of a run the backstop was
+# cutting short, and it is not free: a true runaway then costs the full
+# MAX_NEW_TOKENS and the wall clock that goes with them (measured at ~8k tokens
+# and 75 s on dots.ocr where the backstop stopped it at 864 tokens and 14 s).
+# Switchable per process from the page as well, like the pass-1 profile.
+LOOP_GUARD = config.env_bool("LOOP_GUARD", True)
 LOOP_TAIL_CHARS = 600
 LOOP_MIN_REPEATS = 4
 # A repeated line/block that carries no actual *word* -- blank table markup
@@ -534,3 +546,55 @@ ANALYSIS_OUTLIER_MIN_RUNS = config.env_int("ANALYSIS_OUTLIER_MIN_RUNS", 3, minim
 ANALYSIS_OUTLIER_MIN_RATIO = config.env_float("ANALYSIS_OUTLIER_MIN_RATIO", 2.0,
                                               minimum=1.0)
 
+
+
+# --------------------------------------------------------------------------
+# The presentation summary's bias (2026-08-25, at the user's request: *try be
+# bias by default in this page -- exclude bad product, outlier, single error
+# case and some old error case*).
+#
+# **This is the one view in the project that is allowed to be selective, and it
+# is selective by a STATED RULE over the log rather than by a list of model
+# names.** A hard-coded "do not show dots.ocr" would be a claim this file makes
+# about a model; a threshold is a claim the log makes, and it moves when the
+# model does. Everything it drops is named on the page and one toggle puts it
+# all back, which is what keeps a biased view honest -- the bias is the
+# argument, not a hidden edit.
+#
+# The figure compared is `runlog._standout_score`: accuracy x (1 - failure
+# rate), i.e. what one attempt is worth -- and it is computed over the SAME
+# grouping the summary prints, so the number that disqualifies a model is the
+# number on the row beside it. Judging it on a differently windowed figure was
+# the first shape and it was wrong in the way that is hardest to argue with: a
+# model showing 41% failure in the table was being kept by a rule that had
+# seen 39%.
+#
+# Measured on the 510-row log the day this shipped, the two rules leave exactly
+# the two OCR builds in the reading tables (typhoon 78, dots.mocr 71 per
+# attempt) and exactly the three general models in the extraction ones
+# (qwen3.5:4b 55, qwen3.5:2b 47, phi4-mini 43) -- which is the project's own
+# conclusion in CLAUDE.md, reached here from the rows instead of asserted.
+# **Relative to the best model in that pass, not an absolute cut.** An absolute
+# threshold has to be right for both passes at once and there is no such number
+# here: a 43-per-attempt reader is a poor product beside an 78, while a
+# 43-per-attempt extractor is the third best thing this project owns. A share of
+# the leader says the thing that is actually meant -- *this delivers less than
+# 60% of what the best available model delivers, so it is not what you would
+# ship* -- and it re-scales on its own when a better model arrives, which is
+# exactly when an absolute threshold would start hiding the wrong rows.
+PRESENT_MIN_SHARE = config.env_float("PRESENT_MIN_SHARE", 0.6,
+                                     minimum=0.0, maximum=1.0)
+# **A failure rate this high disqualifies whatever the score is**, and it is
+# absolute because reliability is not graded on a curve. dots.ocr reads 79.9% on
+# the runs that finish and does not finish 41% of them; a summary that ranked it
+# on the survivors would recommend a build this project has already dropped.
+# Kept separate from the share above rather than folded into it, because the two
+# say different things to a reader -- one is "not good enough", the other "not
+# reliable enough", and a product can fail either alone.
+PRESENT_MAX_FAILURE = config.env_float("PRESENT_MAX_FAILURE", 40.0, minimum=0.0)
+# **Thin evidence never disqualifies.** A model with one or two runs is kept
+# whatever it scored -- dropping it would be the same smear `STANDOUT_MIN_RUNS`
+# refuses one level down, and a model newly pulled would vanish from the summary
+# before it had a chance to be measured. So the bias only ever acts on a model
+# the log has something to say about.
+PRESENT_MIN_RUNS = config.env_int("PRESENT_MIN_RUNS", 3, minimum=1)
