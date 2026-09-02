@@ -1,4 +1,36 @@
 {
+  "_mandatory": {
+    "types": [
+      "RECEIPT",
+      "TAX_INVOICE"
+    ],
+    "required": [
+      "inv_rtv_cnr_number",
+      "seller_tax_id",
+      "seller_branch",
+      "buyer_tax_id",
+      "buyer_branch",
+      "subtotal",
+      "vat_total"
+    ],
+    "found_only": [
+      "remaining_amount",
+      "remaining_vat_amount",
+      "payment_date",
+      "cheque_number"
+    ]
+  },
+  "inv_rtv_cnr_number": "",
+  "seller_tax_id": "0101111011111",
+  "seller_branch": "สำนักงานใหญ่",
+  "buyer_tax_id": "0101111001110",
+  "buyer_branch": "สาขาที่ 00068",
+  "subtotal": "3,646,128.51",
+  "vat_total": "174,443.47",
+  "remaining_amount": "",
+  "remaining_vat_amount": "",
+  "payment_date": "25/02/2026",
+  "cheque_number": "11111111",
   "document_type": [
     "ใบเสร็จรับเงิน/ใบกำกับภาษี Receipt/Tax Invoice",
     "ใบเสร็จรับเงิน/ใบกำกับภาษี",
@@ -7,18 +39,13 @@
   "document_number": "12121212121",
   "issue_date": "25/02/2026",
   "reference_document": "",
+  "po_gr_rtv_number": "",
   "seller_name": [
     "บริษัท เอบีซี รีเทล ดีเวลล็อปเม้นท์ จำกัด ABC RETAIL DEVELOPMENT CO.,LTD",
     "บริษัท เอบีซี รีเทล ดีเวลล็อปเม้นท์ จำกัด",
     "ABC RETAIL DEVELOPMENT CO.,LTD"
   ],
-  "seller_tax_id": "0101111011111",
-  "seller_branch": "สำนักงานใหญ่",
   "buyer_name": "บริษัท สปริงโรล จำกัด",
-  "buyer_tax_id": "0101111001110",
-  "buyer_branch": "สาขาที่ 00068",
-  "currency": "บาท",
-  "subtotal": "3,646,128.51",
-  "vat_total": "174,443.47",
-  "amount_incl_vat": ""
+  "amount_incl_vat": "",
+  "currency": "บาท"
 }

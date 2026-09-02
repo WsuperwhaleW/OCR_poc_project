@@ -38,6 +38,8 @@ is not one.
 import re
 
 import grounding
+import prompts
+import verify
 
 _THAI_DIGITS = str.maketrans("๐๑๒๓๔๕๖๗๘๙", "0123456789")
 
@@ -58,51 +60,247 @@ def _needles(*words):
 # document type
 # --------------------------------------------------------------------------
 
-# Raw printed heading -> the standard code. Tested in order, and the ORDER is the
-# whole of the correctness here, exactly as in `fieldscore.HEADER_MAP`: a receipt
-# that is also a tax invoice heads itself ใบเสร็จรับเงิน/ใบกำกับภาษี, which
-# contains both single readings inside it, so the compound has to be asked for
-# before either half. A credit note is asked before all of them, because one
-# often names the invoice it corrects in its own heading.
+# Raw printed heading -> the standard codes it names. **A document can be more
+# than one type at once, and in this corpus six of the ten are.**
+# `ใบเสร็จรับเงิน/ใบกำกับภาษี` is a receipt AND a tax invoice;
+# `ใบลดหนี้/ใบกำกับภาษี` is a credit note AND a tax invoice. That is not a
+# quirk of these fixtures -- Thai practice routinely issues one page that
+# discharges two documents, and the slash in the heading is the page saying so.
+#
+# **This table used to return the FIRST match and stop, and that was wrong in two
+# separate ways** (both found 2026-08-31, by the user):
+#
+#  * a compound entry `RECEIPT_TAX_INVOICE` papered over one combination by
+#    hand, which only works for combinations somebody thought of. It did not
+#    exist for `ใบลดหนี้/ใบกำกับภาษี`, so sol006 matched CREDIT_NOTE, stopped,
+#    and its tax-invoice half was **silently dropped** -- taking with it every
+#    field a tax invoice is required to carry;
+#  * `statement of account` was a needle under INVOICE, so sol001 -- which heads
+#    itself `ใบแจ้งหนี้ STATEMENT OF ACCOUNT` -- came back INVOICE and the
+#    statement half disappeared the same way.
+#
+# So every entry is now tested and ALL that match are returned. There are no
+# compound codes: a receipt/tax-invoice is `["RECEIPT", "TAX_INVOICE"]`, which
+# composes for combinations nobody enumerated, and the field set is the union of
+# the two forms (`prompts.fields_for_types`). Order in this list is the order the
+# codes come back in -- most specific first, so `primary_type` reads off the
+# front -- but it no longer decides which single answer wins, because there is
+# no longer a single answer.
 #
 # Each entry is (code, all-of, any-of): the code applies when every needle in
 # all-of is present and at least one from any-of is, an empty any-of meaning
 # nothing further is required. Needles are matched against the squashed heading,
 # so spacing, punctuation and slashes do not matter.
 DOCUMENT_TYPES = [
+    # FIRST, and the order matters here more than anywhere else in this table:
+    # a withholding tax certificate shares not one field with the commercial
+    # documents below it, so a page that is one is nothing else, and it is what
+    # `primary_type` should file it under whatever else its heading happens to
+    # brush against.
+    #
+    # The Thai section number is a needle in its own right because the printed
+    # form carries it on its own line under the heading -- and it survives
+    # squashing as "50ทว", the vowel being a combining mark that
+    # `grounding.squash` drops. That is short, and it is safe only because
+    # classification reads the heading band alone: `app._TYPE_SCAN_LINES` looks
+    # at the top of the page and at lines short enough to be a heading, so a
+    # "50" and a "ทว" adrift in body text are never seen.
+    ("WHT_CERTIFICATE", (), _needles(
+        "หนังสือรับรองการหักภาษี ณ ที่จ่าย",
+        "หนังสือรับรองการหักภาษี",
+        "ใบรับรองการหักภาษี",
+        "มาตรา 50 ทวิ",
+        "50 ทวิ",
+        "withholding tax certificate",
+        "certificate of withholding tax",
+        "tax withholding certificate")),
     ("CREDIT_NOTE", (), _needles("ใบลดหนี้", "ใบหักหนี้", "credit note",
                                  "credit notice")),
     ("DEBIT_NOTE", (), _needles("ใบเพิ่มหนี้", "debit note")),
-    # Both halves present -> the compound. Thai and English are tested
-    # independently so a page printing only one language still resolves.
-    ("RECEIPT_TAX_INVOICE", _needles("ใบเสร็จรับเงิน", "ใบกำกับภาษี"), ()),
-    ("RECEIPT_TAX_INVOICE", _needles("receipt", "tax invoice"), ()),
-    ("TAX_INVOICE", (), _needles("ใบกำกับภาษี", "tax invoice")),
-    ("RECEIPT", (), _needles("ใบเสร็จรับเงิน", "ใบรับเงิน", "receipt")),
-    # Statement of Account is named by the requirement as an invoice heading, and
-    # ใบวางบิล / ใบแจ้งหนี้ are the two ordinary Thai wordings for one.
+    # Its own code since 2026-08-31. It was a needle under INVOICE, on a reading
+    # of the requirement, and a statement of account is a different document: it
+    # summarises what is owed rather than charging for one delivery. sol001
+    # prints ใบแจ้งหนี้ in Thai and STATEMENT OF ACCOUNT in English, so it now
+    # comes back as both -- which is what the page says, and the manifest is
+    # where a human overrules it.
+    ("STATEMENT_OF_ACCOUNT", (), _needles("statement of account",
+                                          "ใบแจ้งยอด", "ใบสรุปยอด")),
     ("INVOICE", (), _needles("ใบแจ้งหนี้", "ใบวางบิล", "ใบกำกับสินค้า",
-                             "invoice", "statement of account",
-                             "billing note")),
+                             "invoice", "billing note")),
+    ("RECEIPT", (), _needles("ใบเสร็จรับเงิน", "ใบรับเงิน", "receipt")),
+    # LAST on purpose, and this decides `primary_type`. Being a tax invoice is
+    # the least distinguishing thing about a document here -- six of the ten
+    # fixtures are one -- so a receipt/tax-invoice files as a receipt and a
+    # credit-note/tax-invoice as a credit note. It is a qualifier that changes
+    # which FIELDS are required, not a family to file under.
+    ("TAX_INVOICE", (), _needles("ใบกำกับภาษี", "tax invoice")),
 ]
 
+# `invoice` is a substring of `tax invoice` once both are squashed, so a page
+# headed only "TAX INVOICE" would come back as both unless the narrower reading
+# suppresses the wider one. These are not exclusive in general -- a real
+# ใบกำกับภาษี/ใบแจ้งหนี้ is genuinely both -- so this is a needle-collision
+# table, not a statement about documents: a code is dropped only when the ONLY
+# evidence for it is text that belongs to the more specific code.
+_SUBSUMED = {
+    "TAX_INVOICE": (_needles("tax invoice"), _needles("invoice")),
+}
 
-def document_type_code(raw_title):
-    """The standard code for a printed document heading, or "" if unrecognised.
 
-    Unrecognised is a real answer and is returned as one. Guessing a code from a
+def _drop_subsumed(codes, squashed):
+    """Remove a code whose only evidence was a substring of a narrower code's."""
+    out = list(codes)
+    for narrow, (narrow_needles, wide_needles) in _SUBSUMED.items():
+        if narrow not in out:
+            continue
+        for wide_code, _, wide_any in DOCUMENT_TYPES:
+            if wide_code not in out:
+                continue
+            # Evidence for the wider code that is NOT inside the narrower one.
+            independent = [n for n in wide_any
+                           if n in squashed
+                           and not any(n in w for w in narrow_needles)]
+            if not independent and set(wide_any) & set(wide_needles):
+                out.remove(wide_code)
+    return out
+
+
+def match_types(raw_title):
+    """(codes, needles, squashed) -- the table's answer and the EVIDENCE for it.
+
+    `document_types` is this with the evidence dropped. The needles that actually
+    matched are what `heading_confidence` measures: a line that IS a heading is
+    almost entirely made of them, and a line of body text that happens to mention
+    a document kind is not.
+    """
+    squashed = grounding.squash(raw_title)
+    if not squashed:
+        return [], [], ""
+    codes, hits = [], []
+    for code, required, any_of in DOCUMENT_TYPES:
+        if not all(n in squashed for n in required):
+            continue
+        matched = [n for n in tuple(required) + tuple(any_of) if n in squashed]
+        if any_of and not any(n in squashed for n in any_of):
+            continue
+        if code not in codes:
+            codes.append(code)
+        hits.extend(matched)
+    return _drop_subsumed(codes, squashed), hits, squashed
+
+
+def heading_confidence(raw_title, line_no=1):
+    """How much of a line is the heading it was classified by, 0.0-1.0.
+
+    **It measures the EVIDENCE ON THE PAGE, not anybody's self-belief** -- not a
+    probability and not the model's opinion of itself. That is what lets one
+    function score the Python table's answer and the model's quoted heading on
+    the same scale, which is the only way the two can be compared at all.
+
+    `coverage` is the share of the line's squashed characters that the matched
+    needles account for, intervals merged so two needles overlapping one another
+    are not counted twice. A line that is only the heading scores ~1.0;
+    `ใบเสร็จรับเงิน/ใบกำกับภาษี` is two needles covering the whole of it. A
+    sentence that mentions a document kind in passing scores low, which is the
+    case worth separating -- a credit note's body text regularly names the
+    invoice it credits.
+
+    `line_no` costs a little confidence further down the page, because a heading
+    is normally near the top and a match at line 30 is likelier to be body text.
+    It is a gentle discount, not a cut-off: sol002 prints its heading eighteen
+    lines down under two letterheads, and a rule that punished that would be
+    wrong on a real document in this very corpus.
+
+    Returns (confidence, detail) so a caller can report WHY -- a bare number
+    nobody can take apart is exactly the confidently-wrong figure this project
+    refuses elsewhere.
+    """
+    codes, hits, squashed = match_types(raw_title)
+    if not codes or not squashed:
+        return 0.0, {"coverage": 0.0, "position": 1.0, "matched": [],
+                     "chars": len(squashed)}
+    if any(squashed.startswith(lead) for lead in REFERENCE_LEADINS):
+        return 0.0, {"coverage": 0.0, "position": 1.0, "matched": [],
+                     "chars": len(squashed), "why": "refers to another document"}
+    spans = []
+    for needle in hits:
+        start = squashed.find(needle)
+        while start != -1:
+            spans.append((start, start + len(needle)))
+            start = squashed.find(needle, start + 1)
+    spans.sort()
+    covered, end = 0, -1
+    for a, b in spans:
+        a = max(a, end)
+        if b > a:
+            covered += b - a
+            end = b
+    coverage = covered / len(squashed)
+    position = 1.0 if line_no <= PROMINENT_LINES else POSITION_DISCOUNT
+    detail = {"coverage": round(coverage, 3), "position": position,
+              "matched": sorted(set(hits)), "chars": len(squashed)}
+    return round(min(1.0, coverage) * position, 3), detail
+
+
+# A heading this far down the page is still a heading -- sol002 prints its own
+# eighteen lines below the top, under two letterheads and a logo block -- so the
+# discount below applies only past that, and it is small.
+PROMINENT_LINES = 20
+POSITION_DISCOUNT = 0.9
+
+# A line that OPENS with one of these is a sentence ABOUT another document, not
+# this document's own heading -- and it is the failure that made scoring by
+# coverage alone unsafe. sol009 prints `อ้างถึงใบกำกับภาษี` ("with reference to
+# tax invoice"), which is 64% needle and beat its real heading
+# `ใบลดหนี้ / รับคืนสินค้า` at 35%: the page would have been classified a tax
+# invoice off a line whose whole job is to name a DIFFERENT one.
+#
+# **It disqualifies the line rather than discounting it**, because there is no
+# score at which "this sentence is about another document" should win: a credit
+# note naming the invoice it credits is the single most common way a page
+# mentions a type it is not. Anchored at the START only -- `ใบกำกับภาษี` inside
+# a heading is ordinary, and a needle merely appearing after one of these words
+# somewhere in a long line is already handled by coverage.
+REFERENCE_LEADINS = _needles(
+    "อ้างถึง", "อ้างอิง", "ตามที่", "ตามใบ", "เพื่อชำระ",
+    "with reference to", "reference to", "refer to", "ref.", "against invoice",
+    "as per", "in respect of")
+
+
+def document_types(raw_title):
+    """Every standard code a printed heading names, most specific first.
+
+    An empty list is a real answer and is returned as one. Guessing a code from a
     heading this table does not know would put a document into a matching flow on
     the strength of a coin flip, and the requirement is explicit that
     classification belongs to review rather than to a default.
     """
-    squashed = grounding.squash(raw_title)
-    if not squashed:
-        return ""
-    for code, required, any_of in DOCUMENT_TYPES:
-        if all(n in squashed for n in required) and (
-                not any_of or any(n in squashed for n in any_of)):
-            return code
-    return ""
+    return match_types(raw_title)[0]
+
+
+def primary_type(codes):
+    """The one code to file a document under, from the codes it carries.
+
+    The front of `DOCUMENT_TYPES`' order, which runs most specific to least: a
+    credit note that is also a tax invoice is filed as a credit note, because
+    "credit note" is what distinguishes it and nearly everything here is also a
+    tax invoice. Used for a filename and for grouping a picker -- never for
+    choosing a field set, which is the union of ALL the codes.
+    """
+    order = [code for code, _, _ in DOCUMENT_TYPES]
+    ranked = sorted(codes, key=lambda c: order.index(c) if c in order else 99)
+    return ranked[0] if ranked else ""
+
+
+def document_type_code(raw_title):
+    """The single primary code for a heading, or "".
+
+    Kept for callers that genuinely want one label -- the filename, a picker
+    heading, the `derived` block. **Do not use it to choose a field set**: it
+    discards the other types the page names, which is the bug this whole section
+    exists to record.
+    """
+    return primary_type(document_types(raw_title))
 
 
 # --------------------------------------------------------------------------
@@ -297,6 +495,40 @@ def references(fields):
 
 
 # --------------------------------------------------------------------------
+# the withholding certificate's one derived figure
+# --------------------------------------------------------------------------
+
+def wht_rates(fields):
+    """The requirement's "Derived WHT Rate %", one entry per income row.
+
+    **Derived, and the requirement says so in the field's own name.** It is
+    worked out here rather than asked of the model for the reason this module
+    exists: pass 2 is a lookup, and a model asked to compute a percentage while
+    it reads starts adjusting the figures it reads to fit the percentage. The
+    field is Optional in the requirement, which is what makes deriving it free.
+
+    Each entry is {row, rate}: the row's index in `income_items`, and the tax as
+    a percentage of the amount paid, rounded to two places. A row whose figures
+    do not both read as amounts, or whose amount paid is zero, contributes
+    `None` rather than being left out -- the caller needs the rate to line up
+    with the row it belongs to, and a zero payment has no rate rather than a
+    rate of zero.
+    """
+    out = []
+    rows = (fields or {}).get(prompts.INCOME_ITEMS_KEY) or []
+    for index, row in enumerate(rows):
+        if not isinstance(row, dict):
+            continue
+        paid = verify.parse_amount(row.get("amount_paid"))
+        tax = verify.parse_amount(row.get("wht_amount"))
+        rate = None
+        if paid not in (None, 0) and tax is not None:
+            rate = round(tax / paid * 100, 2)
+        out.append({"row": index, "rate": rate})
+    return out
+
+
+# --------------------------------------------------------------------------
 # the whole derivation
 # --------------------------------------------------------------------------
 
@@ -313,6 +545,11 @@ def derive(fields, transcript=""):
         # printed heading the model copied. This is the single most useful thing
         # in here: it is what turns "ใบเสร็จรับเงิน/ใบกำกับภาษี" into a value a
         # matching flow can branch on.
+        # Both: the list is what the page names and what the field set is built
+        # from, the primary is the one label to file it under. A single code
+        # here would repeat the bug fixed on 2026-08-31 -- it drops every type
+        # after the first.
+        "document_types": document_types(fields.get("document_type")),
         "document_type_code": document_type_code(fields.get("document_type")),
         "seller_branch_code": branch_code(fields.get("seller_branch")),
         "buyer_branch_code": branch_code(fields.get("buyer_branch")),
@@ -320,6 +557,41 @@ def derive(fields, transcript=""):
         "buyer_tax_id_digits": tax_id_digits(fields.get("buyer_tax_id")),
         "seller_tax_id_valid": tax_id_valid(fields.get("seller_tax_id")),
         "buyer_tax_id_valid": tax_id_valid(fields.get("buyer_tax_id")),
+        # The withholding certificate's two parties get the same treatment as
+        # the commercial documents' two, from the same functions. A key the
+        # extraction never asked for is absent from `fields`, so these come back
+        # empty on every other type rather than being conditional here -- the
+        # derivation is a flat dict by design, and a key that appears and
+        # disappears is worse to read than one that is empty.
+        "payer_branch_code": branch_code(fields.get("payer_branch")),
+        "payee_branch_code": branch_code(fields.get("payee_branch")),
+        "payer_tax_id_digits": tax_id_digits(fields.get("payer_tax_id")),
+        "payee_tax_id_digits": tax_id_digits(fields.get("payee_tax_id")),
+        "payer_tax_id_valid": tax_id_valid(fields.get("payer_tax_id")),
+        "payee_tax_id_valid": tax_id_valid(fields.get("payee_tax_id")),
+        "wht_rates": wht_rates(fields),
         "electronic_tax": electronic_tax(transcript),
         "references": references(fields),
     }
+
+
+def _selftest():
+    """The two tables that name document types must agree, in order.
+
+    `prompts` may not import this module -- normalise -> grounding -> prompts is
+    the existing chain and the fourth edge would close a cycle -- so the phrase
+    each code is named by in a prompt, and the specificity order both
+    `primary_type` and `prompts.type_bullets` rank by, are written out over
+    there and checked from here. A code added to `DOCUMENT_TYPES` alone would
+    otherwise classify a page and then be silently unnameable in the prompt that
+    page is read with, which is the same failure as a schema key missing from
+    the template's four maps.
+    """
+    ours = [code for code, _, _ in DOCUMENT_TYPES]
+    theirs = list(prompts.TYPE_SPECIFICITY)
+    assert ours == theirs, (
+        f"normalise.DOCUMENT_TYPES is {ours} and prompts.TYPE_SPECIFICITY is "
+        f"{theirs}: the two must name the same codes in the same order")
+
+
+_selftest()

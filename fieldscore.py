@@ -386,6 +386,35 @@ def _readings(where: str, value, warnings) -> list:
     return out
 
 
+def _mandatory_drift(case_id: str, note) -> list:
+    """Warn where a truth file's `_mandatory` note disagrees with the requirement.
+
+    The note is a convenience for whoever is filling the file in by hand -- which
+    of its keys have to be answered and which are found-only -- and it is a COPY
+    of `prompts.MANDATORY_FIELDS`, which is the one statement of the fact. A copy
+    that has drifted is worse than no copy at all, because it is read as the rule;
+    so it is checked rather than trusted, and never used to score anything.
+
+    Silent when there is no note, when the case is not in the manifest, or when
+    the note is not the shape this writes: it is an annotation, and a malformed
+    one must not stop a file being scored.
+    """
+    if not isinstance(note, dict):
+        return []
+    import scoring                            # local: nothing else here needs it
+    case = scoring.cases_index().get(case_id)
+    if not case:
+        return []
+    codes = list(case.get("doc_types") or [])
+    want = list(prompts.mandatory_for_types(codes))
+    got = note.get("required")
+    if not isinstance(got, list) or sorted(got) == sorted(want):
+        return []
+    return [f"_mandatory in the truth file lists {sorted(got)}, but the "
+            f"requirement demands {sorted(want)} of {' + '.join(codes) or 'this'}"
+            " -- the note is out of date, prompts.MANDATORY_FIELDS is the rule"]
+
+
 def load_truth(case_id: str) -> dict:
     """Read one case's field ground truth. Raises ValueError if unusable.
 
@@ -412,9 +441,16 @@ def load_truth(case_id: str) -> dict:
         raise ValueError(f"{path.name} must hold a JSON object")
 
     warnings = []
+    warnings.extend(_mandatory_drift(case_id, raw.get("_mandatory")))
     scalars = {}
     for key, value in raw.items():
         if key.startswith("_") or key in _CONFIG_KEYS:
+            continue
+        if key in prompts.RETIRED_KEYS:
+            # A value for a key the schema used to ask for. Not a mistake and
+            # not a warning: these files are the human's record of the page, and
+            # a key leaving the schema does not make the value on the page wrong.
+            # It is simply not scored while nothing asks for it.
             continue
         if key not in SCALARS:
             warnings.append(f"unknown key {key!r} -- ignored")
@@ -547,6 +583,15 @@ README_LINES = [
         "values are what the page prints outside the schema. Scored and",
         "reported separately -- the labels are the model's own wording, so they",
         "never move the headline number.",
+        "",
+        "_mandatory is a NOTE, not values. It records which keys the field",
+        "requirement marks Mandatory for this document's types, and which it",
+        "asks for without demanding. A required key decides the headline score;",
+        "a found-only key is still extracted, still judged and still shown, and",
+        "simply does not move the rate -- nobody is held to it. The list is",
+        "derived from prompts.MANDATORY_FIELDS, which is the single statement of",
+        "the fact; a copy here that disagrees with it is reported as a warning,",
+        "so fix it there rather than here.",
 ]
 
 
@@ -734,7 +779,7 @@ def _pair_rows(truth_rows, actual_rows):
     return matched
 
 
-def _score_items(truth_rows, actual_rows) -> dict:
+def _score_items(truth_rows, actual_rows, required_cells=None) -> dict:
     actual_rows = [r for r in (actual_rows or []) if isinstance(r, dict)]
     matched = _pair_rows(truth_rows, actual_rows)
     rows = []
@@ -758,6 +803,10 @@ def _score_items(truth_rows, actual_rows) -> dict:
                 # saying so cell by cell keeps one dropped row costing what it
                 # actually cost rather than one point.
                 "status": judge(value, None if j is None else source.get(key)),
+                # Mandatory of every ROW, where the requirement says so. Same
+                # flag as a scalar's so one rule can take the headline over both.
+                "required": (True if required_cells is None
+                             else key in required_cells),
             })
 
     spurious_cells = 0
@@ -825,17 +874,52 @@ def _score_others(truth_entries, actual_entries) -> dict:
 # the score
 # --------------------------------------------------------------------------
 
-def score(truth: dict, fields, table: dict = None) -> dict:
+def score(truth: dict, fields, table: dict = None, keys=None,
+          mandatory=None, items_mandatory=None) -> dict:
     """Score one extraction against one loaded truth file.
 
     `fields` is the `fields` object of an extraction result -- what the model
     returned, before any of it is displayed. `table` is what `table_rows` read out
     of the .md, passed in rather than fetched so this stays a pure function of its
     arguments and can be tested without a solution directory.
+
+    `keys` is the field set the extraction was ASKED for -- `prompts.fields_for_type`
+    of the document's type. A truth value for a key outside it is not scored, and
+    that is the whole of how a per-type schema reaches this module.
+
+    **It filters what is scored; it never edits the truth file.** Those files are
+    the human's -- a value a person has entered is not to be changed -- so a key
+    the current type does not ask for stays on disk and simply falls out of the
+    denominator, ready for the day the requirement asks for it again. Scoring it
+    anyway would mark every invoice wrong for not returning a `currency` that
+    nothing requested.
+
+    `mandatory` is the requirement's Mandatory set for this document's types
+    (`prompts.mandatory_for_types`), and **it is the headline's denominator**:
+    a field the requirement marks Yes is scored, one it marks No is extracted,
+    grounded, shown and reported under `optional` -- found, not marked. The two
+    are kept apart rather than pooled because they are different claims: the
+    first is whether this document can be filed at all, and mixing an Optional
+    field nobody is held to into that rate makes a compliant document look
+    incomplete. `optional` is reported for the same reason `other_fields` is --
+    excluded from the headline, never thrown away.
+
+    **`None` and `()` are different, and the difference is the usual one here.**
+    `None` is *nobody said*, and scores everything asked, which is what this did
+    before the requirement tables arrived and is still right for a caller that
+    did not classify. `()` is *no requirement covers this type*, and scores
+    nothing: a tax invoice on its own is held to no table, so there is no
+    compliance rate to state about it. `scored_scope` says which of the three
+    happened, because 100% of nothing and 100% of eleven are the same number.
     """
     fields = fields if isinstance(fields, dict) else {}
+    asked = list(keys) if keys is not None else list(SCALARS)
+    required = None if mandatory is None else set(mandatory)
+    required_cells = None if items_mandatory is None else set(items_mandatory)
     scalar_rows = []
     for key, value in truth["scalars"].items():
+        if key not in asked:
+            continue
         status, reading = judge_best(value, fields.get(key))
         row = {
             "path": key,
@@ -847,6 +931,11 @@ def score(truth: dict, fields, table: dict = None) -> dict:
             "status": status,
             "tier": ("p1" if key in grounding.PRIORITY_1 else
                      "p2" if key in grounding.PRIORITY_2 else "p3"),
+            # Whether the requirement demands this key of this document. On the
+            # row rather than worked out again by each reader: the page marks it,
+            # the CLI prints it and the headline is taken over it, and three
+            # answers to one question drift.
+            "required": True if required is None else key in required,
         }
         readings = accepted(value)
         # Present only where there is genuinely a choice, so a caller can say
@@ -858,7 +947,7 @@ def score(truth: dict, fields, table: dict = None) -> dict:
     scalars = _tally(scalar_rows)
     scalars["rows"] = scalar_rows
     scalars["checked"] = len(scalar_rows)
-    scalars["unchecked"] = len(SCALARS) - len(scalar_rows)
+    scalars["unchecked"] = len(asked) - len(scalar_rows)
     for tier in ("p1", "p2"):
         scalars[tier] = _tally([r for r in scalar_rows if r["tier"] == tier])
 
@@ -872,7 +961,8 @@ def score(truth: dict, fields, table: dict = None) -> dict:
     elif table and table.get("error"):
         warnings.append(f"table not scored: {table['error']}")
     elif table:
-        items = _score_items(table["rows"], fields.get("line_items"))
+        items = _score_items(table["rows"], fields.get("line_items"),
+                             required_cells)
         # Where these rows came from, carried with the score. A derived truth has
         # to say what it derived, or a wrong column mapping looks like a wrong
         # extraction -- and the mapping is the one part of this nobody wrote down
@@ -883,13 +973,32 @@ def score(truth: dict, fields, table: dict = None) -> dict:
     others = (_score_others(truth["other_fields"], fields.get("other_fields"))
               if truth["other_fields"] is not None else None)
 
-    # The headline is the schema's own keys: the scalars plus the table's cells.
-    # `other_fields` is excluded on purpose -- see the module docstring.
-    overall = _tally(scalar_rows + (items["rows"] if items else []))
-    overall["scored_paths"] = len(scalar_rows) + (len(items["rows"]) if items else 0)
+    # The headline is what the REQUIREMENT demands: the Mandatory scalars plus
+    # the Mandatory cells of the table. `other_fields` is excluded on purpose --
+    # see the module docstring -- and an Optional field is excluded for a
+    # different reason with the same shape: nobody is held to it, so a document
+    # that leaves it out is compliant and must not read as incomplete.
+    judged = scalar_rows + (items["rows"] if items else [])
+    wanted = [r for r in judged if r["required"]]
+    spare = [r for r in judged if not r["required"]]
+    overall = _tally(wanted)
+    overall["scored_paths"] = len(wanted)
+    # The other half, reported and never in the headline. A reader comparing the
+    # two rates learns something the headline cannot say: a model that is good at
+    # the eleven that matter and poor at the rest is a different proposition from
+    # one that is evenly mediocre.
+    optional = _tally(spare)
+    optional["scored_paths"] = len(spare)
 
     return {
         "overall": overall,
+        "optional": optional,
+        # Which of the three states the caller put this in. 100% of nothing and
+        # 100% of eleven are the same number and not the same claim, so the scope
+        # travels with the rate rather than being inferred from a count.
+        "scored_scope": ("everything asked" if required is None
+                         else "the requirement's Mandatory fields" if required
+                         else "nothing -- no requirement covers this type"),
         "scalars": scalars,
         "line_items": items,
         "other_fields": others,
@@ -899,18 +1008,42 @@ def score(truth: dict, fields, table: dict = None) -> dict:
         # alone cannot say which it is.
         "coverage": {
             "scalars_checked": len(scalar_rows),
-            "scalars_total": len(SCALARS),
+            # The size of the form that RAN, not of the union of every form. A
+            # rate over 11 of an invoice's keys and one over 11 of the whole
+            # schema are the same number and not the same claim.
+            "scalars_total": len(asked),
+            # Truth values this document's type did not ask for. Not a fault --
+            # the file is allowed to know more than the form does -- but a
+            # reader comparing two documents needs to see the form changed.
+            "scalars_not_asked": sum(1 for k in truth["scalars"]
+                                     if k not in asked),
+            # Of the form that ran, how many keys the requirement demands and
+            # how many of those the truth file rules on. The headline's
+            # denominator is the second, and the gap is truth nobody has written.
+            "required_total": (len(asked) if required is None
+                               else len([k for k in asked if k in required])),
+            "required_checked": sum(1 for r in scalar_rows if r["required"]),
             "line_items_checked": items is not None,
             "other_fields_checked": truth["other_fields"] is not None,
         },
     }
 
 
-def evaluate(case_id: str, fields) -> dict:
+def evaluate(case_id: str, fields, keys=None, doc_types=(),
+             mandatory=None, items_mandatory=None) -> dict:
     """Load the truth for a case and score `fields` against it.
 
     Returns {"error": ...} rather than raising, so a caller on a request path can
     put it on a response without a try/except of its own.
+
+    `keys` is the field set the extraction asked for; `doc_types` are the types
+    it was built from, recorded on the result so a score can say which form it
+    was taken over. Passing neither scores every key the truth file rules on,
+    which is what this did before per-type field sets and is still right for a
+    caller that did not classify.
+
+    `mandatory` and `items_mandatory` are the requirement's Mandatory sets and
+    decide what the headline is taken over -- see `score`.
     """
     try:
         truth = load_truth(case_id)
@@ -918,8 +1051,10 @@ def evaluate(case_id: str, fields) -> dict:
         return {"error": str(err)}
     table = (table_rows(case_id, truth.get("table_columns"))
              if truth.get("score_table", True) else None)
-    result = score(truth, fields, table)
+    result = score(truth, fields, table, keys=keys, mandatory=mandatory,
+                   items_mandatory=items_mandatory)
     result["case"] = case_id
+    result["doc_types"] = list(doc_types or [])
     return result
 
 
@@ -959,6 +1094,18 @@ def format_report(result: dict, show: int = 40) -> list:
     lines.append(f"  correct {counts['correct']}  partial {counts['partial']}  "
                  f"wrong {counts['wrong']}  missed {counts['missed']}  "
                  f"spurious {counts['spurious']}  agreed-absent {counts['absent']}")
+    # What the two rates above are OVER. Printed every run rather than on demand:
+    # since 2026-09-02 the headline is the requirement's Mandatory set, so a rate
+    # of 100% is a claim about compliance and not about the whole form, and the
+    # number alone cannot say which.
+    if result.get("scored_scope"):
+        lines.append(f"  scored over: {result['scored_scope']}")
+    optional = result.get("optional") or {}
+    if optional.get("expected"):
+        oc = optional["counts"]
+        lines.append(f"  optional fields      {pct(optional['accuracy'])}"
+                     f"   ({oc['correct']}/{optional['expected']} values"
+                     " -- found, not in the headline)")
 
     tiers = "  ".join(
         f"{tier} {pct(scalars[tier]['accuracy']).strip()}"
@@ -1011,8 +1158,12 @@ def format_report(result: dict, show: int = 40) -> list:
         lines.append("")
         lines.append(f"  {'field':34} {'status':9} {'expected':44} got")
         for row in bad[:show]:
+            # A row outside the headline is marked rather than dropped: it is
+            # still a value the page prints and the extraction got wrong, and it
+            # is still worth correcting -- it simply does not move the rate.
+            mark = "" if row.get("required", True) else "  (optional)"
             lines.append(f"  {row['path'][:34]:34} {row['status']:9} "
-                         f"{_clip(row['expected']):44} {_clip(row['actual'])}")
+                         f"{_clip(row['expected']):44} {_clip(row['actual'])}{mark}")
         if len(bad) > show:
             lines.append(f"  ... and {len(bad) - show} more")
         # Only the words actually in the table above, in the order the column

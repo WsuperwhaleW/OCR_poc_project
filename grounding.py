@@ -30,28 +30,33 @@ amounts -- not a proof of correctness for short ones.
 import re
 import unicodedata
 
+import prompts
 import verify
 
-# The scalar keys of the extraction schema. Anything else the model returns is
-# checked for grounding but never demanded.
-SCALAR_FIELDS = [
-    "document_type", "document_number", "issue_date", "reference_document",
-    "seller_name", "seller_tax_id", "seller_branch",
-    "buyer_name", "buyer_tax_id", "buyer_branch",
-    "currency", "subtotal", "vat_total", "amount_incl_vat",
-]
+# Every scalar key the extraction schema can ask for -- the UNION of the per-type
+# field sets, imported rather than copied so the two cannot drift. What any one
+# extraction actually asks for is a subset of this, chosen by document type: see
+# `prompts.DOC_TYPE_FIELDS`. Anything outside it that the model returns is still
+# checked for grounding, just never demanded.
+SCALAR_FIELDS = list(prompts._SCALAR_KEYS)
 
-# Of those, the ones whose absence is worth reporting. Every priority-1 key is
-# Mandatory in the field requirement except `reference_document`, which is
-# Conditional -- a document that cites nothing is complete without one, and
-# flagging it on every run would put a standing complaint against the one key
-# here that is legitimately empty most of the time.
-SCALAR_REQUIRED = [
-    "document_type", "document_number", "issue_date",
-    "seller_name", "seller_tax_id", "seller_branch",
-    "buyer_name", "buyer_tax_id", "buyer_branch",
-    "currency", "subtotal", "vat_total", "amount_incl_vat",
-]
+# Of those, the ones whose absence is worth reporting -- and since 2026-08-31
+# that is a question about the DOCUMENT TYPE, not about the schema. The
+# requirement marks a different set Mandatory for an invoice than for a credit
+# note, and a key the requirement does not demand of this kind of document
+# should not stand as a complaint against it.
+#
+# `SCALAR_REQUIRED` is what a caller that has not classified anything gets, and
+# it is the list this module used before the split: every key except
+# `reference_document`, which is legitimately empty on most documents.
+# `required_for_type` is what a caller with a type should use.
+SCALAR_REQUIRED = list(prompts.DEFAULT_MANDATORY)
+
+
+def required_for_type(code):
+    """The keys whose absence is worth reporting, for a document-type code."""
+    return list(prompts.mandatory_for_type(code))
+
 
 # The delivery tiers of the field requirement. Pass 2 extracts TIER 1 ONLY, so
 # tier 1 is the whole schema and the other two are empty here rather than
@@ -65,12 +70,11 @@ SCALAR_REQUIRED = [
 # nothing". Present and absent are both written, so the sum is what the tier was
 # on that row.
 #
-# The keys that used to be in tiers 2 and 3 -- addresses, due dates, PO/GR/RTV
-# numbers, withholding tax, net payable, VAT rate, service period, customer,
-# contract and location codes, payment and bank details, the amount in words --
-# are not lost. Pass 2 puts anything it finds under its own printed label into
-# `other_fields`, which is exactly where they go until a later phase asks for
-# them by name.
+# The keys that used to be in tiers 2 and 3 -- addresses, due dates, withholding
+# tax, net payable, VAT rate, service period, customer, contract and location
+# codes, payment and bank details, the amount in words -- are not lost. Pass 2
+# puts anything it finds under its own printed label into `other_fields`, which
+# is exactly where they go until a later phase asks for them by name.
 PRIORITY_1 = list(SCALAR_FIELDS)
 PRIORITY_2 = []
 PRIORITY_3 = []
@@ -136,7 +140,7 @@ def list_repetition(fields) -> dict:
     }
 
 
-def tier_counts(fields) -> dict:
+def tier_counts(fields, keys=None) -> dict:
     """How many tier-1 and tier-2 fields came back filled, and how many did not.
 
     Counts only -- never the values -- so the run log can carry field coverage
@@ -144,13 +148,19 @@ def tier_counts(fields) -> dict:
     returned something; whether that something is right is what `grounded_pct`
     and the number checks are for.
     """
+    # `keys` is the field set this extraction actually asked for. Counting
+    # against the union instead would report a document as missing keys nobody
+    # requested of it -- an invoice is not incomplete for having no
+    # `original_invoice_date`. `p1_present + p1_absent` is therefore the size of
+    # the form that ran, which is what makes the pair readable on a run-log row
+    # whose build asked for a different number of keys.
+    tier1 = list(keys) if keys is not None else PRIORITY_1
     counts = {}
-    for label, keys in (("p1", PRIORITY_1), ("p2", PRIORITY_2),
-                        ("p3", PRIORITY_3)):
-        present = sum(1 for k in keys
+    for label, tier in (("p1", tier1), ("p2", PRIORITY_2), ("p3", PRIORITY_3)):
+        present = sum(1 for k in tier
                       if isinstance(fields, dict) and not _is_blank(fields.get(k)))
         counts[f"{label}_present"] = present
-        counts[f"{label}_absent"] = len(keys) - present
+        counts[f"{label}_absent"] = len(tier) - present
     return counts
 
 _THAI_DIGITS = str.maketrans("๐๑๒๓๔๕๖๗๘๙", "0123456789")
@@ -297,12 +307,35 @@ def _looks_computed(key, value, fields, items):
                for c in candidates)
 
 
-def check(fields, transcript):
+def check(fields, transcript, keys=None, required=None, items=None):
     """Audit extracted fields against the transcript they came from.
 
     Returns a per-path status map plus the two lists worth acting on: what the
     document does not state, and what the model produced that the document does
     not support.
+
+    `keys` is the field set this extraction asked for and `required` the subset
+    the requirement makes Mandatory for that document type; both default to the
+    whole schema and the untyped required list, which is what this did before
+    per-type field sets. Reporting a key nobody asked for as `missing` would put
+    a standing complaint against every document of the wrong type -- and
+    `missing` already means "the extractor did not return this", never "the page
+    does not print it".
+
+    `items` is the row shape of a TABLE this extraction asked for --
+    `prompts.items_for_types` -- and it follows exactly the same rule one level
+    down, which is why it had to be added when the withholding certificate
+    brought a table back (2026-09-01):
+
+    * a non-empty shape means the certificate's `income_items` were asked for,
+      so an empty list is a real `missing` and every cell is audited;
+    * `()` means this form asks for no table at all, so nothing is demanded;
+    * `None` is what a caller that has not been taught about tables gets, and it
+      keeps the behaviour this had before: `line_items` demanded whether or not
+      anything asked for it. That was a standing false complaint on every
+      document -- pass 2 has not asked for the charges table since the schema
+      narrowed to priority 1 -- and it is fixed by the app passing the shape,
+      not by changing what a caller who says nothing gets.
     """
     if not isinstance(fields, dict):
         return {}
@@ -310,7 +343,8 @@ def check(fields, transcript):
         return {"error": "no transcript to check the fields against"}
 
     source = Source(transcript)
-    items = [i for i in (fields.get("line_items") or []) if isinstance(i, dict)]
+    items_shape = tuple(items) if items is not None else None
+    rows = [i for i in (fields.get("line_items") or []) if isinstance(i, dict)]
     statuses = {}
     missing = []
     flagged = []
@@ -327,7 +361,7 @@ def check(fields, transcript):
         if source.holds(value):
             statuses[path] = "grounded"
             return
-        computed = key in _MONEY_KEYS and _looks_computed(key, value, fields, items)
+        computed = key in _MONEY_KEYS and _looks_computed(key, value, fields, rows)
         statuses[path] = "computed" if computed else "ungrounded"
         flagged.append({
             "path": path,
@@ -339,25 +373,47 @@ def check(fields, transcript):
                     "no matching text on the page -- the model produced this"),
         })
 
-    for key in SCALAR_FIELDS:
-        judge(key, fields.get(key), required=key in SCALAR_REQUIRED, key=key)
+    asked = list(keys) if keys is not None else SCALAR_FIELDS
+    demanded = set(required if required is not None else SCALAR_REQUIRED)
+    for key in asked:
+        judge(key, fields.get(key), required=key in demanded, key=key)
 
     # Keys outside the schema are the model's own additions and are the most
     # likely place for an invention, so they are checked too -- just not demanded.
     for key, value in fields.items():
-        if key in SCALAR_FIELDS or key in ("line_items", "other_fields"):
+        if key in asked or key in ("line_items", prompts.INCOME_ITEMS_KEY,
+                                   "other_fields"):
             continue
         if isinstance(value, (str, int, float)):
             judge(key, value, required=False)
 
-    if not items:
-        statuses["line_items"] = "missing"
-        missing.append("line_items")
-    for index, item in enumerate(items):
-        for key, value in item.items():
-            if isinstance(value, (str, int, float)):
-                judge(f"line_items[{index}].{key}", value,
-                      required=key in ITEM_REQUIRED)
+    if items_shape is None:
+        # The pre-2026-09-01 behaviour, kept for a caller that says nothing.
+        if not rows:
+            statuses["line_items"] = "missing"
+            missing.append("line_items")
+        for index, item in enumerate(rows):
+            for key, value in item.items():
+                if isinstance(value, (str, int, float)):
+                    judge(f"line_items[{index}].{key}", value,
+                          required=key in ITEM_REQUIRED)
+    elif items_shape:
+        income = [r for r in (fields.get(prompts.INCOME_ITEMS_KEY) or [])
+                  if isinstance(r, dict)]
+        if not income:
+            statuses[prompts.INCOME_ITEMS_KEY] = "missing"
+            missing.append(prompts.INCOME_ITEMS_KEY)
+        for index, row in enumerate(income):
+            for key, value in row.items():
+                if isinstance(value, (str, int, float)):
+                    # Never demanded here, although the requirement marks all
+                    # four Mandatory. A per-ROW obligation is `validate`'s to
+                    # report -- it is the module that knows which rules this
+                    # document is held to -- and one fault reported twice under
+                    # two names is the mistake the ABSENT/FAILED split exists to
+                    # avoid.
+                    judge(f"{prompts.INCOME_ITEMS_KEY}[{index}].{key}", value,
+                          required=False)
 
     for index, entry in enumerate(fields.get("other_fields") or []):
         if isinstance(entry, dict):

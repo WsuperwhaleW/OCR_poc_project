@@ -12,68 +12,153 @@
     "should be verified before relying on its score.",
     "sol007 is a noisy scan: its number, date and totals band are printed over a",
     "stamp. sol010's page image is only 1125x1533, so its footer fine print is",
-    "best-effort and should be verified before relying on its score."
+    "best-effort and should be verified before relying on its score.",
+    "",
+    "doc_types is a LIST because a document is regularly more than one type at",
+    "once: six of these ten head themselves with a slash -- a receipt AND a tax",
+    "invoice, a credit note AND a tax invoice. The extraction form is the UNION",
+    "of the forms for the types listed here, so a page that is both answers for",
+    "both. The codes are normalise.document_types' vocabulary, and the first is",
+    "the one the file is named and grouped under.",
+    "",
+    "THIS LIST OVERRULES THE PAGE. The classifier reads the printed heading; a",
+    "person reads the document. Where the two disagree, edit here. sol001 is the",
+    "standing example: it prints ใบแจ้งหนี้ in Thai and STATEMENT OF ACCOUNT in",
+    "English, so the classifier reports both, and it is filed as a statement of",
+    "account. Drop \"INVOICE\" from its list to make that reading exclusive.",
+    "",
+    "aliases are the filenames these PDFs shipped under before 2026-08-31, kept",
+    "so an upload of an original still resolves by name (rule 3). Contents are",
+    "unchanged, so the sha256 rule matches them either way."
   ],
   "cases": [
     {
       "id": "sol001",
-      "pdf": "Invoice_CDS_BS2603030054_F6910137421TINV_mock 1.pdf",
+      "pdf": "statement_of_account_invoice_sol001.pdf",
+      "doc_types": [
+        "STATEMENT_OF_ACCOUNT",
+        "INVOICE"
+      ],
       "pages": 1,
-      "kind": "printed statement of account"
+      "kind": "printed statement of account",
+      "aliases": [
+        "Invoice_CDS_BS2603030054_F6910137421TINV_mock 1.pdf",
+        "invoice_sol001.pdf"
+      ]
     },
     {
       "id": "sol002",
-      "pdf": "Invoice_RBS_BS2502190159_F689219741TINV_mock 1.pdf",
+      "pdf": "invoice_sol002.pdf",
+      "doc_types": [
+        "INVOICE"
+      ],
       "pages": 1,
-      "kind": "printed hotel invoice, mostly English"
+      "kind": "printed hotel invoice, mostly English",
+      "aliases": [
+        "Invoice_RBS_BS2502190159_F689219741TINV_mock 1.pdf"
+      ]
     },
     {
       "id": "sol003",
-      "pdf": "Receipt_B2S_BS2604270279_F6910282462TINV_mock 1.pdf",
+      "pdf": "receipt_tax_invoice_sol003.pdf",
+      "doc_types": [
+        "RECEIPT",
+        "TAX_INVOICE"
+      ],
       "pages": 1,
-      "kind": "handwritten receipt scan"
+      "kind": "handwritten receipt scan",
+      "aliases": [
+        "Receipt_B2S_BS2604270279_F6910282462TINV_mock 1.pdf"
+      ]
     },
     {
       "id": "sol004",
-      "pdf": "Receipt_BTM_BS2603200085_F6910191733TINV_mock 1.pdf",
+      "pdf": "receipt_tax_invoice_sol004.pdf",
+      "doc_types": [
+        "RECEIPT",
+        "TAX_INVOICE"
+      ],
       "pages": 2,
-      "kind": "printed receipt, long line-item table"
+      "kind": "printed receipt, long line-item table",
+      "aliases": [
+        "Receipt_BTM_BS2603200085_F6910191733TINV_mock 1.pdf"
+      ]
     },
     {
       "id": "sol005",
-      "pdf": "Receipt_CDS_BS2603030054_F6910137421TINV-mock 1.pdf",
+      "pdf": "receipt_tax_invoice_sol005.pdf",
+      "doc_types": [
+        "RECEIPT",
+        "TAX_INVOICE"
+      ],
       "pages": 1,
-      "kind": "printed receipt/tax invoice"
+      "kind": "printed receipt/tax invoice",
+      "aliases": [
+        "Receipt_CDS_BS2603030054_F6910137421TINV-mock 1.pdf"
+      ]
     },
     {
       "id": "sol006",
-      "pdf": "13.pdf",
+      "pdf": "credit_note_tax_invoice_sol006.pdf",
+      "doc_types": [
+        "CREDIT_NOTE",
+        "TAX_INVOICE"
+      ],
       "pages": 1,
-      "kind": "printed credit note / tax invoice, 5 line items"
+      "kind": "printed credit note / tax invoice, 5 line items",
+      "aliases": [
+        "13.pdf",
+        "credit_note_sol006.pdf"
+      ]
     },
     {
       "id": "sol007",
-      "pdf": "14.pdf",
+      "pdf": "receipt_tax_invoice_sol007.pdf",
+      "doc_types": [
+        "RECEIPT",
+        "TAX_INVOICE"
+      ],
       "pages": 1,
-      "kind": "scanned receipt/tax invoice, heavy stamp noise over the header"
+      "kind": "scanned receipt/tax invoice, heavy stamp noise over the header",
+      "aliases": [
+        "14.pdf"
+      ]
     },
     {
       "id": "sol008",
-      "pdf": "15.pdf",
+      "pdf": "credit_note_sol008.pdf",
+      "doc_types": [
+        "CREDIT_NOTE"
+      ],
       "pages": 1,
-      "kind": "printed credit note, one line item, no VAT"
+      "kind": "printed credit note, one line item, no VAT",
+      "aliases": [
+        "15.pdf"
+      ]
     },
     {
       "id": "sol009",
-      "pdf": "16.pdf",
+      "pdf": "credit_note_sol009.pdf",
+      "doc_types": [
+        "CREDIT_NOTE"
+      ],
       "pages": 1,
-      "kind": "printed credit note / goods return, VAT 0%"
+      "kind": "printed credit note / goods return, VAT 0%",
+      "aliases": [
+        "16.pdf"
+      ]
     },
     {
       "id": "sol010",
-      "pdf": "17.pdf",
+      "pdf": "credit_note_sol010.pdf",
+      "doc_types": [
+        "CREDIT_NOTE"
+      ],
       "pages": 1,
-      "kind": "printed credit note, low-resolution scan, fine print at the foot"
+      "kind": "printed credit note, low-resolution scan, fine print at the foot",
+      "aliases": [
+        "17.pdf"
+      ]
     }
   ]
 }

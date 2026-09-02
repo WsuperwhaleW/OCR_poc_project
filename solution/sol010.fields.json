@@ -1,8 +1,30 @@
 {
+  "_mandatory": {
+    "types": [
+      "CREDIT_NOTE"
+    ],
+    "required": [
+      "document_type",
+      "document_number",
+      "issue_date",
+      "seller_tax_id",
+      "seller_branch",
+      "buyer_tax_id",
+      "buyer_branch",
+      "subtotal",
+      "vat_total",
+      "amount_incl_vat"
+    ],
+    "found_only": [
+      "po_gr_rtv_number"
+    ]
+  },
   "document_type": "ใบลดหนี้",
   "document_number": "CN99231000427",
   "issue_date": "14/12/2023",
   "reference_document": "I0121CFM0114",
+  "original_invoice_date": "03/06/2021",
+  "po_gr_rtv_number": "",
   "seller_name": [
     "บริษัท เดินทำไม จำกัด WW WALK WHY CO.,LTD.",
     "บริษัท เดินทำไม จำกัด",
@@ -13,8 +35,8 @@
   "buyer_name": "บจก. พระยายาม",
   "buyer_tax_id": "0105555021215",
   "buyer_branch": "สาขาที่ 00007",
-  "currency": "",
   "subtotal": "756.00",
   "vat_total": "0.00",
-  "amount_incl_vat": "756.00"
+  "amount_incl_vat": "756.00",
+  "currency": ""
 }

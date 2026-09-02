@@ -59,6 +59,24 @@ LINE_BREAK = re.compile(r"<br\b[^>]*>", re.I)
 # dash survives, and colon-tolerant so `|:---:|` is markup here too.
 PIPE_RULE = re.compile(r"^[|\-: \t]*-{2,}[|\-: \t]*$", re.M)
 
+# A printed blank to be filled in -- the ruled line after `วันที่/Date`, the run
+# after `เช็ค หมายเลข`. It is a RULING, not text: the page draws a rule, the model
+# spells it as dots or underscores, and a hand transcription writes nothing at
+# all, so scoring it charges a correct read for the one thing on the page that
+# carries no content. Same class as the table markup above, and it was costing
+# more than that ever did -- 560 characters on sol001, 17 points of its score.
+#
+# Four is the threshold so an ellipsis in prose stays content. Verified against
+# all ten ground-truth files: not one contains a run this long, so nothing a
+# human transcribed is at risk.
+#
+# It goes with the table markup under `--keep-tables` rather than beside the page
+# marker, for two reasons: a Markdown separator row is a run of dashes, so out
+# here it would eat half of one and leave `| :|`; and that flag means compare
+# literally -- it is the only way to reproduce a number taken before this, which
+# it cannot be if it still drops the rules.
+FILL_RULE = re.compile(r"[.…_–—-]{4,}")
+
 # `--- page 2 ---` is this app's own separator between the pages of one document
 # (`app.py` joins page transcripts with it), not something a model read off the
 # paper. It comes out of both sides unconditionally, including under
@@ -115,6 +133,19 @@ _TOKEN = re.compile(r"(bs\d{6,}|f\d{6,}tinv)", re.I)
 
 def _tokens(name: str) -> set:
     return {m.lower() for m in _TOKEN.findall(name)}
+
+
+def _case_tokens(case) -> set:
+    """Reference numbers this case can be recognised by, from its name and aliases.
+
+    The shipped fixtures were renamed to <doc_type>_<id>.pdf on 2026-08-31, which
+    took the BS…/F…TINV numbers out of `pdf` and left them only in `aliases`. This
+    rule is the last resort for a file that has been renamed AND re-exported, so
+    its contents no longer hash to ours -- reading the aliases too is what keeps
+    it working at all now that no current filename carries a number.
+    """
+    names = [case["pdf"], *case.get("aliases", [])]
+    return set().union(*(_tokens(n) for n in names))
 
 
 def sha256_bytes(data: bytes) -> str:
@@ -174,7 +205,7 @@ def case_for_upload(filename: str = "", sha256: str = "", data: bytes = None):
             # An invoice and its receipt share a document number, so this is only
             # safe when exactly one case matches. Guessing between two would score
             # against the wrong ground truth and report a confidently wrong number.
-            hits = [c for c in index.values() if found & _tokens(c["pdf"])]
+            hits = [c for c in index.values() if found & _case_tokens(c)]
             if len(hits) == 1:
                 return hits[0], "document number"
 
@@ -192,7 +223,8 @@ def normalise(text: str, ignore_tables: bool = True) -> str:
 
     Collapses whitespace and unifies table markup, so an HTML table and a Markdown
     pipe table with the same cells score identically -- the model flip-flops
-    between them and that is formatting, not recognition.
+    between them and that is formatting, not recognition. A printed fill rule
+    goes the same way, for the same reason: see FILL_RULE.
     """
     text = unicodedata.normalize("NFC", text)
     text = PAGE_MARKER.sub("", text)
@@ -206,6 +238,9 @@ def normalise(text: str, ignore_tables: bool = True) -> str:
         text = PIPE_RULE.sub("", text)
         text = text.replace("\\|", "|")   # unescape Markdown-escaped pipes
         text = text.replace("|", " ")
+        # After the separator row, so a Markdown rule is markup here rather than
+        # a run of dashes this would eat half of.
+        text = FILL_RULE.sub(" ", text)
     # Real whitespace collapses to one space; zero-width marks go entirely.
     lines = [
         re.sub(r"\s+", " ", ZERO_WIDTH.sub("", ln)).strip()
@@ -359,11 +394,127 @@ def score(expected: str, actual: str, align: bool = True) -> dict:
     }
 
 
+# How many lines a rewrap may span on either side of a fold. A line the model
+# split, or a run of lines it ran together, is one or two either way in every
+# transcript here; the bound is what keeps the search below cheap and stops it
+# pairing two distant regions that happen to concatenate alike.
+FOLD_MAX_LINES = 4
+
+# Above this many line pairs a group is not searched at all, only tested whole.
+# A group this size is a rewritten page rather than a rewrapped line, and the
+# search is quadratic in the group.
+FOLD_MAX_CELLS = 4000
+
+
+def _fold_group(exp, act):
+    """The folding of one diff group that hides the most spacing.
+
+    Both sides are cut into consecutive blocks; a block pair whose CONTENT is
+    equal is folded to the truth's wording, and everything else is left as it
+    was. Consecutive on both sides and left to right, so a block can only ever
+    fold against the text opposite it -- moved text never folds.
+
+    This is a search rather than a single test because the two shapes turn up
+    together: `TAX ID … / ใบกำกับสินค้า …` run onto one line, in the same group as
+    a word misread one line above. Testing the group whole keeps both, and a
+    reader then cannot tell which of the two is the real finding.
+    """
+    n, m = len(exp), len(act)
+    exp_keys = [content_only(x) for x in exp]
+    act_keys = [content_only(x) for x in act]
+
+    # best[i][j]: the most content characters foldable from exp[i:] against
+    # act[j:]. Walked backwards so each cell reads only cells already settled.
+    best = [[0] * (m + 1) for _ in range(n + 1)]
+    move = [[None] * (m + 1) for _ in range(n + 1)]
+    for i in range(n, -1, -1):
+        for j in range(m, -1, -1):
+            if i == n and j == m:
+                continue
+            top, mv = -1, None
+            # Folds are tried first and skips have to beat them strictly, so a
+            # tie folds: hiding a spacing difference is the whole point.
+            for k in range(i + 1, min(n, i + FOLD_MAX_LINES) + 1):
+                key = "".join(exp_keys[i:k])
+                for l in range(j + 1, min(m, j + FOLD_MAX_LINES) + 1):
+                    if key == "".join(act_keys[j:l]) and len(key) + best[k][l] > top:
+                        top, mv = len(key) + best[k][l], ("fold", k, l)
+            if i < n and best[i + 1][j] > top:
+                top, mv = best[i + 1][j], ("exp", i + 1, j)
+            if j < m and best[i][j + 1] > top:
+                top, mv = best[i][j + 1], ("act", i, j + 1)
+            best[i][j], move[i][j] = top, mv
+
+    out, i, j = [], 0, 0
+    while move[i][j]:
+        what, k, l = move[i][j]
+        if what == "fold":
+            out.extend(exp[i:k])          # folded: reads as the truth, so equal
+        elif what == "act":
+            out.append(act[j])            # kept: reported as invented text
+        # "exp" drops an expected line from the output, which reports it missing.
+        i, j = k, l
+    return out
+
+
+def fold_spacing(expected_lines, actual_lines):
+    """`actual` rewritten to the truth's wording wherever ONLY the spacing moved.
+
+    The diff is the one place this project still charged for layout. Character
+    accuracy strips every invisible character from both sides before it measures
+    anything (see INVISIBLE), so a truth line the model split over two lines, two
+    lines it ran together, or a space it put inside a number cost the score
+    nothing -- and then showed up in the differences list as a `-`/`+` pair
+    anyway, which reads as a misread. A reader comparing the two cannot tell that
+    from a real one without squashing both by eye.
+
+    So text whose CONTENT the truth already holds is folded away: those actual
+    lines are replaced by the expected ones, and `unified_diff` then sees them as
+    equal and drops them along with their context. Nothing else is touched --
+    text differing by so much as one character is left exactly as it was, so
+    missing, invented and misread content still shows.
+
+    **The lines are paired on their content, not on their text**, so a line the
+    model spaced out inside a token -- `* A 0 3 $ C N *` for `*A03$CN*` -- pairs
+    with its truth line rather than being lumped into a `replace` with whatever
+    happens to sit beside it. Where that is not enough, `_fold_group` searches
+    within the group for the blocks that do line up.
+
+    **A reordering never folds**, because a folded pair has to be consecutive on
+    both sides and in the same order: moved text still shows, which is what
+    `word_accuracy` measures and what `align_blocks` forgives in the score.
+    """
+    matcher = difflib.SequenceMatcher(
+        None,
+        [content_only(ln) for ln in expected_lines],
+        [content_only(ln) for ln in actual_lines],
+        autojunk=False,
+    )
+    out = []
+    for tag, i1, i2, j1, j2 in matcher.get_opcodes():
+        exp, act = expected_lines[i1:i2], actual_lines[j1:j2]
+        # `equal` is equal CONTENT, so the two may still be spelled differently;
+        # taking the truth's wording is what folds that away.
+        if tag == "equal" or content_only("".join(exp)) == content_only("".join(act)):
+            out.extend(exp)
+        elif len(exp) * len(act) <= FOLD_MAX_CELLS:
+            out.extend(_fold_group(exp, act))
+        else:
+            out.extend(act)
+    return out
+
+
 def diff_lines(expected: str, actual: str, context: int = 1):
+    """Unified diff of the two transcripts, with spacing-only groups folded out.
+
+    What is left is the set of differences that actually move `char_accuracy`.
+    An empty list therefore means "the same content", not "byte for byte the
+    same page" -- which is the claim the score makes too.
+    """
     return list(
         difflib.unified_diff(
             expected.splitlines(),
-            actual.splitlines(),
+            fold_spacing(expected.splitlines(), actual.splitlines()),
             fromfile="expected",
             tofile="actual",
             lineterm="",

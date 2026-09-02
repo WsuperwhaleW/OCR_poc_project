@@ -1,4 +1,24 @@
 {
+  "_mandatory": {
+    "types": [
+      "STATEMENT_OF_ACCOUNT",
+      "INVOICE"
+    ],
+    "required": [
+      "document_type",
+      "document_number",
+      "issue_date",
+      "po_gr_rtv_number",
+      "seller_tax_id",
+      "seller_branch",
+      "buyer_tax_id",
+      "buyer_branch",
+      "subtotal",
+      "vat_total",
+      "amount_incl_vat"
+    ],
+    "found_only": []
+  },
   "document_type": [
     "ใบแจ้งหนี้ STATEMENT OF ACCOUNT",
     "ใบแจ้งหนี้",
@@ -6,7 +26,7 @@
   ],
   "document_number": "12121212122",
   "issue_date": "05/02/26",
-  "reference_document": "",
+  "po_gr_rtv_number": "",
   "seller_name": [
     "บริษัท เอบีซี รีเทล ดีเวลล็อปเม้นท์ จำกัด ABC RETAIL DEVELOPMENT CO.,LTD.",
     "บริษัท เอบีซี รีเทล ดีเวลล็อปเม้นท์ จำกัด",
@@ -17,8 +37,9 @@
   "buyer_name": "บริษัท สปริงโรล จำกัด",
   "buyer_tax_id": "0101111001110",
   "buyer_branch": "สาขาที่ 00068",
-  "currency": "",
   "subtotal": "3,646,128.51",
   "vat_total": "174,443.47",
-  "amount_incl_vat": ""
+  "amount_incl_vat": "",
+  "reference_document": "",
+  "currency": ""
 }

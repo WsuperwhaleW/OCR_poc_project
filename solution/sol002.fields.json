@@ -1,8 +1,27 @@
 {
+  "_mandatory": {
+    "types": [
+      "INVOICE"
+    ],
+    "required": [
+      "document_type",
+      "document_number",
+      "issue_date",
+      "po_gr_rtv_number",
+      "seller_tax_id",
+      "seller_branch",
+      "buyer_tax_id",
+      "buyer_branch",
+      "subtotal",
+      "vat_total",
+      "amount_incl_vat"
+    ],
+    "found_only": []
+  },
   "document_type": "INVOICE",
   "document_number": "CR2024/030",
   "issue_date": "25/12/2024",
-  "reference_document": "",
+  "po_gr_rtv_number": "",
   "seller_name": [
     "บริษัท โจ-โจ ตราด จำกัด",
     "Jo-Jo TRAT COMPANY LIMITED",
@@ -14,13 +33,14 @@
     "Branch 00001"
   ],
   "buyer_name": [
-   "Andromeda Galaxy Company Limited",
-   "Andromeda Galaxy Company Limited (Head Office)"
+    "Andromeda Galaxy Company Limited",
+    "Andromeda Galaxy Company Limited (Head Office)"
   ],
   "buyer_tax_id": "0101111000111",
   "buyer_branch": "Head Office",
-  "currency": "Baht",
   "subtotal": "11,638.64",
   "vat_total": "814.71",
-  "amount_incl_vat": "12,453.35"
+  "amount_incl_vat": "12,453.35",
+  "reference_document": "",
+  "currency": "Baht"
 }

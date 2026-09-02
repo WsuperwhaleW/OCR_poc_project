@@ -1,8 +1,30 @@
 {
+  "_mandatory": {
+    "types": [
+      "CREDIT_NOTE"
+    ],
+    "required": [
+      "document_type",
+      "document_number",
+      "issue_date",
+      "seller_tax_id",
+      "seller_branch",
+      "buyer_tax_id",
+      "buyer_branch",
+      "subtotal",
+      "vat_total",
+      "amount_incl_vat"
+    ],
+    "found_only": [
+      "po_gr_rtv_number"
+    ]
+  },
   "document_type": "ใบลดหนี้ / รับคืนสินค้า",
   "document_number": "2023/1107",
   "issue_date": "12 ธันวาคม 2566",
   "reference_document": "",
+  "original_invoice_date": "",
+  "po_gr_rtv_number": "",
   "seller_name": "บริษัท เดินยังไงก็ไกล กำจัด",
   "seller_tax_id": "0188899547156",
   "seller_branch": "",
@@ -15,8 +37,8 @@
     "ลำดับสาขา 05656",
     "05656"
   ],
-  "currency": "",
   "subtotal": "208,839.60",
   "vat_total": "-",
-  "amount_incl_vat": "208,839.60"
+  "amount_incl_vat": "208,839.60",
+  "currency": ""
 }

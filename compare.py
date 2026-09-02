@@ -39,6 +39,7 @@ import requests
 
 import config
 import fieldscore
+import prompts
 import scoring
 
 # Every line below can carry Thai -- case filenames, and the diff bodies most of
@@ -336,10 +337,33 @@ def main():
                     note += ("  [steps failed: "
                              + ", ".join(s["id"] for s in extracted["steps_failed"])
                              + "]")
+                # Named apart from the failures, and worded as one: a step that
+                # owns only `other_fields` costs no scored key when its reply
+                # breaks, so it is not counted as a failure anywhere. Printed
+                # all the same -- a short extras list and a truncated one look
+                # identical in the JSON.
+                if extracted.get("steps_extras"):
+                    note += ("  [extras cut short: "
+                             + ", ".join(s["id"] for s in extracted["steps_extras"])
+                             + "]")
+                if any(s.get("salvaged") for s in (extracted.get("steps") or [])):
+                    note += "  [extras salvaged: kept the entries that finished]"
                 # Scored here rather than read off the app's own `field_score`, so
                 # a deployed instance is scored against the truth files in *this*
                 # working copy -- the same rule pass 1 already follows.
-                r["fields"] = fieldscore.evaluate(cid, extracted.get("fields"))
+                # Over the form the extraction was ASKED for, which the app
+                # reports back as `doc_type`. Scoring every key the truth file
+                # states would mark an invoice wrong for not returning the keys
+                # its own type does not ask for.
+                codes = extracted.get("doc_types") or []
+                r["fields"] = fieldscore.evaluate(
+                    cid, extracted.get("fields"),
+                    keys=prompts.fields_for_types(codes), doc_types=codes,
+                    # Scored over the requirement's Mandatory set, as the app
+                    # scores it -- the two must not disagree about what the
+                    # headline covers.
+                    mandatory=prompts.mandatory_for_types(codes),
+                    items_mandatory=prompts.mandatory_items_for_types(codes))
             r["fields_note"] = note
 
         # ---- report -------------------------------------------------------
@@ -364,11 +388,14 @@ def main():
                     say(line)
         if score_text:
             if r["diff"]:
-                say("\n  --- differences ---")
+                # Content differences only. `scoring.diff_lines` folds out any group whose
+                # two sides hold the same text differently wrapped, because
+                # that is what `char_accuracy` does too.
+                say("\n  --- differences in content ---")
                 for line in r["diff"]:
                     say("  " + line)
             else:
-                say("\n  exact match")
+                say("\n  every character of content matches")
 
     if len(results) > 1:
         say(f"\n{'=' * 78}\nSUMMARY\n{'=' * 78}")

@@ -1,16 +1,43 @@
 {
+  "_mandatory": {
+    "types": [
+      "RECEIPT",
+      "TAX_INVOICE"
+    ],
+    "required": [
+      "inv_rtv_cnr_number",
+      "seller_tax_id",
+      "seller_branch",
+      "buyer_tax_id",
+      "buyer_branch",
+      "subtotal",
+      "vat_total"
+    ],
+    "found_only": [
+      "remaining_amount",
+      "remaining_vat_amount",
+      "payment_date",
+      "cheque_number"
+    ]
+  },
+  "inv_rtv_cnr_number": "",
+  "seller_tax_id": "0101111000111",
+  "seller_branch": "สาขา: 01065",
+  "buyer_tax_id": "010111102222",
+  "buyer_branch": "สำนักงานใหญ่",
+  "subtotal": "467,896.04",
+  "vat_total": "20,747.72",
+  "remaining_amount": "",
+  "remaining_vat_amount": "",
+  "payment_date": "",
+  "cheque_number": "",
   "document_type": "ใบเสร็จรับเงิน/ใบกำกับภาษี",
   "document_number": "510260007343",
   "issue_date": "24-Feb-26",
   "reference_document": "",
+  "po_gr_rtv_number": "",
   "seller_name": "บริษัท บราตวูสท์ จำกัด (มหาชน)",
-  "seller_tax_id": "0101111000111",
-  "seller_branch": "01065",
   "buyer_name": "บริษัท ซไนท์เชล จำกัด",
-  "buyer_tax_id": "010111102222",
-  "buyer_branch": "สำนักงานใหญ่",
-  "currency": "บาท",
-  "subtotal": "467,896.04",
-  "vat_total": "20,747.72",
-  "amount_incl_vat": ""
+  "amount_incl_vat": "",
+  "currency": "บาท"
 }

@@ -185,6 +185,24 @@ COLUMNS = [
     # Blank on a run that never extracted, `0` on one that extracted cleanly --
     # the blank-is-not-zero rule the tier columns follow.
     "extract_looped",
+    # Every document type pass 2 asked the form of, `+`-joined, and on whose
+    # authority -- "case" (the benchmark manifest), "transcript" (classified from
+    # the printed heading, in Python) or "caller". Appended at the END of this
+    # list, like every column before it, because inserting mid-file re-labels
+    # every value to the right of it.
+    #
+    # **A LIST, because a document is regularly more than one type**: six of the
+    # ten fixtures head themselves with a slash, and the form is the union of the
+    # types named. A single code here would drop every type after the first,
+    # which is the bug this whole column was added alongside fixing.
+    #
+    # It is worth a column because the FORM changed with it: `p1_present` and
+    # `p1_absent` are counted against the keys that document's types asked for,
+    # so two rows can read 11/13 and 13/15 and both be complete runs. The
+    # denominator is on the row, and this says which form produced it. Blank on
+    # rows written before 2026-08-31 and on any run that never extracted.
+    "doc_types",
+    "doc_type_from",
 ]
 
 # The value the run was actually made with, taken from `settings` rather than
@@ -327,7 +345,7 @@ EXTRACT_COLUMNS = ("extract_seconds", "extract_tokens", "extract_mode",
                    "p3_present", "p3_absent",
                    "field_acc", "field_expected", "p1_correct", "p1_scored",
                    "p1_partial", "other_distinct", "extract_looped",
-                   "extract_model")
+                   "extract_model", "doc_types", "doc_type_from")
 
 _TIERS = ("p1_present", "p1_absent", "p2_present", "p2_absent",
           "p3_present", "p3_absent")
@@ -340,6 +358,14 @@ def _extract_cells(summary: dict) -> dict:
     grounded = extracted.get("grounding") or {}
     repetition = grounding.list_repetition(fields if isinstance(fields, dict) else {})
     return {
+        # Which form pass 2 asked for, and how that was decided. Both blank
+        # rather than guessed where the run never extracted -- blank is not a
+        # type, and this file's standing rule is that blank never means zero.
+        # Joined with "+" rather than a comma: this file is CSV, and a comma
+        # inside a value is a quoting problem waiting for the one reader that
+        # splits by hand.
+        "doc_types": "+".join(extracted.get("doc_types") or []),
+        "doc_type_from": extracted.get("doc_type_from", ""),
         "extract_seconds": extracted.get("seconds", ""),
         "extract_tokens": extracted.get("tokens", ""),
         "extract_mode": extracted.get("mode", ""),
@@ -364,7 +390,15 @@ def _extract_cells(summary: dict) -> dict:
         "fields_missing": len(grounded.get("missing") or []) if grounded else "",
         # Blank rather than 0 where nothing was extracted: a failed run left the
         # tiers unmeasured, which is not the same as measuring them at zero.
-        **(grounding.tier_counts(fields) if fields
+        #
+        # Counted against `fields_asked` -- the form this document's TYPE asked
+        # for -- so `p1_present + p1_absent` is the size of the form that ran.
+        # Against the union instead it would report an invoice as missing the
+        # keys only a credit note is asked for, and the pair would stop being
+        # readable as a denominator. A result from before per-type forms carries
+        # no `fields_asked` and falls back to the whole schema, which is what it
+        # was counted against when it was written.
+        **(grounding.tier_counts(fields, extracted.get("fields_asked")) if fields
            else {k: "" for k in _TIERS}),
         **_field_cells(extracted.get("field_score")),
     }
@@ -381,14 +415,16 @@ def _field_cells(score: dict) -> dict:
     if not overall.get("expected"):
         return {k: "" for k in ("field_acc", "field_expected", "p1_correct",
                                 "p1_scored", "p1_partial")}
-    # The priority-1 tier on its own, which since the schema narrowed is very
-    # nearly the whole form -- but not by definition, so it is taken from the
-    # tier tally rather than assumed to equal `overall`. Written as a pair or not
-    # at all: a count of correct values with no denominator beside it is not a
-    # figure anyone can read, and `p1_scored` is per document.
-    p1 = ((score or {}).get("scalars") or {}).get("p1") or {}
-    scored = p1.get("expected") or 0
-    counts = p1.get("counts") or {}
+    # **The counts come from the headline, which since 2026-09-02 is the
+    # requirement's Mandatory set rather than the priority-1 tier.** The column
+    # names are a file format and are not renamed, so read a `p1_*` cell as
+    # "of what the requirement demands of this document" from that date and as
+    # "of the priority-1 tier" before it -- the two are the same keys on an
+    # invoice and differ by four on a receipt. Written as a pair or not at all:
+    # a count of correct values with no denominator beside it is not a figure
+    # anyone can read, and the denominator is per document.
+    scored = overall.get("expected") or 0
+    counts = overall.get("counts") or {}
     return {"field_acc": _pct(overall.get("accuracy")),
             "field_expected": overall["expected"],
             "p1_correct": counts.get("correct", "") if scored else "",
@@ -1282,16 +1318,44 @@ def _incomplete(row: dict) -> bool:
     return (row.get("status") or "") in _INCOMPLETE
 
 
-def _extract_incomplete(row: dict) -> bool:
-    """True where PASS 2 did not finish: it cycled, or it never replied.
+def _extras_loop(row: dict) -> bool:
+    """True where a cycled reply cost `other_fields` entries and nothing else.
 
-    Separate from `_incomplete` because the two passes fail differently and a
-    row can be one without the other -- a page that read cleanly and then looped
-    inside `other_fields` is a good read and a failed extraction, and the two
-    tables must be able to say so independently.
+    **A failure in the extras is not a failure of the extraction** (2026-08-27,
+    at the user's request: *that error on other extraction field will not count
+    as error ... but if main field error we will count that as error*). The
+    reason it is safe is what `other_fields` is: the overflow valve for
+    everything the fourteen priority-1 keys do not cover, whose labels are the
+    model's own wording and which `fieldscore` therefore keeps out of every
+    headline. A reply that filled the form and then cycled through the extras
+    measured the setting exactly as well as one that stopped there politely.
+
+    The test is that the main fields survived -- `p1_present` above zero. A
+    cycle that ate the whole reply leaves it at 0 and is a failure like any
+    other, which is the half of the rule that keeps this honest: it excuses the
+    loops that cost nothing, never the ones that cost the form.
+
+    `extract_looped` itself is unchanged and still written, so the extras
+    contest still refuses to let a cycled reply win on volume -- that is a
+    fairness rule about ranking, not a count of errors.
     """
     return (_num(row.get("extract_looped"), 0.0) > 0
-            or (row.get("status") or "") in _INCOMPLETE)
+            and _num(row.get("p1_present"), 0.0) > 0)
+
+
+def _extract_incomplete(row: dict) -> bool:
+    """True where PASS 2 did not finish: it cycled away the form, or never replied.
+
+    Separate from `_incomplete` because the two passes fail differently and a
+    row can be one without the other -- a page that read cleanly and then died
+    inside pass 2 is a good read and a failed extraction, and the two tables
+    must be able to say so independently.
+
+    A cycle confined to `other_fields` is NOT one of these; see `_extras_loop`.
+    """
+    return ((row.get("status") or "") in _INCOMPLETE
+            or (_num(row.get("extract_looped"), 0.0) > 0
+                and not _extras_loop(row)))
 
 
 def _complete_only(cases: dict, failed) -> dict:
@@ -1983,7 +2047,11 @@ def _error_kind(row: dict, pass_: str):
     status = (row.get("status") or "")
     if pass_ == "read":
         return status if status in _INCOMPLETE else None
-    if _num(row.get("extract_looped"), 0.0) > 0:
+    # A cycle that cost only `other_fields` is not charged to anyone: the form
+    # came back. Same rule as `_extract_incomplete`, applied to blame rather
+    # than to averaging, and it has to be the same or the Errors tab and the
+    # failure rate would disagree about what happened on one row.
+    if _num(row.get("extract_looped"), 0.0) > 0 and not _extras_loop(row):
         return "extract_loop"
     # A status failure is pass 2's own only where there was no pass 1 to blame it
     # on -- a fields-only run was fed a transcript and read nothing.
@@ -2842,7 +2910,22 @@ def _pres_group(points: list, key_of) -> list:
     `_per_case`'s rule applied to a flat point list: a model run five times on
     one fixture is not five samples of it. The mean is over the documents, the
     counts are over the runs, and both are on the row.
+
+    **The window is applied here, with the key this grouping uses** (2026-08-28,
+    at the user's request: *the run-count filter works on the other tabs but not
+    the summary*). It was the one compilation on the card that never called
+    `recent_by`, so the card's window box moved every table except the tab most
+    likely to be read -- and the payload reported a `window` the six blocks were
+    not taken under, which is worse than not offering the control at all.
+
+    It is done in here rather than once in `presentation` because the blocks
+    group on four different keys -- model, model x preset, model x shape -- and
+    a window taken on one of them describes the other three wrongly. That is the
+    card's standing rule (`recent_by`): *N means N of that setting, that model,
+    that document*, not a slice off the end of the log, and each table trims
+    with the key it groups on.
     """
+    points = recent_by(points, key_of)
     groups = {}
     for point in points:
         key = key_of(point)
@@ -2900,7 +2983,8 @@ def _pres_cost(entry: dict):
     return round(secs / acc, 2)
 
 
-def presentation(rows: list = None, bias: bool = True) -> dict:
+def presentation(rows: list = None, bias: bool = True,
+                 single_source: bool = True) -> dict:
     """The six-block summary, biased by default and saying so.
 
     `bias=False` returns the same six blocks over every row that survived the
@@ -2911,11 +2995,26 @@ def presentation(rows: list = None, bias: bool = True) -> dict:
     computed over the rows a single-source drop has already left, or a model
     whose whole failure record is one bad pairing would be disqualified by
     failures the summary is about to stop counting.
+
+    **The bias runs over the rows in view, and the per-group window is applied
+    under it, per block** (`_pres_group`). The rules are not per block -- a weak
+    model is weak for a whole pass, and a time outlier is judged against its own
+    cell's median, which is neither of the keys a block groups on -- so they see
+    the pool, and each block then takes its own last N of it. One consequence to
+    read the banner with: `bias` counts what the rules removed from that pool,
+    which can include runs a window would have dropped anyway.
+
+    `single_source=False` says the CALLER has already dropped them, which the
+    card-wide toggle does for every other table on the card. **The rule must not
+    run twice**: it is not idempotent, because a model whose remaining failures
+    all fall on one document becomes single-source on a second pass and loses
+    those too. So the caller does it once, and this skips its own step 1 rather
+    than repeating it.
     """
     everything = _for_summary(read(limit=10 ** 6) if rows is None else rows)
     steps = []
     rows = everything
-    if bias:
+    if bias and single_source:
         # 1. Single-source failures. A document dominated by one bad model is
         # not a hard document, and a model that loops on one fixture and reads
         # everything else is not an unreliable model. Only the FAILING runs of
@@ -3042,7 +3141,15 @@ def presentation(rows: list = None, bias: bool = True) -> dict:
         "extract_models": ex_models,
         # 5: single against agentic, per model, with the clock.
         "extract_shapes": shapes,
+        # Per group, with the key each block groups on -- see `_pres_group`.
+        # Reported here since 2026-08-25 and only APPLIED since 2026-08-28: the
+        # six blocks were the one compilation on the card that never called
+        # `recent_by`, so this key named a window they were not taken under.
         "window": window_size() or None,
+        # The rows the bias rules ran over -- BEFORE the per-group window, which
+        # is applied per block below them. So this is what the card's filters
+        # matched, not the number of runs any one table averages, and every row
+        # prints its own `runs` for that.
         "runs": len(rows),
     }
 

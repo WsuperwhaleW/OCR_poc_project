@@ -1,16 +1,43 @@
 {
+  "_mandatory": {
+    "types": [
+      "RECEIPT",
+      "TAX_INVOICE"
+    ],
+    "required": [
+      "inv_rtv_cnr_number",
+      "seller_tax_id",
+      "seller_branch",
+      "buyer_tax_id",
+      "buyer_branch",
+      "subtotal",
+      "vat_total"
+    ],
+    "found_only": [
+      "remaining_amount",
+      "remaining_vat_amount",
+      "payment_date",
+      "cheque_number"
+    ]
+  },
+  "inv_rtv_cnr_number": "215/10736",
+  "seller_tax_id": "0-5454-54545-54-5",
+  "seller_branch": "สำนักงานใหญ่",
+  "buyer_tax_id": "0155737222723",
+  "buyer_branch": "สาขาที่ 226",
+  "subtotal": "9,604 30",
+  "vat_total": "672 30",
+  "remaining_amount": "",
+  "remaining_vat_amount": "",
+  "payment_date": "",
+  "cheque_number": "",
   "document_type": "ใบเสร็จรับเงิน/ใบกำกับภาษี",
   "document_number": "10737",
   "issue_date": "17/3/69",
   "reference_document": "215/10736",
+  "po_gr_rtv_number": "",
   "seller_name": "บริษัท อะเวนจูรีน จำกัด",
-  "seller_tax_id": "0-5454-54545-54-5",
-  "seller_branch": "สำนักงานใหญ่",
   "buyer_name": "บริษัท ไพลิน จำกัด",
-  "buyer_tax_id": "0155737222723",
-  "buyer_branch": "สาขาที่ 226",
-  "currency": "",
-  "subtotal": "9,604 30",
-  "vat_total": "672 30",
-  "amount_incl_vat": "10,276 60"
+  "amount_incl_vat": "10,276 60",
+  "currency": ""
 }

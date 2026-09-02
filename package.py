@@ -46,8 +46,10 @@ FILES = [
     "scoring.py",
     "verify.py",
     "normalise.py",
+    "validate.py",
     "machine.py",
     "compare.py",
+    "ocrflag.py",
     "randomtest.py",
     "package.py",
 ]

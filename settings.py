@@ -353,6 +353,112 @@ EXTRACT_REPEAT_THRESHOLD = 3
 # pass 2
 # --------------------------------------------------------------------------
 
+# Pass 0: which KIND of document this is. The answer chooses the field set both
+# pass-2 shapes are then asked for, and it frames both prompts -- see
+# `prompts.type_block`.
+#
+# **The MODEL is asked FIRST, on every document, since 2026-09-02** (at the
+# user's request: *it need to let llm check first always since sometimes its new
+# doc or random doc*). The benchmark manifest and the printed-heading table
+# (`normalise.DOCUMENT_TYPES`) are what catch it when its answer cannot be
+# believed, rather than what stop it being asked -- so a fixture exercises the
+# same path a real upload takes, which it did not before.
+#
+# `app._classify_with_model` throws the answer away unless the heading it quotes
+# is really printed on the page; then the manifest answers, then the table. A
+# disagreement with the manifest is REPORTED on the result as
+# `doc_type_expected` rather than resolved.
+#
+# Off sends the pre-2026-09-02 order -- manifest, then the heading table, and the
+# default (widest) form for anything neither places. It is a comparison knob like
+# `DRY_MULTIPLIER=0`, not a preference, and it is also how to make a sweep stop
+# paying a classify request per run.
+#
+# **Measured on all ten fixtures with `gemma4:e4b`: 10/10 get the same FORM the
+# manifest would have given**, so no pass-2 number in CLAUDE.md moves. Only
+# sol001's label differs, and the type it drops has no requirement behind it.
+CLASSIFY_WITH_MODEL = config.env_bool("CLASSIFY_WITH_MODEL", True)
+# How sure the PYTHON classifier has to be before the model is not asked at all
+# (2026-09-02, at the user's request: *use code to classify but if its confidence
+# is more than 90% ... if not, let llm do it*).
+#
+# The figure is `normalise.heading_confidence`: how much of the line the answer
+# was read off is actually the heading, discounted a little further down the
+# page. **It measures the evidence on the page, not anybody's self-belief**,
+# which is what lets the same function score the model's quoted heading and put
+# the two answers on one scale.
+#
+# 0.9 is the user's number and it is a threshold rather than a measurement --
+# but it is not arbitrary against this corpus: every real heading here scores
+# 1.00 (a line that is only the heading, `ใบเสร็จรับเงิน/ใบกำกับภาษี` included,
+# whose two needles cover all of it) and a body-text mention of a document kind
+# scores 0.23-0.30. There is nothing between 0.30 and 1.00 to be sensitive to.
+#
+# 0 asks the model never (the table always wins where it matched anything);
+# above 1.0 asks it always.
+CLASSIFY_MIN_CONFIDENCE = config.env_float("CLASSIFY_MIN_CONFIDENCE", 0.9,
+                                           minimum=0.0, maximum=1.01)
+# Send a MULTI-TYPE answer from the table to the model, however confident it is
+# (2026-09-02, at the user's request: *if keyword detected multiple type let llm
+# check/decide, since sometimes the file only mentions another doc type as a
+# reference and code may detect that as a doc type, which is wrong*).
+#
+# **The risk is specific to a needle match and coverage does not see it.** A
+# second type costs a handful of characters on a line the first type already
+# fills, so `ใบลดหนี้ อ้างอิงใบกำกับภาษี 123` scores like a heading and comes
+# back as two types, one of which is a reference to a different document. One
+# wrong type widens the form, adds validation rules the document is not held to,
+# and frames both prompts with a lie about what it is reading.
+#
+# The cost is that a LEGITIMATE slash heading escalates too --
+# `ใบเสร็จรับเงิน/ใบกำกับภาษี` really is both, and six of the ten fixtures are
+# multi-type -- so this trades most of the gate's speed for the certainty. On
+# this corpus it changes no answer: measured, the model returns the same types.
+CLASSIFY_ESCALATE_MULTI = config.env_bool("CLASSIFY_ESCALATE_MULTI", True)
+# Tell the pass-2 prompts what the document is. Off sends the prompt that was
+# sent before 2026-09-01 -- byte for byte, which `prompts._selftest` asserts --
+# while leaving the FORM exactly as this document's type chose it. That is the
+# whole point of the switch and the only honest way to measure the framing: an
+# arm that also changed which keys were asked for would be measuring two things.
+# It is a comparison knob, like DRY_MULTIPLIER=0, not a preference.
+# One short JSON object -- a heading and a code or two. The cap is small on
+# purpose: a reply long enough to overrun it is one that started transcribing the
+# page, which is this project's oldest pass-2 failure and is not an answer worth
+# waiting for.
+# Whether the pass-2 prompts are TOLD the type. Off sends the prompt that was
+# sent before 2026-09-01 -- byte for byte, which `prompts._selftest` asserts --
+# while leaving the FORM exactly as the type chose it. Which is the only honest
+# way to measure this: an arm that also changed the keys would move two things.
+#
+# **Measured per mode, because the two modes measured differently** -- CLAUDE.md,
+# 250 runs over ten fixtures and five models. Single mode gains 4.9 points of
+# accuracy and 4.7 of precision, and on one model it recovers two whole credit
+# notes that had been coming back as an empty skeleton.
+#
+# Agentic is the close call, and it is ON at the user's decision (2026-09-01)
+# rather than by the mean: the five-model mean is -0.54 and every point of that
+# is gemma4:e2b's -4.5, while THREE of five improve -- including both of the two
+# best models, which gain 1.2 each. The project's best pass-2 number, qwen3.5:9b
+# agentic at 92.0, is only reachable with it. A setting that is going to be
+# adopted is adopted on one model, not on the mean of five.
+#
+# **Turn this off when running gemma4:e2b or qwen3.5:4b in agentic mode** -- they
+# are the two that lose, by 4.5 and 1.2.
+TYPE_FRAMING_SINGLE = config.env_bool("TYPE_FRAMING_SINGLE", True)
+TYPE_FRAMING_AGENTIC = config.env_bool("TYPE_FRAMING_AGENTIC", True)
+# The framing in two halves: naming the document, and the per-key rules that
+# come with it. Off names the type and rules nothing. Kept as a knob because the
+# halves measured very differently -- in single mode the rules are the whole of
+# the gain and naming alone is WORSE than saying nothing, while in agentic the
+# naming is what costs and the rules are nearly free.
+TYPE_FRAMING_BULLETS = config.env_bool("TYPE_FRAMING_BULLETS", True)
+CLASSIFY_MAX_TOKENS = config.env_int("CLASSIFY_MAX_TOKENS", 160, minimum=32)
+# How much of the transcript the question carries. A heading is at the top of the
+# page or a few inches down it -- sol002's is eighteen lines in -- and sending a
+# ten-page document to ask one question about its first inch is prefill spent on
+# nothing.
+CLASSIFY_MAX_CHARS = config.env_int("CLASSIFY_MAX_CHARS", 4000, minimum=200)
+
 # Second pass: feed the finished transcript back to the model as text and ask for
 # structured fields. Text-only, so there is no image to prefill and it costs a
 # fraction of the OCR run.

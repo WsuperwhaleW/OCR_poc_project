@@ -32,9 +32,11 @@ import grounding
 import jobs
 import machine
 import normalise
+import prompts
 import randomtest
 import runlog
 import scoring
+import validate
 import verify
 
 # Prompt text and tunables live outside this file so either can be read, edited
@@ -42,9 +44,23 @@ import verify
 # the prompts; `settings.py` holds every value the app runs with, and the
 # comment beside each one says what was measured to arrive at it.
 from prompts import (
-    EXTRACT_JSON_SCHEMA,
-    EXTRACT_PROMPT,
     EXTRACT_REMINDER,
+    extract_prompt,
+    rules_for_types,
+    type_phrase,
+    type_line,
+    step_rules,
+    CLASSIFY_PROMPT,
+    classify_vocabulary,
+    TYPE_NAMES,
+    extract_schema,
+    INCOME_ITEMS_KEY,
+    fields_for_types,
+    income_items_schema,
+    items_for_types,
+    mandatory_for_types,
+    mandatory_items_for_types,
+    steps_for_types,
     EXTRACT_STEP_PREFIX,
     EXTRACT_STEP_RETRY,
     EXTRACT_STEP_TASK,
@@ -67,6 +83,14 @@ from settings import (
     EXTRACT,
     EXTRACT_LOOP_MIN_REPEATS,
     EXTRACT_LOOP_TAIL_CHARS,
+    CLASSIFY_ESCALATE_MULTI,
+    CLASSIFY_MAX_CHARS,
+    CLASSIFY_MAX_TOKENS,
+    CLASSIFY_MIN_CONFIDENCE,
+    CLASSIFY_WITH_MODEL,
+    TYPE_FRAMING_AGENTIC,
+    TYPE_FRAMING_BULLETS,
+    TYPE_FRAMING_SINGLE,
     EXTRACT_MAX_TOKENS,
     EXTRACT_REPEAT_THRESHOLD,
     EXTRACT_SCHEMA,
@@ -617,7 +641,380 @@ def _is_ocr_envelope(raw: str) -> bool:
     return raw.lstrip().lstrip("`json \n").startswith('{"natural_text"')
 
 
-def _extract_single(text: str, status: dict) -> dict:
+# How many lines from the top of a transcript to look in for the heading. The
+# heading is not always near the head of the page -- sol002 prints it eighteen
+# lines down, under two letterheads and a logo block -- and this is the same
+# claim `prompts._EP_HEAD`'s doc-type rule makes, applied to the search.
+_TYPE_SCAN_LINES = 40
+
+# A heading is a short line. A paragraph that happens to contain the words
+# "tax invoice" is body text, and classifying on it would pick a form off a
+# sentence in the small print.
+_TYPE_SCAN_MAX_CHARS = 80
+
+
+def classify_transcript(text: str):
+    """(codes, heading, confidence, detail) -- what the page calls itself.
+
+    The heading is returned with the codes because it is the EVIDENCE for them:
+    it is reported on the result, and it is what rule 4 below demands of the
+    model before it will believe an answer.
+
+    Deterministic and model-free -- it is `normalise.document_types`, a table of
+    needles, run line by line over the top of the page. **Nothing is asked of the
+    model to decide this**, which matters more here than usual: the answer
+    chooses the FORM the model is then asked to fill, so a classification the
+    model made would be a schema the model chose for itself.
+
+    A LIST, because a document is regularly more than one type at once -- a page
+    headed ใบเสร็จรับเงิน/ใบกำกับภาษี is a receipt and a tax invoice, and both
+    forms apply. Returning one and discarding the rest is the bug this signature
+    exists to prevent.
+
+    An empty list is a real answer. It gets the default field set, which is wider
+    than any typed one -- guessing a type to pick a narrower form would drop
+    Mandatory fields on a coin flip.
+
+    `confidence` is `normalise.heading_confidence` of the line the answer came
+    off, and it is what decides whether the model is asked at all: above
+    `CLASSIFY_MIN_CONFIDENCE` this answer stands on its own and no request is
+    made. `detail` is its working, so the number can be taken apart.
+    """
+    best = ([], "", 0.0, {})
+    for number, line in enumerate((text or "").splitlines()[:_TYPE_SCAN_LINES], 1):
+        line = line.strip()
+        if not line or len(line) > _TYPE_SCAN_MAX_CHARS:
+            continue
+        codes = normalise.document_types(line)
+        if not codes:
+            continue
+        confidence, detail = normalise.heading_confidence(line, number)
+        # **The BEST-scoring line wins, not the first** (2026-09-02). First-wins
+        # was the old rule and it existed to stop a credit note's body text --
+        # which regularly names the invoice it credits -- making the page an
+        # invoice as well. Scoring answers that better than order does: a line
+        # that IS a heading scores 1.00 and a sentence mentioning one scores
+        # 0.23-0.30, so the real heading wins even where the mention comes first.
+        # Ties keep the earlier line, which is the old behaviour where the score
+        # cannot separate two lines.
+        if confidence > best[2]:
+            best = (codes, line, confidence, detail)
+    return best
+
+
+def _classify_with_model(text: str, status: dict):
+    """(codes, heading) from the model: which kind of document this transcript is.
+
+    **The classifier for a real document since 2026-09-02**, ahead of the printed
+    heading table rather than behind it. What that buys is the case the table
+    cannot cover: a page heading itself in wording nobody has written a needle
+    for, which used to take the DEFAULT field set -- every key of every
+    requirement at once, the widest form here and the most fill pressure a small
+    model is ever put under.
+
+    **It still does not choose the schema it is then asked to fill**, which is
+    the objection `normalise.py`'s header spends three paragraphs on, and the
+    difference is the guards below: the answer is a code from a closed list plus
+    a heading that has to be ON the page, so it is a reading of printed text that
+    Python then checks -- not a judgement taken on trust. An answer that fails
+    either test is discarded whole and the heading table answers instead.
+
+    Two guards, and the second is the one that makes this safe to run first:
+
+    * the codes are filtered to the vocabulary it was offered, so an invented
+      category cannot reach `DOC_TYPE_FIELDS`;
+    * **the heading it quotes must actually be printed on the page**, checked
+      with `grounding.squash` the same way every extracted value is checked. An
+      answer that cannot point at a heading is thrown away whole -- codes and
+      all -- because the codes were supposedly read off that heading.
+
+    Returns ([], "") on anything unusable, which sends `resolve_doc_types` on to
+    the heading table -- the pre-2026-09-02 answer, so a refusal costs the run
+    nothing but the request. Never raises, for the same reason.
+    """
+    if not CLASSIFY_WITH_MODEL or not (text or "").strip():
+        return [], ""
+    message = (CLASSIFY_PROMPT.format(vocabulary=classify_vocabulary())
+               + text[:CLASSIFY_MAX_CHARS])
+    try:
+        url, payload = backends.structured_request(
+            backends.system_prefix(status)
+            + [{"role": "user", "content": message}],
+            None, CLASSIFY_MAX_TOKENS, status)
+        res = requests.post(url, json=payload, timeout=GEN_TIMEOUT)
+        if res.status_code != 200:
+            return [], ""
+        raw, _, _ = backends.structured_reply(res.json(), status)
+        answer = json.loads(_first_json_object(strip_fence(raw)) or raw)
+        if not isinstance(answer, dict):
+            return [], ""
+        heading = str(answer.get("heading") or "").strip()
+        codes = [c for c in (answer.get("types") or [])
+                 if isinstance(c, str) and c in TYPE_NAMES]
+    except Exception:
+        # Including a JSON error: this is one small request whose whole purpose
+        # is to narrow a form, and there is a correct answer to give without it.
+        return [], ""
+    if not codes or not heading:
+        return [], ""
+    squashed = grounding.squash(heading)
+    if not squashed or squashed not in grounding.squash(text):
+        # It named a heading the page does not print, so it read nothing -- the
+        # codes are a guess about a document it did not look at. The heading
+        # table gets the question instead.
+        return [], ""
+    # Deduped in the vocabulary's own order, so two spellings of one answer and
+    # two orderings of one pair of codes produce the same form.
+    return [c for c in TYPE_NAMES if c in set(codes)], heading
+
+
+def _needs_second_opinion(codes, confidence):
+    """Why the table's answer is not good enough on its own, or "".
+
+    Two reasons, and they are different failures of a needle match:
+
+    * **not enough of the line is the heading** -- the coverage gate, which
+      catches a document kind mentioned in passing in a sentence;
+    * **more than one type** -- which coverage CANNOT catch, because a second
+      type costs only a few characters on a line the first type already fills.
+      A page that merely cites another document (`ใบลดหนี้ อ้างอิงใบกำกับภาษี
+      123`) scores like a heading and comes back as two types, one of them
+      wrong -- and a wrong type widens the form, adds rules the document is not
+      held to, and frames both prompts with a lie about what it is reading.
+
+    The second rule escalates legitimate slash headings too, and knowingly:
+    `ใบเสร็จรับเงิน/ใบกำกับภาษี` really is both, and six of the ten fixtures are
+    multi-type. That is the price of the certainty, and on this corpus the model
+    returns the same types, so it buys the certainty for a request rather than
+    for an answer.
+    """
+    if not codes:
+        return ""
+    if confidence < CLASSIFY_MIN_CONFIDENCE:
+        return f"the heading scored {confidence:.0%}, under {CLASSIFY_MIN_CONFIDENCE:.0%}"
+    if CLASSIFY_ESCALATE_MULTI and len(codes) > 1:
+        return ("the heading names more than one type, and one of them may be a "
+                "reference to another document")
+    return ""
+
+
+def resolve_doc_types(text: str, case_id: str = None, doc_type=None,
+                      status: dict = None):
+    """(codes, how, heading) -- what this document is, and on whose authority.
+
+    In order of confidence, the same shape as `scoring.case_for_upload`'s rules
+    and for the same reason: `how` is reported, so a run never has to be trusted
+    about a choice it cannot show its working for.
+
+      1. the caller said so
+      2. **the Python heading table, where it is sure** -- above
+         `CLASSIFY_MIN_CONFIDENCE` AND naming one type, and then no request is
+         made at all
+      3. the model, where a status is given
+      4. the manifest, for a benchmark case
+      5. the Python table's answer below the bar, rather than nothing
+      6. nothing -- the default set
+
+    **Rules 2 and 3 are the user's own design** (2026-09-02): *use code to
+    classify but if its confidence is more than 90% ... if not, let llm do it*.
+    Cheap and certain first, the model where the page is not obvious. The whole
+    of what makes it work is that the certainty is MEASURED rather than assumed
+    -- `normalise.heading_confidence` scores how much of the matched line is
+    actually the heading, so `ใบเสร็จรับเงิน/ใบกำกับภาษี` on its own line scores
+    1.00 and a sentence mentioning a tax invoice scores 0.23.
+
+    **A heading the table cannot place scores nothing at all, so it goes to the
+    model** -- which is the case the model was promoted for on the same day, and
+    the one this ordering preserves. What changed is only that a page whose
+    heading is unmistakable no longer pays a request to be told so.
+
+    **The manifest and the low-confidence answer are both still under the model**
+    rather than in front of it: a fixture must exercise the path a real document
+    takes, which is why the manifest stopped answering first earlier today.
+
+    **The manifest is still checked, and a disagreement is REPORTED rather than
+    resolved** -- `_field_set` puts the manifest's own answer on the form as
+    `doc_type_expected` whenever the two differ. The manifest is a person's
+    reading and the model's is a machine's; when a measured number moves, that
+    field is what says which of the two the run was built on.
+
+    Rule 2 is the only one that costs a request -- one short one, on the first
+    `CLASSIFY_MAX_CHARS` of the transcript, and about half a second warm.
+    `_classify_with_model` has what it refuses to believe, and it refuses by
+    falling through rather than by failing: a classification that cannot be
+    trusted leaves the run exactly where it would have been without it.
+
+    **The manifest outranks the page**, which is the point of having it: a
+    heading can name a type a person disagrees with, and the manifest is where
+    that correction lives. sol001 is the standing example -- it prints ใบแจ้งหนี้
+    in Thai and STATEMENT OF ACCOUNT in English, so the classifier reports both,
+    and the manifest is what settles which reading this project uses.
+
+    `doc_type` accepts a string or a list; a string is wrapped, so a caller with
+    one type in hand does not have to know about the plural.
+
+    `heading` is the line the answer was read off, where one was: it is what the
+    page says about itself, and a classification nobody can check against the
+    page is exactly what the model's rule refuses to accept.
+
+    The fourth return value is that heading's confidence, or **None** where the
+    answer came from a person and there is no page evidence to score -- the
+    caller and the manifest. None, never 0.0: "nobody measured this" and "this
+    measured zero" are different claims, and only the second is a bad heading.
+    """
+    if doc_type:
+        codes = [doc_type] if isinstance(doc_type, str) else list(doc_type)
+        return codes, "caller", "", None, ""
+    read, heading, confidence, _ = classify_transcript(text)
+    why = _needs_second_opinion(read, confidence)
+    if read and not why:
+        return read, "transcript", heading, confidence, ""
+    if status:
+        codes, quoted = _classify_with_model(text, status)
+        if codes:
+            # Scored the same way, off the heading the model quoted -- which the
+            # guard has already checked is really printed on the page. One
+            # function for both answers is the only thing that makes the two
+            # numbers comparable, and it is why this is a measure of the EVIDENCE
+            # rather than of anybody's self-belief.
+            return (codes, "model", quoted,
+                    normalise.heading_confidence(quoted)[0], why)
+    if case_id:
+        case = scoring.cases_index().get(case_id) or {}
+        if case.get("doc_types"):
+            return list(case["doc_types"]), "case", "", None, why
+    if read:
+        # Under the bar and used anyway, because the alternative is the default
+        # form -- the union of every requirement, the widest here and the most
+        # fill pressure a small model is ever put under. A weak reading of the
+        # page beats no reading; the confidence rides on the result and says so.
+        return read, "transcript", heading, confidence, why
+    return [], "unclassified", "", None, why
+
+
+def manifest_types(case_id: str) -> list:
+    """What a person says this benchmark case is, or []. Never the classifier.
+
+    Read separately from `resolve_doc_types` so the manifest can be a CHECK on an
+    answer it no longer gets to give: since the model classifies first, the only
+    thing that can say a fixture was built on a different form from the one its
+    truth file was written against is the manifest, held beside the answer rather
+    than in front of it.
+    """
+    return list((scoring.cases_index().get(case_id) or {}).get("doc_types") or [])
+
+
+def _field_set(text: str, case_id: str = None, doc_type=None, status=None):
+    """Everything downstream needs about one document's form, in one dict.
+
+    **Resolved once per extraction and handed to everything**: the prompt's
+    shape, the prompt's TEXT, the JSON grammar, the step table, what grounding
+    calls missing, what `validate` checks and what `fieldscore` scores all come
+    off this dict, so no two of them can disagree about which document this is.
+
+    `keys` and `mandatory` are the UNION over every type the document names -- a
+    page that is both a credit note and a tax invoice must answer for both, and
+    an intersection would let each type excuse the other's obligations.
+    `doc_type` is the primary one, for a label and nothing else.
+    """
+    codes, how, heading, confidence, escalated = resolve_doc_types(
+        text, case_id, doc_type, status)
+    # What the manifest says, where it says anything and the answer above came
+    # from somewhere else. Present ONLY on a disagreement, so the field is a
+    # finding rather than a row of metadata: a fixture whose form was chosen by
+    # the model against a person's reading is the one case where a moved field
+    # score has an explanation that is not the extractor's.
+    expected = manifest_types(case_id) if case_id and how != "case" else []
+    if sorted(expected) == sorted(codes):
+        expected = []
+    return {"doc_types": codes,
+            "doc_type": normalise.primary_type(codes),
+            "doc_type_from": how,
+            "doc_type_heading": heading,
+            "doc_type_expected": expected,
+            # How much of the line the answer was read off is actually a heading,
+            # 0-1, or None where the answer came from a person (the caller, the
+            # manifest) and there is no page evidence to score. **None, never 0**
+            # -- the standing rule: "nobody measured this" and "this measured
+            # zero" are different claims.
+            "doc_type_confidence": confidence,
+            # Why the table's own answer was not taken on its own, where it was
+            # not: the coverage gate, or more than one type. Empty where it was
+            # taken, so the field is a reason rather than a status -- and it is
+            # what makes a `model` answer legible, since "the model classified
+            # this" does not say what the cheap path thought first.
+            "doc_type_escalated": escalated,
+            "keys": list(fields_for_types(codes)),
+            "mandatory": list(mandatory_for_types(codes)),
+            # The row shape of a TABLE this form asks for, or []. Only the
+            # withholding certificate asks for one, and it is here rather than
+            # folded into `keys` because a row is not a key: the prompt, the
+            # grammar, the step table, grounding and `validate` each need it as
+            # its own thing, and it is exactly the sort of second answer that
+            # drifts from the first if two callers work it out separately.
+            "items": list(items_for_types(codes)),
+            # Of that table, the cells the requirement marks Mandatory. Its own
+            # entry rather than folded into `mandatory` for the reason `items` is
+            # its own entry: a row's obligation is not a key's, and `validate`
+            # reports it against a path no key list could match.
+            "mandatory_items": list(mandatory_items_for_types(codes))}
+
+
+def _classified(form: dict, mode: str) -> dict:
+    """What stage 0 decided, in the shape the page draws it.
+
+    The run's middle stage made visible: the type, the authority behind it, the
+    line it was read off, and -- the half that actually matters to a reader --
+    **what the answer then bought**, which is the form, the steps and the
+    validation rules that follow from it. A type on its own is trivia; a type
+    that explains why there are eleven rows below it and not sixteen is the
+    reason the stage exists.
+
+    Sent as an event AND attached to the result. Both, because they answer at
+    different times: the event is what the page has while the extraction is
+    still running, and the result is what a re-render an hour later has. One
+    function so the two cannot drift.
+    """
+    codes = form["doc_types"]
+    return {
+        "doc_types": list(codes),
+        "doc_type": form["doc_type"],
+        "doc_type_from": form["doc_type_from"],
+        "doc_type_heading": form.get("doc_type_heading") or "",
+        # The manifest's own answer, on a benchmark case where it differs from
+        # the one this run used. Empty on every other run, and empty on
+        # agreement -- it is a disagreement, not a field.
+        "doc_type_expected": list(form.get("doc_type_expected") or []),
+        # How much of the line this was read off is a heading, or None where a
+        # person gave the answer and there is nothing on the page to score.
+        "doc_type_confidence": form.get("doc_type_confidence"),
+        # Why the model was asked, where it was.
+        "doc_type_escalated": form.get("doc_type_escalated") or "",
+        "type_phrase": type_phrase(codes),
+        "fields": list(form["keys"]),
+        "mandatory": list(form["mandatory"]),
+        # The cells of the table this form asks for, or []. On the strip beside
+        # the field count, because "eleven fields" and "fourteen fields and a
+        # table" are different amounts of work and the difference is invisible
+        # in a count of scalars.
+        "items": list(form["items"]),
+        # Which of those cells the requirement demands, so the page can mark a
+        # column heading rather than work the requirement out in JavaScript.
+        "mandatory_items": list(form["mandatory_items"]),
+        # Named only for the shape that walks them. Single mode asks one
+        # question, and reporting the steps it did not take would describe a run
+        # that did not happen.
+        "steps": ([s["id"] for s in steps_for_types(codes)]
+                  if mode == "agentic" else []),
+        "rules": list(rules_for_types(codes)),
+        # Whether the answer reached the PROMPT or only the field list. It is
+        # per mode and a setting can turn it off, so a reader comparing two runs
+        # has to be able to see which of them was told.
+        "framed": bool(_framing(form, mode)),
+    }
+
+
+def _extract_single(text: str, status: dict, form: dict) -> dict:
     """The whole schema in one request: all 29 scalars and both lists at once.
 
     The cheaper of the two shapes, and the one a fresh process starts in.
@@ -636,10 +1033,14 @@ def _extract_single(text: str, status: dict) -> dict:
     of unit prices the page never printed. Every baseline in CLAUDE.md was taken
     on the unconstrained request, and it stays the first thing asked.
     """
-    result = _extract_once(text, status, None)
+    result = _extract_once(text, status, None, form)
     if "fields" in result or not EXTRACT_SCHEMA:
         return result
-    retry = _extract_once(text, status, EXTRACT_JSON_SCHEMA)
+    # Constrained to THIS document's form, not to the union of every form: a
+    # grammar listing a key the prompt never asked for is an invitation to fill
+    # it, which is the note `prompts.extract_schema` carries.
+    retry = _extract_once(text, status,
+                          extract_schema(form["keys"], form["items"]), form)
     retry["seconds"] = round(result.get("seconds", 0) + retry.get("seconds", 0), 2)
     if "fields" not in retry:
         # Both failed. The first reply is the one to report -- it is the one the
@@ -662,7 +1063,23 @@ def _extract_single(text: str, status: dict) -> dict:
     return retry
 
 
-def _extract_once(text: str, status: dict, schema) -> dict:
+def _framing(form: dict, mode: str):
+    """The codes this mode's prompt is framed with -- the form's, or none.
+
+    () is the pre-2026-09-01 prompt exactly, with the form untouched, which is
+    what makes an A/B here mean anything.
+
+    **It takes the mode because the two modes measured opposite**, and the
+    default is on for single and off for agentic. That is not a hedge: the rules
+    this framing carries are about telling one key from another, and agentic
+    already asks two or three keys at a time, so it has far less of the confusion
+    they fix and pays the tokens anyway. CLAUDE.md has the 210 runs.
+    """
+    on = TYPE_FRAMING_SINGLE if mode == "single" else TYPE_FRAMING_AGENTIC
+    return form["doc_types"] if on else ()
+
+
+def _extract_once(text: str, status: dict, schema, form: dict) -> dict:
     """One extraction request, parsed, salvaged if it was cut off, and grounded.
 
     `schema` constrains decoding to those keys where the server supports it and
@@ -674,7 +1091,11 @@ def _extract_once(text: str, status: dict, schema) -> dict:
     # message that produced it. Instructions, transcript, instructions again --
     # the closing repeat is what stops an OCR fine-tune answering with its own
     # transcript envelope, and seeing that on screen is half of why it is there.
-    message = EXTRACT_PROMPT + text + EXTRACT_REMINDER
+    # "single" because this function IS single mode's one request -- agentic
+    # never reaches here, it goes through `_step_question`.
+    message = (extract_prompt(form["keys"], _framing(form, "single"),
+                              TYPE_FRAMING_BULLETS, form["items"])
+               + text + EXTRACT_REMINDER)
     url, payload = backends.structured_request(
         backends.system_prefix(status)
         + [{"role": "user", "content": message}],
@@ -745,12 +1166,13 @@ def _extract_once(text: str, status: dict, schema) -> dict:
         # Every value traced back to the transcript it came from. The prompt asks
         # the model not to invent; this is the part that checks, because a
         # plausible invented value is indistinguishable from a read one on screen.
-        "grounding": grounding.check(fields, text),
+        "grounding": grounding.check(fields, text, form["keys"],
+                                     form["mandatory"], form["items"]),
         # Coverage by delivery tier, the same counts the run log records. Sent so
         # the page can say it in one line instead of leaving you to count filled
         # rows; it is deliberately NOT part of the grounding dict, because how
         # many fields came back is a different question from whether they are real.
-        "tiers": grounding.tier_counts(fields),
+        "tiers": grounding.tier_counts(fields, form["keys"]),
         # Which of these figures already carry tax, decided in Python from the
         # figures just extracted. It rides on the extraction result because the
         # Fields tab labels the totals from it: "Amount ex VAT" is a plain lie on
@@ -816,6 +1238,8 @@ def _step_schema(step: dict) -> dict:
         "type": "object",
         "properties": {
             key: (LINE_ITEM_SCHEMA if key == "line_items"
+                  else income_items_schema(prompts.INCOME_ITEM_KEYS)
+                  if key == INCOME_ITEMS_KEY
                   else OTHER_FIELDS_SCHEMA if key == "other_fields"
                   else {"type": "string"})
             for key in step["keys"]
@@ -853,14 +1277,24 @@ def _step_prefix(text: str) -> str:
     return EXTRACT_STEP_PREFIX + text
 
 
-def _step_question(step: dict) -> str:
-    """The part that differs: this step's title, skeleton and rules."""
+def _step_question(step: dict, codes=()) -> str:
+    """The part that differs: this step's title, skeleton and rules.
+
+    `codes` names the document's type in the task line and adds the type's rules
+    for the keys THIS step owns -- never for the others, which is what keeps a
+    rule aimed at one step out of the fourteen answers it was not aimed at. It
+    goes in the question rather than in the shared prefix for the same reason
+    `EXTRACT_REMINDER` closes the single-shot message: what is said after the
+    transcript is what the model is still holding when it answers.
+    """
     return EXTRACT_STEP_TASK.format(title=step["title"],
+                                    context=type_line(codes),
                                     skeleton=step["skeleton"],
-                                    rules=step["rules"])
+                                    rules=step_rules(step, codes,
+                                                     TYPE_FRAMING_BULLETS))
 
 
-def _step_message(text: str, step: dict) -> str:
+def _step_message(text: str, step: dict, codes=()) -> str:
     """The message for one step: prefix, transcript, then this step's question.
 
     Assembled in that order on purpose. The transcript first is what makes the
@@ -868,17 +1302,79 @@ def _step_message(text: str, step: dict) -> str:
     is what keeps an OCR fine-tune from answering with its own transcript envelope,
     which is the same thing EXTRACT_REMINDER buys the single-shot prompt.
     """
-    return _step_prefix(text) + _step_question(step)
+    return _step_prefix(text) + _step_question(step, codes)
 
 
-def _step_values(step: dict, raw: str):
+def _extras_only(step: dict) -> bool:
+    """True where a step owns `other_fields` and nothing else.
+
+    The one thing that decides whether a broken reply from this step is an
+    ERROR or merely a short answer, so it is a test on the keys rather than a
+    step id: `other_fields` is the overflow valve for everything the fourteen
+    priority-1 keys do not cover, and a page has as many extra fields as the
+    model decides it has. Nothing downstream rules on them -- `fieldscore`
+    keeps them out of the headline because their labels are the model's own
+    wording -- so an entry lost off the end of that list costs no measurement.
+
+    Deliberately NOT "every key this step owns is a list". A step owning
+    `line_items` would be a claim about the charges table, which the truth
+    files do rule on; this is about the one key nobody scores.
+    """
+    return bool(step["keys"]) and set(step["keys"]) == {"other_fields"}
+
+
+def _salvage_step(step: dict, raw: str):
+    """The entries this step had finished before its reply stopped, or None.
+
+    Ten entries and an eleventh cut off at the token cap is ten entries, not a
+    failure: `_salvage_json` rewinds to the last element that closed, and here
+    that is exactly the boundary between what the model finished saying and
+    what it did not. Nothing is invented to fill the tail -- same rule as the
+    single-shot salvage, and as grounding.
+
+    None where nothing whole survived, so the caller still pays for the
+    schema-constrained attempt and still raises if that fails too. An empty
+    list is None as well: a step that returned no entry at all has not been
+    rescued, it has merely been parsed.
+
+    **The half-written entry is dropped, and dropping it is the point.**
+    `_salvage_json` rewinds to the last element that closed, and inside a
+    truncated `{"label": "...", "value": "half of a v` that is the COMMA after
+    the label -- so it hands back an entry carrying a label and no value.
+    `OTHER_FIELDS_SCHEMA` requires both, and a label with the value missing is
+    not a fact the page states; it is the shape of a sentence the model was
+    still writing. Keeping it would put an empty-valued field on screen among
+    real ones, which is the same mistake as reading a key the reply never
+    reached as "the document does not state this".
+    """
+    try:
+        values = _step_values(step, raw, salvage=True)
+    except Exception:
+        return None
+    whole = {key: ([e for e in value if "label" in e and "value" in e]
+                   if key == "other_fields" and isinstance(value, list) else value)
+             for key, value in values.items()}
+    return whole if any(whole.get(key) for key in step["keys"]) else None
+
+
+def _step_values(step: dict, raw: str, salvage: bool = False):
     """The keys this step owns, pulled out of its reply. Raises on unusable JSON.
 
     Only the step's own keys are taken. A step that answers with keys belonging to
     another step has guessed at fields it was not shown the rules for, and taking
     those would put back exactly the cross-contamination the split is here to stop.
+
+    `salvage` accepts a reply that never closed, keeping the elements that did.
+    It is passed only for an extras-only step (`_extras_only`): everywhere else
+    a reply that stopped mid-value is a failure worth reporting as one, because
+    the keys it dropped are keys something scores.
     """
-    parsed = json.loads(_first_json_object(strip_fence(raw)) or raw)
+    try:
+        parsed = json.loads(_first_json_object(strip_fence(raw)) or raw)
+    except json.JSONDecodeError:
+        parsed = _salvage_json(raw) if salvage else None
+        if parsed is None:
+            raise
     if not isinstance(parsed, dict):
         raise ValueError("reply was JSON but not an object")
     values = {}
@@ -886,7 +1382,7 @@ def _step_values(step: dict, raw: str):
         if key not in parsed:
             continue
         value = parsed[key]
-        if key in ("line_items", "other_fields"):
+        if key in ("line_items", INCOME_ITEMS_KEY, "other_fields"):
             values[key] = [v for v in value if isinstance(v, dict)] \
                 if isinstance(value, list) else []
         elif isinstance(value, (str, int, float)):
@@ -895,7 +1391,9 @@ def _step_values(step: dict, raw: str):
 
 
 def _ask_step(content: str, step: dict, status: dict, collect: list = None):
-    """Ask one step and parse its reply. Returns (values, replies, truncated, tokens).
+    """Ask one step and parse its reply.
+
+    Returns (values, replies, truncated, tokens, salvaged).
 
     Asked plain first, exactly as the baselines were measured. A reply that will
     not parse is asked once more with decoding constrained to this step's own
@@ -914,9 +1412,18 @@ def _ask_step(content: str, step: dict, status: dict, collect: list = None):
     step that died -- exactly the replies worth reading, since a step that
     answered is already visible in its values. A dead step now leaves its text in
     `raw` beside the others.
+
+    `salvaged` says the values came out of a reply that never closed. Only an
+    extras-only step can be salvaged (`_extras_only`), and it is tried BEFORE
+    the schema-constrained attempt: a list cut off at the token cap is not the
+    failure that attempt was built for -- a grammar does not shorten an answer,
+    so the second request would run to the same cap -- and the entries that
+    finished are already in hand. Everywhere else the parse failure stands and
+    the schema attempt runs exactly as it did.
     """
     replies, tokens = [], 0
     collect = replies if collect is None else collect
+    extras = _extras_only(step)
 
     def keep(text):
         replies.append(text)
@@ -927,15 +1434,24 @@ def _ask_step(content: str, step: dict, status: dict, collect: list = None):
     keep(raw)
     tokens += used
     try:
-        return _step_values(step, raw), replies, truncated, tokens
+        return _step_values(step, raw), replies, truncated, tokens, False
     except Exception:
+        kept = _salvage_step(step, raw) if extras else None
+        if kept:
+            return kept, replies, truncated, tokens, True
         if not EXTRACT_SCHEMA:
             raise
     raw, truncated, used = _chat(content, step["max_tokens"], status,
                                  _step_schema(step))
     keep(raw)
     tokens += used
-    return _step_values(step, raw), replies, truncated, tokens
+    try:
+        return _step_values(step, raw), replies, truncated, tokens, False
+    except Exception:
+        kept = _salvage_step(step, raw) if extras else None
+        if kept:
+            return kept, replies, truncated, tokens, True
+        raise
 
 
 def _ungrounded_in(values: dict, source) -> list:
@@ -971,7 +1487,25 @@ def _reply_label(step_id: str, attempt: int, n: int, failed: bool = False) -> st
             + (" (failed)" if failed else ""))
 
 
-def _steps_for(wanted):
+def _step_count_label():
+    """How many agentic steps a run makes, as "7" or "7-17" across the forms.
+
+    Over single types and pairs, because a real document names two about as often
+    as one and a pair's union can need more steps than either alone.
+
+    The top of the range is the UNCLASSIFIED form rather than any document: a
+    page nothing could place is asked the union of every requirement, which is
+    seventeen steps. Every real form is seven or nine.
+    """
+    codes = list(prompts.DOC_TYPE_FIELDS)
+    combos = [[]] + [[c] for c in codes] + [[a, b] for a in codes for b in codes
+                                            if a != b]
+    counts = {len(steps_for_types(c)) for c in combos}
+    return (str(min(counts)) if len(counts) == 1
+            else f"{min(counts)}-{max(counts)}")
+
+
+def _steps_for(wanted, doc_types=()):
     """The step table, or the named subset of it, in the table's own order.
 
     A measurement tool and nothing else: it is what lets one step's prompt be
@@ -982,20 +1516,25 @@ def _steps_for(wanted):
     The order is always `EXTRACT_STEPS`', never the caller's, so a restricted run
     is the full run with steps removed rather than a differently ordered one.
     """
+    table = steps_for_types(doc_types)
     if not wanted:
-        return EXTRACT_STEPS
+        return table
     ids = [s.strip() for s in wanted if str(s).strip()]
-    known = {s["id"] for s in EXTRACT_STEPS}
+    # Checked against THIS document's table, so asking a receipt for the
+    # `original_invoice` step is refused by name rather than silently running
+    # nothing. The message names the steps this type actually has.
+    known = {s["id"] for s in table}
     unknown = [i for i in ids if i not in known]
     if unknown:
         raise ValueError(f"unknown extraction step(s): {', '.join(unknown)} -- "
-                         f"have {', '.join(sorted(known))}")
+                         f"{' + '.join(doc_types) or 'an unclassified document'}"
+                         f" has {', '.join(sorted(known))}")
     if not ids:
         raise ValueError("no extraction steps named")
-    return tuple(s for s in EXTRACT_STEPS if s["id"] in set(ids))
+    return tuple(s for s in table if s["id"] in set(ids))
 
 
-def _extract_agentic(text: str, status: dict, only=None):
+def _extract_agentic(text: str, status: dict, form: dict, only=None):
     """Walk the step table, yielding progress, and return the merged result.
 
     A generator so that both the browser and the run stream can show which step is
@@ -1007,7 +1546,12 @@ def _extract_agentic(text: str, status: dict, only=None):
     nobody asked for as missing -- the field score, the run-log row -- stands
     down on that key. See `_steps_for`.
     """
-    table = _steps_for(only)
+    # The steps this document's TYPE asks for, before any restriction the
+    # caller applied. `steps_only` is measured against this rather than against
+    # the whole step table: an invoice legitimately runs six of the eight steps
+    # and is a complete run of its own form, not a partial run of someone else's.
+    full_table = steps_for_types(form["doc_types"])
+    table = _steps_for(only, form["doc_types"])
     source = grounding.Source(text)
     started = time.perf_counter()
     fields, steps, replies = {}, [], []
@@ -1028,7 +1572,7 @@ def _extract_agentic(text: str, status: dict, only=None):
         yield {"event": "extract_step", "step": index, "total": len(table),
                "id": step["id"], "title": step["title"], "status": "running"}
 
-        question = _step_question(step)
+        question = _step_question(step, _framing(form, "agentic"))
         message = prefix + question
         # `raw` holds this step's own replies, verbatim, in the order they were
         # asked for. They are also concatenated into the result's single `raw`
@@ -1061,8 +1605,15 @@ def _extract_agentic(text: str, status: dict, only=None):
             # success path, and in the handler on the failure path.
             raws = []
             try:
-                attempt_values, raws, truncated, tokens = _ask_step(
+                attempt_values, raws, truncated, tokens, salvaged = _ask_step(
                     content, step, status, raws)
+                if salvaged:
+                    # The reply stopped mid-entry and what had finished was
+                    # kept. Recorded rather than passed over: the step answered
+                    # with less of the page than it found, and a count of
+                    # entries with nothing beside it reads as the whole of what
+                    # the document labels.
+                    record["salvaged"] = True
                 for n, raw in enumerate(raws):
                     label = _reply_label(step["id"], attempt, n)
                     replies.append(f"--- {label} ---\n" + raw)
@@ -1086,7 +1637,15 @@ def _extract_agentic(text: str, status: dict, only=None):
                 # A retry that fails leaves the answer it was meant to correct
                 # standing, so the step has fields and is not a failed step. Saying
                 # it failed would send someone looking for keys that are there.
-                record["error" if best_bad is None else "retry_error"] = why
+                where = "error" if best_bad is None else "retry_error"
+                # An extras-only step that dies costs no key anything rules on,
+                # so it is reported and NOT counted as a failed step: it does
+                # not reach `steps_failed`, the page's failed-step banner or the
+                # run log's failure rate. A priority-1 step that dies still
+                # does, because its keys are the form. See `_extras_only`.
+                if where == "error" and _extras_only(step):
+                    where = "extras_error"
+                record[where] = why
                 break
             elapsed += time.perf_counter() - at
 
@@ -1112,13 +1671,18 @@ def _extract_agentic(text: str, status: dict, only=None):
 
     elapsed = round(time.perf_counter() - started, 2)
     failed = [s for s in steps if s.get("error")]
-    if len(failed) == len(steps):
+    # Every step that returned nothing, whether or not that counts as a failure.
+    # The bail-out below is about there being no answer at all, which an
+    # extras-only step is as capable of producing as any other -- it just does
+    # not make the run a failure on its own.
+    dead = [s for s in steps if s.get("error") or s.get("extras_error")]
+    if dead and len(dead) == len(steps):
         return {"error": "Every extraction step failed. First: "
-                         + failed[0]["error"],
+                         + (dead[0].get("error") or dead[0]["extras_error"]),
                 "mode": "agentic", "steps": steps, "seconds": elapsed,
                 "prompt_prefix": prefix,
                 **({"steps_only": [s["id"] for s in table]}
-                   if len(table) < len(EXTRACT_STEPS) else {}),
+                   if len(table) < len(full_table) else {}),
                 "raw": "\n\n".join(replies)[:4000]}
 
     # Ordered the way the schema lists the keys rather than the way the steps
@@ -1127,6 +1691,13 @@ def _extract_agentic(text: str, status: dict, only=None):
     ordered = {k: fields[k] for k in grounding.SCALAR_FIELDS if k in fields}
     for key in ("line_items", "other_fields"):
         ordered[key] = fields.get(key) or []
+    # Only where this form asked for the table. Unlike the two above, which have
+    # been on every result since before the schema was per type, an empty
+    # `income_items` on an invoice would be a claim that a table was asked for
+    # and came back empty -- and `grounding.check` would then have to be told to
+    # ignore the very key it was told to audit.
+    if form["items"]:
+        ordered[INCOME_ITEMS_KEY] = fields.get(INCOME_ITEMS_KEY) or []
 
     return {
         "fields": ordered,
@@ -1135,8 +1706,9 @@ def _extract_agentic(text: str, status: dict, only=None):
         # result read back from the queue, or from the blocking endpoint, never
         # saw the event, and a step's question is unreadable without what led it.
         "prompt_prefix": prefix,
-        "grounding": grounding.check(ordered, text),
-        "tiers": grounding.tier_counts(ordered),
+        "grounding": grounding.check(ordered, text, form["keys"],
+                                     form["mandatory"], form["items"]),
+        "tiers": grounding.tier_counts(ordered, form["keys"]),
         "vat_basis": verify.vat_basis(ordered, text),
         # Same derivation as single mode, from the merged answer rather than from
         # any one step -- the references list in particular spans several of them.
@@ -1150,13 +1722,21 @@ def _extract_agentic(text: str, status: dict, only=None):
         # Present only when this run was restricted to part of the step table, so
         # nothing downstream reads its keys as the whole form. Absent on an
         # ordinary run rather than holding every id, for the same reason.
-        **({"steps_only": [s["id"] for s in table]} if len(table) < len(EXTRACT_STEPS)
+        **({"steps_only": [s["id"] for s in table]} if len(table) < len(full_table)
            else {}),
         # Named separately from the per-step errors because a partial answer is
         # the normal outcome here rather than a failure: the page says which parts
         # of the form were not filled instead of showing them as simply empty.
         "steps_failed": [{"id": s["id"], "title": s["title"], "error": s["error"]}
                          for s in failed],
+        # Reported separately and never folded into `steps_failed`: a broken
+        # reply from an extras-only step costs entries nothing scores, so it is
+        # a note about how much of the page came back rather than a failure of
+        # the extraction. Absent when there is none, like `steps_only`.
+        **({"steps_extras": [{"id": s["id"], "title": s["title"],
+                              "error": s["extras_error"]}
+                             for s in steps if s.get("extras_error")]}
+           if any(s.get("extras_error") for s in steps) else {}),
     }
 
 
@@ -1252,7 +1832,7 @@ def set_extract_mode(mode: str) -> str:
 
 
 def extract_fields_stream(text: str, mode: str = None, case_id: str = None,
-                          steps=None):
+                          steps=None, doc_type: str = None):
     """Turn a finished transcript into structured JSON, yielding progress.
 
     A separate text-only pass rather than part of the OCR prompt: mixing
@@ -1281,8 +1861,19 @@ def extract_fields_stream(text: str, mode: str = None, case_id: str = None,
     # with a complaint about images.
     if not status["text_available"]:
         return {"error": status["text_reason"]}
-    if (mode or extract_mode()) == "agentic":
-        result = yield from _extract_agentic(text, status, steps)
+    # Which form to ask for. Resolved ONCE, here, and handed to whichever shape
+    # runs -- the prompt, the JSON grammar, the step table, what grounding calls
+    # missing, what validate checks and what fieldscore scores all come off this
+    # one dict, so the two modes cannot disagree about which document this is.
+    form = _field_set(text, case_id, doc_type, status)
+    # Stage 0, announced before either shape starts. It is the one part of a
+    # pass-2 run that is finished before the first request goes out, so a page
+    # that shows it immediately is showing something true rather than a
+    # placeholder -- and in single mode it is the ONLY progress event there is.
+    mode = mode or extract_mode()
+    yield {"event": "classified", "mode": mode, **_classified(form, mode)}
+    if mode == "agentic":
+        result = yield from _extract_agentic(text, status, form, steps)
     else:
         # Refused rather than ignored: single mode is one request for the whole
         # schema, so there is no honest way to ask it for part of one, and a
@@ -1290,11 +1881,70 @@ def extract_fields_stream(text: str, mode: str = None, case_id: str = None,
         # fourteen keys instead.
         if steps:
             return {"error": "steps only apply to agentic extraction."}
-        result = _extract_single(text, status)
-    return _score_fields(result, case_id)
+        result = _extract_single(text, status, form)
+    result = _validate_fields(result, form, text, mode)
+    return _score_fields(result, case_id, form)
 
 
-def _score_fields(result: dict, case_id: str) -> dict:
+def _validate_fields(result: dict, form: dict, text: str, mode: str) -> dict:
+    """Attach the requirement's validation rules, and say which form they are for.
+
+    Outside `fields`, like `derived` and for the same reason: `grounding.check`
+    walks that dict and would report a computed verdict as an invention.
+
+    Never allowed to break an extraction. The fields are the product and this is
+    a measurement of them -- and the corpus is the standing reminder that a
+    validator must not gate, since seventeen of twenty tax IDs in `solution/`
+    fail the checksum for being anonymised mocks.
+    """
+    if not isinstance(result, dict):
+        return result
+    # Recorded even where nothing was extracted: which form was asked for is a
+    # fact about the run, and a reader looking at an empty result needs it most.
+    # Both: `doc_types` is what the page names and what the form was built
+    # from, `doc_type` is the primary one to file it under. A single code alone
+    # would repeat the bug fixed on 2026-08-31 -- it drops every type after the
+    # first, and with them every field only the dropped type required.
+    result["doc_types"] = list(form["doc_types"])
+    result["doc_type"] = form["doc_type"]
+    result["doc_type_from"] = form["doc_type_from"]
+    # The line the type was read off, where one was. Reported for the same
+    # reason `doc_type_from` is: the form below was chosen by this, and a choice
+    # nobody can check is one nobody should have to take on trust.
+    result["doc_type_heading"] = form.get("doc_type_heading") or ""
+    # A disagreement with the manifest, where there is one. On the result as well
+    # as on `classified`, because a result read back later is all a reader has.
+    result["doc_type_expected"] = list(form.get("doc_type_expected") or [])
+    result["doc_type_confidence"] = form.get("doc_type_confidence")
+    result["doc_type_escalated"] = form.get("doc_type_escalated") or ""
+    # The form itself, so the page renders the questions that were ASKED rather
+    # than every key it knows how to draw. A key the form omits is not an empty
+    # answer -- it is a question nobody put -- and an empty row for it would read
+    # as a document that states nothing about it.
+    result["fields_asked"] = list(form["keys"])
+    # The table's cells, or []. Named apart from `fields_asked` for the reason
+    # `_field_set` gives: the page draws them as a table and the scalars as rows.
+    result["items_asked"] = list(form["items"])
+    # The whole of stage 0, for a result being rendered after the fact -- a
+    # re-extraction loaded from the Fields pane, or a blocking POST that had no
+    # stream to carry the event.
+    # The mode is passed in rather than read off the result: a run that failed
+    # before either shape reported one still has to say whether ITS prompt was
+    # framed, and defaulting that to single would describe the wrong run.
+    result["classified"] = _classified(form, mode)
+    if not result.get("fields"):
+        return result
+    try:
+        result["validation"] = validate.validate(
+            result["fields"], keys=form["keys"], doc_types=form["doc_types"],
+            mandatory=form["mandatory"], transcript=text,
+            items=form["items"])
+    except Exception as err:  # pragma: no cover - never worth a 500
+        result["validation"] = {"error": f"validation failed: {err}"}
+    return result
+
+
+def _score_fields(result: dict, case_id: str, form: dict = None) -> dict:
     """Attach the field score, when this document has field ground truth.
 
     Absent rather than an error when there is none: most documents are not
@@ -1315,7 +1965,19 @@ def _score_fields(result: dict, case_id: str) -> dict:
         return result
     try:
         if fieldscore.has_truth(case_id):
-            result["field_score"] = fieldscore.evaluate(case_id, result["fields"])
+            # Scored over the form that RAN. A truth file states more than any
+            # one form asks for -- it is the human's record of the page, not of
+            # the schema -- so scoring every key in it would mark an invoice
+            # wrong for not returning a currency nobody requested.
+            # The headline is taken over what the requirement DEMANDS of this
+            # document's types; an Optional field is still judged and reported,
+            # under `optional`, and simply does not decide the rate.
+            result["field_score"] = fieldscore.evaluate(
+                case_id, result["fields"],
+                keys=(form or {}).get("keys"),
+                doc_types=(form or {}).get("doc_types") or [],
+                mandatory=(form or {}).get("mandatory"),
+                items_mandatory=(form or {}).get("mandatory_items"))
     except Exception as err:  # pragma: no cover - a score is never worth a 500
         result["field_score"] = {"error": f"field scoring failed: {err}"}
     return result
@@ -1331,9 +1993,9 @@ def _drain(generator):
 
 
 def extract_fields(text: str, mode: str = None, case_id: str = None,
-                   steps=None) -> dict:
+                   steps=None, doc_type: str = None) -> dict:
     """`extract_fields_stream` for callers with nowhere to show progress."""
-    return _drain(extract_fields_stream(text, mode, case_id, steps))
+    return _drain(extract_fields_stream(text, mode, case_id, steps, doc_type))
 
 
 def strip_fence(text: str) -> str:
@@ -1958,7 +2620,18 @@ def index():
         # opposed to merely run against it: the transcript truth and the field
         # truth are two different files, and the Fields-only pane is the one
         # place where having the first without the second is a live case.
+        # doc_type groups the three case pickers into <optgroup>s, so "test the
+        # invoices" is one glance rather than a reading of ten prose `kind`
+        # lines. Blank sorts into its own group rather than being guessed at.
         cases=[{"id": c["id"], "pdf": c["pdf"], "kind": c.get("kind", ""),
+                "doc_types": list(c.get("doc_types") or []),
+                "doc_type": normalise.primary_type(c.get("doc_types") or []),
+                "fields": list(fields_for_types(c.get("doc_types") or [])),
+                # Of that form, what the requirement DEMANDS. Beside `fields`
+                # rather than derived from it on the page: which keys are
+                # Mandatory is a property of the requirement, and a copy of that
+                # in JavaScript is how the template's field maps went stale.
+                "mandatory": list(mandatory_for_types(c.get("doc_types") or [])),
                 "field_truth": fieldscore.has_truth(c["id"])}
                for c in scoring.cases_index().values()],
         mock_files=mock_files(),
@@ -1970,7 +2643,12 @@ def index():
         ctx_choices=backends.NUM_CTX_CHOICES,
         num_ctx=backends.num_ctx(),
         extract_mode=extract_mode(),
-        extract_steps=len(EXTRACT_STEPS),
+        # A RANGE, not a count: the step table is per document type now, so an
+        # invoice runs six of the eight steps and a credit note all eight. The
+        # picker is drawn before any document is chosen, so the only honest
+        # label is the span -- a flat "8 steps" beside a run that made six reads
+        # as a run that lost two.
+        extract_steps=_step_count_label(),
         ocr_profile=ocr_profile(),
         ocr_profiles=[{"id": pid, **spec} for pid, spec in OCR_PROFILES.items()],
         # Whether a cycling read is cut short, and what it would cost if it were
@@ -1982,6 +2660,11 @@ def index():
         # rather than hardcoded in the template: it is a setting, and a page that
         # says 50% while the process runs at 0 is describing a build nobody has.
         min_read_for_fields=MIN_READ_FOR_FIELDS,
+        # The bar the Python classifier has to clear before the model is
+        # not asked. Sent rather than repeated in the template: a page
+        # quoting a threshold the process is not running describes a build
+        # nobody has -- the same rule `min_read_for_fields` follows.
+        min_classify_confidence=CLASSIFY_MIN_CONFIDENCE,
         # What a contest pins: how many from each end of the ranking it runs, and
         # the Detail every contender runs at. Sent rather than repeated in the
         # template for the same reason as the threshold above -- the page must
@@ -2097,7 +2780,24 @@ def servers_select():
 def cases():
     """Benchmark documents that have a ground-truth transcript."""
     return jsonify(cases=[
+        # doc_type is the manifest's standard code for the heading the page
+        # prints -- INVOICE / RECEIPT_TAX_INVOICE / CREDIT_NOTE, the same
+        # vocabulary normalise.document_type_code returns. It is here so a
+        # caller can select a set to test by kind of document without parsing
+        # `kind`, which is prose. Blank for a case the manifest does not
+        # classify, which is a real answer and not a default.
         {"id": c["id"], "pdf": c["pdf"], "kind": c.get("kind", ""),
+         # The types the page names, and the one it is filed under. A document
+         # is regularly two of them, so the list is the answer and `doc_type` is
+         # a label taken off the front of it.
+         "doc_types": list(c.get("doc_types") or []),
+         "doc_type": normalise.primary_type(c.get("doc_types") or []),
+         # The form those types ask for. Sent per case so a caller -- and the
+         # page -- can say what WILL be asked before anything runs, rather than
+         # having to re-derive the union of the requirements client-side.
+         "fields": list(fields_for_types(c.get("doc_types") or [])),
+         # What of that form the requirement demands -- the same reason as above.
+         "mandatory": list(mandatory_for_types(c.get("doc_types") or [])),
          "pages": c.get("pages", 1), "available": c["pdf_path"].exists(),
          "field_truth": fieldscore.has_truth(c["id"])}
         for c in scoring.cases_index().values()
@@ -2206,6 +2906,45 @@ def _requested_steps(body):
     return steps
 
 
+@app.post("/api/classify")
+def classify_endpoint():
+    """What kind of document this is, and the form that follows from it.
+
+    The first stage of the pass-2 workflow, exposed on its own so it can be
+    read, tested and swept without paying for an extraction: it is what
+    `extract_fields` runs before it builds either prompt, through the same
+    `_field_set`, so what comes back here is exactly what the extraction would
+    be asked for.
+
+    Takes the same input shapes as `/api/extract` -- a posted `text`, a `job`,
+    or a `case` with `from_truth` -- plus the same `doc_type` override, which is
+    answered straight back as `caller`. There is nothing to log: no model was
+    asked anything unless rule 4 ran, and a row saying only "this is a receipt"
+    would be a run in the log that read no page and extracted no field.
+    """
+    body = request.get_json(silent=True) or {}
+    try:
+        text, case_id, _ = _extract_input(body)
+    except ValueError as err:
+        return jsonify(error=str(err)), 400
+    # The extraction model's status, because rule 4 is a request to it. A model
+    # server that is down is not an error here: the heading table answers
+    # without one, and `_classify_with_model` is given None rather than a status
+    # it cannot use.
+    status = backends.extract_status()
+    form = _field_set(text, case_id, body.get("doc_types") or body.get("doc_type"),
+                      status if status.get("text_available") else None)
+    return jsonify({
+        **form,
+        # What the answer buys, which is the whole reason to ask: the steps an
+        # agentic run would walk, the rules `validate` would then apply, and the
+        # framing both prompts would carry.
+        "steps": [s["id"] for s in steps_for_types(form["doc_types"])],
+        "rules": list(rules_for_types(form["doc_types"])),
+        "type_phrase": type_phrase(form["doc_types"]),
+    })
+
+
 @app.post("/api/extract")
 def extract_endpoint():
     """Re-run field extraction on text, without re-reading the page.
@@ -2234,7 +2973,12 @@ def extract_endpoint():
         steps = _requested_steps(body)
     except ValueError as err:
         return jsonify(error=str(err)), 400
-    result = extract_fields(text, mode, case_id, steps)
+    # `doc_type` accepts one code or a list -- a document is often more than
+    # one type, and a caller overriding the classification has to be able to say
+    # so. `doc_types` is the plural spelling of the same field.
+    result = extract_fields(text, mode, case_id, steps,
+                            doc_type=body.get("doc_types")
+                            or body.get("doc_type"))
     log_extract(result, body.get("job"), context)
     return jsonify(result)
 
@@ -2263,7 +3007,9 @@ def extract_stream_endpoint():
 
     def generate():
         try:
-            stream = extract_fields_stream(text, mode, case_id, steps)
+            stream = extract_fields_stream(text, mode, case_id, steps,
+                                           doc_type=body.get("doc_types")
+                                           or body.get("doc_type"))
             while True:
                 try:
                     yield json.dumps(next(stream)) + "\n"
@@ -3181,13 +3927,26 @@ def _runs_payload(limit: int, window=None, min_read_pct=None,
             totals = runlog.totals(matched, logged=len(everything))
         # The presentation summary, compiled over the same filtered rows under
         # the same view -- so the card's chips reach it like every other table.
-        # **Its own bias is applied on top and is its own toggle**: it drops
-        # single-source failures, weak models and time outliers whether or not
-        # the card-wide one is on, because that tab is the one view here that is
-        # meant to be shown rather than argued from. `bias=False` returns the
-        # same six blocks over everything, which is what makes the bias
-        # inspectable rather than load-bearing.
-        totals["presentation"] = runlog.presentation(matched, bias=bias)
+        #
+        # **And the card-wide single-source toggle reaches it too**, which it did
+        # not until 2026-08-25: this read `matched` while every other table read
+        # `reduced`, so one card was showing two populations with nothing saying
+        # so, and the toggle's own tooltip -- *from every table except the Errors
+        # one* -- was false about the Summary tab. Measured on the live log, that
+        # was worth 56% -> 35% on one setting's error rate.
+        #
+        # `single_source=False` because the drop has already happened: the rule
+        # is not idempotent, and running it again would find NEW single-source
+        # groups among what survived the first pass.
+        #
+        # Its own bias is applied on top and is its own toggle -- weak models and
+        # time outliers -- because that tab is the one view here meant to be
+        # shown rather than argued from. `bias=False` returns the same six blocks
+        # over everything, which is what makes the bias inspectable rather than
+        # load-bearing.
+        totals["presentation"] = runlog.presentation(
+            reduced if drop_single_source else matched,
+            bias=bias, single_source=not drop_single_source)
         # Beside it rather than inside it: the environment describes the runs
         # under every view, biased or not, and a card that changed its machine
         # when a checkbox moved would be describing a different computer.
@@ -3335,6 +4094,75 @@ def too_large(_):
 say = config.say
 
 
+# A key in a JS object literal: at the start of a line, or after a comma. Both,
+# because these maps put two keys on one line where the values are short -- an
+# earlier version anchored to the line start only and silently saw 7 of the 11.
+_JS_MAP_KEYS = re.compile(r"(?:^\s+|,\s*)(\w+)\s*:", re.M)
+
+
+def template_field_keys():
+    """The keys `templates/index.html` knows how to draw, per map.
+
+    Returns {"FIELD_LABELS": {...}, "FIELD_HINTS": {...}, "FIELD_SECTIONS": {...}}.
+
+    Parsed rather than imported because the maps are JavaScript. It is crude on
+    purpose -- it reads the key names out of three literals and nothing else --
+    and it exists because the failure it catches is silent: **a key absent from
+    `FIELD_SECTIONS` is not rendered at all**, and when the schema was widened on
+    2026-08-19 a third of it simply did not appear on the page, with no error
+    anywhere. Returns empty maps rather than raising if the file has moved on;
+    a parser that fails loudly on a cosmetic edit would be worse than the bug.
+    """
+    try:
+        text = (config.BASE_DIR / "templates" / "index.html").read_text("utf-8")
+    except Exception:                                    # noqa: BLE001
+        return {}
+
+    def literal(name, opener, closer):
+        try:
+            start = text.index(f"const {name} = {opener}")
+        except ValueError:
+            return ""
+        return text[start:text.index(closer, start)]
+
+    labels = set(_JS_MAP_KEYS.findall(literal("FIELD_LABELS", "{", "};")))
+    hints = set(_JS_MAP_KEYS.findall(literal("FIELD_HINTS", "{", "};")))
+    sections = set(re.findall(r"'(\w+)'",
+                              literal("FIELD_SECTIONS", "[", "\n];")))
+    # Section TITLES are quoted the same way as the keys; only names the schema
+    # knows are keys, and a key the schema does not know is what we are looking
+    # for, so compare against the union of both rather than filtering here.
+    return {"FIELD_LABELS": labels, "FIELD_HINTS": hints,
+            "FIELD_SECTIONS": sections}
+
+
+def check_template_fields():
+    """Lines describing any drift between the schema and the page's own maps.
+
+    Empty when they agree. A key in the schema and not on the page is invisible
+    to a reader; a key on the page and not in the schema is a row that can only
+    ever be empty. Both are worth a line at startup and neither is worth a
+    refusal -- the page still works, it just does not show everything.
+    """
+    maps = template_field_keys()
+    if not maps:
+        return ["could not read the field maps out of templates/index.html"]
+    schema = set(prompts._SCALAR_KEYS)
+    problems = []
+    for name in ("FIELD_LABELS", "FIELD_HINTS", "FIELD_SECTIONS"):
+        drawn = maps[name]
+        missing = sorted(schema - drawn)
+        if missing:
+            problems.append(f"{name} does not know {', '.join(missing)}")
+        # Only names that ARE schema keys can be extra; section titles and other
+        # words in those literals are not keys and are not a fault.
+        extra = sorted((drawn & set(prompts.RETIRED_KEYS)) - schema)
+        if extra:
+            problems.append(f"{name} still lists retired key(s) "
+                            f"{', '.join(extra)}")
+    return problems
+
+
 def preflight():
     """Report what this instance can and cannot do, before it accepts traffic.
 
@@ -3346,6 +4174,10 @@ def preflight():
     of the log rather than discovered later as a puzzling 500.
     """
     say(f"[ocr] listening on http://{config.HOST}:{config.PORT}")
+    # A key the page's maps do not know is a key the page does not draw, and
+    # nothing else says so -- see `check_template_fields`.
+    for problem in check_template_fields():
+        say(f"[ocr] WARNING: {problem}")
     if config.HOST not in ("127.0.0.1", "localhost", "::1"):
         say(f"[ocr] WARNING: bound to {config.HOST}, reachable from other hosts. "
             "This app has no authentication -- put it behind a reverse proxy or "

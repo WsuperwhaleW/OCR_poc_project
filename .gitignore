@@ -36,3 +36,8 @@ CLAUDE.md
 
 .DS_Store
 Thumbs.db
+
+# Apryse/Typhoon comparison outputs -- a local PoC kept on this machine only.
+# Searchable PDFs, key-value/classification JSON and the overlay maps produced by
+# the apryse-demo container. Regenerable, large, and not part of this app.
+apryse_compare/

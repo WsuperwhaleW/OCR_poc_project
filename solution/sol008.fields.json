@@ -1,4 +1,24 @@
 {
+  "_mandatory": {
+    "types": [
+      "CREDIT_NOTE"
+    ],
+    "required": [
+      "document_type",
+      "document_number",
+      "issue_date",
+      "seller_tax_id",
+      "seller_branch",
+      "buyer_tax_id",
+      "buyer_branch",
+      "subtotal",
+      "vat_total",
+      "amount_incl_vat"
+    ],
+    "found_only": [
+      "po_gr_rtv_number"
+    ]
+  },
   "document_type": [
     "ใบลดหนี้ (Credit Note)",
     "ใบลดหนี้",
@@ -7,14 +27,16 @@
   "document_number": "6611/2023",
   "issue_date": "29 พ.ย. 2566",
   "reference_document": "",
+  "original_invoice_date": "",
+  "po_gr_rtv_number": "",
   "seller_name": "ED DT CO.,LTD.",
   "seller_tax_id": "0165498798765",
   "seller_branch": "",
   "buyer_name": "บริษัท เดินยังไกล จำกัด",
   "buyer_tax_id": "0188899547156",
   "buyer_branch": "",
-  "currency": "",
   "subtotal": "43,547.04",
   "vat_total": "",
-  "amount_incl_vat": ""
+  "amount_incl_vat": "",
+  "currency": ""
 }

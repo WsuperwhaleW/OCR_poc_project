@@ -1,4 +1,25 @@
 {
+  "_mandatory": {
+    "types": [
+      "CREDIT_NOTE",
+      "TAX_INVOICE"
+    ],
+    "required": [
+      "document_type",
+      "document_number",
+      "issue_date",
+      "seller_tax_id",
+      "seller_branch",
+      "buyer_tax_id",
+      "buyer_branch",
+      "subtotal",
+      "vat_total",
+      "amount_incl_vat"
+    ],
+    "found_only": [
+      "po_gr_rtv_number"
+    ]
+  },
   "document_type": [
     "ใบลดหนี้/ใบกำกับภาษี Credit Note/Tax Invoice",
     "ใบลดหนี้/ใบกำกับภาษี",
@@ -7,6 +28,8 @@
   "document_number": "BYD875419",
   "issue_date": "17/08/2568",
   "reference_document": "BYD2020207",
+  "original_invoice_date": "12/04/2567",
+  "po_gr_rtv_number": "",
   "seller_name": [
     "บริษัท ปฏิทินลายเป็ด ประเทศไทย จำกัด The Duck Calendar.,(Thailand) LTD.",
     "บริษัท ปฏิทินลายเป็ด ประเทศไทย จำกัด",
@@ -20,8 +43,8 @@
   ],
   "buyer_tax_id": "0154545454545",
   "buyer_branch": "สาขาที่ 00555",
-  "currency": "",
   "subtotal": "2,936.00",
   "vat_total": "205.52",
-  "amount_incl_vat": "3,141.52"
+  "amount_incl_vat": "3,141.52",
+  "currency": ""
 }

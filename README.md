@@ -489,6 +489,17 @@ The list stays after the run, under the fields, so a value can be traced back to
 that produced it. A step that failed is called out above the fields: its keys are empty
 because the question was never answered, which is not the same as the document being silent.
 
+**The step that lists `other_fields` is the exception, and it is never a failure.** Its reply
+is a list, so a reply cut off at the step's token cap has still finished most of what it was
+saying: the entries that closed are kept and the half-written one at the end is dropped — ten
+whole entries and an eleventh cut in half is recorded as ten. The row says *cut off — kept
+what finished*, in amber rather than red, and a note above the fields says the list is short
+for that reason rather than because the page has little on it. Nothing counts it as an error:
+not the failed-step banner, not `steps_failed`, not the run log's failure rate. The reason is
+what `other_fields` is — everything the document type's own field set does not cover, under
+the document's own labels, which nothing scores. A step that owns one of those keys is a
+failure when it breaks, exactly as before.
+
 The switch is server-side and takes effect on the next extraction — including queued
 documents and the run log's `extract_mode` column, which records the shape each row actually
 ran in. It is **not** refused while the queue is busy, unlike switching model server.
@@ -509,7 +520,7 @@ answers a question you would actually be asking.
 | Button | On which steps |
 |---|---|
 | **prompt** | any step that has answered — the question is for reading against the answer it produced, so there is nothing to check while the step is still running |
-| **raw** | only a step with something to explain: it failed, it was re-asked, its first reply would not parse, it answered with a value that is not on the page, or it left one of its own keys empty. **Hover the button and it says which of those it is.** |
+| **raw** | only a step with something to explain: it failed, its reply was cut off part-way through the extra fields, it was re-asked, its first reply would not parse, it answered with a value that is not on the page, or it left one of its own keys empty. **Hover the button and it says which of those it is.** |
 
 So a clean step carries one button and a troubled one carries two, and the rows worth opening
 are the rows with more on them. A clean step's reply is not lost — the **Raw output** checkbox
@@ -761,7 +772,7 @@ at a time. Raising the token cap does not help.
 ## Checking accuracy against ground truth
 
 `solution/` holds a hand-transcribed expected transcript for each PDF in `mockOcr/` —
-`sol001.md` … `sol005.md`, in Markdown so the tables render when you open them. Edit these
+`sol001.md` … `sol010.md`, in Markdown so the tables render when you open them. Edit these
 directly; they are the files the scores are computed from. Scoring lives in `scoring.py` and
 is shared by the web page and the CLI, so the browser and the terminal can never report
 different numbers for the same run.
@@ -773,6 +784,35 @@ and it is filled in by hand — see *Field extraction accuracy* below.
 `solution/out/*.txt` is the transcript of the last run and `solution/out/*.fields.json` the
 last extraction, both written automatically. Deleting them is harmless.
 `solution/manifest.json` maps each id to its source PDF.
+
+### Picking a set by kind of document
+
+Each case in `manifest.json` carries `doc_types` — a **list**, because a document is often
+more than one type. The codes are `normalise.document_types`' vocabulary. The source PDFs are
+named for them, so a set can be picked from the shell or from the page:
+
+```bash
+ls mockOcr/invoice_*.pdf
+```
+
+| filed under | cases | also |
+|---|---|---|
+| `STATEMENT_OF_ACCOUNT` | sol001 | invoice |
+| `INVOICE` | sol002 | — |
+| `RECEIPT` | sol003, sol004, sol005, sol007 | tax invoice |
+| `CREDIT_NOTE` | sol006, sol008, sol009, sol010 | sol006 is also a tax invoice |
+| `WHT_CERTIFICATE` | — | the withholding tax certificate (มาตรา 50 ทวิ) is a recognised type with a form and validation rules of its own, and no fixture yet |
+
+A file is named for **every** type its heading names, in that order — so
+`receipt_tax_invoice_sol003.pdf`, `credit_note_tax_invoice_sol006.pdf`,
+`statement_of_account_invoice_sol001.pdf`. Globbing finds a family
+(`ls mockOcr/credit_note_*`); `GET /api/cases` is what to read for the exact list.
+
+The three case dropdowns on the page (**Benchmark case**, **Lock document**, **Ground-truth
+document**) group their options under the type each case is filed under, and `GET /api/cases`
+reports `doc_types` per case. The PDFs were renamed to this scheme on 2026-08-31; the names they
+shipped under before that are listed as `aliases`, so an upload of an original still matches
+by name, and any copy of one still matches by contents whatever it is called.
 
 ### From the web page
 
@@ -797,7 +837,8 @@ a guess.
 
 When the input has a known ground truth, an **Accuracy** tab appears with three
 colour-coded bars (red < 80%, amber < 95%, green above) and a colourised diff against the
-expected text. The headline character accuracy is also appended to the footer line. Every
+expected text — showing differences in content only, with spacing and line breaks
+folded out. The headline character accuracy is also appended to the footer line. Every
 scored run is written to `solution/out/<id>.txt`.
 
 The tab also says how this run compares with **the best that document has ever scored** —
@@ -829,7 +870,7 @@ python compare.py --no-run
 | `--no-run` | re-score the saved `solution/out/<id>.txt` without paying for OCR again |
 | `--detail original\|medium\|low` | override the resolution preset |
 | `--app URL` | score a deployed instance instead of localhost |
-| `--keep-tables` | compare table markup literally instead of normalising it |
+| `--keep-tables` | compare table markup literally instead of normalising it. Fill rules are kept too, so this is also how to reproduce a score taken before they were dropped |
 | `--fields` | also score the extracted fields — see below |
 | `--fields-only` | score the fields and skip the transcript diff and accuracy |
 | `--from-truth` | extract from `solution/<id>.md` instead of from a transcript, so pass 1 contributes nothing to the pass-2 score |
@@ -848,11 +889,15 @@ Each case reports:
 
 | Metric | Meaning |
 |---|---|
-| `char accuracy` | 1 − character edit distance / length. **The headline number, and it scores content only** — every invisible character is removed from both sides first, so line breaks, blank lines, indentation, cell padding, tabs, non-breaking and other Unicode spaces, and zero-width marks cannot change it. So is every piece of table markup: `<table>`, `<tr>`, `<td>`, `<th>` and their `colspan`/`rowspan` attributes, `<br>`, pipes and the `\|---\|` separator row all come out, leaving the cell text. A table scores on what it says, not on how it was marked up. The `--- page 2 ---` separator this app puts between the pages of one document goes too. Only the characters a reader would see on the paper are compared. |
+| `char accuracy` | 1 − character edit distance / length. **The headline number, and it scores content only** — every invisible character is removed from both sides first, so line breaks, blank lines, indentation, cell padding, tabs, non-breaking and other Unicode spaces, and zero-width marks cannot change it. So is every piece of table markup: `<table>`, `<tr>`, `<td>`, `<th>` and their `colspan`/`rowspan` attributes, `<br>`, pipes and the `\|---\|` separator row all come out, leaving the cell text. A table scores on what it says, not on how it was marked up. The `--- page 2 ---` separator this app puts between the pages of one document goes too, and so does a printed blank waiting to be filled in — a run of four or more dots, underscores or dashes, which is how a model spells the ruled line after วันที่/Date or เช็ค หมายเลข on a form. A rule carries no content, and a hand transcription writes none. Only the characters a reader would get information from are compared. |
 | `word accuracy` | longest-common-subsequence word overlap. Whitespace does not count here either, but re-ordering does: a value read correctly in the wrong place lowers this and not `char accuracy`. |
 | `char acc. w/o marks` | `char accuracy` with Thai tone marks and above/below vowels stripped. If this is much higher than `char accuracy`, the right letters are being read and the marks lost — a different problem from wrong words. |
 
-…followed by a unified diff of expected vs actual.
+…followed by a unified diff of expected vs actual, listing **differences in content**
+only. A group of lines whose two sides hold the same text differently wrapped is
+folded out of it, because where the model put the line breaks and the spaces does not
+move the score either. An empty diff therefore means the content matches, not that the
+two files are byte for byte the same.
 
 On Windows, Thai in the diff prints as `?` — the console defaults to cp1252 and cannot
 encode it. The scores are unaffected. For readable diffs:
@@ -864,6 +909,55 @@ set PYTHONIOENCODING=utf-8
 **The scores are only as good as `solution/*.md`.** Those files are one person's reading of
 the rendered pages — correct them where you disagree. `sol003` is a handwritten scan and its
 handwritten values in particular deserve a second look.
+
+### Flagging what is wrong: value, number, line, character
+
+`compare.py` says how well each document was read. `ocrflag.py` says *what* is wrong with
+it, leading with the part that decides whether the document is usable — **did the values
+survive the read**. The app must be running, the same as above.
+
+```bash
+python ocrflag.py
+```
+
+```bash
+python ocrflag.py sol003
+```
+
+```bash
+python ocrflag.py --no-run
+```
+
+It reads each case with pass 1 only — no fields are extracted — saves the transcript to
+`solution/out/<id>.txt` like `compare.py` does, and prints:
+
+| Section | |
+|---|---|
+| `FILES` | one row per document, **most lost first**: character accuracy, values lost, numbers lost and invented, and `LOOPED`/`TRUNCATED` where the read did not finish. A row is marked `FLAG` when it lost a value or a figure, scored under 90%, or did not finish |
+| `VALUES` | every key/value `solution/<id>.fields.json` states — names and numbers included — and whether the transcript still holds it, with what the read has in its place: `buyer_tax_id '0155737222723' read has '015573722723'`. The test is the one `grounding.py` uses, so a value reported lost is exactly a value pass 2 could not have grounded, however good the extraction model is |
+| `NUMBERS` | every figure the page prints, compared **by value** — so a figure printed one way and read another is not flagged — listing the ones the read lost and the ones it invented. Figures under three digits are not counted; a `1` occurs on every page |
+| `--text` | the line and character differences: `missing` / `invented` / `misread` / `moved` lines with the file and line to open (`sol003.md:31`), the differing character spans under each, and a corpus-wide split into `digits`, `marks` (Thai tone marks and above/below vowels) and `text`. Off by default — most of it is words in prose, which cost a point of character accuracy and no field |
+
+| Flag | |
+|---|---|
+| `--no-run` | flag the saved `solution/out/<id>.txt` instead of reading again |
+| `--text` | also list the line and character differences |
+| `--all` | list every value, not only the ones that were lost |
+| `--model NAME` | model to read with, any unique substring. Defaults to typhoon |
+| `--profile typhoon\|dots`, `--server URL`, `--detail`, `--app URL` | as `compare.py` |
+| `--keep-tables` | flag table markup and fill rules literally too |
+| `--top N` | findings printed per case (default 25) |
+| `--json PATH` | write every value, figure and character span as JSON |
+
+Nothing that costs the score nothing is flagged: whitespace, line wrapping, cell padding,
+table markup and printed fill rules are removed from both sides first, a line the model
+split or ran together is folded away, and content the model emitted in a different order is
+reported as `moved` and left out of the totals.
+
+**`VALUES` and character accuracy rank the documents differently, and that is the point of
+having both.** A page can read at 93% and have lost the one figure somebody needs, and a
+page can read at 64% because the model paraphrased a paragraph of payment terms while every
+value on it survived intact.
 
 ### Field extraction accuracy
 
@@ -924,6 +1018,13 @@ If a heading is not recognised, name it yourself — `"table_columns": {"จำ�
 restating all of this, and keys starting with `_` are ignored by the scorer, so notes to
 yourself are safe there.
 
+**Each file opens with a `_mandatory` note** saying which types the case is, which of its keys
+the requirement demands (`required`) and which it asks for without demanding (`found_only`) —
+so whoever is filling one in can see at a glance which keys have to be answered. It is a note
+and never values: nothing is scored from it. The rule itself lives in `prompts.MANDATORY_FIELDS`,
+and a note that has drifted from it is reported as a warning on every run that loads the file —
+fix it there, not here.
+
 Comparison is loose about presentation and strict about content: punctuation, spacing and
 Thai digits are normalised away and figures are compared by value, so `1,200` and `1,200.00`
 score equal. You do not have to guess how the model will write a number.
@@ -942,11 +1043,23 @@ python compare.py sol005 --fields --from-truth
 contributes nothing to the score. The **Fields only** pane does the same for one document at a
 time, and lets you change model between runs.
 
+**The headline is taken over the fields the requirement marks Mandatory.** A field it marks
+Yes is scored; a field it marks No is asked for, returned, grounded, judged against the truth
+file and shown on the page with its verdict — it is *found*, and it does not move the rate.
+Nobody is held to an Optional field, so a document that leaves one out is compliant and must
+not read as incomplete. What that covers follows the type: eleven keys on an invoice, ten on a
+credit note, seven of a receipt's eleven. The Optional ones are reported beside the headline
+as their own rate, and every run prints what it was scored over — `scored over: the
+requirement's Mandatory fields` — because 100% of nothing and 100% of eleven are the same
+number and not the same claim. A document no requirement covers (a bare tax invoice) has
+nothing Mandatory and so gets no field rate at all.
+
 | Metric | Meaning |
 |---|---|
-| `field accuracy` | correct values ÷ values the truth file says the page prints. **The headline.** |
+| `field accuracy` | correct values ÷ **Mandatory** values the truth file says the page prints. **The headline.** |
 | loose | the same, counting a partial match — one value contains the other, so the right thing was found and too much or too little of it was taken |
 | `field precision` | correct ÷ everything the extractor filled in. Falls when it invents values the page does not state |
+| `optional fields` | the same accuracy over the fields the requirement marks No. Reported, never in the headline; a row of the miss table that belongs to one is marked `(optional)` |
 | `by tier` | the same accuracy over each delivery tier. Pass 2 extracts priority 1 only, so tier 1 is the whole schema and tiers 2 and 3 are empty |
 | `line items` | how many rows were matched, returned and invented, and the accuracy of the cells inside the matched ones — against the table read out of `solution/<id>.md`. Rows are matched by content, not by position, so one dropped row does not mis-score every row after it |
 | `other fields` | reported, and deliberately **not** part of the headline: those labels are the model's own wording |
@@ -1153,12 +1266,13 @@ to run first. The **Fields** cell marks an updated row.
 | `extract_steps` | the agentic steps this row's extraction ran, where it ran only some of them (`POST /api/extract` with `steps`). Blank on every ordinary run — a full walk names no steps here. A row that names steps was measuring one step: its tier counts are out of the keys that step owns, and `field_acc` is blank because a part of the form is not scored against the whole of it |
 | `ocr_profile` | `typhoon` or `dots` — the pass-1 shape that read the page, taken from the pages themselves for the same reason. Blank on rows written before profiles existed, and on `run_type=extract` rows, which read no page |
 | `grounded_pct`, `ungrounded`, `fields_missing` | share of extracted values found in the transcript, how many were not, and how many fields the document does not state |
-| `field_acc`, `field_expected` | pass 2 scored against `solution/<id>.fields.json`: the share of the values that came back correct, and how many values that was. Blank on every document without a field truth file, so it does not read down the column like `grounded_pct` — read the accuracy beside its own `field_expected`, because 100% of three keys and 100% of fourteen are the same cell and not the same claim |
-| `other_fields`, `other_distinct` | how many entries came back under `other_fields` — everything the page states that the fourteen keys do not cover — and how many of them were **distinct**. A count only; the labels are the model's own wording and stay out of the file, like the transcript. The pair is the point: 104 against 5 is a loop, 12 against 12 is a document. Blank where nothing was extracted, `0` where the extraction ran and named none |
+| `field_acc`, `field_expected` | pass 2 scored against `solution/<id>.fields.json`: the share of the values that came back correct, and how many values that was. Blank on every document without a field truth file, so it does not read down the column like `grounded_pct` — read the accuracy beside its own `field_expected`, because 100% of three keys and 100% of thirteen are the same cell and not the same claim |
+| `other_fields`, `other_distinct` | how many entries came back under `other_fields` — everything the page states that the document type's own field set does not cover — and how many of them were **distinct**. A count only; the labels are the model's own wording and stay out of the file, like the transcript. The pair is the point: 104 against 5 is a loop, 12 against 12 is a document. Blank where nothing was extracted, `0` where the extraction ran and named none |
 | `extract_model` | the model pass 2 ran on, where it is **not** the one that read the page. Blank on the one-model setup, which reads as "the same as `model`" rather than as unknown |
-| `extract_looped` | `1` when the same entry came back three or more times — a reply that cycled rather than a document with a lot on it. Such a run is counted as a **failure** by the setting table and dropped from the extras ranking rather than allowed to win it. Blank where nothing was extracted, `0` where the extraction ran cleanly |
+| `extract_looped` | `1` when the same entry came back three or more times — a reply that cycled rather than a document with a lot on it. Such a run is dropped from the extras ranking rather than allowed to win it. It counts as a **failure** only where the cycle cost the form: `other_fields` holds what the type's field set does not cover and nothing scores it, so a run that filled the form and then cycled through the extras is a complete extraction with a short list. Where `p1_present` is `0` the reply cycled away the form itself, and that is a failure. Blank where nothing was extracted, `0` where the extraction ran cleanly |
 | `p1_correct`, `p1_partial`, `p1_scored` | priority-1 values that are the value the field truth file says belongs in that key, values where one contains the other, and how many values that file rules on. **Correctness, not coverage** — `p1_present` counts a key filled with anything at all. The setting table scores a partial as **half a value**; `p1_correct` keeps the strict count, so both readings survive here. Blank on every document without a field truth file, for the same reason `field_acc` is: a `0` would read as an extraction that got everything wrong rather than as one with no answer sheet |
-| `p1_present`, `p1_absent`, `p2_present`, `p2_absent`, `p3_present`, `p3_absent` | field coverage by delivery tier — how many of each tier's keys came back filled. Pass 2 extracts priority 1 only, so `p2`/`p3` read `0/0`: this build asked for none of them, which is not the same as a run that extracted nothing and leaves them blank. Present and absent are both written, so a row always says what its counts were out of |
+| `p1_present`, `p1_absent`, `p2_present`, `p2_absent`, `p3_present`, `p3_absent` | field coverage by delivery tier — how many of each tier's keys came back filled. Pass 2 extracts priority 1 only, so `p2`/`p3` read `0/0`: this build asked for none of them, which is not the same as a run that extracted nothing and leaves them blank. Present and absent are both written, so a row always says what its counts were out of — and since the form is per document type, that sum is 11 on a commercial form, 14 on a withholding certificate, and 30 where nothing classified the page |
+| `doc_types`, `doc_type_from` | every type pass 2 built the form from, `+`-joined, and on whose authority: `case` (the benchmark manifest), `model` (read by the model and checked against the page), `transcript` (the fallback — matched in Python from the printed heading), `caller`, or blank. Read it beside `p1_present`/`p1_absent`, which are counted against that form — two rows reading 11/13 and 13/15 are both complete runs of different forms |
 | `case`, `char_accuracy`, `word_accuracy`, `char_accuracy_no_marks` | percentages, blank when the input has no ground truth. **`char_accuracy` is the score** — content only, and order-blind: the transcript's blocks are matched to the ground truth's by content before the edit distance, so a page read correctly but walked in a different order is not charged for it. Missing, invented and misread content cost exactly what they did. The other two stay for diagnosis and are not shown on the page: `word_accuracy` is order-*sensitive*, so the gap between the two is what a reordering looks like |
 | `status`, `error` | `ok` / `partial` / `truncated` / `looped` / `cancelled` / `error` |
 | `run_type` | `ocr` for a document read, `extract` for a re-extraction of a transcript already read. Blank on rows written before the column existed |
@@ -1211,8 +1325,12 @@ Built for showing — projected, or read from across a room — so everything on
 from the rest of the card. Two banner cards, then six numbered tables.
 
 **The headline cards** answer the two questions the tab exists for, at a size that needs no
-leaning in: **best at reading a page** and **best at extracting fields**, each with the model,
-the percentage, its error rate, and what it was measured over. They name the *ranking's*
+leaning in: **best at reading a page** and **best extractor**. The extraction card names a
+model *and* a request shape — `agentic` or `single`, on a pill — because the two are not two
+samples of one setting and a figure pooled across them describes neither. Only the winning
+shape is shown; block 5 has the full grid for the other. Each card carries the model, the
+percentage, the clock, its error rate and what it was measured over, and says *nothing scored
+in this view* if a filter has emptied it rather than disappearing. They name the *ranking's*
 winner and never the sorted table's top row, so re-sorting a table by time cannot re-label the
 fastest model "best".
 
@@ -1262,6 +1380,10 @@ Three things are deliberately different here from every other panel:
 - **Its own colour scale**: red under 70%, amber to 90%, green at 90% and above. Error rates
   are coloured on the same scale read from the other end, so 10% error is green and 30% is
   red. The rest of the page keeps its own scale.
+- **The shared Drop single-source failures toggle applies here too**, like every other panel
+  — so does every chip. What narrows the headline cards is: that toggle, the chips, and this
+  panel's own **Exclude weak models**. None of them changes an accuracy mean on its own, since
+  a failed run is never scored anyway; what they move is the error rate and the run count.
 - **It shows everything by default**, like every other panel. Exclude models with the chips
   above, exactly as elsewhere — or tick **Exclude weak models** to do it by rule instead of by
   hand. A strip of chips then names every model that was dropped and why on hover; unticking it
@@ -1438,7 +1560,7 @@ Ranked on **field accuracy**: priority-1 values that are the value the ground tr
 belongs in that key, as a share of the values that file rules on, meaned over documents. A
 **`partial` scores half a value** — one string contains the other, so the model found the right
 thing and took too much or too little of it, which is neither a hit nor a miss. The truth files
-state 11 to 13 of the fourteen keys, so the denominator is about 12 and it is **per document**,
+state most of their type's field set, so the denominator is 11 to 15 and it is **per document**,
 which is why this is a mean of per-document rates and never one big fraction.
 
 The strict count (`correct` only) and the generous one (`partial` counting full) are both still
@@ -1447,7 +1569,7 @@ over-capture and truncation, a low pair with no gap is misreading.
 
 | Column | |
 |---|---|
-| **Setting** | the model that **extracted**, backend and extraction shape. Where a different model read the page, it is named as `reading: …` — a field score taken over a real transcript is partly a measurement of pass 1. A **failure rate** appears here when any of its runs cycled |
+| **Setting** | the model that **extracted**, backend and extraction shape. Where a different model read the page, it is named as `reading: …` — a field score taken over a real transcript is partly a measurement of pass 1. A **failure rate** appears here when any of its runs cycled away the form, or never replied. A reply that filled them and then cycled through `other_fields` is not a failure — see `extract_looped` |
 | **Field accuracy** | the headline, with the raw counts totalled over the scored runs beneath it. Reads *not scored yet* where nothing this setting ran on has a `solution/<id>.fields.json` |
 | **Extra fields, ranked** | `other_fields` scored against the other settings run on the **same document**, as points **per document** — see below |
 | **Extra fields** | how many **distinct** entries came back under `other_fields`, meaned over documents, with the raw total under it where the two differ |
@@ -1483,12 +1605,16 @@ would make a setting look weak for having had no opponent.
 same number of contests: +10 from one document and +26 from five are not the same achievement,
 and the raw totals rank whichever setting was run most.
 
-**A run whose reply cycled does not enter the contest at all.** It is not a smaller result, it
-is a failed one, and it is counted in the failure rate instead. Without that rule the column
+**A run whose reply cycled does not enter the contest at all.** Without that rule the column
 rewards exactly the failure it should penalise — a reply that repeats one invented line a
 hundred times returns 104 "extra fields" and beats every honest reply on the page. What is
 compared for the runs that do enter is `other_distinct`, so repetition below the flag's
 threshold cannot inflate a total either.
+
+Being kept out of the contest is **not** the same as being counted as a failure, and a cycle
+that cost only the extras is not one: the run filled the fourteen keys and is scored on them
+like any other. It is barred from a ranking of *how much of the page came back* because its
+count is inflated, which is a fairness rule about that one column.
 
 Even so, **this column measures volume and volume is not quality.** Nothing here checks that
 the extra fields are real; `grounded_pct` is the separate check for that, and it cannot catch a
@@ -1560,6 +1686,316 @@ document** &mdash; a fixture every model reads badly may be the hardest page her
 its hand-written ground truth may be wrong.
 
 ---
+
+## The extracted fields
+
+**Each document type has its own field list, straight from its requirement.** A document is
+asked for the union of the lists of the types it names — six of the ten fixtures name two.
+
+| field | key | invoice | credit note | receipt |
+|---|---|---|---|---|
+| Document Type | `document_type` | Yes | Yes | — |
+| INV / CN No. | `document_number` | Yes | Yes | — |
+| INV Date | `issue_date` | Yes | Yes | — |
+| PO / GR / RTV No. | `po_gr_rtv_number` | **Yes** | optional | — |
+| INV / RTV / CNR No. | `inv_rtv_cnr_number` | — | — | **Yes** |
+| Supplier Tax ID | `seller_tax_id` | Yes | Yes | Yes |
+| Supplier Tax Branch Code | `seller_branch` | Yes | Yes | Yes |
+| Buyer Tax ID | `buyer_tax_id` | Yes | Yes | Yes |
+| Buyer Tax Branch Code | `buyer_branch` | Yes | Yes | Yes |
+| Amount Exclude VAT | `subtotal` | Yes | Yes | Yes |
+| VAT Amount | `vat_total` | Yes | Yes | Yes |
+| Amount Include VAT | `amount_incl_vat` | Yes | Yes | — |
+| Remaining Amount | `remaining_amount` | — | — | optional |
+| Remaining VAT Amount | `remaining_vat_amount` | — | — | optional |
+| Payment Date | `payment_date` | — | — | optional |
+| Cheque No. | `cheque_number` | — | — | optional |
+
+Each of these three forms is eleven keys. Everything else the page states comes back under
+its own printed label in `other_fields`, which nothing scores.
+
+**The withholding tax certificate (มาตรา 50 ทวิ) is a fourth form and shares nothing with
+them** — no document type, no document number, no VAT totals, and two parties who are not a
+buyer and a seller. It is fourteen keys **and a table**:
+
+| field | key | |
+|---|---|---|
+| Book No. (เล่มที่) | `book_no` | optional |
+| Certificate No. (เลขที่) | `certificate_no` | optional |
+| Sequence No. in P.N.D. Form (ลำดับที่ในแบบ) | `sequence_no` | optional |
+| Payer Tax ID (เลขประจำตัวผู้เสียภาษีอากร) | `payer_tax_id` | **Yes** |
+| Payer Name (ชื่อผู้จ่ายเงิน) | `payer_name` | **Yes** |
+| Payer Branch (สำนักงานใหญ่/สาขาที่) | `payer_branch` | optional |
+| Payer Address (ที่อยู่ผู้จ่ายเงิน) | `payer_address` | optional |
+| Payee Tax ID | `payee_tax_id` | **Yes** |
+| Payee Name | `payee_name` | **Yes** |
+| Payee Branch | `payee_branch` | optional |
+| Payee Address | `payee_address` | optional |
+| Dividend Tax Rate Option (กรณี 40(4)(ข)) | `dividend_rate_option` | optional |
+| Total Amount Paid (รวมเงินที่จ่าย) | `total_amount_paid` | **Yes** |
+| Total WHT Amount (รวมภาษีที่หักนำส่ง) | `total_wht_amount` | **Yes** |
+
+The **payer** is the party that paid the income and withheld the tax
+(ผู้มีหน้าที่หักภาษี ณ ที่จ่าย); the **payee** is the party it was withheld from
+(ผู้ถูกหักภาษี ณ ที่จ่าย). The requirement prints the word *Payer* over both blocks; they are
+named apart here because the certificate carries the same four things twice and only the
+label above each block says whose they are.
+
+**It is the one form that asks for a table**, under `income_items` — one object per row of
+income the certificate covers, all four cells Mandatory:
+
+| cell | | |
+|---|---|---|
+| `income_type` | Income Type Description (รายละเอียดประเภทเงินได้) | the row's own wording, including what was written against a free-text option |
+| `payment_date` | Payment Date (วัน เดือน ปี ที่จ่าย) | copied as printed; the Buddhist-era year is converted when the row is validated, never when it is read |
+| `amount_paid` | Line Amount Paid (จำนวนเงินที่จ่าย) | added up and reconciled against `total_amount_paid` |
+| `wht_amount` | Line WHT Amount (ภาษีที่หักและนำส่งไว้) | may not exceed that row's `amount_paid`; added up against `total_wht_amount` |
+
+`Derived WHT Rate %` (อัตราภาษีที่หัก) is **not** extracted. Its own name says it is derived,
+so it is worked out in Python from the two figures on the row and arrives under
+`derived.wht_rates`, one entry per row, `null` where either figure could not be read. The
+Fields tab draws it as a muted last column so it cannot be mistaken for something the page
+printed.
+
+No fixture in `solution/` is a withholding certificate, so nothing here has been scored
+against ground truth — the rows are extracted, grounded against the transcript and validated,
+but not field-scored.
+
+**A receipt is not asked for its own number, date or heading.** Its requirement asks which
+document is being *settled*, not what the receipt itself is — so `document_type`,
+`document_number`, `issue_date` and `amount_incl_vat` are not on its form, and its own number
+and date arrive in `other_fields`. Classification is unaffected: the type is read off the
+transcript in Python, never out of an extracted field.
+
+**A type with no requirement contributes no fields.** `TAX_INVOICE`, `STATEMENT_OF_ACCOUNT`
+and `DEBIT_NOTE` have no list of their own, so `receipt + tax invoice` asks the receipt's
+eleven and nothing more. A document naming *only* such a type — or none at all — is asked the
+union of all four requirements (30 keys), because a narrower form chosen on a guess drops
+Mandatory fields while a wider one costs tokens. That union is the widest thing this app ever
+asks for — an unclassified document runs 17 agentic steps against a typed document's 7 or 9 —
+so it is worth classifying a page rather than relying on it.
+
+The certificate's **table** is the one thing the default does *not* inherit: a scalar nobody
+asked for comes back empty, whereas a table a document does not rule comes back filled from
+whatever is nearest.
+
+### The rules differ by type as well
+
+| | invoice | credit note | receipt |
+|---|---|---|---|
+| INV / CN No. | pattern + **duplicate check** | pattern + **original document matching** | — |
+| INV / RTV / CNR No. | — | — | pattern + **reference matching** |
+| INV Date | date format + **not in the future** | date format only | — |
+| Remaining Amount | — | — | numeric + **outstanding balance** |
+| Remaining VAT Amount | — | — | **VAT balance** |
+| Payment Date | — | — | date format |
+
+And the certificate's own, which no other type is held to:
+
+| | withholding tax certificate |
+|---|---|
+| Payer / Payee Tax ID | 13 digits + mod-11 check digit |
+| Payer / Payee Branch | 5-digit code |
+| Payer / Payee Name | **fuzzy match against a Company Master at 90%** — reported as *not run*, there being no Company Master here |
+| Line Amount Paid, Line WHT Amount | numeric, not negative, and the tax not above the amount paid |
+| Payment Date (per row) | date format, Buddhist era to Western |
+| Total Amount Paid, Total WHT Amount | numeric + **sum reconciliation** against the table's own column |
+| Dividend Tax Rate Option | **checkbox detection** — required only where a row states dividend income |
+
+The sum reconciliation is skipped rather than failed where a row's figure could not be read: a
+sum missing one addend is not evidence that the total is wrong.
+
+A credit note legitimately post-dates the invoice it corrects, which is why the future-date
+rule does not run on one. `Cheque No.` has no validation rule in the requirement and gets
+none: a field with nothing to check is not a field that passes, it simply is not checked.
+
+### How the type is decided
+
+In order of confidence, and the answer is reported on every result as `doc_types` (a list)
+with `doc_type_from` saying which rule produced it:
+
+| order | rule | `doc_type_from` |
+|---|---|---|
+| 1 | the request said so — `doc_types` (or `doc_type`) on `POST /api/extract` | `caller` |
+| 2 | **the printed heading, matched in Python — where it is at least 90% sure** | `transcript` |
+| 3 | **the model**, given the transcript and the list of codes | `model` |
+| 4 | the benchmark manifest's `doc_types`, for one of the ten cases | `case` |
+| 5 | the Python answer that was under the bar, rather than nothing | `transcript` |
+| 6 | nothing recognised — the default form is asked | `unclassified` |
+
+**Cheap and certain first, the model where the page is not obvious.** Rule 2 is
+`normalise.document_types` run line by line over the top of the transcript — a table of
+needles, no model involved — and every candidate line is scored: **how much of it the matched
+needles actually account for**, discounted a little further down the page. A line that *is* a
+heading scores 1.00; a sentence mentioning a document kind scores 0.2–0.3. Above
+`CLASSIFY_MIN_CONFIDENCE` (0.9) that answer stands on its own and **no request is made at
+all**.
+
+A line that opens with a reference phrase — อ้างถึง, ตามที่, *with reference to*, *as per* —
+is disqualified outright rather than scored. A credit note naming the invoice it credits is
+the commonest way a page mentions a type it is not, and there is no score at which that
+should win.
+
+**A multi-type answer always goes to the model, however confident it is.** The confidence
+measures how much of the *line* is heading, and a second type costs only a few characters on a
+line the first already fills — so `ใบลดหนี้ ใบกำกับสินค้า 123` (a credit note citing an
+invoice) and `ใบเสร็จรับเงิน/ใบกำกับภาษี` (genuinely both) look alike to it, and one wrong
+type widens the form and adds rules the document is not held to. `CLASSIFY_ESCALATE_MULTI=0`
+turns this off; with it on, six of the ten fixtures escalate, because a Thai slash heading is
+the normal way to be two things at once.
+
+**Rule 3 is the model**, asked whenever the table is unsure or silent — a page heading itself
+in wording nobody wrote a needle for, which otherwise gets the default form, the union of
+every requirement at 30 keys. It is offered the closed list of codes and asked for the ones
+that fit, together with the heading it read them off, and **the answer is thrown away whole
+unless that heading is really printed on the page**, checked with the same test every
+extracted value gets. Codes outside the list are dropped.
+
+**The confidence is reported, and it measures the evidence rather than anyone's self-belief.**
+The model's answer is scored by the same function, off the heading it quoted, so the two are
+on one scale — `doc_type_confidence` on the result, and `100% sure` / `43% sure` beside the
+answer on the **Classify** box. It is absent, never 0%, where a person gave the answer (the
+request, or the manifest): there is no heading on the page to score.
+
+Where the model was asked, **why** it was asked rides with the answer as `doc_type_escalated`
+and appears in the Classify box's tooltip — *the heading scored 43%, under 90%*, or *the
+heading names more than one type*. "The model classified this" does not say what the cheap
+path thought first, which is the question worth answering when the two disagree.
+
+**Where the model's answer differs from the manifest's, the model's is used and the
+disagreement is reported** — `doc_type_expected` on the result, and an amber note on the
+Classify box saying *manifest says …*. The manifest is a person's reading and the model's is a
+machine's; when a measured number moves, that field is what says which the run was built on.
+
+Rule 2 is the only one that costs a request: one short one, on the first part of the
+transcript, about half a second on a warm model. `CLASSIFY_WITH_MODEL=0` restores the old
+order — manifest, then heading table — which is also how to stop a sweep paying for it. An
+unrecognised document gets the default form, which is wider than any typed one; guessing a
+type to pick a narrower form would drop Mandatory fields on a coin flip.
+
+**The prompt is told the answer, and by default only in single mode.** The type names the
+form, and it also frames the request: a *What this document is* block after the general rules,
+carrying whatever that type has to say about a key on the form — a credit note's cited invoice
+is not a PO number, a receipt's own number is not the document it settles, a receipt's own date
+is not the payment date. In agentic mode the same framing goes in each step's task line, with
+each step carrying only the rules for the keys **it** owns.
+
+Measured over ten fixtures and five models, it gains single mode about five points of both
+accuracy and precision. Agentic is closer — three of the five models gain and two lose — and
+it is on because the two strongest models are among the three that gain.
+
+| setting | default | |
+|---|---|---|
+| `TYPE_FRAMING_SINGLE` | `1` | frame the single-request prompt |
+| `TYPE_FRAMING_AGENTIC` | `1` | frame each agentic step. Set `0` for `gemma4:e2b` or `qwen3.5:4b`, the two models it costs |
+| `TYPE_FRAMING_BULLETS` | `1` | include the per-key rules, not just the type's name |
+
+Nothing is emitted for a document rule 5 could not place, so an unclassified run is asked
+exactly what it was asked before any of this existed — byte for byte, which a self-test at
+import asserts.
+
+**The manifest outranks the page.** A heading can name a type a person disagrees with, and
+`doc_types` in `solution/manifest.json` is where that correction lives. sol001 is the standing
+example: it prints its Thai heading as an invoice and its English one as a statement of
+account, so the classifier reports both.
+
+A document is filed under the **first** of its types — the most distinguishing one, since
+being a tax invoice is the least distinguishing thing about a document here. That is what
+names its PDF and what groups it in the three case dropdowns; the option says *also …* where
+there are more types. It is never what chooses the field set.
+
+**The page follows the form.** On the Fields tab only the keys that form asked for are
+drawn, and a whole section drops when the form asks for none of it — an invoice shows
+*Document, References, Supplier, Buyer, Totals*; a receipt shows *References, Supplier,
+Buyer, Totals, Outstanding, Payment* and no Document section at all, because its requirement
+asks nothing about the receipt itself. A row for a key the form omits would read as a
+document that states nothing about it, when in fact nobody asked.
+
+Every type is on the status line beside the check count, with the rule that produced them and
+the type-specific validation rules that ran in the tooltip. Picking a case in the **Benchmark
+case** or **Ground-truth document** picker says which form it will be asked — *receipt + tax
+invoice · 11 fields* — before anything runs.
+
+**Fields the requirement marks Mandatory carry a `REQUIRED` chip on their label**, and which
+they are follows the type: an invoice demands all eleven of its keys, a receipt seven of its
+eleven, and a document no requirement covers demands none, so nothing on it is marked. The
+status line lists them in its tooltip.
+
+A Mandatory field that came back empty reads **required, not returned**, in red, instead of
+the plain *missing* an optional one gets — the page is not allowed to be silent about it, so
+the empty row is a finding rather than an absence. The status line counts them beside the
+check count: `12/13 checks pass · 2 required missing`. It is a separate figure and never
+folded into the check count, because an absent field is neither a pass nor a failure of a
+rule — the rule never ran on it.
+
+On the withholding certificate's income table the requirement marks the cells Mandatory of
+every row, so the chip goes on the **column heading**, and a row that leaves one of those
+cells empty prints `required` in it.
+
+The same distinction is carried through the rest of the page, so the score's scope is never
+something you have to remember:
+
+| where | what it says |
+|---|---|
+| the three case pickers | `receipt + tax invoice · 11 fields (7 required)`, before anything runs |
+| the pipeline's **Classify** box | `11 fields, 7 required · 3 extra checks` |
+| a field row's label | the `REQUIRED` chip |
+| a found-only value's verdict | drawn muted and reading `· not scored` — it was judged and it is outside the rate |
+| the **Accuracy** tab's *Field extraction* bar | `N required value(s) correct`, with the found-only count named after it |
+| the **Run log** cell | `90% of 10 required` |
+
+Where no requirement covers the type, nothing is marked and no required count is printed —
+`0 required` would read as a form nobody can pass, when in fact nobody is holding the document
+to anything.
+
+## Validation
+
+`validate.py` runs the requirement's validation rules over the values pass 2 returned. It is
+deterministic Python, like `normalise.py` and the grounding check, and nothing about it is
+asked of the model.
+
+| field | rules | on |
+|---|---|---|
+| `document_type` | the heading normalises to a known type, and to one this document was taken to be | invoice, credit note |
+| `document_number` | pattern; **duplicate check**; **original document matching** | invoice, credit note |
+| `issue_date` | reads as a date; **not in the future** | invoice, credit note |
+| `po_gr_rtv_number` | pattern; reference matching needs the PO/GR/RTV system | invoice, credit note |
+| `inv_rtv_cnr_number` | pattern; reference matching needs the document being settled | receipt |
+| `seller_tax_id`, `buyer_tax_id` | thirteen digits, and the mod-11 check digit | every form |
+| `seller_branch`, `buyer_branch` | normalises to a five-digit branch code | every form |
+| `subtotal`, `vat_total`, `amount_incl_vat` | each reads as an amount; subtotal + VAT = the total; VAT is the standard rate of the figure it is charged on | every form that asks the key |
+| `remaining_amount` | numeric; outstanding balance needs what was owed before this payment | receipt |
+| `remaining_vat_amount` | numeric; **VAT balance** — the tax part is the standard rate of the balance | receipt |
+| `payment_date` | reads as a date | receipt |
+
+Only the rules a form's own requirement names are run. `validation.rules` on every result says
+which of them did, so a rule that passed can be told from one this document was never held to
+— and **`vat_balance` is the only one of the receipt's three external-looking rules that can
+actually run here**, because it compares two figures the page prints against each other.
+
+The rules in the *on* column come from the requirement's own table for that type, and the
+union applies where a document is more than one. `validation.rules` on every result says which
+of them ran, so a rule that passed can be told from one this document was never held to.
+
+Each check comes back in one of five states, and the three that are not a pass or a failure
+are the ones worth understanding:
+
+| state | means |
+|---|---|
+| `ok` | the rule ran and the value satisfies it |
+| `failed` | the rule ran and the value does not |
+| `warning` | worth a look, but a correct document can fail it. Only the VAT-rate rule uses it: a page that mixes taxed and untaxed lines legitimately blends below the standard rate |
+| `unchecked` | **the rule could not run** — it needs data this process has not got, or the value it depends on is not printed. Never counted as a pass |
+| `absent` | the field came back empty, so there is nothing to check. Marked `mandatory` where the requirement demands that field of this type |
+
+It arrives on every extraction result as **`validation`**, beside `derived` and outside
+`fields` — a computed verdict has nothing on the page to be grounded against, so merging it
+in would have the grounding check report it as an invention.
+
+**It reports and never gates.** No value is rewritten, no run fails, and nothing here reaches
+an accuracy denominator. On the Fields tab a `failed` or `warning` rule prints under the value
+it is about; a rule that passed or could not run prints nothing, and the status line carries
+the counts. The pass rate is taken over the rules that actually ran.
 
 ## Normalised values
 
@@ -1661,8 +2097,9 @@ everything else, which is most documents.
 | Route | |
 |---|---|
 | `POST /api/ocr` | same fields as the stream, blocking, whole JSON at once. Drains the same generator internally, so timings are measured identically |
+| `POST /api/classify` | what kind of document a transcript is, and the form that follows: `doc_types`, `doc_type`, `doc_type_from`, `doc_type_heading`, the `keys` and `mandatory` fields of that form, the agentic `steps` it would walk, the validation `rules` it adds, and the `type_phrase` both prompts would carry. Takes the same input as `/api/extract` — `text`, or a `job`, or a `case` with `from_truth` — and the same `doc_type`/`doc_types` override. Writes no run-log row: nothing was read and no field was extracted |
 | `POST /api/extract` | re-run pass 2 on a transcript the app already has. Takes an optional `mode` (`single`/`agentic`) for that one call, and an optional `job` — the id from the `page`/`done` events — which names the document in the run-log row it writes, and is also what lets the reply carry `field_score`. `{"case": "sol003"}` names that document outright instead, and with `{"from_truth": true}` the transcript is read from `solution/sol003.md` and no `text` is needed: pass 2 alone, on text pass 1 cannot have spoiled. `400` for an id that is not a case. `{"steps": ["document"]}` runs only those agentic steps, for measuring one step's prompt on its own: the reply then carries `steps_only`, no `field_score` (the keys nobody asked for are not missing), and its run-log row names the steps in `extract_steps`. `400` in single mode, which has no part of the schema to ask for |
-| `POST /api/extract/stream` | the same as `/api/extract`, as NDJSON: `extract_steps` once, then an `extract_step` per step as it starts and finishes, then `fields`. Agentic mode only emits the step events; single mode emits `fields` alone |
+| `POST /api/extract/stream` | the same as `/api/extract`, as NDJSON: `classified` first — what the document was decided to be and the form that follows, before any request goes to the model — then `extract_steps` once, then an `extract_step` per step as it starts and finishes, then `fields`. Agentic mode only emits the step events; single mode emits `fields` alone |
 | `GET` · `POST /api/extract/mode` | read or set the extraction shape for everything this process extracts next. Body `{"mode": "single"}` or `{"mode": "agentic"}` |
 | `GET /api/page/<job>/<n>` | PNG of prepared page `n` (0-based). `job` is returned on the `page` and `done` events. 404s once the upload falls out of the cache |
 | `POST /api/preview` | the prepared page **before** any read, so the Detail can be seen rather than guessed at. Multipart, taking the same `image` / `case` / `file` field as `/api/ocr` plus `detail` and an optional `page` (0-based). Answers with the PNG; `X-Preview-Pages`, `X-Preview-Detail` (as resolved), `X-Preview-Width`/`-Height` and `X-Preview-Source-Width`/`-Height` carry the numbers. No model server needed, and nothing is cached or logged |
@@ -1670,7 +2107,7 @@ everything else, which is most documents.
 | `GET /api/servers` | every configured endpoint, what each one is, and which is active. `?probe=1` bypasses the status cache |
 | `POST /api/servers` | `{"url": "...", "model": "..."}`, either field optional. 409 while the queue has a job running |
 | `POST /api/context` | set the Ollama context window for subsequent requests |
-| `GET /api/cases` · `GET /api/files` | benchmark cases, and readable documents in `mockOcr/`. Each case says `field_truth`: whether it has a `solution/<id>.fields.json`, and so whether an extraction of it can be scored |
+| `GET /api/cases` · `GET /api/files` | benchmark cases, and readable documents in `mockOcr/`. Each case says `doc_types` (a list — a document is often more than one) and `field_truth`: whether it has a `solution/<id>.fields.json`, and so whether an extraction of it can be scored |
 | `GET /api/truth/<case>` | the hand-written ground truth for one case, verbatim, plus the case's pdf, kind and page count. 404 for an id that is not a case |
 | `GET`/`POST /api/queue` | list or enqueue. `GET /api/queue/<id>`, `DELETE /api/queue/<id>`, `POST /api/queue/clear`, `POST /api/queue/mode`, `POST /api/queue/workers` |
 | `POST /api/queue/run` | release the queue so workers pick up what is in it; `{"start": false}` stops it handing out more. Queueing alone never starts a read. `started` in the queue's stats says which state it is in |

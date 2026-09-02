@@ -243,6 +243,47 @@
   .fld-bar { display: flex; align-items: center; gap: 10px; margin-bottom: 12px;
              font-size: .82rem; color: var(--muted); }
   .fld-bar #fldStatus { flex: 1; }
+
+  /* The three stages of a run: read the page, decide what it is, ask for the
+     fields that follow. Drawn as a strip rather than as three paragraphs
+     because the ORDER is the thing being shown -- stage 2 chooses the form
+     stage 3 is asked for, and a reader who does not know that reads a wrong
+     value in stage 3 as the model's mistake when it is stage 2's. */
+  .pipe { display: flex; align-items: stretch; gap: 0; flex-wrap: wrap;
+          margin: 0 0 10px; }
+  .pipe:empty { display: none; }
+  .pipe-st { flex: 1 1 0; min-width: 150px; border: 1px solid var(--border);
+             border-radius: 6px; padding: 7px 10px; background: var(--tint);
+             position: relative; }
+  .pipe-st + .pipe-st { margin-left: 18px; }
+  /* The arrow between two stages, drawn in the gap the margin leaves. */
+  .pipe-st + .pipe-st::before { content: '\2192'; position: absolute;
+             left: -15px; top: 50%; transform: translateY(-50%);
+             color: var(--muted); font-size: 13px; }
+  .pipe-h { display: flex; align-items: center; gap: 6px; font-size: 11px;
+            text-transform: uppercase; letter-spacing: .04em;
+            color: var(--muted); }
+  .pipe-n { display: inline-flex; align-items: center; justify-content: center;
+            width: 15px; height: 15px; border-radius: 50%; font-size: 10px;
+            background: var(--border); color: var(--text); letter-spacing: 0; }
+  .pipe-v { font-size: 13px; margin-top: 3px; }
+  .pipe-d { font-size: 11px; color: var(--muted); margin-top: 2px;
+            overflow-wrap: anywhere; }
+  /* done / running / waiting / skipped. Only `done` is coloured: three green
+     boxes would make the strip the loudest thing on a tab whose subject is the
+     values below it. */
+  .pipe-st.done .pipe-n { background: var(--ok); color: var(--bg); }
+  .pipe-st.run { border-color: var(--accent); }
+  .pipe-st.run .pipe-n { background: var(--accent); color: var(--bg); }
+  .pipe-st.wait { opacity: .55; }
+  .pipe-st.skip .pipe-v { color: var(--muted); }
+  /* Stage 0 disagreed with a person. Amber rather than red: the run is sound and
+     its answer may well be the better one -- what is being flagged is that two
+     authorities differ and the reader is the one who can settle it. */
+  .pipe-st.warn { border-color: var(--warn); }
+  .pipe-st.warn .pipe-n { background: var(--warn); color: var(--bg); }
+  .pipe-warn { color: var(--warn); }
+  .pipe-sure { color: var(--ok); }
   .fld-grid { display: grid; grid-template-columns: 200px minmax(0, 1fr); gap: 2px 14px; font-size: .88rem; }
   @media (max-width: 620px) { .fld-grid { grid-template-columns: minmax(0, 1fr); } }
   .fld-grid dt { color: var(--muted); padding: 6px 0; font-size: .82rem; }
@@ -271,6 +312,17 @@
   .tier.p1 { background: rgba(110,168,254,.18); color: #6ea8fe; }
   .tier.p2 { background: var(--tint); color: var(--muted); }
   .tier.p3 { background: var(--tint); color: var(--muted); }
+  /* Mandatory in the requirement. Louder than a tier mark and quieter than a
+     verdict: it qualifies the LABEL -- this field has to be filled -- and says
+     nothing about the value beside it, until the value is missing, which is the
+     one case where the requirement itself makes the empty row a finding. */
+  .req { font-size: .6rem; font-weight: 700; letter-spacing: .03em;
+         padding: .05rem .28rem; border-radius: 3px; margin-left: .35rem;
+         vertical-align: .08rem; text-transform: uppercase;
+         background: rgba(217,164,65,.18); color: var(--warn); }
+  .fld-grid dd.req-missing { color: var(--danger); opacity: 1; }
+  .fld-tag.req-missing { background: rgba(255,107,107,.18); color: var(--danger); }
+  #fields th .req { margin-left: .3rem; }
   .fld-tag.computed { background: rgba(217,164,65,.18); color: var(--warn); }
   #fields td.ungrounded { color: var(--danger); text-decoration: underline wavy var(--danger); }
   /* Scored against the hand-written truth file, marked at the value itself. A
@@ -285,7 +337,19 @@
   .sc.partial { background: rgba(217,164,65,.18); color: var(--warn); }
   .sc.wrong, .sc.missed, .sc.spurious { background: rgba(255,107,107,.18); color: var(--danger); }
   .sc.absent { background: var(--border); color: var(--muted); }
+  /* A verdict on a value the requirement does not demand. Judged, shown, and
+     outside the headline -- so it is drawn back rather than in the danger
+     colours, which on this tab mean "this cost you something". */
+  .sc.unscored { background: var(--tint); color: var(--muted); font-weight: 600; }
   /* The value the truth says belongs there, under the one that came back. */
+  /* A validation finding, under the value it is about. Deliberately the same
+     size and place as `.truth` -- both answer "what is wrong with this value" --
+     but coloured rather than muted, because a ground-truth line is context and
+     this is a rule the document failed. Only `failed` and `warning` are ever
+     drawn; a rule that passed or could not run says nothing here. */
+  .val-note { font-size: .78rem; margin-top: 2px; }
+  .val-note.failed { color: var(--danger); }
+  .val-note.warning { color: var(--warn); }
   .truth { font-size: .78rem; color: var(--muted); margin-top: 2px; }
   .truth b { color: var(--text); font-weight: 600; }
   .truth i { font-style: normal; opacity: .8; }
@@ -307,6 +371,11 @@
   #fields th, #fields td { border: 1px solid var(--border); padding: 6px 9px; text-align: left; }
   #fields th { background: var(--accent-soft); font-weight: 600; }
   #fields td.num { text-align: right; font-variant-numeric: tabular-nums; }
+  /* The one column on this tab that is NOT on the page: the derived WHT
+     rate. Muted, because every other cell beside it is text the document
+     printed and grounding vouched for, and a computed figure sitting in
+     the same weight would read as one of them. */
+  #fields td.derived { color: var(--muted); }
   .seg { display: flex; gap: 6px; }
   .seg button { flex: 1; padding: 8px 10px; font-size: .84rem; border-radius: 8px; }
   .seg button.on { background: var(--accent-soft); border-color: var(--accent); font-weight: 600; }
@@ -619,7 +688,12 @@
     display: flex; flex-direction: column; gap: 2px;
     border-top: 3px solid var(--hero, var(--accent)); }
   .pr-hero-label { font-size: .78rem; text-transform: uppercase;
-    letter-spacing: .07em; color: var(--muted); font-weight: 600; }
+    letter-spacing: .07em; color: var(--muted); font-weight: 600;
+    display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  /* The shape pill in a card heading. Same colour vocabulary as block 5's
+     column, so the two say the same thing the same way. */
+  .pr-hero-pill { text-transform: none; letter-spacing: 0; font-size: .74rem;
+    padding: 1px 9px; }
   .pr-hero-model { font-size: 1.1rem; font-weight: 700; margin-top: 4px;
     word-break: break-word; }
   /* `clamp` rather than a fixed size: this is the one number on the page that
@@ -1053,12 +1127,19 @@ follows your desktop; Light is the one to pick for projecting or screenshotting.
           Benchmark case <span class="muted-inline">(scored against ground truth)</span>
           <select id="benchCase">
             <option value="">— none, use uploaded file —</option>
-            {% for c in cases %}
-            <option value="{{ c.id }}">{{ c.id }} · {{ c.kind }}</option>
+            {# Grouped by the manifest's doc_type so a set can be picked by kind
+               of document -- the same codes as the mockOcr/ filenames. #}
+            {% for doc_type, group in cases|groupby('doc_type') %}
+            <optgroup label="{{ doc_type or 'unclassified' }}">
+              {% for c in group %}
+              <option value="{{ c.id }}">{{ c.id }} · {{ c.kind }}{% if c.doc_types|length > 1 %} · also {{ c.doc_types[1:]|join(', ')|lower|replace('_', ' ') }}{% endif %}</option>
+              {% endfor %}
+            </optgroup>
             {% endfor %}
           </select>
         </label>
       </div>
+      <p class="note" id="benchFormNote"></p>
       {% endif %}
       <div class="row">
         <button id="run" class="primary" disabled>Read document</button>
@@ -1165,9 +1246,13 @@ follows your desktop; Light is the one to pick for projecting or screenshotting.
             Lock document
             <select id="rtLockCase">
               <option value="">&mdash; spread over all &mdash;</option>
-              {% for c in cases %}{% if c.field_truth %}
-              <option value="{{ c.id }}">{{ c.id }} &middot; {{ c.kind }}</option>
-              {% endif %}{% endfor %}
+              {% for doc_type, group in cases|selectattr('field_truth')|list|groupby('doc_type') %}
+              <optgroup label="{{ doc_type or 'unclassified' }}">
+                {% for c in group %}
+                <option value="{{ c.id }}">{{ c.id }} &middot; {{ c.kind }}{% if c.doc_types|length > 1 %} &middot; also {{ c.doc_types[1:]|join(', ')|lower|replace('_', ' ') }}{% endif %}</option>
+                {% endfor %}
+              </optgroup>
+              {% endfor %}
             </select>
           </label>
         </div>
@@ -1272,8 +1357,12 @@ follows your desktop; Light is the one to pick for projecting or screenshotting.
             Ground-truth document
             <select id="fxCase">
               <option value="">&mdash; pick a case &mdash;</option>
-              {% for c in cases %}
-              <option value="{{ c.id }}">{{ c.id }} &middot; {{ c.kind }}</option>
+              {% for doc_type, group in cases|groupby('doc_type') %}
+              <optgroup label="{{ doc_type or 'unclassified' }}">
+                {% for c in group %}
+                <option value="{{ c.id }}">{{ c.id }} &middot; {{ c.kind }}{% if c.doc_types|length > 1 %} &middot; also {{ c.doc_types[1:]|join(', ')|lower|replace('_', ' ') }}{% endif %}</option>
+                {% endfor %}
+              </optgroup>
               {% endfor %}
             </select>
           </label>
@@ -1400,6 +1489,7 @@ follows your desktop; Light is the one to pick for projecting or screenshotting.
       </div>
 
       <div id="fields">
+        <div id="pipeline" class="pipe"></div>
         <div class="fld-bar">
           <span id="fldStatus"></span>
           <label class="cmp-opt"><input type="checkbox" id="fldRawChk"> Raw output</label>
@@ -1414,7 +1504,10 @@ follows your desktop; Light is the one to pick for projecting or screenshotting.
       <div id="accuracy">
         <div id="accHead"></div>
         <div id="accBars"></div>
-        <h3 class="acc-sub">Differences vs ground truth</h3>
+        <h3 class="acc-sub" title="Only differences in content. Where the model
+        put the line breaks and the spaces cannot lower the score, so it is not
+        shown here either — a group of lines holding the same text as the ground
+        truth is folded away however it was wrapped.">Differences vs ground truth</h3>
         <pre id="accDiff"></pre>
       </div>
 
@@ -1641,6 +1734,7 @@ const cmpHint = document.getElementById('cmpHint');
 const tabFields = document.getElementById('tabFields');
 const fieldsEl = document.getElementById('fields');
 const fldStatus = document.getElementById('fldStatus');
+const pipeline = document.getElementById('pipeline');
 const fldBody = document.getElementById('fldBody');
 const fldRerun = document.getElementById('fldRerun');
 const fldMode = document.getElementById('fldMode');
@@ -1662,6 +1756,46 @@ const fxServerNote = document.getElementById('fxServerNote');
 const fxServerText = document.getElementById('fxServerText');
 const fxDot = document.getElementById('fxDot');
 const FX_CASES = {{ cases | tojson }};
+const benchFormNote = document.getElementById('benchFormNote');
+
+/* What a case will be asked for, as a phrase for a note. The form is decided by
+   the document's TYPE and the types differ in what they ask -- a receipt is not
+   asked its own number or date, an invoice is not asked for a cheque -- so a
+   pane that names the document without naming the form is only half of what a
+   reader needs before pressing Run.
+
+   Empty for a case the manifest does not classify: the default form is asked,
+   and naming a type there would claim a classification nobody made. */
+/* Which form a picked case will be asked for, under the Workspace picker.
+   The same phrase the Fields pane shows, and it is worth having in both places
+   for the same reason: the form is decided by the document's TYPE, so what a
+   run will even try to extract changes with the case -- a receipt is not asked
+   its own number or date, an invoice is not asked for a cheque. Knowing that
+   before pressing Read is the difference between reading an empty row as "the
+   page does not say" and as "nobody asked". */
+function paintBenchForm() {
+  if (!benchFormNote) return;
+  const id = benchCase && benchCase.value;
+  const note = id ? caseFormNote(id) : '';
+  // The phrase ends in a separator for the Fields pane, which follows it with
+  // the transcript's own line. Nothing follows it here.
+  benchFormNote.textContent = note ? note.replace(/ · $/, '') : '';
+}
+
+function caseFormNote(id) {
+  const c = (FX_CASES || []).find(x => x.id === id);
+  if (!c || !(c.doc_types || []).length) return '';
+  const types = c.doc_types.join(' + ').replace(/_/g, ' ').toLowerCase();
+  const n = (c.fields || []).length;
+  /* How many of them the requirement DEMANDS, said before anything runs: the
+     count decides what the field score will be taken over, so "11 fields" alone
+     names a form and not the thing that will be measured. Omitted where no
+     requirement covers the type -- there, none is required and a "0 required"
+     would read as a form nobody can pass. */
+  const m = (c.mandatory || []).length;
+  return types + (n ? ' · ' + n + ' fields' : '')
+    + (m ? ' (' + m + ' required)' : '') + ' · ';
+}
 /* Set while the transcript on screen came out of `solution/<id>.md` rather than
    out of a read. It is what keeps a Re-extract from the Fields tab scored: the
    case cannot be recovered from a page job, because no page was ever read. */
@@ -2113,15 +2247,34 @@ tabLayout.addEventListener('click', () => {
 });
 
 /* ---------- extracted fields (second LLM pass) ---------- */
+/* The requirement's eleven fields and nothing else. `seller_name`, `buyer_name`,
+   `reference_document`, `original_invoice_date` and `currency` were removed on
+   2026-08-31 with the keys themselves -- neither requirement lists them, and a
+   label for a key nothing asks for is a row that can only ever be empty. */
 const FIELD_LABELS = {
-  document_type: 'Document type', document_number: 'Document number',
-  issue_date: 'Issue date', reference_document: 'Reference document',
-  seller_name: 'Seller', seller_tax_id: 'Seller tax ID',
-  seller_branch: 'Seller branch',
-  buyer_name: 'Buyer', buyer_tax_id: 'Buyer tax ID',
-  buyer_branch: 'Buyer branch',
-  currency: 'Currency', subtotal: 'Amount ex VAT', vat_total: 'VAT',
-  amount_incl_vat: 'Amount incl. VAT'
+  document_type: 'Document type', document_number: 'INV / CN no.',
+  issue_date: 'INV date',
+  po_gr_rtv_number: 'PO / GR / RTV no.',
+  inv_rtv_cnr_number: 'INV / RTV / CNR no.',
+  seller_tax_id: 'Supplier tax ID', seller_branch: 'Supplier branch code',
+  buyer_tax_id: 'Buyer tax ID', buyer_branch: 'Buyer branch code',
+  subtotal: 'Amount ex VAT', vat_total: 'VAT amount',
+  amount_incl_vat: 'Amount incl. VAT',
+  remaining_amount: 'Remaining amount', remaining_vat_amount: 'Remaining VAT',
+  payment_date: 'Payment date', cheque_number: 'Cheque no.',
+  /* The withholding tax certificate (มาตรา 50 ทวิ), 2026-09-01. Its keys share
+     nothing with the eleven above, so none of these ever renders beside them --
+     `fields_asked` decides which rows a run draws. The wording is the
+     requirement's own, English side, so a label on screen and a row of the
+     requirement table can be matched by eye. */
+  book_no: 'Book no.', certificate_no: 'Certificate no.',
+  sequence_no: 'Sequence in P.N.D.',
+  payer_tax_id: 'Payer tax ID', payer_name: 'Payer name',
+  payer_branch: 'Payer branch code', payer_address: 'Payer address',
+  payee_tax_id: 'Payee tax ID', payee_name: 'Payee name',
+  payee_branch: 'Payee branch code', payee_address: 'Payee address',
+  dividend_rate_option: 'Dividend rate option',
+  total_amount_paid: 'Total amount paid', total_wht_amount: 'Total WHT amount'
 };
 
 /* One line saying what each key MEANS, shown on hover over its label.
@@ -2136,34 +2289,77 @@ const FIELD_LABELS = {
    Written from the same definitions EXTRACT_PROMPT gives the model, so the page
    and the prompt cannot describe a key differently. */
 const FIELD_HINTS = {
-  document_type: 'The heading naming what this document is, copied as printed. Normalised to a standard code below',
-  document_number: 'The number identifying this document',
-  issue_date: 'The date this document is dated \u2014 not a due or payment date',
-  reference_document: 'Another document this one cites. Empty on most documents, and never this document\u2019s own number',
-  seller_name: 'The issuer of this document, normally the letterhead at the top',
-  seller_tax_id: 'The issuer\u2019s tax ID. Thirteen digits in Thailand',
-  seller_branch: 'Which office or branch that tax ID is, as printed \u2014 a head-office word or a branch number',
-  buyer_name: 'The customer, found by its printed label \u2014 never the letterhead',
-  buyer_tax_id: 'The customer\u2019s tax ID. Thirteen digits in Thailand',
-  buyer_branch: 'Which office or branch that tax ID is, as printed',
-  currency: 'Only where the page prints a currency word, code or symbol. Thai text alone does not state a currency',
+  document_type: 'The heading naming what this document is, copied as printed. Normalised to a standard code, and checked against the type this document was taken to be',
+  document_number: 'This document\u2019s own number. Checked for a duplicate on an invoice, and against the document it credits on a credit note',
+  issue_date: 'The date this document is dated \u2014 not a due or payment date. An invoice is also checked for a future date; a credit note is not',
+  po_gr_rtv_number: 'The purchase order, goods receipt or return-to-vendor number this document is raised against. Mandatory on an invoice, optional on a credit note',
+  inv_rtv_cnr_number: 'The invoice, return or credit-note-return this payment settles — never this receipt’s own number. Mandatory on a receipt',
+  seller_tax_id: 'The issuer\u2019s tax ID. Thirteen digits, with a mod-11 check digit',
+  seller_branch: 'Which office or branch that tax ID is, as printed. Normalised to a five-digit code, head office being 00000',
+  buyer_tax_id: 'The customer\u2019s tax ID. Thirteen digits, with a mod-11 check digit',
+  buyer_branch: 'Which office or branch that tax ID is, as printed. Normalised to a five-digit code',
   subtotal: 'The goods total printed BEFORE tax is added',
-  vat_total: 'The VAT line',
-  amount_incl_vat: 'The total printed AFTER VAT is added'
+  vat_total: 'The VAT line. Checked against the standard rate of the figure it is charged on',
+  amount_incl_vat: 'The total printed AFTER VAT is added. Checked as subtotal + VAT',
+  remaining_amount: 'What is still owed after this payment, where the page prints a balance. Never worked out by subtraction',
+  remaining_vat_amount: 'The VAT part of that balance. Checked against the standard rate of the balance',
+  payment_date: 'The date the money was paid or the cheque was drawn — not the date the document was issued',
+  cheque_number: 'The cheque the payment was made by. A bank account or transfer reference is not one',
+  book_no: 'The book or volume this certificate was torn from (เล่มที่). Short — two to six digits',
+  certificate_no: 'The certificate\u2019s own number (เลขที่). Short — not a tax ID',
+  sequence_no: 'Which line of the P.N.D. filing this certificate is (ลำดับที่ในแบบ)',
+  payer_tax_id: 'The tax ID of the party that paid the income and withheld the tax (ผู้จ่ายเงิน). Thirteen digits, with a mod-11 check digit',
+  payer_name: 'The name of the party that withheld the tax. The requirement matches it against a Company Master at 90% — there is none here, so that check reports as not run',
+  payer_branch: 'Which office or branch of the payer, as printed. Normalised to a five-digit code, head office being 00000',
+  payer_address: 'The payer\u2019s printed address, as printed. No validation rule in the requirement',
+  payee_tax_id: 'The tax ID of the party the income was paid to and the tax withheld from (ผู้ถูกหักภาษี). Thirteen digits, with a mod-11 check digit',
+  payee_name: 'The name of the party the tax was withheld from. Matched against the Company Master by the same rule as the payer\u2019s',
+  payee_branch: 'Which office or branch of the payee, as printed. Normalised to a five-digit code',
+  payee_address: 'The payee\u2019s printed address, as printed',
+  dividend_rate_option: 'The ticked rate option against a dividend line (กรณี 40(4)(ข)). Required only where an income row states dividend income, and blank on most certificates',
+  total_amount_paid: 'The total of the amounts paid (รวมเงินที่จ่าย). Reconciled against the sum of the table\u2019s own column',
+  total_wht_amount: 'The total of the tax withheld and remitted (รวมภาษีที่หักนำส่ง). Reconciled against the sum of the table\u2019s own column'
 };
 
-/* Pass 2 extracts the field requirement's PRIORITY 1 set and nothing else --
-   fourteen keys, grouped the way the page itself is laid out. Everything else the
-   document states arrives under its own printed label in `other_fields`, which is
-   rendered below rather than as named keys. */
+/* Every key any document type's form can ask for, grouped the way the page is
+   laid out. Which of them are RENDERED is decided per run from
+   `extracted.fields_asked` -- the form the document's type actually asked for --
+   so an invoice does not show a Credited-invoice-date row that nothing requested
+   and nobody could fill. A key absent from this list is not rendered at all,
+   which is how fifteen keys silently vanished from this tab in 2026-08-19: any
+   key added to `prompts._SCALAR_KEYS` must be added here and to FIELD_LABELS and
+   FIELD_HINTS as well. */
 const FIELD_SECTIONS = [
-  ['Document', ['document_type', 'document_number', 'issue_date',
-                'reference_document']],
-  ['Seller', ['seller_name', 'seller_tax_id', 'seller_branch']],
-  ['Buyer', ['buyer_name', 'buyer_tax_id', 'buyer_branch']],
-  ['Totals', ['currency', 'subtotal', 'vat_total', 'amount_incl_vat']]
+  ['Document', ['document_type', 'document_number', 'issue_date']],
+  /* Split from Document on 2026-08-31. Both of these name ANOTHER document --
+     the order this one is raised against, or the one this payment settles -- so
+     filing them under "Document" was wrong on every form and actively
+     misleading on a receipt, whose form asks for nothing about itself and would
+     have shown a lone reference under that heading. */
+  ['References', ['po_gr_rtv_number', 'inv_rtv_cnr_number']],
+  ['Supplier', ['seller_tax_id', 'seller_branch']],
+  ['Buyer', ['buyer_tax_id', 'buyer_branch']],
+  ['Totals', ['subtotal', 'vat_total', 'amount_incl_vat']],
+  /* The receipt's own two groups. Both drop out entirely on an invoice or a
+     credit note, whose forms ask for none of these -- a section of rows that
+     could only ever be empty is worse than no section. */
+  ['Outstanding', ['remaining_amount', 'remaining_vat_amount']],
+  ['Payment', ['payment_date', 'cheque_number']],
+  /* The withholding certificate's four groups. Every one of them drops out on
+     an invoice, a credit note or a receipt, whose forms ask for none of these.
+     The two parties are named by what they DID rather than by the requirement's
+     bare "Payer", because the requirement prints that word over both blocks and
+     a page showing two identical headings would be unreadable. */
+  ['Certificate', ['book_no', 'certificate_no', 'sequence_no']],
+  ['Payer — withheld the tax',
+   ['payer_tax_id', 'payer_name', 'payer_branch', 'payer_address']],
+  ['Payee — tax withheld from them',
+   ['payee_tax_id', 'payee_name', 'payee_branch', 'payee_address']],
+  ['Withheld', ['total_amount_paid', 'total_wht_amount', 'dividend_rate_option']]
 ];
-const MONEY_KEYS = new Set(['subtotal', 'vat_total', 'amount_incl_vat']);
+const MONEY_KEYS = new Set(['subtotal', 'vat_total', 'amount_incl_vat',
+                            'remaining_amount', 'remaining_vat_amount',
+                            'total_amount_paid', 'total_wht_amount']);
 
 /* Every extracted key is priority 1 now, so the per-key tier tag would say P1
    fourteen times and carry no information. Left empty rather than removed: the
@@ -2188,6 +2384,27 @@ const ITEM_HINTS = {
   vat: 'VAT on this row, where the table rules a VAT column',
   withholding_tax: 'Withholding tax (ภาษีหัก ณ ที่จ่าย) — deducted at source, so it comes OFF the row rather than being added to it',
   net_amount: 'What the row comes to after those, where the table rules such a column'
+};
+
+/* The withholding certificate's income table (2026-09-01), kept apart from
+   ITEM_COLS above for the same reason `income_items` is kept apart from
+   `line_items`: that is the charges table of a commercial document and this is
+   the table of income a certificate covers. One list of columns serving both
+   would draw an invoice's headings over a certificate's rows.
+
+   The rate is LAST and is not one of the four extracted cells: it is worked out
+   in Python from the two beside it (`normalise.wht_rates`), which is what the
+   requirement means by calling the field "Derived". It is drawn from
+   `extracted.derived`, never from the model's answer. */
+const INCOME_COLS = [
+  ['income_type', 'Income type'], ['payment_date', 'Payment date'],
+  ['amount_paid', 'Amount paid'], ['wht_amount', 'WHT amount']
+];
+const INCOME_HINTS = {
+  income_type: 'The kind of income as the row prints it (รายละเอียดประเภทเงินได้). Where the row is the free-text option, this is what was written against it',
+  payment_date: 'The date on that row (วัน เดือน ปี ที่จ่าย), as printed. A Buddhist-era year is converted when the row is validated, never when it is read',
+  amount_paid: 'The amount paid on that row (จำนวนเงินที่จ่าย). The column is added up and reconciled against the total below',
+  wht_amount: 'The tax withheld and remitted on that row (ภาษีที่หักและนำส่งไว้). Checked against the amount paid — it may not exceed it — and added up against the total below'
 };
 
 /* A value is only worth reading if it came off the page. `status` is the
@@ -2216,10 +2433,19 @@ const SCORE_TAG = {
   absent: ['not stated', 'the document does not print this, and nothing was filled in — agreed']
 };
 const SCORE_OK = new Set(['correct', 'absent']);
-function scoreMark(row) {
+/* `scored` is false on a value the requirement does not demand. The verdict is
+   still shown -- the truth file judged it and it is still worth correcting --
+   and it is muted and says so, because since 2026-09-02 the headline is taken
+   over the Mandatory fields alone, and a red mark that moved nothing would
+   otherwise read as a mark that did. */
+function scoreMark(row, scored) {
   const tag = row && SCORE_TAG[row.status];
-  return tag ? '<span class="sc ' + row.status + '" title="' + esc(tag[1]) + '">'
-               + esc(tag[0]) + '</span>' : '';
+  if (!tag) return '';
+  const off = scored === false;
+  return '<span class="sc ' + row.status + (off ? ' unscored' : '') + '" title="'
+    + esc(tag[1] + (off ? ' — found only: the requirement does not demand '
+                          + 'this field, so it is outside the field score' : ''))
+    + '">' + esc(tag[0]) + (off ? ' · not scored' : '') + '</span>';
 }
 /* The readings of the truth file this row was NOT judged against, quoted.
    `expected` is the one the answer came closest to, so these are the rest. */
@@ -2257,18 +2483,66 @@ function truthLine(row) {
     + '</div>';
 }
 
-function defList(pairs, truth) {
+/* The requirement's validation rules, keyed by the field they are about.
+
+   Only `failed` and `warning` reach the page as a mark. `ok` deliberately draws
+   nothing: a tick beside ten of thirteen values is noise on a tab whose job is
+   to show what is WRONG, and the counts are in the status line for anyone who
+   wants to know the checks ran at all. `unchecked` draws nothing for the same
+   reason plus a stronger one -- it means the rule could not run, which is not a
+   statement about this value. */
+function valIndex(validation) {
+  const out = {};
+  if (!validation || validation.error) return out;
+  for (const row of (validation.checks || [])) {
+    if (row.state !== 'failed' && row.state !== 'warning') continue;
+    (out[row.field] = out[row.field] || []).push(row);
+  }
+  return out;
+}
+
+/* A failed rule outranks a warning: the pair this most often draws is a tax ID
+   that fails its checksum, which is a harder claim than a VAT rate that blends
+   below 7%. */
+function valMark(rows) {
+  if (!rows || !rows.length) return '';
+  const bad = rows.filter(r => r.state === 'failed');
+  const shown = bad.length ? bad : rows;
+  const state = bad.length ? 'failed' : 'warning';
+  const title = shown.map(r => r.rule + ': ' + (r.why || r.detail || '')).join(' | ');
+  return '<div class="val-note ' + state + '" title="' + esc(title) + '">'
+    + esc(shown.map(r => r.rule).join(', ')) + ' \u2014 '
+    + esc(shown[0].why || shown[0].detail || '') + '</div>';
+}
+
+function defList(pairs, truth, val, req) {
   if (!pairs.length) return '';
   return '<dl class="fld-grid">' + pairs.map(([label, value, money, status, key]) => {
     const blank = (value === null || value === undefined || value === '');
     const tag = GROUND_TAG[status];
     const tier = FIELD_TIER[key];
     const sc = (truth && key) ? truth[key] : null;
+    // Mandatory in the requirement for THIS document's type, which is why the
+    // set is handed in rather than looked up: the same key is Mandatory on an
+    // invoice and optional on a credit note, and a mark that did not follow the
+    // type would be a compliance claim about the wrong document.
+    const must = !!(req && key && req.has(key));
+    const gap = must && (blank || status === 'missing');
     const cls = [blank ? 'empty' : '', money ? 'money' : '',
+                 gap ? 'req-missing' : '',
                  status === 'ungrounded' || status === 'computed' ? status : ''].join(' ');
     let body;
     if (blank || status === 'missing') {
-      body = tag ? '<span class="fld-tag missing" title="' + esc(tag[1]) + '">'
+      // A Mandatory field that came back empty is a finding, not an absence:
+      // "the page may be silent about this" is true of an Optional field and is
+      // exactly what the requirement says cannot be true here. The grounding tag
+      // still explains WHY it is empty, in the tooltip, because that half is
+      // unchanged -- this only says the emptiness is not acceptable.
+      body = gap
+        ? '<span class="fld-tag req-missing" title="'
+          + esc('Mandatory for this document type and it did not come back. '
+                + (tag ? tag[1] : '')) + '">required, not returned</span>'
+        : tag ? '<span class="fld-tag missing" title="' + esc(tag[1]) + '">'
                    + esc(tag[0]) + '</span>' : '—';
     } else {
       body = esc(String(value))
@@ -2281,13 +2555,18 @@ function defList(pairs, truth) {
     const hint = key ? FIELD_HINTS[key] : '';
     return '<dt' + (hint ? ' class="has-hint" title="' + esc(hint) + '"' : '')
       + '>' + esc(label)
+      + (must ? '<span class="req" title="Mandatory in the requirement for this '
+                + 'document type — the page has to state it and the extraction '
+                + 'has to return it.">required</span>' : '')
       + (tier ? '<span class="tier ' + tier + '" title="Priority '
                 + tier.slice(1) + ' field — '
                 + (tier === 'p1' ? 'prototype / MVP'
                    : tier === 'p2' ? 'production readiness'
                    : 'advanced extraction') + '">' + tier.toUpperCase()
                 + '</span>' : '')
-      + '</dt><dd class="' + cls.trim() + '">' + body + scoreMark(sc) + truthLine(sc)
+      + '</dt><dd class="' + cls.trim() + '">' + body
+      + scoreMark(sc, !req || !key ? undefined : must) + truthLine(sc)
+      + valMark(val && key ? val[key] : null)
       + '</dd>';
   }).join('') + '</dl>';
 }
@@ -2348,6 +2627,23 @@ function fieldScoreNote(fs) {
     + (c.partial ? ', ' + c.partial + ' partly (' + pct(o.accuracy_loose) + ' counting those)' : '')
     + '. ' + c.wrong + ' wrong, ' + c.missed + ' missed, ' + c.spurious
     + ' filled where the page states nothing.';
+  /* What the rate is over. Since 2026-09-02 it is the requirement's Mandatory
+     set, so a document can score 100% with an Optional field wrong -- which is
+     correct, and unreadable unless the scope is printed beside the number. */
+  if (fs.scored_scope) {
+    html += ' <span class="how">Scored over ' + esc(fs.scored_scope) + '.</span>';
+  }
+  /* The Optional fields, judged the same way and deliberately outside the rate:
+     nobody is held to them, so a document that leaves one out is compliant and
+     must not read as incomplete. Reported rather than dropped, for the reason
+     `other_fields` is -- a model good at the eleven that matter and poor at the
+     rest is a different proposition from one that is evenly mediocre. */
+  const op = fs.optional || {};
+  if (op.expected) {
+    const oc = op.counts || {};
+    html += ' <span class="how">Optional fields, not in that rate: '
+      + oc.correct + ' of ' + op.expected + ' correct (' + pct(op.accuracy) + ').</span>';
+  }
   if (cov.scalars_checked < cov.scalars_total) {
     html += ' <span class="how">Scored over the ' + cov.scalars_checked + ' of '
       + cov.scalars_total + ' key(s) the truth file fills in'
@@ -2405,6 +2701,11 @@ function paintRaw(target, result, reply) {
 let extractMode = {{ extract_mode | tojson }};
 const EXTRACT_STEP_COUNT = {{ extract_steps }};
 let extractSteps = null;
+/* Stage 0's answer, from the `classified` event. Kept outside `extracted`
+   because it arrives BEFORE the extraction does and is what the strip draws
+   while pass 2 is still running; the finished result carries its own copy for
+   anything rendered after the fact. */
+let classified = null;
 
 /* Two controls for one switch: the picker in the sidebar, where a run is set up
    before it starts, and the button beside Re-extract, where you are standing when
@@ -2530,7 +2831,10 @@ paintLoopGuard();
 /* Step progress, from either the Re-extract stream or a full run's stream.
    Returns true when the message was a step message and has been consumed. */
 function stepEvent(msg) {
-  if (msg.event === 'extract_steps') {
+  if (msg.event === 'classified') {
+    const { event, ...rest } = msg;
+    classified = rest;
+  } else if (msg.event === 'extract_steps') {
     extractSteps = msg.steps.map(s => Object.assign({}, s, { status: 'waiting' }));
     // The block every step's message opens with. Kept here so a step's question
     // can be read in context while the run is still going; the finished result
@@ -2584,6 +2888,14 @@ function stepList(steps) {
         if (s.error) {
           note = esc(s.error);
           cls = 'bad';
+        } else if (s.extras_error && done) {
+          /* An extras-only step that broke. Flagged, never `bad`: it costs
+             entries nothing scores, so colouring it like a failed step would
+             say the extraction went wrong when the form came back whole. */
+          note = 'extra fields — ' + esc(s.extras_error)
+               + (s.items ? ' · kept ' + s.items + (s.items === 1 ? ' entry' : ' entries')
+                          : ' · nothing kept');
+          cls = 'flagged';
         } else if (done) {
           const bits = [];
           // A step that owns a list reports its length; one that owns scalars
@@ -2592,6 +2904,11 @@ function stepList(steps) {
           if (s.items) bits.push(s.items + (s.items === 1 ? ' row' : ' rows'));
           // "0/0" is not a count, it is a step that did not say what it owns.
           else if (keys.length) bits.push(filled + '/' + keys.length);
+          // The reply stopped mid-entry and what had finished was kept. After
+          // the count rather than inside it -- and NOT between those two
+          // branches, which silently detaches the `else` from its `if` and
+          // prints a row count and a key count on the same clean step.
+          if (s.salvaged) bits.push('cut off — kept what finished');
           if (s.retry_error) bits.push('re-ask failed');
           else if (s.retried) bits.push('re-asked');
           if (s.ungrounded) { bits.push(s.ungrounded + ' not on page'); cls = 'flagged'; }
@@ -2635,6 +2952,10 @@ function stepList(steps) {
            A step that answered cleanly has nothing to explain, and its reply is
            still in the whole-reply pane above if anyone wants it. */
         const why = s.error ? 'this step failed'
+                  : s.extras_error ? 'its reply broke before it finished listing '
+                                     + 'the extra fields'
+                  : s.salvaged ? 'its reply was cut off and only the entries that '
+                                 + 'finished were kept'
                   : s.retry_error ? 'the re-ask failed'
                   : s.ungrounded ? 'it answered with a value that is not on the page'
                   : s.schema_retry ? 'its first reply would not parse'
@@ -2714,10 +3035,181 @@ function stepNote(r) {
       + '<ul>' + failed.map(f =>
           '<li>' + esc(f.title) + ' — ' + esc(f.error) + '</li>').join('') + '</ul>';
   }
+  /* The extras step, said separately and without the failure wording. A reply
+     that stopped part-way through `other_fields` costs entries nothing scores,
+     so it is a statement about how much of the page came back — not about
+     whether the extraction worked. The distinction matters the same way
+     `partial` does: it stops a short list reading as a page with little on it. */
+  const extras = (r.steps_extras || []).length;
+  const salvaged = r.steps.filter(s => s.salvaged).length;
+  if (extras || salvaged) {
+    html += ' The extra-fields step stopped part-way through its list, so what is '
+      + 'under “other fields” is what it had named before it stopped'
+      + (extras && !salvaged ? ' — nothing, in this run' : '')
+      + '. The fields above are unaffected and this is not counted as a failure.';
+  }
   return html + '</p>';
 }
 
+/* A newline for the tooltips below. Written this way rather than as an escape
+   because these strings pass through a Jinja template on the way out. */
+const NL = String.fromCharCode(10);
+
+/* One stage box. `state` is done / run / wait / skip. */
+function pipeBox(n, name, state, value, detail, hint) {
+  return '<div class="pipe-st ' + state + '"' + (hint ? ' title="' + esc(hint) + '"' : '')
+    + '><div class="pipe-h"><span class="pipe-n">' + n + '</span>' + esc(name) + '</div>'
+    + '<div class="pipe-v">' + (value || '') + '</div>'
+    + (detail ? '<div class="pipe-d">' + detail + '</div>' : '') + '</div>';
+}
+
+/* Where the type came from, in words. The same four authorities the tooltip
+   names, shortened to fit a box. */
+/* Whose answer stage 0 took, in the order it asks. `model` is the ordinary case
+   for a real document since 2026-09-02 and `transcript` is the fallback under
+   it -- so `transcript` is not a lesser answer, it is the one Python reached
+   when the model's could not be believed. */
+const CLASSIFY_FROM = {
+  case: 'from the benchmark manifest',
+  transcript: "matched from the page's own heading",
+  model: 'read by the model, quoting the page back',
+  caller: 'given by the request',
+};
+
+/* Read → classify → extract, the three stages of a run, in order.
+   Painted from three different places on purpose: pass 1 from the page state,
+   stage 0 from its event or from the finished result, pass 2 from `extracted`.
+   None of the three can report the other two, and a strip assembled from one of
+   them would go stale for the other two. */
+function paintPipeline() {
+  const c = classified || (extracted && extracted.classified) || null;
+  const done = extracted && !extracted.pending && !extracted.error;
+  if (!c && !extracted && !truth && !pageStats.length) { pipeline.innerHTML = ''; return; }
+
+  // 1. Read. A fields-only run never read a page, and saying so is the point:
+  //    a blank box there reads as a read that failed.
+  let read;
+  if (truthOnlyCase) {
+    read = pipeBox(1, 'Read', 'skip', 'not read',
+                   'fed <b>solution/' + esc(truthOnlyCase) + '.md</b>',
+                   'This run was fed the ground-truth transcript, so pass 1 '
+                   + 'contributes no errors of its own to the fields below.');
+  } else if (pageStats.length) {
+    const secs = pageStats.reduce((a, p) => a + (Number(p.seconds) || 0), 0);
+    read = pipeBox(1, 'Read', 'done',
+                   pageStats.length + ' page' + (pageStats.length > 1 ? 's' : ''),
+                   Math.round(secs) + 's'
+                     + (truth && truth.char_accuracy !== undefined
+                        ? ' · ' + (truth.char_accuracy * 100).toFixed(1) + '% chars' : ''),
+                   'Pass 1: the page image in, a verbatim transcript out.');
+  } else {
+    read = pipeBox(1, 'Read', 'wait', 'no page read', '',
+                   'Pass 1 has not run in this tab.');
+  }
+
+  // 2. Classify. The value is what the document IS; the detail is what that
+  //    bought, which is the half a reader needs to make sense of stage 3.
+  let cls;
+  if (c) {
+    const types = (c.doc_types || []).join(' + ').replace(/_/g, ' ').toLowerCase();
+    const bits = [];
+    bits.push(esc(c.fields.length + ' fields'
+                  // What the score will be over. On the box rather than only in
+                  // its tooltip: this stage chose the form, and how much of that
+                  // form is compulsory is the half stage 3 is judged on.
+                  + ((c.mandatory || []).length
+                     ? ', ' + c.mandatory.length + ' required' : '')));
+    if (c.steps && c.steps.length) bits.push(esc(c.steps.length + ' steps'));
+    if (c.rules && c.rules.length) bits.push(esc(c.rules.length + ' extra checks'));
+    /* The manifest's own answer, where this run did not use it and the two
+       differ. A finding, not a field: a fixture whose form was chosen by the
+       model against a person's reading is the one case where a moved field
+       score has an explanation that is not the extractor's. */
+    const disagree = (c.doc_type_expected || []).length
+      ? ' · <b class="pipe-warn">manifest says '
+        + esc(c.doc_type_expected.join(' + ').replace(/_/g, ' ').toLowerCase())
+        + '</b>' : '';
+    /* How sure the page's own heading made this, 0-1, or null where a person
+       gave the answer and there is nothing on the page to score. It decides
+       whether the model is asked at all, so it belongs beside the answer rather
+       than in its tooltip -- and a run answered by the code at 43% is a
+       different thing from one answered by the code at 100%. */
+    const conf = c.doc_type_confidence;
+    const sure = (conf === null || conf === undefined) ? ''
+      : ' · <b class="' + (conf >= MIN_CLASSIFY_CONFIDENCE ? 'pipe-sure' : 'pipe-warn')
+        + '">' + Math.round(conf * 100) + '% sure</b>';
+    cls = pipeBox(2, 'Classify', disagree ? 'warn' : 'done',
+                  esc(types || 'unclassified'),
+                  esc(CLASSIFY_FROM[c.doc_type_from] || 'not classified')
+                    + sure + ' · ' + bits.join(' · ') + disagree,
+                  (c.doc_type_escalated
+                     ? 'The page-heading table was not taken on its own here: '
+                       + c.doc_type_escalated + '.' + NL
+                     : '')
+                    + ((conf === null || conf === undefined)
+                     ? 'No confidence figure: a person gave this answer -- the '
+                       + 'request or the benchmark manifest -- so there is no '
+                       + 'heading on the page to score.' + NL
+                     : 'How much of the line it was read off is actually the '
+                       + 'heading, discounted a little further down the page. It '
+                       + 'measures the evidence on the page, not how sure the '
+                       + 'classifier feels, '
+                       + 'self-belief, which is what lets the same figure describe '
+                       + 'the Python table and the model. At or above '
+                       + Math.round(MIN_CLASSIFY_CONFIDENCE * 100) + '% the table '
+                       + 'answers on its own and no request is made; below it the '
+                       + 'model is asked.' + NL)
+                    + ((c.doc_type_expected || []).length
+                     ? 'The benchmark manifest says this document is '
+                       + c.doc_type_expected.join(' + ') + ', and this run did not '
+                       + 'use that answer. The form below follows the answer above,'
+                       + ' so a field score taken here is over a different form '
+                       + 'from the one the truth file was written against.' + NL
+                     : '')
+                    + (c.doc_type_heading ? 'Heading read: ' + c.doc_type_heading + NL : '')
+                    + 'Chose the form below: ' + c.fields.join(', ')
+                    + (c.mandatory && c.mandatory.length
+                       ? NL + 'Mandatory on this type: ' + c.mandatory.join(', ') : '')
+                    + (c.rules && c.rules.length
+                       ? NL + 'Validation rules these types add: '
+                         + c.rules.join(', ').replace(/_/g, ' ') : '')
+                    + NL + (c.framed
+                       ? 'The extract prompt was told this.'
+                       : 'The extract prompt was NOT told this — it chose the '
+                         + 'form only (TYPE_FRAMING is off for this mode).'));
+  } else {
+    cls = pipeBox(2, 'Classify', 'wait', '—', '',
+                  'Which kind of document this is, decided in Python from the '
+                  + 'printed heading before either prompt is built. It chooses '
+                  + 'the fields asked for below.');
+  }
+
+  // 3. Extract.
+  let ext;
+  if (extracted && extracted.error) {
+    ext = pipeBox(3, 'Extract', 'skip', 'failed', esc((extracted.error || '').slice(0, 60)),
+                  extracted.error);
+  } else if (extracted && extracted.pending) {
+    const steps = extractSteps || [];
+    const at = steps.filter(x => x.status === 'done').length;
+    ext = pipeBox(3, 'Extract', 'run', 'running…',
+                  steps.length ? esc(at + ' of ' + steps.length + ' steps') : '',
+                  'Pass 2: the transcript back in as text, the form out as JSON.');
+  } else if (done) {
+    const tiers = extracted.tiers || {};
+    const p = Number(tiers.p1_present), a = Number(tiers.p1_absent);
+    const filled = Number.isFinite(p) && p + a > 0 ? p + '/' + (p + a) + ' filled' : '';
+    ext = pipeBox(3, 'Extract', 'done', esc(modeLabel(extracted)),
+                  [filled, extracted.seconds + 's'].filter(Boolean).join(' · '),
+                  'Pass 2 asked for exactly the form stage 2 chose.');
+  } else {
+    ext = pipeBox(3, 'Extract', 'wait', 'not run', '', '');
+  }
+  pipeline.innerHTML = read + cls + ext;
+}
+
 function paintFields() {
+  paintPipeline();
   paintFieldBody();
   // Left on the normal body until there is a reply to show: an empty pane while
   // the pass is still running reads as "the model returned nothing", when the
@@ -2751,6 +3243,17 @@ function paintFieldBody() {
   }
 
   const f = extracted.fields || {};
+  /* Which of them the requirement marks Mandatory, from stage 0 -- the live
+     event while a run is in flight, the result's own copy for one read back
+     afterwards, exactly as the pipeline strip resolves it. Empty on a run that
+     predates per-type forms and on a document nothing could place, and empty is
+     the honest answer there: no requirement is in play, so nothing is demanded.
+     Never derived here from the type -- which keys a requirement demands is
+     stated once, in `prompts.MANDATORY_FIELDS`, and a second copy in JavaScript
+     would go stale the next time a requirement arrives. */
+  const stage0 = classified || extracted.classified || {};
+  const req = new Set(stage0.mandatory || []);
+  const reqItems = new Set(stage0.mandatory_items || []);
   const g = extracted.grounding || {};
   const st = g.statuses || {};
   const ratio = g.grounded_ratio;
@@ -2767,11 +3270,67 @@ function paintFieldBody() {
     if (!Number.isFinite(present) || present + absent === 0) return acc;
     return {present: acc.present + present, total: acc.total + present + absent};
   }, {present: 0, total: 0});
+  /* The document type is on the status line rather than in a banner, because
+     it is not a finding -- it is the name of the form the values below were
+     asked for, and it changes which rows exist. `doc_type_from` rides in the
+     tooltip: a type taken off the heading and one taken from the manifest are
+     the same answer with different authority behind them, and a run should
+     never have to be trusted about a choice it cannot show its working for. */
+  const vc = (extracted.validation && extracted.validation.counts) || null;
+  /* Every type the page names, not just the one it is filed under: the form
+     below is the UNION of their field sets, so naming one of them would leave a
+     reader unable to work out why a key is on screen. */
+  const docTypes = extracted.doc_types
+    || (extracted.doc_type ? [extracted.doc_type] : []);
   fldStatus.textContent = `${modeLabel(extracted)} · ${extracted.seconds}s · `
     + `${extracted.tokens} tokens · ${extracted.model || ''}`
+    + (docTypes.length ? ` · ${docTypes.join(' + ').replace(/_/g, ' ').toLowerCase()}` : '')
     + (filled.total ? ` · ${filled.present}/${filled.total} fields` : '')
     + (ratio === null || ratio === undefined ? ''
-       : ` · ${(ratio * 100).toFixed(0)}% grounded`);
+       : ` · ${(ratio * 100).toFixed(0)}% grounded`)
+    + (vc && vc.scored ? ` · ${vc.ok}/${vc.scored} checks pass` : '')
+    /* Mandatory fields that came back empty, counted by `validate` over
+       DISTINCT fields rather than over check rows -- one field with two
+       rules against it contributes two absent rows. Beside the check
+       count and never folded into it: an absent field is neither a pass
+       nor a failure of a rule, because the rule never ran on it, and it
+       is the one figure on this line that says the document cannot be
+       filed as it stands. Absent rather than zero where no requirement
+       covers the type: nothing is demanded, so nothing can be missing. */
+    + (vc && vc.mandatory_absent
+       ? ` · ${vc.mandatory_absent} required missing` : '');
+  /* Which rules a document is held to is a property of its TYPE, not of the
+     schema -- an invoice's number is checked for a duplicate and a credit
+     note's against the document it credits -- so the check count is unreadable
+     without them. A rule that passed and one this document was never held to
+     look identical in a bare "13/15". */
+  const vrules = (extracted.validation && extracted.validation.rules) || [];
+  /* Where the answer came from, and -- since 2026-09-01 -- the line it was
+     read off. The type is settled before either prompt is built and both are
+     told what it is, so this is not only a label on the form: it is text the
+     model was sent. A reader looking at a value in the wrong key has to be able
+     to see whether the run was told the wrong thing about the document. */
+  const fromWord = {case: 'from the benchmark manifest',
+                    transcript: 'matched in Python from the heading on the page'
+                                + ' -- the fallback, so the model either was not'
+                                + ' asked or quoted a heading the page does not print',
+                    model: 'classified by the model, from a heading it quoted back'
+                           + ' off the page and Python checked is really printed there',
+                    caller: 'given by the request'}[extracted.doc_type_from]
+                   || 'not classified';
+  fldStatus.title = (docTypes.length
+    ? `Field set: the union of ${docTypes.join(' + ')} (${fromWord})`
+      + (extracted.doc_type_heading ? `\nHeading read: ${extracted.doc_type_heading}` : '')
+      + '\nBoth prompts were told this, and carry the rules that go with it'
+    : 'The document type was not identified, so the default field set was asked'
+      + ' for and neither prompt was told what kind of document this is')
+    + (vrules.length
+       ? `\nRules these types add: ${vrules.join(', ').replace(/_/g, ' ')}`
+       : '\nNo type-specific validation rules apply')
+    + (req.size
+       ? `\nMandatory for this type (${req.size}): `
+         + [...req].map(k => FIELD_LABELS[k] || k).join(', ')
+       : '\nNo requirement covers this type, so no field is Mandatory');
 
   // Which figures below already carry tax. The labels are built from it rather
   // than fixed, because `subtotal` is only "Amount ex VAT" on a page that
@@ -2783,6 +3342,12 @@ function paintFieldBody() {
                    : FIELD_LABELS[k];
 
   const truth = truthIndex(extracted.field_score);
+  const val = valIndex(extracted.validation);
+  /* The form this document's TYPE asked for. Falls back to every key when a
+     result predates per-type forms, so an old run read back from the queue still
+     renders in full rather than blank. */
+  const asked = new Set(extracted.fields_asked
+                        || Object.keys(FIELD_LABELS));
 
   /* Two banners stay above the fields and everything else moved below them.
      Both of these say the values under them are incomplete for a reason that is
@@ -2798,14 +3363,20 @@ function paintFieldBody() {
         + esc(extracted.partial) + '</p>' : '')
     + stepNote(extracted);
 
-  for (const [title, keys, hideWhenEmpty] of FIELD_SECTIONS) {
+  for (const [title, allKeys, hideWhenEmpty] of FIELD_SECTIONS) {
+    // Only the keys this run's form asked for. A key the form omits is not an
+    // empty answer, it is a question nobody put -- and drawing it as an empty
+    // row would read as a document that says nothing about it.
+    const keys = allKeys.filter(k => asked.has(k));
+    if (!keys.length) continue;
     // A section of keys the document simply may not have drops when it is empty
     // -- unless the truth file says one of them IS printed, in which case the
     // whole point of this tab is to show that nothing came back for it.
     if (hideWhenEmpty && keys.every(k => !f[k]
         && !(truth.scalars[k] && truth.scalars[k].status === 'missed'))) continue;
     html += '<div class="fld-sec">' + title + '</div>'
-      + defList(keys.map(k => [label(k), f[k], MONEY_KEYS.has(k), st[k], k]), truth.scalars);
+      + defList(keys.map(k => [label(k), f[k], MONEY_KEYS.has(k), st[k], k]),
+                truth.scalars, val, req);
   }
 
   // Filtered exactly as the grounding pass filters it, so the row index in
@@ -2863,6 +3434,68 @@ function paintFieldBody() {
       + '</table></div>';
   }
 
+  /* The certificate's income table. Drawn only where the form asked for one --
+     `items_asked` is the row shape the server chose from the document's type --
+     so an invoice never shows an empty one, and a certificate that returned no
+     rows shows the heading with a note rather than nothing, because "the table
+     did not come back" and "this document has no table" are different failures
+     and only the first is worth acting on.
+
+     There is no truth marking here, unlike the line-items table above: no
+     fixture in solution/ is a withholding certificate, so nothing rules on
+     these rows yet. What they do carry is the grounding verdict per cell and
+     the derived rate. */
+  const incomeCols = (extracted.items_asked || [])
+    .map(k => INCOME_COLS.find(([c]) => c === k)).filter(Boolean);
+  if (incomeCols.length) {
+    const rows = (Array.isArray(f.income_items) ? f.income_items : [])
+      .filter(r => r && typeof r === 'object' && !Array.isArray(r));
+    const rates = ((extracted.derived || {}).wht_rates) || [];
+    html += '<div class="fld-sec">Income rows (' + rows.length + ')</div>';
+    if (!rows.length) {
+      html += '<p class="ground-note">No income rows came back. The certificate'
+        + ' rules a table of income and this run returned none of it, so the two'
+        + ' totals below have nothing to be reconciled against.</p>';
+    } else {
+      html += '<div style="overflow-x:auto"><table><tr>'
+        + incomeCols.map(([k, lab]) => '<th class="has-hint" title="'
+            + esc(INCOME_HINTS[k] || '') + '">' + esc(lab)
+            // A cell of this table is Mandatory of every ROW, so the mark goes
+            // on the heading rather than on each cell -- the same fact said
+            // once instead of once per row.
+            + (reqItems.has(k) ? '<span class="req" title="Mandatory in the '
+                + 'requirement — every row has to state it.">required</span>'
+                : '') + '</th>').join('')
+        + '<th class="has-hint" title="Worked out here from the two figures on'
+        + ' the row, not read off the page — the requirement calls it a derived'
+        + ' rate. Blank where either figure could not be read, or where the'
+        + ' amount paid is zero.">Rate %</th></tr>'
+        + rows.map((r, i) => {
+            const rate = (rates[i] || {}).rate;
+            return '<tr>' + incomeCols.map(([k]) => {
+              const v = r && r[k] ? String(r[k]) : '';
+              const num = /^[\d.,\- ]+$/.test(v) && v.trim() !== '';
+              const st2 = st['income_items[' + i + '].' + k];
+              const bad = st2 === 'ungrounded' || st2 === 'computed';
+              // Empty in a column the requirement demands. Marked in the CELL as
+              // well as on the heading: the heading says the column is required
+              // of every row, and only the cell can say which row failed it.
+              const gap = !v && reqItems.has(k);
+              return '<td class="' + (num ? 'num ' : '')
+                + (bad ? 'ungrounded' : gap ? 'sc-missed' : '') + '"'
+                + (bad ? ' title="' + esc(GROUND_TAG[st2][1]) + '"'
+                   : gap ? ' title="Mandatory on every row of this table, and'
+                           + ' this row left it empty"' : '')
+                + '>' + (v ? esc(v) : gap ? 'required' : '') + '</td>';
+            }).join('')
+            + '<td class="num derived">'
+            + (rate === null || rate === undefined ? '—' : esc(String(rate)))
+            + '</td></tr>';
+          }).join('')
+        + '</table></div>';
+    }
+  }
+
   // Paired with its original index for the same reason as the line items above.
   const other = (Array.isArray(f.other_fields) ? f.other_fields : [])
     .map((o, i) => [o, i]).filter(([o]) => o && (o.label || o.value));
@@ -2906,6 +3539,9 @@ async function runExtract() {
 async function extractInto(payload) {
   extracted = { pending: true };
   extractSteps = null;
+  // Cleared with the steps, and for the same reason: last document's answer
+  // sitting over this run's fields would name the wrong form.
+  classified = null;
   // Cleared with the steps: a prefix left from the last document would sit under
   // this run's questions claiming to be the text they were asked against.
   extractPrefix = '';
@@ -3440,11 +4076,13 @@ function runRow(r) {
       // distinguishable at a glance.
       + (r.field_acc === '' || r.field_acc === undefined ? ''
          : '<br><span style="font-size:.72rem" title="of the ' + esc(r.field_expected)
-           + ' value(s) the field ground truth says this document prints, the share '
-           + 'that came back correct — a different question from whether they are '
-           + 'on the page"><b style="color:' + accColour(Number(r.field_acc) / 100)
+           + ' value(s) the field ground truth says this document prints AND the '
+           + 'requirement demands of its type, the share that came back correct '
+           + '— a different question from whether they are on the page. Fields '
+           + 'the requirement marks optional are extracted and shown, and are '
+           + 'not in this rate"><b style="color:' + accColour(Number(r.field_acc) / 100)
            + '">' + Number(r.field_acc).toFixed(0) + '%</b> of '
-           + esc(r.field_expected) + ' fields</span>')
+           + esc(r.field_expected) + ' required</span>')
       + '</td>'
     + '<td><span class="qbadge ' + (r.status === 'ok' ? 'done' : esc(r.status || '')) + '">'
       + esc(r.status || '') + '</span>'
@@ -4725,9 +5363,13 @@ function paintExtractSummary(t) {
     // against the score two columns left. Many filled and few correct is a model
     // inventing; few filled is one giving up, and they share an accuracy.
     {key: 'filled', label: 'Filled', n: true, value: e => e.filled.mean,
-     title: 'how many of the 14 priority-1 keys came back filled with anything at '
-          + 'all — coverage, not correctness',
-     cell: e => msFig(e.filled, ' of 14', 1)},
+     // No fixed number: the form is per document type now -- eleven keys on any
+     // of the three requirements, sixteen where no requirement applies -- so a
+     // mean over rows of different forms has no single denominator to name.
+     title: 'how many priority-1 keys came back filled with anything at all — '
+          + 'coverage, not correctness. The form is per document type, so rows '
+          + 'here can be out of different totals',
+     cell: e => msFig(e.filled, '', 1)},
     {key: 'failure', label: 'Failed', n: true, value: e => e.failure_rate,
      title: 'extractions whose reply cycled, and runs that produced no reply at '
           + 'all. Both are counted as failures and neither is scored.',
@@ -5058,14 +5700,18 @@ function prCostTint(factor) {
    when somebody sorted by time would be naming the fastest model "best". Same
    rule as the `ms-top` highlight, which is why both read `[0]` of the list the
    server returned rather than anything in the DOM. */
-function prHero(label, entry, unit, extra) {
+/* `badge` is already-built markup (the shape pill) or empty; `extra` is a
+   leading fact for the sub-line. Both are assembled by the caller with `esc`
+   applied to anything that came from the log. */
+function prHero(label, entry, unit, extra, badge) {
+  const head = '<span class="pr-hero-label">' + esc(label)
+    + (badge || '') + '</span>';
   if (!entry || entry.value.mean === null || entry.value.mean === undefined)
-    return '<div class="pr-hero pr-hero-none"><span class="pr-hero-label">'
-      + esc(label) + '</span><span class="pr-hero-num">&mdash;</span>'
+    return '<div class="pr-hero pr-hero-none">' + head
+      + '<span class="pr-hero-num">&mdash;</span>'
       + '<span class="pr-hero-sub">nothing scored in this view</span></div>';
   const pct = Number(entry.value.mean);
-  return '<div class="pr-hero" style="--hero:' + presColour(pct) + '">'
-    + '<span class="pr-hero-label">' + esc(label) + '</span>'
+  return '<div class="pr-hero" style="--hero:' + presColour(pct) + '">' + head
     + '<span class="pr-hero-model" title="' + esc(entry.model || '') + '">'
       + esc(csModel(entry.model)) + '</span>'
     + '<span class="pr-hero-num">' + pct.toFixed(1) + (unit || '') + '</span>'
@@ -5077,18 +5723,40 @@ function prHero(label, entry, unit, extra) {
       + '</span></span></div>';
 }
 
+/* Two cards: the best reader, and **the single best (model, shape) pairing**.
+
+   This went through two shapes on 2026-08-25, both at the user's request, and
+   the pair of them is the design:
+
+   1. *separate agentic and single in the big title card since the performance is
+      very different* -- the extraction card had been the POOLED per-model score,
+      which is the one thing `by_extract` and `_pres_group` refuse to compute.
+      The shapes are not two samples of one setting: the gap on typhoon was 2.5x
+      on the 29-key schema, and `qwen3.5:2b` is the one model that prefers the
+      shape the others do not. A pooled headline averaged a model's strong shape
+      with its weak one and named neither.
+   2. *only show the best not both* -- so one card, not one per shape.
+
+   **What survives from the first is the number, not the layout.** The card is
+   `extract_shapes[0]`, a model AND a shape, so it still never pools the two --
+   it just shows the winner instead of a card each. On the live log that is
+   agentic `qwen3.5:4b` at 76.0%, where the pooled figure had been 67.9%: the
+   headline now names something you can actually go and run.
+
+   The pill is not decoration. Without it the card would say "qwen3.5:4b, 76.0%"
+   and that number is unreachable in single mode -- the shape is half of what is
+   being recommended. Block 5 has the full grid for the shape that lost. */
 function prHeroes(p) {
   const ocr = (p.ocr_models || [])[0];
-  const ex = (p.extract_models || [])[0];
-  // The best shape for the winning extractor, which is the one thing the field
-  // number alone does not say and the whole of what block 5 is about.
-  const shape = (p.extract_shapes || []).find(s => ex && s.model === ex.model);
+  // The server's ordering, sorted by field accuracy -- never the sorted table.
+  const best = (p.extract_shapes || [])[0];
+  const secs = e => e && e.seconds.mean !== null
+    ? Number(e.seconds.mean).toFixed(0) + 's per doc' : '';
   return '<div class="pr-heroes">'
-    + prHero('Best at reading a page', ocr, '%',
-             ocr && ocr.seconds.mean !== null
-               ? Number(ocr.seconds.mean).toFixed(0) + 's per doc' : '')
-    + prHero('Best at extracting fields', ex, '%',
-             shape ? esc(shape.mode) : '')
+    + prHero('Best at reading a page', ocr, '%', secs(ocr))
+    + prHero('Best extractor', best, '%', secs(best),
+             best ? '<span class="pr-shape pr-shape-' + esc(best.mode)
+                    + ' pr-hero-pill">' + esc(best.mode) + '</span>' : '')
     + '</div>';
 }
 
@@ -5225,8 +5893,19 @@ function prEnvCard(env) {
 }
 
 /* A block heading: a numbered accent chip and the question it answers. The
-   caveats that used to sit under each block are on the heading's tooltip now. */
-function prHead(n, text, hint) {
+   caveats that used to sit under each block are on the heading's tooltip now.
+
+   `what` names the key THIS block groups on, because the window is per group
+   like everywhere else on the card -- block 1 covers each model's own recent
+   runs, block 3 each model-and-preset's. The sentence is plain text and joins
+   the tooltip rather than becoming a `cs-of` span as it does on the other tabs:
+   this tab has no prose by rule, and `prHead` escapes its hint. */
+function prHead(n, text, hint, what) {
+  const note = logWindow
+    ? ' Figures cover each ' + (what || 'model') + "'s most recent runs, up to "
+      + logWindow + ' — the run count on each row is what it actually covers.'
+    : '';
+  hint = (hint || '') + note;
   return '<div class="pr-h"' + (hint ? ' title="' + esc(hint) + '"' : '') + '>'
     + '<span class="pr-n">' + n + '</span>' + esc(text) + '</div>';
 }
@@ -5357,7 +6036,8 @@ function paintPresent(t) {
              + 'run equally at every preset, so a figure pooled across them is '
              + 'partly a ranking of whichever model was run most at each — which '
              + 'is why there is no pooled row. A row that falls in the first grid '
-             + 'and rises in the second is a preset paying for nothing.')
+             + 'and rises in the second is a preset paying for nothing.',
+             'model and preset')
     + '<div class="pr-sub">Accuracy at each preset</div>'
     + (prDetailGrid(p, 'accuracy') || none)
     + '<div class="pr-sub">Time at each preset</div>'
@@ -5370,7 +6050,8 @@ function paintPresent(t) {
          rowClass: e => e === ex[0] ? ' class="ms-top"' : ''}) : none)
     + prHead(5, 'Single against agentic',
              'The two shapes are separate rows, never averaged: some models do '
-             + 'well in one and badly in the other.')
+             + 'well in one and badly in the other.',
+             'model and shape')
     + (shapes.length ? lvTable('prShape', shapes, shape, {sort: {key: 'field', dir: 'desc'}}) : none)
     + prHead(6, 'What each extractor costs',
              'The pass-2 clock alone — reading the page is not in these figures.')
@@ -5393,6 +6074,9 @@ let rtAbort = null;
    is what actually decides, and a page quoting a different number would be
    describing a build nobody is running. */
 const MIN_READ_FOR_FIELDS = {{ min_read_for_fields }};
+/* From the server, never repeated here: the bar the Python classifier has
+   to clear before the model is asked. */
+const MIN_CLASSIFY_CONFIDENCE = {{ min_classify_confidence }};
 const CONTEST = { top: {{ contest_top }}, bottom: {{ contest_bottom }},
                   detail: '{{ contest_detail }}' };
 /* Which scope each contest subject implies. Painted from the server's own table
@@ -6515,15 +7199,22 @@ function fieldAccNote(fs) {
   const c = o.counts || {};
   const cov = fs.coverage || {};
   const items = fs.line_items;
+  const op = fs.optional || {};
   return accRow('Field extraction', o.accuracy,
                 'Extracted values against the value the field ground truth says '
                 + 'belongs in that key -- a different question from whether the '
-                + 'text was read correctly')
+                + 'text was read correctly'
+                + (fs.scored_scope ? '\nScored over ' + fs.scored_scope : ''))
     + '<p class="acc-note">' + c.correct + ' of ' + o.expected
-    + ' value(s) correct'
+    // What the bar is OVER, on the bar's own line. The Fields tab says it too,
+    // and this tab is read without that one: a rate whose scope is only stated
+    // elsewhere is a rate that will be read as covering everything.
+    + (fs.scored_scope ? ' required' : '') + ' value(s) correct'
     + (c.partial ? ', ' + c.partial + ' partly' : '')
     + ' — ' + c.wrong + ' wrong, ' + c.missed + ' missed, ' + c.spurious
     + ' filled where the page states nothing'
+    + (op.expected ? '. ' + (op.counts || {}).correct + ' of ' + op.expected
+       + ' found-only value(s) correct, outside this bar' : '')
     + (items ? '; ' + items.rows_matched + '/' + items.rows_expected
                + ' line-item row(s) matched, from the table in '
                + esc(((items.derived || {}).source) || 'the ground truth') : '')
@@ -6564,7 +7255,10 @@ function paintAccuracy() {
     + fieldAccNote(extracted && extracted.field_score);
 
   if (!truth.diff || !truth.diff.length) {
-    accDiff.innerHTML = '<span class="add">Exact match.</span>';
+    // "the same content", not "byte for byte the same page": `scoring.diff_lines`
+    // folds out any group whose two sides differ only in where the line breaks
+    // and spaces fell, which is the same rule `char_accuracy` scores under.
+    accDiff.innerHTML = '<span class="add">Every character of content matches.</span>';
     return;
   }
   accDiff.innerHTML = truth.diff.map(line => {
@@ -6990,6 +7684,12 @@ if (mockFile) {
 }
 if (benchCase) {
   benchCase.addEventListener('change', () => {
+    // Which form this case will be asked for. Painted from the same handler
+    // that already reacts to the picker rather than from a second listener --
+    // and it must live down here, because `benchCase` is a `const` declared
+    // below FX_CASES and reaching for it any earlier is a dead-zone throw that
+    // takes the whole script with it.
+    paintBenchForm();
     // The server reads the case PDF from disk, so any attached file is ignored.
     if (benchCase.value) {
       current = null; fileInput.value = '';
@@ -7501,9 +8201,18 @@ runBtn.addEventListener('click', async () => {
           // OCR is finished and on screen; the second pass runs after it.
           extracted = { pending: true };
           extractSteps = null;
+          classified = null;
           tabFields.disabled = false;
           pagebar.innerHTML = '<span class="spin"></span> Extracting fields…';
           if (tabFields.classList.contains('on')) paintFields();
+        } else if (msg.event === 'classified') {
+          // Stage 2 of three, and on a full run it is the only moment the page
+          // can say WHY the fields about to appear are the ones they are.
+          stepEvent(msg);
+          pagebar.innerHTML = '<span class="spin"></span> '
+            + esc((msg.doc_types || []).join(' + ').replace(/_/g, ' ').toLowerCase()
+                  || 'unclassified')
+            + ' — asking for ' + msg.fields.length + ' fields…';
         } else if (msg.event === 'extract_steps' || msg.event === 'extract_step') {
           // Agentic mode only. The bar names the step because 15 requests with
           // one label between them is the same silence as no progress at all.
@@ -7595,7 +8304,8 @@ async function fxDescribe() {
     return;
   }
   const meta = FX_CASES.find(c => c.id === id) || {};
-  fxTruthNote.textContent = t.file + ' · ' + t.text.length.toLocaleString()
+  fxTruthNote.textContent = caseFormNote(id) + t.file + ' · '
+    + t.text.length.toLocaleString()
     + ' characters · ' + (meta.field_truth
       ? 'scored against ' + id + '.fields.json'
       : 'no ' + id + '.fields.json — the fields come back unscored');
