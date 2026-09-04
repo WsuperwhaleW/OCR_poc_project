@@ -227,6 +227,66 @@ OLLAMA_REASONING_EFFORT = config.env_str("OLLAMA_REASONING_EFFORT", "none",
 # switch made mid-batch would be paid for by the document being read.
 OLLAMA_UNLOAD_ON_SWITCH = config.env_bool("OLLAMA_UNLOAD_ON_SWITCH", True)
 
+
+# --------------------------------------------------------------------------
+# Starting on something that works (2026-09-03, at the user's request: *auto
+# default model to the best one that is shown, and auto check and select the
+# server that is in the history/constant and is online*).
+#
+# Both of these change a DEFAULT and nothing else. An explicit choice -- the
+# page's pickers, `compare.py --server/--model`, a locked random-test round --
+# still wins in every case, so nothing that was reproducible before stops being
+# reproducible. What changes is what a fresh process does when nobody has said.
+
+# Probe the configured endpoints and the ones the run log has runs against, and
+# make the first one that answers active.
+#
+# The old default was `_endpoints[0]`, which is llama-server on :8080 -- and on
+# the machine this was written on that port has served 2 runs of 1298 while
+# Ollama on :11434 served the other 1296. So the app started, every render, and
+# every request pointed at a dead port until somebody moved the picker, and a
+# dead port is not cheap: it costs a full connect timeout, twice (llama, then
+# Ollama), on every probe.
+#
+# The cost is paid once, at startup, in `preflight` -- never on a polling path,
+# which is the rule this project already has about the model server. It stops at
+# the first endpoint that answers, so the usual case is one probe.
+AUTO_SELECT_SERVER = config.env_bool("AUTO_SELECT_SERVER", True)
+# How many candidates a single auto-select is willing to probe. Each dead one is
+# ~3 s of connect timeouts, and the list is the constants plus every server in
+# the log, which grows without bound on a machine that has moved endpoints
+# around. Bounded so a long history cannot turn startup into a minute of waiting
+# for ports nobody is running any more.
+AUTO_SELECT_MAX_CANDIDATES = config.env_int("AUTO_SELECT_MAX_CANDIDATES", 8,
+                                            minimum=1)
+
+# Default each pass's model to the one the run log RANKS FIRST for that pass,
+# among the models the active endpoint actually serves.
+#
+# It replaces a substring test on the model's name as the pass-1 default (an
+# `ocr` in the name), and it replaces "the reading model" as the pass-2 one. The
+# name test was never a claim about quality -- it was a guard against a fresh
+# process resolving pass 1 onto whatever had been pulled most recently -- and
+# `runlog.best_models` guards the same thing with evidence instead: the same
+# ranking the Summary tab's headline cards print. It is still a fallback below
+# an explicit choice, and the name test is still a fallback below IT, for a
+# model the log has never scored.
+#
+# **The two passes rank differently and that is the point.** On the log this was
+# written against, pass 1 ranks typhoon first (86.6%, 1 failure in 50) where the
+# name test picked dots.mocr (85.7%, 8 failures) -- within a point on the runs
+# that finish, separated by the failures, which is what a name cannot see. Pass 2
+# ranks qwen3.5:9b first (90.4%) with typhoon seventh of nine at 38.8%; until now
+# a one-model setup ran the second pass on the first pass's winner, which this
+# project's own sweeps say is the wrong tool for the form.
+#
+# One thing to know before leaving it on: the ranking is accuracy x (1 - failure
+# rate) and says nothing about cost. qwen3.5:9b is 6.6 GB, spills off a 6 GB
+# card, and takes 53-81 s an extraction against gemma4:e4b's 14-35 s for about
+# two points more. Pick the model by hand where that trade matters; the page's
+# picker says which model is auto-selected and why.
+AUTO_BEST_MODEL = config.env_bool("AUTO_BEST_MODEL", True)
+
 # Which pass-1 shape to start in: a key of `prompts.OCR_PROFILES`. Not validated
 # here -- this module deliberately imports nothing but `config` and `jobs`, so
 # `app.py` checks the name against the table and falls back with a warning, the
@@ -257,16 +317,48 @@ DRY_MULTIPLIER = config.env_float("DRY_MULTIPLIER", 0.8, minimum=0.0)
 DRY_ALLOWED_LENGTH = config.env_int("DRY_ALLOWED_LENGTH", 32, minimum=1)
 
 
-def sampler_extras():
+# How many tokens of the tail DRY scans for repeats. 0 means "the whole context
+# window", resolved from the window the request itself is being sent with, so the
+# two cannot disagree after a Context change -- the same rule as never re-reading
+# an env var in a second module.
+#
+# This was hard-coded -1, llama.cpp's documented "= context size", and every
+# llama.cpp baseline in CLAUDE.md was measured under it. A 2026 llama-server
+# build (b1-67a17c1) validates the field as 0 <= n <= INT_MAX and rejects -1 with
+# HTTP 400 on EVERY request -- the app was unusable against it. Sending the window
+# as a number is the same sampler on both builds; verified against that server,
+# which accepts 0, 8192 and 32768 and refuses -1.
+#
+# Do NOT let this fall through to the server's own default: that build defaults
+# it to 64, so an omitted field is a different sampler rather than the measured
+# one. A positive value here overrides the window, and 0 in llama.cpp's own
+# vocabulary (disable DRY) is DRY_MULTIPLIER=0 here.
+DRY_PENALTY_LAST_N = config.env_int("DRY_PENALTY_LAST_N", 0, minimum=0)
+
+# Used when the caller does not know the window -- it is always passed in from
+# backends.num_ctx() on both request paths, so this is a floor rather than a
+# setting anyone is expected to meet.
+DRY_PENALTY_FALLBACK = 8192
+
+
+def sampler_extras(n_ctx: int = 0):
     """llama.cpp-only sampling controls, omitted entirely when DRY is disabled.
 
     Omitted rather than sent as no-ops so that with DRY_MULTIPLIER=0 both backends
     receive a byte-identical request body apart from Ollama's "model" field --
     there is then nothing left to explain a difference in the results except the
     server itself.
+
+    `n_ctx` is the window this request is being sent with (backends.num_ctx());
+    DRY scans that whole window unless DRY_PENALTY_LAST_N says otherwise.
     """
     if DRY_MULTIPLIER <= 0:
         return {}
+    try:
+        window = int(n_ctx)
+    except (TypeError, ValueError):
+        window = 0
+    last_n = DRY_PENALTY_LAST_N or (window if window > 0 else DRY_PENALTY_FALLBACK)
     return {
         # repeat_penalty stays OFF: documents legitimately repeat values (0.00,
         # currency codes, identical cells) and a flat penalty corrupts them.
@@ -277,7 +369,8 @@ def sampler_extras():
         "dry_multiplier": DRY_MULTIPLIER,
         "dry_base": 1.75,
         "dry_allowed_length": DRY_ALLOWED_LENGTH,
-        "dry_penalty_last_n": -1,
+        # A number, never -1. See DRY_PENALTY_LAST_N above.
+        "dry_penalty_last_n": last_n,
     }
 
 

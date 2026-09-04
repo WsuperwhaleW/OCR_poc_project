@@ -236,6 +236,9 @@ The ones that matter for a deployment:
 | `PORT` | `5000` | Port to bind. |
 | `LLAMA_URL` | `http://127.0.0.1:8080` | Where the model server is listening. |
 | `OCR_ENDPOINTS` | *(unset)* | Comma-separated list offered in the server picker. |
+| `AUTO_SELECT_SERVER` | `1` | Probe the configured endpoints and the ones the run log has runs against at startup, and select the first that answers. `0` starts on the first in the list whether or not anything is listening there. |
+| `AUTO_SELECT_MAX_CANDIDATES` | `8` | How many endpoints one auto-select will probe. A dead port costs a pair of connect timeouts. |
+| `AUTO_BEST_MODEL` | `1` | Select each pass's model at startup: the one the run log ranks first for that pass. Both stay changeable in the pickers. `0` starts both passes on the reading model — the one-model setup every figure in `CLAUDE.md` was measured under. |
 | `OLLAMA_SYSTEM` | `You are a helpful assistant.` | System message sent with every Ollama request; it reproduces what Ollama otherwise injects from the served model's Modelfile. Ollama only — llama-server is sent none. Set it empty to send no system message. |
 | `EXTRACT_SCHEMA` | `1` | Whether a field-extraction reply that cannot be parsed is asked again with decoding constrained to the field schema. The first request is unconstrained either way. `0` turns the retry off, so an unusable reply is reported instead. |
 | `OLLAMA_REPEAT_PENALTY` | `1.1` | Repetition penalty on the constrained retry above. Ollama only, and the only place this app sets one above `1.0`. `1.0` turns it off. |
@@ -386,6 +389,41 @@ raising the token cap does not help.
 Set the starting state with `LOOP_GUARD` (`1`/`0`). Like the profile, switching it applies to
 the whole process and takes effect on the next page read; a page already streaming finishes
 under the rule it started with, and the run log's `status` says which.
+
+### Score fields only above (the read floor)
+
+Pass 2 can only map values pass 1 produced, so a field score taken over a broken transcript
+marks down whatever extracted and lets whatever read get away with it. **Score fields only
+above** is the transcript accuracy a read has to reach before the extraction taken from it is
+worth a field score. It sits on the **Workspace** pane, under the loop backstop, and again on
+the **Random test** pane: one setting behind two boxes, so moving either moves both.
+
+Under the floor the extraction still runs and the row is still written — keys filled, grounded
+ratio, extra fields, timings, and the transcript score itself. What is dropped is the
+correctness figure: `field_acc`, `field_expected`, `p1_correct`, `p1_partial` and `p1_scored`
+are left blank, the Accuracy tab prints the reason instead of a bar, and the Fields tab prints
+it instead of the rate. **The per-value marks stay** — those are what explain a bad read, and
+blanking them would remove the evidence along with the number. A random-test round says
+**unscored** with the reason in place of its score.
+
+It applies to **every path that reads a page** — this pane, the queue, `POST /api/ocr`,
+`POST /api/ocr/stream` and the random test — and it is applied at the moment a run is logged.
+A read that looped, was cut off at the token cap, or came back empty is left unscored whatever
+the floor says: that transcript is a fragment however it scored. A document with no
+`solution/<id>.md` is never suppressed, because nothing there can tell a bad read from an
+unmeasured one. **A low score is not a failure** — it is a run, and it counts in the pass-1
+mean.
+
+**There are two read floors and only one of them can be undone.** This one decides what is
+**written**, and a score never taken is not in the log to recover. The run-log card's own
+**Read floor** decides what is **averaged**, and moves freely because every table re-derives
+trust from each row's transcript score. So the useful shape is to leave this one at `0` — score
+everything, keep the figures — and raise the card's floor to decide what the tables mean by
+them.
+
+Set the starting value with `MIN_READ_FOR_FIELDS` (a fraction, default `0.75`). Switching it
+applies to the whole process and takes effect on the next run; the page sends what is on screen
+before each run, so a run is judged by the floor its operator is looking at.
 
 ### Raw output (the reply before anything touched it)
 
@@ -663,6 +701,44 @@ talks to, without restarting it. Offered by default:
 
 Set the list with `OCR_ENDPOINTS` if your servers listen elsewhere.
 
+**The app picks one that is online at startup.** The list above is a constant and the run
+log is a history, and neither says which port has something listening on it today. So
+before it reports on a server, the app probes the configured endpoints and then every
+server `logs/runs.csv` has runs against — most recently used first — and makes the first
+one that answers active. It stops at the first, so the usual case is one probe, and it
+never moves off an endpoint that answers. Startup prints the endpoint it landed on and
+what it tried. `AUTO_SELECT_SERVER=0` turns it off; `AUTO_SELECT_MAX_CANDIDATES` bounds
+how many it will try, since a dead port costs a pair of connect timeouts.
+
+It happens **at startup only**. Once the app is running the server picker is the way to
+move, and **Re-check** re-probes the endpoint already selected — after starting a model
+server the app did not find at launch, press Re-check, or restart the app.
+
+### The models are selected for you at startup
+
+Startup also picks the model for each pass: the one the run log **ranks first for that
+pass**, among the models the active endpoint serves. It is the same ranking the Summary
+tab's headline cards and the Full rank panel show (`runlog.best_models`, accuracy ×
+(1 − failure rate), windowed per model like every other figure on that card), and a model
+with a track record outranks one with a run or two behind it.
+
+**They are ordinary selections, exactly as if you had used the pickers** — so the page
+opens on them, and changing either is the picker as usual. Nothing is re-decided later: a
+default that moved under a session as the log grew would be worse than one set once.
+
+- **The two passes rank differently, and that is the point**: reading lands on the OCR
+  model, while extraction lands on whichever general model has scored best here rather
+  than on whatever is reading the page. Pick **same as reading model** to go back.
+- A model the log has never scored is still reachable as a reading default: below the
+  ranking, the old rules answer (an OCR model first, then anything with vision).
+- The ranking knows nothing about cost. Where a slower model wins by a point or two, pick
+  the cheaper one by hand.
+
+Start the app with `AUTO_BEST_MODEL=0` to run both passes on the reading model, which is
+the one-model setup every figure in `CLAUDE.md` was measured under and the setting for a
+sweep whose numbers are to be compared with those. `compare.py` prints the extraction model
+in its header whenever it differs from the reader.
+
 The two server kinds are detected, not configured — `backends.py` probes `/props` first
 (llama.cpp) then `/api/tags` (Ollama) — and the app adapts:
 
@@ -679,8 +755,10 @@ The two passes ask for different things — reading Thai off an image, and mappi
 onto a form — and a model can be good at one and poor at the other. **Model · extracts fields**,
 beside the reading model in both the Workspace and Fields panes, chooses what pass 2 runs on:
 
-- **same as reading model** (the default) — one model does both, which is how the app has always
-  worked and what every figure in the run log predates this choice was measured under.
+- **same as reading model** — one model does both, which is what every figure in the run log
+  predating this choice was measured under, and what `AUTO_BEST_MODEL=0` starts on. It is no
+  longer what a fresh start selects: since 2026-09-03 startup picks the extractor the run log
+  ranks first (see above), which is usually not the model reading the page.
 - **any general model the endpoint serves** — pass 2 sends text and gets JSON back, so it does
   not need vision. A text-only model is a perfectly good extractor and is offered here.
 
@@ -718,8 +796,8 @@ Three things to know about it:
 * **It is skipped while the queue is working**, even though a model-only switch is allowed
   there. Eviction goes to the same scheduler that is serving the run in flight.
 
-The app never polls the model server. It asks for status when the page renders and when you
-press **Re-check**, and that is all.
+The app never polls the model server. It asks for status when the page renders, when you
+press **Re-check**, and once at startup, and that is all.
 
 ### Server status
 
@@ -772,7 +850,7 @@ at a time. Raising the token cap does not help.
 ## Checking accuracy against ground truth
 
 `solution/` holds a hand-transcribed expected transcript for each PDF in `mockOcr/` —
-`sol001.md` … `sol010.md`, in Markdown so the tables render when you open them. Edit these
+`sol001.md` … `sol013.md`, in Markdown so the tables render when you open them. Edit these
 directly; they are the files the scores are computed from. Scoring lives in `scoring.py` and
 is shared by the web page and the CLI, so the browser and the terminal can never report
 different numbers for the same run.
@@ -799,8 +877,9 @@ ls mockOcr/invoice_*.pdf
 |---|---|---|
 | `STATEMENT_OF_ACCOUNT` | sol001 | invoice |
 | `INVOICE` | sol002 | — |
-| `RECEIPT` | sol003, sol004, sol005, sol007 | tax invoice |
+| `RECEIPT` | sol003, sol004, sol005, sol007, sol011, sol012 | tax invoice |
 | `CREDIT_NOTE` | sol006, sol008, sol009, sol010 | sol006 is also a tax invoice |
+| `TAX_INVOICE` | sol013 | the only case that is a tax invoice and nothing else. No requirement covers that type on its own, so it is asked the widest form (30 keys) and nothing is Mandatory — it is marked **unknown type** and its headline field score is taken over the 13 values its truth file states |
 | `WHT_CERTIFICATE` | — | the withholding tax certificate (มาตรา 50 ทวิ) is a recognised type with a form and validation rules of its own, and no fixture yet |
 
 A file is named for **every** type its heading names, in that order — so
@@ -810,7 +889,7 @@ A file is named for **every** type its heading names, in that order — so
 
 The three case dropdowns on the page (**Benchmark case**, **Lock document**, **Ground-truth
 document**) group their options under the type each case is filed under, and `GET /api/cases`
-reports `doc_types` per case. The PDFs were renamed to this scheme on 2026-08-31; the names they
+reports `doc_types` per case. The PDFs were renamed to this scheme on 2026-08-31 (sol011-sol013 arrived under it on 2026-09-03); the names they
 shipped under before that are listed as `aliases`, so an upload of an original still matches
 by name, and any copy of one still matches by contents whatever it is called.
 
@@ -889,9 +968,10 @@ Each case reports:
 
 | Metric | Meaning |
 |---|---|
-| `char accuracy` | 1 − character edit distance / length. **The headline number, and it scores content only** — every invisible character is removed from both sides first, so line breaks, blank lines, indentation, cell padding, tabs, non-breaking and other Unicode spaces, and zero-width marks cannot change it. So is every piece of table markup: `<table>`, `<tr>`, `<td>`, `<th>` and their `colspan`/`rowspan` attributes, `<br>`, pipes and the `\|---\|` separator row all come out, leaving the cell text. A table scores on what it says, not on how it was marked up. The `--- page 2 ---` separator this app puts between the pages of one document goes too, and so does a printed blank waiting to be filled in — a run of four or more dots, underscores or dashes, which is how a model spells the ruled line after วันที่/Date or เช็ค หมายเลข on a form. A rule carries no content, and a hand transcription writes none. Only the characters a reader would get information from are compared. |
+| `char accuracy` | **how much of the ground truth the transcript actually produced** — content characters of the page that came back, as contiguous runs, over the content characters the page prints. Missing and misread text costs; **text the transcript has and the page does not costs nothing** (it is counted separately as `invented`, and printed beside the score). Until 2026-09-04 this was 1 − character edit distance / length, which charged extra text the same as lost text; the rule changed because pass 2 is what the number is for — a value the read dropped cannot then be extracted, while a line the page does not print leaves every real value where it was. `word accuracy` has always been computed this way, so the two are now consistent. **It scores content only** — every invisible character is removed from both sides first, so line breaks, blank lines, indentation, cell padding, tabs, non-breaking and other Unicode spaces, and zero-width marks cannot change it. So is every piece of table markup: `<table>`, `<tr>`, `<td>`, `<th>` and their `colspan`/`rowspan` attributes, `<br>`, pipes and the `\|---\|` separator row all come out, leaving the cell text. A table scores on what it says, not on how it was marked up. The `--- page 2 ---` separator this app puts between the pages of one document goes too, and so does a printed blank waiting to be filled in — a run of four or more dots, underscores or dashes, which is how a model spells the ruled line after วันที่/Date or เช็ค หมายเลข on a form. A rule carries no content, and a hand transcription writes none. Only the characters a reader would get information from are compared. |
 | `word accuracy` | longest-common-subsequence word overlap. Whitespace does not count here either, but re-ordering does: a value read correctly in the wrong place lowers this and not `char accuracy`. |
 | `char acc. w/o marks` | `char accuracy` with Thai tone marks and above/below vowels stripped. If this is much higher than `char accuracy`, the right letters are being read and the marks lost — a different problem from wrong words. |
+| `numbers`, `Thai`, `English` | the same measure over one script at a time, and each prints the count it is out of. `numbers` is digits in Arabic or Thai numerals — amounts, dates, tax IDs, document numbers; `Thai` is Thai letters with their marks and vowels; `English` is the Latin alphabet, which is what the letters are and not a claim that the words are English. **They do not add up to `char accuracy`**: punctuation, symbols and currency signs belong to no script and are in the headline only. A page printing fewer than 20 characters of a script reports no rate for it and says how few there were — three characters score 0% or 100% and nothing in between. In the SUMMARY table the three means cover only the documents that print enough of that script, and a line under the table says which. |
 
 …followed by a unified diff of expected vs actual, listing **differences in content**
 only. A group of lines whose two sides hold the same text differently wrapped is
@@ -1051,12 +1131,20 @@ not read as incomplete. What that covers follows the type: eleven keys on an inv
 credit note, seven of a receipt's eleven. The Optional ones are reported beside the headline
 as their own rate, and every run prints what it was scored over — `scored over: the
 requirement's Mandatory fields` — because 100% of nothing and 100% of eleven are the same
-number and not the same claim. A document no requirement covers (a bare tax invoice) has
-nothing Mandatory and so gets no field rate at all.
+number and not the same claim.
+
+**A document no requirement covers yet is scored over the base field set instead, and marked
+`unknown type`.** A bare tax invoice, or a page nothing could classify, has nothing Mandatory
+— so its headline is taken over every key its truth file states, and everything that prints
+that rate says what it is over: the run prints `scored over: every key asked for -- no
+requirement covers this document type yet`, the Classify box carries an **unknown type**
+badge, and the bar on the Accuracy tab counts *stated* values rather than *required* ones. It
+is not a compliance figure: nothing on such a document is marked `REQUIRED`, no extra
+validation rule runs, and `validate` demands nothing of it. It is what the extractor found.
 
 | Metric | Meaning |
 |---|---|
-| `field accuracy` | correct values ÷ **Mandatory** values the truth file says the page prints. **The headline.** |
+| `field accuracy` | correct values ÷ **Mandatory** values the truth file says the page prints — or, on a type no requirement covers, ÷ every value it states. **The headline.** |
 | loose | the same, counting a partial match — one value contains the other, so the right thing was found and too much or too little of it was taken |
 | `field precision` | correct ÷ everything the extractor filled in. Falls when it invents values the page does not state |
 | `optional fields` | the same accuracy over the fields the requirement marks No. Reported, never in the headline; a row of the miss table that belongs to one is marked `(optional)` |
@@ -1122,7 +1210,7 @@ extraction-model and shape pickers are hidden.
 | | |
 |---|---|
 | **Full** | read the page, then extract from what came back. Both passes, and the field score is therefore partly a measurement of the read: a value pass 1 got wrong cannot then be extracted right |
-| | **A read that failed &mdash; looped, cut off, or empty &mdash; or that scored under `MIN_READ_FOR_FIELDS` (0.75) does not get its fields scored.** The extraction still runs and the row is still written with what came back (keys filled, grounded ratio, extra fields, timings); the correctness columns are left blank, and the round says **unscored** with the reason. A low score is **not** a failed run — it is a run, and it counts in the pass-1 mean. Set `MIN_READ_FOR_FIELDS=0` to score every extraction whatever the read did |
+| | **A read that failed &mdash; looped, cut off, or empty &mdash; or that scored under the read floor does not get its fields scored.** The extraction still runs and the row is still written with what came back (keys filled, grounded ratio, extra fields, timings); the correctness columns are left blank, and the round says **unscored** with the reason. A low score is **not** a failed run — it is a run, and it counts in the pass-1 mean. **Score fields only above** on this pane and on the Workspace pane are one setting; set it to `0` to score every extraction whatever the read did |
 | **Read only** | pass 1 and stop. No extraction, no field score, and the row it logs has blank pass-2 columns |
 | **Fields only** | pass 2 alone, on `solution/<id>.md`. No page is read and no image is made, so what comes back wrong is the extractor's &mdash; the same thing the Fields pane does, and the shape every pass-2 measurement was taken under. Any served model can be drawn, vision or not, and it runs as the one model in force |
 
@@ -1176,6 +1264,13 @@ The whole plan appears as soon as the run starts — every round `queued`, the c
 `running`, then filled in with the transcript score, the field score (a partial counting half),
 how many extra fields came back, and the clock. A round that fails is marked and the run
 continues: stopping at the first failure would find one problem per invocation.
+
+**The field score is the same one everything else reports** — the fields the requirement marks
+Mandatory for that document's type. A round prints `5+0p/7 req, 1/2 opt`: five of the seven
+required values correct, and one of the two the truth file rules on that the requirement only
+asks for. The optional half appears only where there is one, so an invoice — every key of
+which is Mandatory — shows just `9+0p/10 req`. A type no requirement covers reads `12+0p/13
+base` instead: the denominator is the base field set, not a requirement.
 
 Two things worth knowing:
 
@@ -1273,7 +1368,9 @@ to run first. The **Fields** cell marks an updated row.
 | `p1_correct`, `p1_partial`, `p1_scored` | priority-1 values that are the value the field truth file says belongs in that key, values where one contains the other, and how many values that file rules on. **Correctness, not coverage** — `p1_present` counts a key filled with anything at all. The setting table scores a partial as **half a value**; `p1_correct` keeps the strict count, so both readings survive here. Blank on every document without a field truth file, for the same reason `field_acc` is: a `0` would read as an extraction that got everything wrong rather than as one with no answer sheet |
 | `p1_present`, `p1_absent`, `p2_present`, `p2_absent`, `p3_present`, `p3_absent` | field coverage by delivery tier — how many of each tier's keys came back filled. Pass 2 extracts priority 1 only, so `p2`/`p3` read `0/0`: this build asked for none of them, which is not the same as a run that extracted nothing and leaves them blank. Present and absent are both written, so a row always says what its counts were out of — and since the form is per document type, that sum is 11 on a commercial form, 14 on a withholding certificate, and 30 where nothing classified the page |
 | `doc_types`, `doc_type_from` | every type pass 2 built the form from, `+`-joined, and on whose authority: `case` (the benchmark manifest), `model` (read by the model and checked against the page), `transcript` (the fallback — matched in Python from the printed heading), `caller`, or blank. Read it beside `p1_present`/`p1_absent`, which are counted against that form — two rows reading 11/13 and 13/15 are both complete runs of different forms |
-| `case`, `char_accuracy`, `word_accuracy`, `char_accuracy_no_marks` | percentages, blank when the input has no ground truth. **`char_accuracy` is the score** — content only, and order-blind: the transcript's blocks are matched to the ground truth's by content before the edit distance, so a page read correctly but walked in a different order is not charged for it. Missing, invented and misread content cost exactly what they did. The other two stay for diagnosis and are not shown on the page: `word_accuracy` is order-*sensitive*, so the gap between the two is what a reordering looks like |
+| `case`, `char_accuracy`, `word_accuracy`, `char_accuracy_no_marks`, `invented_chars` | percentages, blank when the input has no ground truth. **`char_accuracy` is the score** — content only, and order-blind: the transcript's blocks are matched to the ground truth's by content first, so a page read correctly but walked in a different order is not charged for it. Missing and misread content cost; **extra content does not, since 2026-09-04** — `invented_chars` counts it instead, and is blank on every row written before that date, which is every row whose `char_accuracy` was an edit distance — an exact test for which era a row belongs to. **The log was not reset for the change**: every table covers each setting's own most recent runs, so the older rows leave on their own as new ones arrive, and the pass-1 table says how many are left until they are gone. Until then, a mean mixing the two is a mean over two questions. The other two stay for diagnosis and are not shown on the page: `word_accuracy` is order-*sensitive*, so the gap between the two is what a reordering looks like |
+| `thai_accuracy`, `latin_accuracy`, `digit_accuracy`, `thai_chars`, `latin_chars`, `digit_chars` | the same transcript recall taken over one script at a time, and how many characters of each the ground truth holds. `digit_accuracy` is the one to read first: every Mandatory field in the requirement is a figure, a date or an ID, and a page can score 95% overall while losing the digit that makes an amount wrong. `latin` is the Latin **alphabet** — a romanised Thai company name is Latin script and is not English. **The three do not add up to `char_accuracy`**; punctuation and symbols belong to no script and are in the headline only. A rate is blank where the page prints fewer than 20 characters of that script — the count beside it says why — and on every row written before 2026-09-04 |
+| `field_verdicts` | which **field** the extraction got right, as `key=letter` pairs joined by `;`. The letters are the six field-score verdicts: `c` correct, `p` partial, `w` wrong, `m` missed (the page states it, the extractor returned nothing), `s` spurious (the page states nothing, the extractor filled it anyway), `a` absent (both empty — agreement, scored neither way). `m` and `s` are opposite mistakes and neither means "empty". Field names only; no value ever reaches this file. Blank wherever `field_acc` is blank, and on rows written before 2026-09-04. This is what the **Weak spots** panel is compiled from |
 | `status`, `error` | `ok` / `partial` / `truncated` / `looped` / `cancelled` / `error` |
 | `run_type` | `ocr` for a document read, `extract` for a re-extraction of a transcript already read. Blank on rows written before the column existed |
 | `extract_updated` | set when a later, better re-extraction replaced this row's pass-2 columns, so `timestamp` no longer says when they were measured. Blank on the normal case |
@@ -1298,9 +1395,9 @@ Pick **Light** for projecting or screenshotting — it is what the Summary panel
 shown in. Light is a soft grey ground with an off-white card rather than white-on-white, so it
 does not glare on a projector.
 
-### Reading the card: eight panels, sortable, filterable
+### Reading the card: nine panels, sortable, filterable
 
-The card is eight panels, and only the last of them is the log:
+The card is nine panels, and only the last of them is the log:
 
 | Panel | |
 |---|---|
@@ -1309,6 +1406,7 @@ The card is eight panels, and only the last of them is the log:
 | **Best reading** | pass 1 per setting — which model, backend, Detail and profile to read a page with |
 | **Best extraction** | pass 2 per setting — which model and shape to extract fields with |
 | **Per document** | one row per ground-truth document: the best transcript, the best fields, the quickest complete run |
+| **Weak spots** | not how good, but at **what**: the transcript score split into Thai, English and numerals per model and per document, and the field score split into the individual keys — a model × field grid and a document × field grid. Every other panel ranks on a mean and therefore averages exactly this away |
 | **Time × Doc × Accuracy** | pass 1 only: read time against the document against the transcript score, with the Detail tables and the outlier list |
 | **Errors** | what is failing, ranked on the failures rather than folded into an accuracy |
 | **Raw data** | the rows of `logs/runs.csv` themselves — unfiltered, and the only place a run can be deleted |
@@ -1323,6 +1421,12 @@ score.
 
 Built for showing — projected, or read from across a room — so everything on it is a size up
 from the rest of the card. Two banner cards, then six numbered tables.
+
+Block 1, *which model reads a page best*, carries **Numbers**, **Thai** and **English** beside
+the transcript accuracy: the same score over one script at a time, numbers first because every
+Mandatory field in the requirement is a figure, a date or an ID. They are recall over three
+subsets of the column to their left and do not add up to it. **Weak spots** has the same split
+per document, and the per-field one.
 
 **The headline cards** answer the two questions the tab exists for, at a size that needs no
 leaning in: **best at reading a page** and **best extractor**. The extraction card names a
@@ -1454,7 +1558,7 @@ extraction under **Both passes** or **Extract only**.
 
 | | |
 |---|---|
-| **Read floor** | transcript accuracy under which a field score is not counted as a measurement of the extractor. Pass 2 can only map the values pass 1 gave it, so a field score over a broken transcript is the read's mistake wearing the extractor's name. Defaults to `MIN_READ_FOR_FIELDS` (0.75 → **75%**); `0` counts every field score whatever the read did |
+| **Read floor** | transcript accuracy under which a field score already in the log is not **averaged**. Pass 2 can only map the values pass 1 gave it, so a field score over a broken transcript is the read's mistake wearing the extractor's name. Defaults to `MIN_READ_FOR_FIELDS` (0.75 → **75%**); `0` counts every field score whatever the read did. **This is the reversible floor of the two** — it re-derives trust from each row's own transcript score every time a table is built, so it can be moved back at any time. The floor on the Workspace and Random test panes decides what gets **written**, and a score never taken is not here to recover |
 | **Runs averaged** | how many recent runs **of each setting, model and document** each table covers. Defaults to `SUMMARY_RUNS` (**50**); `0` is the whole log |
 
 **Neither knob writes anything, and neither hides a run from the log.** Every run is stored
@@ -1477,6 +1581,19 @@ every count.
 way back. A row is identified by its position in the file, checked against its timestamp and
 file name before anything is removed, so a page holding a stale list (a run finished while
 rows were ticked) deletes nothing and says so rather than deleting a neighbour.
+
+#### Nothing is logged while the model server is stubbed
+
+A run whose reply came from a fixture is not a measurement, and the log has no column that
+could say so afterwards. `runlog.record` therefore writes nothing while `requests.post` or
+`requests.get` has been replaced — every model-server call in this app goes through those two
+— and prints one line on stderr naming the fix. This is not hypothetical: a verification run
+once wrote 52 rows under a model called `stub` which, because the fixture answered with the
+ground truth, scored 100% and sat at the top of the pass-2 setting table.
+
+To keep the rows from such a run, point `OCR_LOG_DIR` at a scratch directory, which is the
+right thing to do for any experiment. To log anyway — for a wrapper around `requests` that is
+not a fake — set `runlog.ALLOW_PATCHED_TRANSPORT = True`.
 
 ### Best setting per document
 
@@ -1529,6 +1646,7 @@ Both read blank where there is nothing to take them over: one document, or no do
 |---|---|
 | **Setting** | model, backend, Detail and pass-1 profile *together*. The same model at a different Detail is a different thing to run, and the profile decides the prompt and the system slot |
 | **Transcript** | character accuracy against `solution/<id>.md`, with word accuracy under it. Word accuracy counts ordering and character accuracy does not, so a value read correctly in the wrong place shows in one and not the other |
+| **Numbers**, **Thai**, **English** | the same score over one script at a time — digits, Thai letters, the Latin alphabet. Numbers first because every Mandatory field in the requirement is a figure, a date or an ID. They are recall over three subsets of the Transcript column and do **not** add up to it. Blank where the documents printed too little of a script to measure it |
 | **Prefill** | vision tower plus prompt encode, paid once per page before the first token. This is the half that scales with Detail |
 | **Decode** | generating the transcript, with the rate under it. The rate excludes prefill, so it compares across pages of different resolutions |
 | **Total** | wall clock for the document |
@@ -1653,6 +1771,43 @@ correct but leaves them out of anything ranked on that column.
 Because each row carries the server, the model and the accuracy together, this is the
 straightforward way to answer "is 11434 actually better than 8080 on my documents" — run the
 same cases on each and compare the columns.
+
+#### Weak spots — not how good, but at what
+
+Every other panel on this card ranks on a mean, and a mean is the wrong shape for *what is it
+bad at*: a model reading 92% overall can be reading 71% of the digits, and a field score of
+8 of 11 says nothing about **which** three. This panel is four tables, two per pass, and each
+pass asks the same question of a model and of a document.
+
+**Pass 1 — which script is lost.** One row per model, and one per document, each with the
+transcript score and then the same score over numerals, Thai and the Latin alphabet, with the
+count each rate is out of. The last column names the **weakest** of the three and how far below
+the model's own best it is — a two-point gap is noise, a twenty-point one is a finding. Models
+are keyed on the model **alone**, without Detail or profile: this asks what a model is bad at
+across everything it has read, which is a different question from *which setting to run* (that
+is **Best reading**). Documents are ordered **worst first** — the table is a work list, not a
+ranking.
+
+**Pass 2 — which field goes wrong.** A table of every key, weakest first, then a **model ×
+field** grid and a **document × field** grid in that same column order, so a column means the
+same thing in both. A cell is the share of that key the extractor got right, a partial counting
+half — the same arithmetic the field score uses, so a cell here and the field accuracy of the
+same run cannot disagree. Under a cell below 100% is the commonest way it fails: `wrong`,
+`missed` (the page states it, the extractor returned nothing) or `spurious` (the page states
+nothing, the extractor filled it anyway). **`missed` and `spurious` are opposite mistakes** and
+want opposite fixes.
+
+A cell is blank where nothing measured it — the key was not asked of that document's type, or
+every verdict on it was `absent` (both sides empty, which is agreement) or `spurious` (nothing
+on the page to be right about). The second is called out under the cell as *N invented*,
+because on the keys this corpus leaves empty by construction that is the whole story.
+
+Both halves need rows written on or after 2026-09-04, when the per-script and per-field columns
+were added; an older run has a score and no breakdown, which is not a low score and is left out
+rather than counted as zero. The pass-2 half also needs a `solution/<id>.fields.json` and a read
+good enough to judge the extraction by — a field score taken over a broken transcript is the
+read's mistake wearing the extractor's name, and the read floor above the card is what decides
+that.
 
 ### Standouts
 
@@ -1918,8 +2073,9 @@ invoice · 11 fields* — before anything runs.
 
 **Fields the requirement marks Mandatory carry a `REQUIRED` chip on their label**, and which
 they are follows the type: an invoice demands all eleven of its keys, a receipt seven of its
-eleven, and a document no requirement covers demands none, so nothing on it is marked. The
-status line lists them in its tooltip.
+eleven, and a document no requirement covers demands none, so nothing on it is marked — the
+Classify box says **unknown type** instead, and the field score below is over the base field
+set. The status line lists them in its tooltip.
 
 A Mandatory field that came back empty reads **required, not returned**, in red, instead of
 the plain *missing* an optional one gets — the page is not allowed to be silent about it, so
@@ -2069,6 +2225,16 @@ without it: `{"loop_guard":true,"max_tokens":4096}`.
 accepted. `400` for anything that is not `true` or `false`. Not refused while the queue is
 busy, for the same reason as the profile. Turning it off stops reads being **aborted**; it does
 not stop them being **detected**, so a run that cycled still comes back `looped`.
+
+`GET /api/ocr/read-floor` — the transcript accuracy a read must reach for its fields to be
+scored, and what the process started at: `{"min_read_pct":75.0,"default_pct":75.0}`.
+
+`POST /api/ocr/read-floor` — `{"min_read_pct":0}` moves it, and answers with what was accepted.
+A **percentage**, clamped to 0–100; `400` for anything that is not a number. Not refused while
+the queue is busy, for the same reason as the profile — each run is flagged as it finishes, so
+a batch split across the switch still says which rule wrote each row. What it cannot do is go
+back: a score this floor stopped being taken is not in the log, which is why the run-log card
+keeps a floor of its own.
 
 `POST /api/ocr/stream` — multipart form, fields `image` and `detail`
 (`original`/`medium`/`low`; the old four names are accepted and mapped). Returns NDJSON:

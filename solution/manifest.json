@@ -159,6 +159,44 @@
       "aliases": [
         "17.pdf"
       ]
+    },
+    {
+      "id": "sol011",
+      "pdf": "receipt_tax_invoice_sol011.pdf",
+      "doc_types": [
+        "RECEIPT",
+        "TAX_INVOICE"
+      ],
+      "pages": 1,
+      "kind": "handwritten receipt/tax invoice on a printed landscape form",
+      "aliases": [
+        "21.pdf"
+      ]
+    },
+    {
+      "id": "sol012",
+      "pdf": "receipt_tax_invoice_sol012.pdf",
+      "doc_types": [
+        "RECEIPT",
+        "TAX_INVOICE"
+      ],
+      "pages": 2,
+      "kind": "handwritten receipt/tax invoice, page 2 is the payer's payment schedule",
+      "aliases": [
+        "22.pdf"
+      ]
+    },
+    {
+      "id": "sol013",
+      "pdf": "tax_invoice_sol013.pdf",
+      "doc_types": [
+        "TAX_INVOICE"
+      ],
+      "pages": 1,
+      "kind": "printed tax invoice with a withholding-tax band; the only pure tax invoice here",
+      "aliases": [
+        "23.pdf"
+      ]
     }
   ]
 }

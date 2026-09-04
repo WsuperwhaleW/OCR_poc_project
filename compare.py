@@ -164,14 +164,24 @@ def select_server(app, url, model):
     model name is resolved against the *new* endpoint's list, which is not known
     until the switch has happened.
 
-    Returns the app's own status dict, which is what gets printed above the
-    sweep. Every run of this file is a measurement, and a measurement with no
-    model name attached is not comparable with the next one.
+    Returns the app's own status dicts for both passes, which is what gets
+    printed above the sweep. Every run of this file is a measurement, and a
+    measurement with no model name attached is not comparable with the next one.
+
+    **Both, because `--model` names the READER and pass 2 may be on another
+    model.** Since `settings.AUTO_BEST_MODEL`, the app selects the extractor its
+    run log ranks first at startup, which on a machine with a general model
+    pulled is regularly not the model this flag just selected. That is a
+    deliberate default and it is also exactly the kind of thing a sweep must say
+    out loud: start the app with AUTO_BEST_MODEL=0, or pick the reading model in
+    the page's extraction picker, to measure the one-model setup the baselines in
+    CLAUDE.md were taken under.
     """
     res = requests.get(f"{app}/api/servers", timeout=30)
     if not res.ok:
         raise RuntimeError(f"HTTP {res.status_code} from {app}/api/servers")
-    server = res.json()["server"]
+    body = res.json()
+    server, extract = body["server"], body.get("extract") or {}
     for payload in ([{"url": url}] if url else []) + ([{"model": model}] if model else []):
         if "model" in payload:
             payload = {"model": resolve_model(server, payload["model"])}
@@ -179,8 +189,8 @@ def select_server(app, url, model):
         body = res.json()
         if not res.ok or body.get("error"):
             raise RuntimeError(body.get("error", f"HTTP {res.status_code}"))
-        server = body["server"]
-    return server
+        server, extract = body["server"], body.get("extract") or extract
+    return server, extract
 
 
 def bar(value, width=28):
@@ -239,7 +249,7 @@ def main():
                    or (fields and not args.no_extract))
     if calls_model:
         try:
-            server = select_server(app, args.server, args.model)
+            server, extract = select_server(app, args.server, args.model)
             profile = (select_profile(app, args.profile) if args.profile
                        else current_profile(app))
             guard = (select_loop_guard(app, args.loop_guard == "on")
@@ -251,7 +261,13 @@ def main():
             + (f"  {server['model']}" if server.get("model") else "")
             + (f"  profile {profile}" if profile else "")
             + ("" if guard is None else
-               "  loop guard on" if guard else "  loop guard OFF"))
+               "  loop guard on" if guard else "  loop guard OFF")
+            # Named only where the two passes differ, so the usual one-model
+            # header stays as short as it was -- and never left unsaid when they
+            # do, because pass-2 figures taken on two different models under one
+            # `--model` are not comparable.
+            + ("" if extract.get("same_as_reading", True)
+               else f"  extracting with {extract.get('model')}"))
         if not server.get("available"):
             say(f"  warning: {server.get('reason') or 'not available'}", sys.stderr)
     elif args.server or args.model or args.profile or args.loop_guard:
@@ -361,7 +377,10 @@ def main():
                     keys=prompts.fields_for_types(codes), doc_types=codes,
                     # Scored over the requirement's Mandatory set, as the app
                     # scores it -- the two must not disagree about what the
-                    # headline covers.
+                    # headline covers. Empty where no requirement covers the
+                    # type, which `fieldscore` reads as "score the base field
+                    # set and say it is an unknown type"; the scope line under
+                    # the report says which of the two happened.
                     mandatory=prompts.mandatory_for_types(codes),
                     items_mandatory=prompts.mandatory_items_for_types(codes))
             r["fields_note"] = note
@@ -375,8 +394,33 @@ def main():
                 f"{r['word_accuracy']:6.1%}")
             say(f"  char acc. w/o marks  {bar(r['char_accuracy_no_marks'])} "
                 f"{r['char_accuracy_no_marks']:6.1%}")
+            # The same recall over the three scripts the pages are written in.
+            # They do not add up to the headline -- punctuation is in neither --
+            # and the numbers line is the one to read first: every Mandatory
+            # field in the requirement is a figure, a date or an ID.
+            for name, label in (("digit", "numbers"), ("thai", "Thai"),
+                                ("latin", "English")):
+                value = r.get(f"{name}_accuracy")
+                total = r.get(f"{name}_chars", 0)
+                if value is None:
+                    say(f"  {label + ' accuracy':20} {'':22} "
+                        f"only {total} char(s) on the page, not scored")
+                else:
+                    say(f"  {label + ' accuracy':20} {bar(value)} {value:6.1%}"
+                        f"  of {total} char(s)")
             say(f"  length: expected {r['expected_words']} words, "
                 f"got {r['actual_words']}")
+            # What the score is made of. `missed` is what it charges for --
+            # content the page prints and the transcript does not, dropped or
+            # misread. `invented` is what it deliberately does NOT charge for
+            # since 2026-09-04, and is therefore the number that has to be
+            # printed: extra text costs pass 2 nothing, an invented VALUE costs
+            # it everything, and only a person reading the diff can tell those
+            # apart.
+            if "matched_chars" in r:
+                say(f"  chars: {r['expected_chars'] - r['matched_chars']} missed "
+                    f"of {r['expected_chars']}, "
+                    f"{r['invented_chars']} invented (not charged)")
         if fields:
             if r.get("fields_note"):
                 say(f" {r['fields_note'].strip()}")
@@ -400,14 +444,44 @@ def main():
     if len(results) > 1:
         say(f"\n{'=' * 78}\nSUMMARY\n{'=' * 78}")
         if score_text:
-            say(f"  {'case':10} {'char':>8} {'word':>8} {'no-marks':>10}")
+            # A script column is blank on a document that prints too little of
+            # it to measure (SCRIPT_MIN_CHARS), and such a document is left out
+            # of that column's mean rather than counted as zero -- so the three
+            # means can be over different numbers of documents, and each says
+            # how many.
+            def script_mean(name):
+                vals = [x[f"{name}_accuracy"] for x in results
+                        if x.get(f"{name}_accuracy") is not None]
+                return (sum(vals) / len(vals), len(vals)) if vals else (None, 0)
+
+            say(f"  {'case':10} {'char':>8} {'thai':>8} {'eng':>8} {'num':>8} "
+                f"{'word':>8} {'missed':>8} {'invented':>9}")
+            pct = lambda v: f"{v:7.1%}" if v is not None else "       -"
             for r in results:
                 say(f"  {r['case']:10} {r['char_accuracy']:7.1%} "
-                    f"{r['word_accuracy']:7.1%} {r['char_accuracy_no_marks']:9.1%}")
+                    f"{pct(r.get('thai_accuracy'))} {pct(r.get('latin_accuracy'))} "
+                    f"{pct(r.get('digit_accuracy'))} "
+                    f"{r['word_accuracy']:7.1%} "
+                    f"{r.get('expected_chars', 0) - r.get('matched_chars', 0):8} "
+                    f"{r.get('invented_chars', 0):9}")
             n = len(results)
             say(f"  {'MEAN':10} {sum(x['char_accuracy'] for x in results)/n:7.1%} "
+                f"{pct(script_mean('thai')[0])} {pct(script_mean('latin')[0])} "
+                f"{pct(script_mean('digit')[0])} "
                 f"{sum(x['word_accuracy'] for x in results)/n:7.1%} "
-                f"{sum(x['char_accuracy_no_marks'] for x in results)/n:9.1%}")
+                f"{sum(x.get('expected_chars', 0) - x.get('matched_chars', 0) for x in results):8} "
+                f"{sum(x.get('invented_chars', 0) for x in results):9}")
+            missing = [f"{name} over {script_mean(name)[1]} of {n}"
+                       for name in ("thai", "latin", "digit")
+                       if script_mean(name)[1] < n]
+            if missing:
+                say("  script means cover only the documents that print enough "
+                    "of that script: " + ", ".join(missing))
+            # The score is recall, so the invented column is the half of the
+            # picture it does not cover. A sweep whose mean rose while this
+            # column rose with it has not necessarily read anything better.
+            say("  (invented = transcript the page does not print; costs no "
+                "points by design)")
         if fields:
             scored = [r for r in results
                       if r.get("fields") and not r["fields"].get("error")]

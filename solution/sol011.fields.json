@@ -1,0 +1,55 @@
+{
+  "_mandatory": {
+    "types": [
+      "RECEIPT",
+      "TAX_INVOICE"
+    ],
+    "required": [
+      "inv_rtv_cnr_number",
+      "seller_tax_id",
+      "seller_branch",
+      "buyer_tax_id",
+      "buyer_branch",
+      "subtotal",
+      "vat_total"
+    ],
+    "found_only": [
+      "remaining_amount",
+      "remaining_vat_amount",
+      "payment_date",
+      "cheque_number"
+    ]
+  },
+  "inv_rtv_cnr_number": "",
+  "seller_tax_id": "0-1055-49155-88-9",
+  "seller_branch": [
+    "สาขาที่ 00012",
+    "Branch No.00012"
+  ],
+  "buyer_tax_id": "0119566119466",
+  "buyer_branch": [
+    "สาขาที่ 00001",
+    "00001"
+  ],
+  "subtotal": "196,612.52",
+  "vat_total": "13,762.88",
+  "remaining_amount": "",
+  "remaining_vat_amount": "",
+  "payment_date": "22/3/25",
+  "cheque_number": "01932715",
+  "document_type": [
+    "ใบเสร็จรับเงิน / ใบกำกับภาษี",
+    "OFFICIAL RECEIPT / TAX INVOICE"
+  ],
+  "document_number": "33737",
+  "issue_date": "22/3/25",
+  "reference_document": "",
+  "po_gr_rtv_number": "",
+  "seller_name": [
+    "บริษัท แมนแมน จำกัด",
+    "TCC Hotel Asset Management Co., Ltd."
+  ],
+  "buyer_name": "แสนวัน จำกัด",
+  "amount_incl_vat": "210,375.40",
+  "currency": ""
+}

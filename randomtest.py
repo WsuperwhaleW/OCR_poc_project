@@ -634,11 +634,29 @@ def summarise_round(result: dict) -> dict:
     result = result or {}
     truth = result.get("truth") or {}
     extracted = result.get("extracted") or {}
-    score = extracted.get("field_score") or {}
-    p1 = (score.get("scalars") or {}).get("p1") or {}
-    counts = p1.get("counts") or {}
-    expected = p1.get("expected") or 0
+    # **A round never reports a rate it also calls unscored.** The score stays on
+    # the result -- the page marks each value against it -- and it is dropped
+    # HERE, so `field`, the counts and `unscored` cannot contradict each other in
+    # one row. That is the disagreement this function's docstring exists to
+    # prevent, and it would otherwise arrive the moment the read floor fired.
+    unscored = extracted.get("fields_unscored") or ""
+    score = {} if unscored else (extracted.get("field_score") or {})
+    # **The HEADLINE, which since 2026-09-02 is the requirement's Mandatory set**
+    # -- not `scalars.p1`, the priority-1 tier, which this read until then. The
+    # two are the same keys on an invoice and differ by four on a receipt, and a
+    # round table reporting one while the run log reports the other is two
+    # readouts of one run disagreeing about what it did, which is the thing this
+    # function's docstring exists to prevent.
+    overall = score.get("overall") or {}
+    counts = overall.get("counts") or {}
+    expected = overall.get("expected") or 0
     correct, partial = counts.get("correct", 0), counts.get("partial", 0)
+    # The fields the requirement marks optional, judged and deliberately outside
+    # the rate above. Carried so a round can say what it found as well as what it
+    # is marked on -- a setting good at the keys that matter and poor at the rest
+    # is a different proposition from one that is evenly mediocre.
+    optional = score.get("optional") or {}
+    opt_counts = optional.get("counts") or {}
     entries = (extracted.get("fields") or {}).get("other_fields") or []
     return {
         "read_by": result.get("model") or "",
@@ -651,6 +669,18 @@ def summarise_round(result: dict) -> dict:
         "correct": correct,
         "partial": partial,
         "expected": expected,
+        # What the rate is over, in one word, so a round is readable without
+        # knowing which build wrote it: every figure above is of the Mandatory
+        # set where a requirement covers the document, and of everything asked
+        # where none does.
+        "scope": score.get("scored_scope") or "",
+        # Whether that denominator is a requirement's Mandatory set or the base
+        # field set of a type no requirement covers. The round line and the page
+        # table both stop calling it "required" on it -- a denominator named
+        # wrongly is worse than one named vaguely.
+        "unknown_type": bool(score.get("unknown_type")),
+        "optional_correct": opt_counts.get("correct", 0),
+        "optional_expected": optional.get("expected") or 0,
         "other": len(entries),
         "partial_reply": bool(extracted.get("partial")),
         "error": extracted.get("error") or "",
@@ -658,7 +688,7 @@ def summarise_round(result: dict) -> dict:
         # extraction ran, and what it scored would have been the read's fault.
         # Carried as the reason rather than a flag: "not scored" without a
         # because reads as a defect in the harness.
-        "unscored": result.get("fields_unscored") or "",
+        "unscored": unscored,
     }
 
 
@@ -817,8 +847,16 @@ def main(argv=None):
                               f"  other={out.get('other')}")
                     elif scope != "ocr":
                         print(f"     field {field:>8}"
-                              f"  ({out.get('correct')}+{out.get('partial')}p/{out.get('expected')})"
-                              f"  other={out.get('other')}"
+                              f"  ({out.get('correct')}+{out.get('partial')}p/{out.get('expected')}"
+                              + (" base fields, unknown type)"
+                                 if out.get("unknown_type") else " required)")
+                              # Found, not marked. Printed only where the truth
+                              # file rules on one, so an invoice -- every key of
+                              # which is Mandatory -- says nothing extra.
+                              + (f"  optional {out.get('optional_correct')}"
+                                 f"/{out.get('optional_expected')}"
+                                 if out.get("optional_expected") else "")
+                              + f"  other={out.get('other')}"
                               + ("  PARTIAL" if out.get("partial_reply") else "")
                               + (f"  {event.get('seconds', 0):.0f}s"
                                  if scope == "fields" else ""))

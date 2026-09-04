@@ -24,6 +24,7 @@ import requests
 
 import config
 import prompts  # constants only, no imports of its own beyond the standard library
+import runlog  # for the model ranking a default is taken from; imports config, grounding and settings, so no cycle
 import settings  # for OLLAMA_SYSTEM and OLLAMA_REASONING_EFFORT; imports just config and jobs, so no cycle
 
 # (connect, read). A local server accepts a connection immediately, so a short
@@ -256,11 +257,73 @@ def probe(url: str, force: bool = False) -> dict:
     return info
 
 
+# --------------------------------------------------------------------------
+# The default model: what the run log ranks first
+#
+# **Added 2026-09-03 at the user's request** -- *auto default model to the best
+# one that is shown*. "Shown" is the Summary tab's headline card and the
+# standouts list, so the default is read off `runlog.best_models`, which is that
+# same ranking rather than a second opinion computed here.
+#
+# It is a DEFAULT and only a default: an explicit choice still wins in
+# `_resolve_model`, and the name heuristics below it still answer for a model the
+# log has never scored. What it replaces is a guess -- a substring test on a
+# name, which says nothing about how well the model has done here.
+#
+# **The log is read behind a cache, because `status()` is on every request
+# path.** `runlog.signature()` is one `stat()` call; compiling the ranking over a
+# 1300-row log is ~10 ms, which is cheap once and not cheap several times a
+# request. The signature moves on an append, an in-place rewrite and a delete, so
+# the cache cannot go stale on a change to the file. A log that cannot be read at
+# all falls back to no preference rather than raising: a default is a
+# convenience, and the app must start without one.
+
+_rank_lock = threading.Lock()
+_rank_cache = {"signature": None, "models": None}
+
+
+def _ranked_models(pass_: str) -> list:
+    """Model names this log ranks first for `pass_` (`ocr` or `extract`)."""
+    try:
+        sig = runlog.signature()
+    except Exception:
+        return []
+    with _rank_lock:
+        if _rank_cache["signature"] != sig:
+            try:
+                _rank_cache["models"] = runlog.best_models()
+            except Exception as err:  # a malformed log must not stop a read
+                config.say(f"[ocr] note: cannot rank models from the run log ({err})")
+                _rank_cache["models"] = {"ocr": [], "extract": []}
+            _rank_cache["signature"] = sig
+        return list((_rank_cache["models"] or {}).get(pass_) or [])
+
+
+def best_served(pass_: str, models: list, keep=None) -> str:
+    """The highest-ranked model of `pass_` that this endpoint serves, or "".
+
+    `models` is the endpoint's own list, and the SERVED spelling is what comes
+    back -- the log records `qwen3.5:4b` where `/api/tags` says
+    `qwen3.5:4b:latest`, and a request has to carry the name the server knows.
+
+    `keep` filters the candidates the way each pass needs: pass 1 needs vision,
+    pass 2 needs a model `select_extract` would not refuse.
+    """
+    if not settings.AUTO_BEST_MODEL:
+        return ""
+    for wanted in _ranked_models(pass_):
+        for entry in models or []:
+            if _same_model(wanted, entry["name"]) and (keep is None or keep(entry)):
+                return entry["name"]
+    return ""
+
+
 def _resolve_model(url, info):
     """Which model an Ollama endpoint should be asked for.
 
-    The explicit choice wins if it is still installed; otherwise the first model
-    that reports vision, otherwise the first model at all -- so a freshly added
+    The explicit choice wins if it is still installed; otherwise the best reader
+    the run log knows of, otherwise an OCR model, otherwise the first model that
+    reports vision, otherwise the first model at all -- so a freshly added
     endpoint is usable without picking anything.
     """
     if info["kind"] != "ollama" or not info["models"]:
@@ -269,6 +332,13 @@ def _resolve_model(url, info):
     picked = _chosen.get(url)
     if picked in names:
         return picked
+    # The log's best reader that this endpoint serves and that can read an image.
+    # `vision is not False` rather than `is True`: None means the server did not
+    # say, and refusing a model on a missing capability flag would drop every
+    # model an older Ollama serves.
+    ranked = best_served("ocr", info["models"], lambda m: m["vision"] is not False)
+    if ranked:
+        return ranked
     # An OCR model first, then any vision model, then whatever is there.
     #
     # **The order matters and this used to be one loop.** `/api/tags` returns
@@ -277,6 +347,9 @@ def _resolve_model(url, info):
     # pulled for pass 2, a restart could silently resolve pass 1 onto one of
     # them. Every pass-1 baseline in this project was measured on an OCR model,
     # and `qwen3.5`/`phi4-mini` are here to extract, not to read pages.
+    #
+    # It still answers for a model the log has never scored, which is what the
+    # ranking above cannot do -- a freshly pulled build has no runs behind it.
     #
     # It only ever picks a DEFAULT: an explicit choice above still wins, so a
     # general model can be selected deliberately.
@@ -358,6 +431,90 @@ def endpoints():
 def active_url():
     with _lock:
         return _active
+
+
+def candidates() -> list:
+    """Endpoints worth trying, best bet first: the constants, then the history.
+
+    The picker's list is a CONSTANT -- `_defaults`, i.e. `OCR_ENDPOINTS` or the
+    two ports this machine runs -- and `logs/runs.csv` is the HISTORY. Nothing
+    joined them until now, so an endpoint that had served a thousand runs was not
+    offered again after a restart unless it happened to be one of the two
+    defaults or was typed back in by hand.
+
+    Configured first because that is what this deployment was told to use;
+    history after it, most recently used first, which is both what a person means
+    by "the server I was on" and the order that finds a live one soonest -- see
+    `autoselect`, where every dead candidate costs a connect timeout.
+
+    A read of the log that fails returns the constants alone. A missing history
+    is a smaller problem than a server that will not start.
+    """
+    out = list(_endpoints)
+    try:
+        history = runlog.servers_seen()
+    except Exception:
+        history = []
+    for url in history:
+        url = clean_url(url)
+        if url and url not in out:
+            out.append(url)
+    return out
+
+
+def autoselect(force: bool = True) -> dict:
+    """Make the first endpoint that answers the active one.
+
+    **Added 2026-09-03 at the user's request** -- *auto check and select the
+    server that is in the history/constant and is online/ready*. The old default
+    was `_endpoints[0]`, which is llama-server on :8080; on the machine this was
+    written on that port has 2 runs in the log against Ollama's 1296, so a fresh
+    process pointed at a dead port until somebody moved the picker.
+
+    Three rules, and the first two are what keep it cheap:
+
+    * **The active endpoint is tried first and kept if it answers.** Auto-select
+      is for a process that has not been told anything, and it must never move a
+      choice somebody made.
+    * **It stops at the first endpoint that answers**, so the usual case is one
+      probe. A dead one costs a full connect timeout twice over (llama, then
+      Ollama), which is why the candidate order above matters and why
+      `AUTO_SELECT_MAX_CANDIDATES` bounds the list.
+    * **Nothing is unloaded.** `select` stops whatever Ollama was holding, on the
+      grounds that a switch means a new model needs the card. This is not a
+      switch away from anything -- it is deciding where to start -- and evicting
+      a model somebody else's process just loaded would be a rude way to begin.
+    * **Only the endpoint it lands on joins the picker's list.** The history is
+      candidates, not configuration: `overview` probes every listed endpoint on
+      every call, so adding eight remembered ports would put eight connect
+      timeouts on the page's own status fetch.
+
+    Returns what happened: `selected` (the URL now active), `changed`, `tried`,
+    and `reason` when nothing answered. Never raises -- an app with no model
+    server has to start anyway and say so, which is `preflight`'s whole rule.
+    """
+    global _active
+    active = active_url()
+    order = [active] + [u for u in candidates() if u != active]
+    order = order[:max(1, settings.AUTO_SELECT_MAX_CANDIDATES)]
+    tried = []
+    for url in order:
+        tried.append(url)
+        try:
+            info = probe(url, force=force)
+        except Exception:
+            continue
+        if info["reachable"]:
+            with _lock:
+                if url not in _endpoints:
+                    _endpoints.append(url)
+                changed = url != _active
+                _active = url
+            return {"selected": url, "changed": changed, "tried": tried,
+                    "reason": None}
+    return {"selected": active, "changed": False, "tried": tried,
+            "reason": ("No model server answered at " + ", ".join(tried) + "."
+                       if tried else "No endpoints configured.")}
 
 
 # --------------------------------------------------------------------------
@@ -522,6 +679,26 @@ def extract_model(url: str = None) -> str:
         return _extract_chosen.get(url)
 
 
+def best_extractor(info: dict) -> str:
+    """The log's best EXTRACTOR this endpoint serves, or "" if it is the reader.
+
+    **Used once, by `autoselect_models` at startup, and never on a request
+    path.** Pass 2 sends text and gets text, so vision is irrelevant here -- what
+    the filter enforces instead is the one combination `select_extract` refuses:
+    a second OCR fine-tune beside a reader that is already one. Reading with the
+    model itself is always allowed, which is why `_same_model` is the exception.
+
+    "" where the winner IS the reading model, so the one-model setup every
+    measurement in this project was taken under is left alone rather than
+    written down as a choice that changes nothing.
+    """
+    reading = info.get("model")
+    best = best_served(
+        "extract", info.get("models") or [],
+        lambda m: not is_ocr_model(m["name"]) or _same_model(m["name"], reading))
+    return "" if not best or _same_model(best, reading) else best
+
+
 def extract_status(url: str = None, force: bool = False) -> dict:
     """`status`, but describing the model pass 2 will actually run on.
 
@@ -547,6 +724,44 @@ def extract_status(url: str = None, force: bool = False) -> dict:
                 "text_reason": (f"{chosen} is not served by {info['url']}. "
                                 "Pick another extraction model.")}
     return {**info, "model": chosen}
+
+
+def autoselect_models(url: str = None) -> dict:
+    """Select the models the run log ranks first, once, at startup.
+
+    **Added 2026-09-03 at the user's request** -- *auto default model to the best
+    one that is shown ... I am just lazy manual selecting*. It is exactly what
+    picking them in the page would do, done for you before the first render, and
+    it is **called once from `preflight` and from nowhere else**: after this the
+    models are an ordinary choice, so the picker, `select_extract`'s refusal,
+    `compare.py` and the random test all keep the meanings they had.
+
+    That is why it is a SELECTION and not a resolution. A default that were
+    re-derived on every request would move under a session as the log grew, and
+    "same as reading model" in the picker would have had to start meaning two
+    different things depending on what had been measured lately.
+
+    Pass 1 needs nothing done: `_resolve_model` already prefers the ranking when
+    nobody has chosen, which is where a default has always lived. Pass 2 is the
+    one that had no such default -- it fell back to the model reading the page,
+    which every sweep in this project says is the wrong tool for the form.
+
+    Returns `{"reading": name, "extract": name or ""}`; `extract` is "" where the
+    best extractor IS the reader, which leaves the one-model setup untouched.
+    """
+    info = status(url)
+    picked = {"reading": info["model"], "extract": ""}
+    if not settings.AUTO_BEST_MODEL or not info["model"]:
+        return picked
+    best = best_extractor(info)
+    if best:
+        # Not through `select_extract`: that unloads, and nothing has been
+        # loaded yet at startup. The refusal it enforces cannot fire here
+        # anyway -- `best_extractor` will not return a second OCR model.
+        with _lock:
+            _extract_chosen[clean_url(url) if url else _active] = best
+        picked["extract"] = best
+    return picked
 
 
 def select_extract(model: str, url: str = None, unload: bool = True) -> dict:
@@ -797,7 +1012,7 @@ def structured_request(messages: list, schema: dict, max_tokens: int,
                              "json_schema": {"name": "fields", "schema": schema}}
                             if schema else {"type": "json_object"}),
         "stream": False,
-        **settings.sampler_extras(),
+        **settings.sampler_extras(num_ctx()),
         **request_extras(info),
     }
 

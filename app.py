@@ -75,6 +75,7 @@ from settings import (
     OCR_PROFILE,
     ACCEPTED_SUFFIXES,
     AGENTIC_EXTRACT,
+    AUTO_SELECT_SERVER,
     AGENTIC_RETRIES,
     DEFAULT_DETAIL,
     DETAIL_PRESETS,
@@ -384,7 +385,7 @@ def stream_page(image: Image.Image, stats: dict | None = None,
         "top_k": 1,
         "top_p": 1.0,
         "min_p": 0.0,
-        **sampler_extras(),
+        **sampler_extras(backends.num_ctx()),
         "stream": True,
         # Ollama does not send llama.cpp's `timings`; asking for usage in the
         # final chunk gives an authoritative token count on both servers.
@@ -645,6 +646,13 @@ def _is_ocr_envelope(raw: str) -> bool:
 # heading is not always near the head of the page -- sol002 prints it eighteen
 # lines down, under two letterheads and a logo block -- and this is the same
 # claim `prompts._EP_HEAD`'s doc-type rule makes, applied to the search.
+# How far apart two lines may be and still be one heading, and how much less of a
+# heading the second may be. Both deliberately tight: 1 means literally the next
+# printed line, and the slack lets a bilingual pair differ slightly in coverage
+# without letting a half-matched caption in.
+_TYPE_HEADING_GAP = 1
+_TYPE_HEADING_SLACK = 0.15
+
 _TYPE_SCAN_LINES = 40
 
 # A heading is a short line. A paragraph that happens to contain the words
@@ -681,6 +689,7 @@ def classify_transcript(text: str):
     made. `detail` is its working, so the number can be taken apart.
     """
     best = ([], "", 0.0, {})
+    scored = []                     # (line number, codes, line, confidence, detail)
     for number, line in enumerate((text or "").splitlines()[:_TYPE_SCAN_LINES], 1):
         line = line.strip()
         if not line or len(line) > _TYPE_SCAN_MAX_CHARS:
@@ -689,6 +698,7 @@ def classify_transcript(text: str):
         if not codes:
             continue
         confidence, detail = normalise.heading_confidence(line, number)
+        scored.append((number, codes, line, confidence, detail))
         # **The BEST-scoring line wins, not the first** (2026-09-02). First-wins
         # was the old rule and it existed to stop a credit note's body text --
         # which regularly names the invoice it credits -- making the page an
@@ -699,6 +709,45 @@ def classify_transcript(text: str):
         # cannot separate two lines.
         if confidence > best[2]:
             best = (codes, line, confidence, detail)
+
+    # **A heading printed on two lines is ONE heading** (2026-09-04). sol001 heads
+    # itself `ใบแจ้งหนี้` and `STATEMENT OF ACCOUNT` on consecutive lines, each a
+    # complete heading scoring 1.00 and each naming a different type. Taking the
+    # better of the two is a coin toss between two right answers, and it threw
+    # away the half that mattered: the document resolved to
+    # STATEMENT_OF_ACCOUNT alone, which no requirement covers, so it was asked
+    # for the 30-key default form and NOTHING it returned could be scored. The
+    # manifest has both, and until now the manifest was the only thing that did.
+    #
+    # So an ADJACENT line that also classifies, and that is as much a heading as
+    # the winner, is unioned into it. Adjacency is the whole of the safety: a
+    # bilingual heading pair is printed together, while the body text naming
+    # another document -- the case best-scoring was introduced for -- is lines
+    # away and scores far lower anyway. Both tests have to pass.
+    if best[0]:
+        winner = next(e for e in scored if e[2] == best[1] and e[1] == best[0])
+        merged, lines = list(best[0]), [best[1]]
+        for number, codes, line, confidence, _detail in scored:
+            if line == winner[2]:
+                continue
+            if abs(number - winner[0]) > _TYPE_HEADING_GAP:
+                continue
+            # As much a heading as the winner is, not merely classifiable: a
+            # partial line beside a real heading is a caption or a reference,
+            # and this must not let one in through the back door.
+            if confidence < best[2] - _TYPE_HEADING_SLACK:
+                continue
+            new_codes = [c for c in codes if c not in merged]
+            if new_codes:
+                merged.extend(new_codes)
+                lines.append(line)
+        if len(merged) > len(best[0]):
+            # Reported in the type order the schema reads in, and with both lines
+            # as the evidence -- the heading is what the model's answer is checked
+            # against, and half of a two-line heading would fail a check the page
+            # actually passes.
+            merged = [c for c in normalise.DOCUMENT_TYPES if c in merged]                      + [c for c in merged if c not in normalise.DOCUMENT_TYPES]
+            best = (merged, " / ".join(lines), best[2], best[3])
     return best
 
 
@@ -748,6 +797,13 @@ def _classify_with_model(text: str, status: dict):
         answer = json.loads(_first_json_object(strip_fence(raw)) or raw)
         if not isinstance(answer, dict):
             return [], ""
+        # Exactly two keys are read, and everything else in the reply is
+        # dropped on the floor. **A number the model volunteered is never taken**
+        # -- not a confidence, not a score, not a probability. It would be a
+        # token sequence about a token sequence with nothing behind it, and it
+        # would sit on the page beside figures that were all computed from
+        # something re-derivable. The heading is checked against the page below;
+        # that check IS the confidence, and it is Python's.
         heading = str(answer.get("heading") or "").strip()
         codes = [c for c in (answer.get("types") or [])
                  if isinstance(c, str) and c in TYPE_NAMES]
@@ -872,11 +928,24 @@ def resolve_doc_types(text: str, case_id: str = None, doc_type=None,
     if status:
         codes, quoted = _classify_with_model(text, status)
         if codes:
-            # Scored the same way, off the heading the model quoted -- which the
-            # guard has already checked is really printed on the page. One
-            # function for both answers is the only thing that makes the two
-            # numbers comparable, and it is why this is a measure of the EVIDENCE
-            # rather than of anybody's self-belief.
+            # **The model may ADD a requirement, never take the last one away**
+            # (2026-09-04). Both answers are readings of the same printed
+            # heading and both have been checked against the page, so where the
+            # model's names only types no requirement covers and the table's
+            # names one that does, the two are unioned rather than the table's
+            # being dropped.
+            #
+            # It is one-directional on purpose, and the asymmetry is the whole
+            # of why it is safe: a type with no requirement contributes no key
+            # and no Mandatory field, so adding the table's answer can only ever
+            # narrow the form and give the document something to be scored on.
+            # Losing it does the opposite, silently -- sol001 resolved to
+            # STATEMENT_OF_ACCOUNT alone, was asked for the 30-key default form,
+            # and NOTHING it returned could be scored, which is indistinguishable
+            # on the page from an extraction that found nothing.
+            if read and not mandatory_for_types(codes) and mandatory_for_types(read):
+                codes = list(codes) + [c for c in read if c not in codes]
+                quoted = " / ".join(x for x in (quoted, heading) if x)
             return (codes, "model", quoted,
                     normalise.heading_confidence(quoted)[0], why)
     if case_id:
@@ -946,6 +1015,20 @@ def _field_set(text: str, case_id: str = None, doc_type=None, status=None):
             "doc_type_escalated": escalated,
             "keys": list(fields_for_types(codes)),
             "mandatory": list(mandatory_for_types(codes)),
+            # No requirement covers any type in play, so nothing below is
+            # Mandatory and the form is the base field set -- the union of every
+            # requirement, which is what `fields_for_types` falls back to. It is
+            # a flag rather than a thing every reader infers from an empty
+            # `mandatory`, because three of them word themselves differently for
+            # it: the Classify box says so, `fieldscore` scores the base set and
+            # marks the rate `unknown_type`, and the round table stops calling
+            # its denominator "required".
+            #
+            # **It changes what is SCORED and nothing about compliance.**
+            # `mandatory` stays empty, so `validate` demands nothing and no key
+            # is marked REQUIRED on the page -- demanding a key of a document no
+            # table covers is a claim this project has no authority to make.
+            "unknown_type": not mandatory_for_types(codes),
             # The row shape of a TABLE this form asks for, or []. Only the
             # withholding certificate asks for one, and it is here rather than
             # folded into `keys` because a row is not a key: the prompt, the
@@ -993,6 +1076,11 @@ def _classified(form: dict, mode: str) -> dict:
         "type_phrase": type_phrase(codes),
         "fields": list(form["keys"]),
         "mandatory": list(form["mandatory"]),
+        # Whether any requirement covers this document at all. The page says so
+        # beside the field count, because "30 fields" with no required clause
+        # otherwise reads as a form nobody can pass rather than as one nobody
+        # has written a requirement for yet.
+        "unknown_type": bool(form.get("unknown_type")),
         # The cells of the table this form asks for, or []. On the strip beside
         # the field count, because "eleven fields" and "fourteen fields and a
         # table" are different amounts of work and the difference is invisible
@@ -1817,6 +1905,119 @@ def set_loop_guard(on: bool) -> bool:
     return _loop_guard
 
 
+# The transcript score a read has to reach before the extraction taken from it is
+# worth a field score. Held for the process and switched from the page for the
+# same reason the three above are: it is a thing you flip while looking at a run
+# whose fields came back unscored, and the next run should honour it without a
+# restart.
+#
+# **There are two floors and they are not the same knob.** This one decides
+# whether a correctness figure is WRITTEN, at the moment a run happens, and
+# nothing can undo it afterwards -- a score never taken is not in the file.
+# `runlog.read_floor` decides whether a figure already in the file is AVERAGED,
+# and moves freely because it re-derives trust from the row's own
+# `char_accuracy` every time a table is compiled. So the summary's floor is the
+# reversible one and stays where it was; this is the one to leave low.
+_read_floor = MIN_READ_FOR_FIELDS
+_read_floor_lock = threading.Lock()
+
+
+def read_floor() -> float:
+    """The run-time floor as a FRACTION. See `runlog.read_floor` for the other."""
+    with _read_floor_lock:
+        return _read_floor
+
+
+def set_read_floor(fraction: float) -> float:
+    """Clamped to 0-1 rather than refused: every value in range means something.
+
+    0 scores every extraction whatever the read did, which is the shape for
+    filling the log and letting the summary's own floor decide what to average.
+    """
+    global _read_floor
+    try:
+        value = max(0.0, min(float(fraction), 1.0))
+    except (TypeError, ValueError):
+        raise ValueError("min_read_pct must be a number between 0 and 100.")
+    with _read_floor_lock:
+        _read_floor = value
+    return value
+
+
+def _unscorable_read(payload: dict, floor: float = None) -> str:
+    """Why this read's fields must not be scored, or "" where they may be.
+
+    **Pass 2 can only map values pass 1 produced.** A field score taken over a
+    broken transcript is a measurement of the read wearing the extractor's name:
+    it marks down whatever extracted and lets whatever read get away with it.
+    That gap is measured -- dots.mocr agentic scored 32.7% over its own reads
+    against 46.8% over the ground truth -- and it is why every pass-2 baseline in
+    CLAUDE.md was taken from truth.
+
+    Four ways a read disqualifies its own extraction, and the last is the one the
+    page can move:
+
+    - it looped, or was cut off at the token cap -- the transcript is a fragment
+      whatever it scored;
+    - it returned nothing at 0.0%;
+    - it scored under the floor in force.
+
+    **None of these makes the run a failure.** A read that finished and scored
+    badly is a run, and it is counted and averaged as one -- `runlog._incomplete`
+    calls a loop or a crash a failure and nothing else. What is dropped here is
+    only the pass-2 figure taken over that transcript.
+
+    **A document with no transcript truth is never suppressed.** Nothing here can
+    tell a bad read from an unmeasured one, and refusing to score on a guess
+    would silently blank the figure for every document that has no `.md`.
+    """
+    floor = read_floor() if floor is None else floor
+    if payload.get("looped"):
+        return "the read looped"
+    if payload.get("truncated"):
+        return "the read hit the token cap"
+    scored = (payload.get("truth") or {}).get("char_accuracy")
+    if scored is None:
+        return ""
+    if scored <= 0:
+        return "the read returned nothing"
+    if scored < floor:
+        return (f"the read scored {scored * 100:.1f}%, under "
+                f"{floor * 100:.0f}%")
+    return ""
+
+
+def apply_read_floor(payload: dict, floor: float = None) -> str:
+    """Mark this run's extraction unscorable where its read disqualifies it.
+
+    **The one place the rule is applied, so no path can be left out of it.** It
+    used to live in `_read_case` alone -- the random test's full rounds -- and a
+    document read through the page, the queue or `/api/ocr` wrote a field score
+    however badly it had been read. Two kinds of row in one file, with nothing in
+    the CSV to say which rule each was written under. Called from `log_run`,
+    which every read path goes through on its way to the log, and once more in
+    the streaming route so the browser is told at the same time the log is.
+
+    **It flags, it does not delete.** The score stays on the result and the
+    Fields tab still marks every value against it -- those marks are what explain
+    a bad read, and blanking them removes the evidence along with the number.
+    What the flag costs is the headline rate on both tabs and the correctness
+    columns in the run log (`runlog._extract_cells`), which are the places the
+    figure would otherwise be read as the extractor's.
+
+    Idempotent: the second call re-derives the same reason and overwrites it.
+    """
+    extracted = payload.get("extracted")
+    if not isinstance(extracted, dict):
+        return ""
+    why = _unscorable_read(payload, floor)
+    if why:
+        extracted["fields_unscored"] = why
+    else:
+        extracted.pop("fields_unscored", None)
+    return why
+
+
 def extract_mode() -> str:
     with _mode_lock:
         return _extract_mode
@@ -1972,6 +2173,13 @@ def _score_fields(result: dict, case_id: str, form: dict = None) -> dict:
             # The headline is taken over what the requirement DEMANDS of this
             # document's types; an Optional field is still judged and reported,
             # under `optional`, and simply does not decide the rate.
+            #
+            # `mandatory` is EMPTY where no requirement covers the type, and
+            # `fieldscore` reads that as its own state: score the base field
+            # set and mark the rate `unknown_type`. Passing None instead would
+            # score the same keys and lose the distinction, which is the half a
+            # reader needs -- a rate over a requirement and a rate over
+            # everything the ground truth states are different claims.
             result["field_score"] = fieldscore.evaluate(
                 case_id, result["fields"],
                 keys=(form or {}).get("keys"),
@@ -2362,7 +2570,16 @@ def log_run(summary: dict, source: dict, status: str = None, error=None,
     re-extraction of the same transcript can find it again and put better figures
     on it. Timestamp and file name are the whole key -- nothing about the row is
     held open, and losing it costs the update, not the run.
+
+    **The read floor is applied here**, before the row is built, because this is
+    the one funnel every read path goes through -- the page, the queue, the
+    blocking route and the random test. Applying it at each of those instead is
+    how it came to be applied at exactly one of them. See `apply_read_floor`.
     """
+    try:
+        apply_read_floor(summary if isinstance(summary, dict) else {})
+    except Exception:
+        pass
     try:
         row = runlog.record(summary, source,
                             {"status": status, "error": str(error) if error else "",
@@ -2632,6 +2849,11 @@ def index():
                 # Mandatory is a property of the requirement, and a copy of that
                 # in JavaScript is how the template's field maps went stale.
                 "mandatory": list(mandatory_for_types(c.get("doc_types") or [])),
+                # No requirement covers this case's types, so its field score
+                # will be taken over the base field set and nothing on it is
+                # Mandatory. Sent rather than inferred from an empty
+                # `mandatory`, for the reason `mandatory` itself is sent.
+                "unknown_type": not mandatory_for_types(c.get("doc_types") or []),
                 "field_truth": fieldscore.has_truth(c["id"])}
                for c in scoring.cases_index().values()],
         mock_files=mock_files(),
@@ -2656,15 +2878,24 @@ def index():
         # same reason the read floor below is sent instead of hardcoded.
         loop_guard=loop_guard(),
         max_new_tokens=MAX_NEW_TOKENS,
-        # The random test's rule about when a field score is worth writing. Sent
-        # rather than hardcoded in the template: it is a setting, and a page that
-        # says 50% while the process runs at 0 is describing a build nobody has.
-        min_read_for_fields=MIN_READ_FOR_FIELDS,
+        # When a field score is worth writing, for every path that reads a page.
+        # Sent rather than hardcoded in the template: it is a setting, it moves
+        # from two panes now, and a page that says 50% while the process runs at
+        # 0 is describing a build nobody has. `read_floor()` rather than the
+        # constant, so a reload shows what is in force and not what started.
+        min_read_for_fields=read_floor(),
+        min_read_default=MIN_READ_FOR_FIELDS,
         # The bar the Python classifier has to clear before the model is
         # not asked. Sent rather than repeated in the template: a page
         # quoting a threshold the process is not running describes a build
         # nobody has -- the same rule `min_read_for_fields` follows.
         min_classify_confidence=CLASSIFY_MIN_CONFIDENCE,
+        # Below this many characters of a script on a page, no rate is reported
+        # for it -- three Latin characters score 0% or 100% and nothing between.
+        # Sent for the same reason as the two above: the page explains a blank
+        # cell by quoting the threshold, and a page quoting a number the process
+        # is not running describes a build nobody has.
+        script_min_chars=scoring.SCRIPT_MIN_CHARS,
         # What a contest pins: how many from each end of the ranking it runs, and
         # the Detail every contender runs at. Sent rather than repeated in the
         # template for the same reason as the threshold above -- the page must
@@ -2798,6 +3029,9 @@ def cases():
          "fields": list(fields_for_types(c.get("doc_types") or [])),
          # What of that form the requirement demands -- the same reason as above.
          "mandatory": list(mandatory_for_types(c.get("doc_types") or [])),
+         # Whether any requirement covers those types at all -- see the template
+         # copy of this payload.
+         "unknown_type": not mandatory_for_types(c.get("doc_types") or []),
          "pages": c.get("pages", 1), "available": c["pdf_path"].exists(),
          "field_truth": fieldscore.has_truth(c["id"])}
         for c in scoring.cases_index().values()
@@ -3096,6 +3330,41 @@ def loop_guard_set():
     if not isinstance(on, bool):
         return jsonify(error="loop_guard must be true or false."), 400
     return jsonify(loop_guard=set_loop_guard(on), max_tokens=MAX_NEW_TOKENS)
+
+
+@app.get("/api/ocr/read-floor")
+def read_floor_get():
+    """The transcript score a read must reach for its fields to be scored."""
+    return jsonify(min_read_pct=round(read_floor() * 100, 1),
+                   default_pct=round(MIN_READ_FOR_FIELDS * 100, 1))
+
+
+@app.post("/api/ocr/read-floor")
+def read_floor_set():
+    """Move the floor for everything this process reads next.
+
+    A PERCENTAGE on the wire and a fraction inside, the same units the summary's
+    own floor uses -- the column it is compared with is a percentage and so is
+    every control that sets it. Getting that backwards scores everything or
+    nothing.
+
+    Not refused while the queue is busy, for the same reason the profile and the
+    extraction mode are not: the flag it decides is written onto each run as that
+    run finishes, so a batch split across the switch still says which rule each
+    row was written under. What it cannot do is go back -- a score this floor
+    stopped being taken is not in the file to be recovered, which is why the
+    summary keeps a floor of its own.
+    """
+    body = request.get_json(silent=True) or {}
+    value = body.get("min_read_pct")
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return jsonify(error="min_read_pct must be a number between 0 and 100."), 400
+    try:
+        floor = set_read_floor(float(value) / 100.0)
+    except ValueError as err:
+        return jsonify(error=str(err)), 400
+    return jsonify(min_read_pct=round(floor * 100, 1),
+                   default_pct=round(MIN_READ_FOR_FIELDS * 100, 1))
 
 
 MOCK_DIR = scoring.MOCK
@@ -3540,6 +3809,12 @@ def _run_round(round_: dict) -> dict:
       one-model setup `select_extract` never refuses -- so an OCR fine-tune can
       be measured on the form here, exactly as the Fields pane measures it.
 
+    **A round always says which model extracts, and "" says "the reader".** That
+    is what clears any choice left behind by an earlier round -- or by the
+    startup default, which since `settings.AUTO_BEST_MODEL` may have selected a
+    different model for pass 2. A plan that does not name an extractor is
+    naming the reader, and it has to say so to the app rather than inherit.
+
     The pass-1 profile is set only where a page is read. Setting it on a
     fields-only round would leave the process on a profile chosen for a model
     that never looked at anything.
@@ -3558,53 +3833,6 @@ def _run_round(round_: dict) -> dict:
         return _read_case(round_["case"], round_["detail"], extract=False)
     set_extract_mode(round_["mode"])
     return _read_case(round_["case"], round_["detail"])
-
-
-def _unscorable_read(payload: dict) -> str:
-    """Why this read's fields must not be scored, or "" where they may be.
-
-    **Pass 2 can only map values pass 1 produced.** A field score taken over a
-    broken transcript is a measurement of the read wearing the extractor's name:
-    it marks down whatever extracted and lets whatever read get away with it.
-    That gap is measured -- dots.mocr agentic scored 32.7% over its own reads
-    against 46.8% over the ground truth -- and it is why every pass-2 baseline in
-    CLAUDE.md was taken from truth.
-
-    So the score is dropped, not the extraction: the run still exercises the real
-    path, still writes its row, and still reports coverage, grounding and
-    `other_fields`. What it does not do is put a correctness figure on the board
-    that belongs to the other pass.
-
-    Four ways a read disqualifies its own extraction, and the last is the
-    threshold the user set (0.75 since 2026-08-24):
-
-    - it looped, or was cut off at the token cap -- the transcript is a fragment
-      whatever it scored;
-    - it returned nothing at 0.0%;
-    - it scored under `MIN_READ_FOR_FIELDS`.
-
-    **None of these makes the run a failure.** A read that finished and scored
-    badly is a run, and it is counted and averaged as one -- `runlog._incomplete`
-    calls a loop or a crash a failure and nothing else. What is dropped here is
-    only the pass-2 figure taken over that transcript.
-
-    **A document with no transcript truth is never suppressed.** Nothing here can
-    tell a bad read from an unmeasured one, and refusing to score on a guess
-    would silently blank the figure for every document that has no `.md`.
-    """
-    if payload.get("looped"):
-        return "the read looped"
-    if payload.get("truncated"):
-        return "the read hit the token cap"
-    scored = (payload.get("truth") or {}).get("char_accuracy")
-    if scored is None:
-        return ""
-    if scored <= 0:
-        return "the read returned nothing"
-    if scored < MIN_READ_FOR_FIELDS:
-        return (f"the read scored {scored * 100:.1f}%, under "
-                f"{MIN_READ_FOR_FIELDS * 100:.0f}%")
-    return ""
 
 
 def _extract_case(case_id: str, mode: str) -> dict:
@@ -3660,15 +3888,10 @@ def _read_case(case_id: str, detail: str, extract: bool = True) -> dict:
     payload["truth"] = evaluate_if_known(case, text)
     if extract and EXTRACT and text.strip():
         payload["extracted"] = extract_fields(text, case_id=case["id"] if case else None)
-        # A field score is only about the extractor when the extractor was given
-        # something to work with. Where the read failed or scored under
-        # MIN_READ_FOR_FIELDS, the extraction still ran and is still logged --
-        # what is dropped is the score, so the row carries coverage, grounding
-        # and `other_fields` and no correctness figure. See `_unscorable_read`.
-        why = _unscorable_read(payload)
-        if why:
-            payload["extracted"].pop("field_score", None)
-            payload["fields_unscored"] = why
+    # The read floor is applied inside `log_run`, for every path rather than only
+    # this one -- see `apply_read_floor`. Nothing is done here beyond letting it
+    # happen, and the flag it may set is on `payload["extracted"]` by the time
+    # this returns.
     log_run(payload, source)
     # The same three-way status the run log derives, so a round that looped says
     # so on the page instead of reading as a clean run with a low score. Set
@@ -3783,6 +4006,12 @@ def ocr_stream():
                         result = stop.value
                         break
                 summary["extracted"] = result
+                # Applied before the event rather than left to `log_run` below:
+                # this is the one path that hands the fields to the browser
+                # before the row is written, and a page that had already drawn
+                # the score would go on showing it. Same call, same rule --
+                # `apply_read_floor` is idempotent for exactly this.
+                apply_read_floor(summary)
                 yield json.dumps({"event": "fields", **result}) + "\n"
 
             # Logged once everything has run, so the row carries the accuracy and
@@ -4187,9 +4416,35 @@ def preflight():
     # clock on THIS box, and until now nothing recorded which box that was.
     machine.report()
 
+    # Find a server before reporting on one. The endpoint list starts on
+    # llama-server's port whether or not anything is listening there, so without
+    # this a machine running Ollama starts up pointed at a dead port and stays
+    # there until somebody moves the picker -- and every probe of it costs two
+    # connect timeouts. Startup is the one place this may be paid: it is a
+    # network request, so it must never go on a polling path.
+    if AUTO_SELECT_SERVER:
+        picked = backends.autoselect()
+        if picked["changed"]:
+            say(f"[ocr] auto-selected {picked['selected']} "
+                f"(tried {', '.join(picked['tried'])})")
+        elif picked["reason"]:
+            say(f"[ocr] {picked['reason']} Leaving the endpoint on "
+                f"{picked['selected']}; use the picker or set OCR_ENDPOINTS.")
+
     status = llama_status()
     say(f"[ocr] {status['kind'] or 'server'} {status['url']} "
         f"model={status['model']} available={status['available']}")
+    # The models, selected once, here -- so the page opens on them and nobody
+    # has to work the pickers to get the build this log says is the best one.
+    # After this they are an ordinary choice, which is what keeps every other
+    # meaning on the page intact; see `backends.autoselect_models`.
+    picked = backends.autoselect_models()
+    # Named only where pass 2 is not running on the reading model, so the usual
+    # one-model line stays as short as it was.
+    if picked["extract"]:
+        say(f"[ocr] extracting with {picked['extract']} -- the run log's best "
+            "extractor. AUTO_BEST_MODEL=0 to use the reading model for both "
+            "passes, which is what every baseline was measured under.")
     say(f"[ocr] switchable endpoints: {', '.join(backends.endpoints())}")
     if status["reason"]:
         say(f"[ocr] {status['reason']}")

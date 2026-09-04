@@ -1,0 +1,58 @@
+{
+  "_mandatory": {
+    "types": [
+      "RECEIPT",
+      "TAX_INVOICE"
+    ],
+    "required": [
+      "inv_rtv_cnr_number",
+      "seller_tax_id",
+      "seller_branch",
+      "buyer_tax_id",
+      "buyer_branch",
+      "subtotal",
+      "vat_total"
+    ],
+    "found_only": [
+      "remaining_amount",
+      "remaining_vat_amount",
+      "payment_date",
+      "cheque_number"
+    ]
+  },
+  "inv_rtv_cnr_number": [
+    "190060",
+    "Inv. 190060"
+  ],
+  "seller_tax_id": "0105511005151",
+  "seller_branch": "สำนักงานใหญ่",
+  "buyer_tax_id": "0105539131288",
+  "buyer_branch": [
+    "สาขาที่ 00012",
+    "00012"
+  ],
+  "subtotal": "25,757 01",
+  "vat_total": "1,802 99",
+  "remaining_amount": "",
+  "remaining_vat_amount": "",
+  "payment_date": "",
+  "cheque_number": "",
+  "document_type": [
+    "ใบเสร็จรับเงิน/ใบกำกับภาษี",
+    "RECEIPT/TAX INVOICE"
+  ],
+  "document_number": "1488",
+  "issue_date": "29-9-68",
+  "reference_document": [
+    "190060",
+    "Inv. 190060"
+  ],
+  "po_gr_rtv_number": "",
+  "seller_name": [
+    "บริษัท เอ็กซ์เพรส จำกัด",
+    "EXPRESS CO,. LTD."
+  ],
+  "buyer_name": "บริษัท อีสปอร์ต จำกัด",
+  "amount_incl_vat": "27,560 00",
+  "currency": ""
+}

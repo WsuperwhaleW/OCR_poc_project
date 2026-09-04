@@ -1,0 +1,89 @@
+{
+  "_mandatory": {
+    "types": [
+      "TAX_INVOICE"
+    ],
+    "required": [],
+    "found_only": [
+      "document_type",
+      "document_number",
+      "issue_date",
+      "po_gr_rtv_number",
+      "inv_rtv_cnr_number",
+      "seller_tax_id",
+      "seller_branch",
+      "buyer_tax_id",
+      "buyer_branch",
+      "subtotal",
+      "vat_total",
+      "amount_incl_vat",
+      "remaining_amount",
+      "remaining_vat_amount",
+      "payment_date",
+      "cheque_number",
+      "book_no",
+      "certificate_no",
+      "sequence_no",
+      "payer_tax_id",
+      "payer_name",
+      "payer_branch",
+      "payer_address",
+      "payee_tax_id",
+      "payee_name",
+      "payee_branch",
+      "payee_address",
+      "dividend_rate_option",
+      "total_amount_paid",
+      "total_wht_amount"
+    ]
+  },
+  "document_type": [
+    "ต้นฉบับใบกำกับภาษี",
+    "ORIGINAL TAX INVOICE"
+  ],
+  "document_number": "TIS2602-1034",
+  "issue_date": "25/02/2026",
+  "po_gr_rtv_number": "",
+  "inv_rtv_cnr_number": [
+    "INS2512-96",
+    "Invoice INS2512-96"
+  ],
+  "seller_tax_id": "0105526020851",
+  "seller_branch": [
+    "สำนักงานใหญ่",
+    "HEAD OFFICE"
+  ],
+  "buyer_tax_id": "0107536110412",
+  "buyer_branch": [
+    "สาขาที่ 00012",
+    "00012"
+  ],
+  "subtotal": "151,353.08",
+  "vat_total": "10,594.72",
+  "amount_incl_vat": "161,947.80",
+  "remaining_amount": "",
+  "remaining_vat_amount": "",
+  "payment_date": "25.2-26",
+  "cheque_number": "18631287",
+  "book_no": "",
+  "certificate_no": "",
+  "sequence_no": "",
+  "payer_tax_id": "",
+  "payer_name": "",
+  "payer_branch": "",
+  "payer_address": "",
+  "payee_tax_id": "",
+  "payee_name": "",
+  "payee_branch": "",
+  "payee_address": "",
+  "dividend_rate_option": "",
+  "total_amount_paid": "",
+  "total_wht_amount": "",
+  "seller_name": [
+    "บริษัท เอ็น เทรดดิ้ง เซอร์วิส จำกัด",
+    "N.TRADING SERVICE CO., LTD."
+  ],
+  "buyer_name": "บริษัท โรบินราชา",
+  "reference_document": "INS2512-96",
+  "currency": ""
+}

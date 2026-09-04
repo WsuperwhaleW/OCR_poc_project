@@ -418,7 +418,7 @@
      it best and quickest side by side. A block of its own rather than more chips
      on `.run-best`, because every figure here carries the setting that produced
      it and a setting does not fit on a chip. */
-  #caseSum, #ocrSum, #extractSum { overflow-x: auto; margin-top: 16px; }
+  #caseSum, #ocrSum, #extractSum, #weakSum { overflow-x: auto; margin-top: 16px; }
   /* ---- the log view: what the tables below are compiled under ----
      Two numbers and a set of filters, none of which write anything. The raw
      rows are the log and are never filtered -- a row hidden there is a row
@@ -742,15 +742,28 @@
   .pr-bias-off { border-left-color: var(--muted); background: var(--tint); }
   #presentSum .an-grid { margin-top: 8px; }
   #caseSum table.queue { min-width: 820px; margin-top: 6px; }
-  #ocrSum table.queue, #extractSum table.queue { min-width: 720px; margin-top: 6px; }
+  #ocrSum table.queue, #extractSum table.queue,
+  #weakSum table.queue { min-width: 720px; margin-top: 6px; }
   /* The model that extracts the most fields correctly, marked in the table
      rather than pulled out above it: the runner-up is the whole point of a
      leaderboard, and a chip naming the winner alone says nothing about by how
      much or over how many documents. */
   #ocrSum tr.ms-top td, #extractSum tr.ms-top td { background: var(--accent-soft); }
   #caseSum .cs-title, #ocrSum .cs-title, #extractSum .cs-title,
-  #standoutSum .cs-title, #errorSum .cs-title { font-size: .78rem; text-transform: uppercase;
+  #standoutSum .cs-title, #errorSum .cs-title,
+  #weakSum .cs-title { font-size: .78rem; text-transform: uppercase;
     letter-spacing: .07em; color: var(--muted); }
+  /* Four tables on one panel, so each heading after the first needs air above
+     it -- without this the note closing one table and the title opening the
+     next read as one paragraph. */
+  #weakSum .cs-title { display: block; margin-top: 26px; }
+  #weakSum .cs-title:first-child { margin-top: 0; }
+  /* The run count under a grid's row header. `an-t` is block only inside a
+     value cell in the analysis tab's own CSS, and a row header there carries no
+     second line -- here it does, and without this it runs into the name. */
+  #weakSum table.an-heat td.an-rowh .an-t,
+  #weakSum table.an-heat td.an-empty .an-t {
+    display: block; font-weight: 400; font-size: .68rem; color: var(--muted); }
   .cs-val { font-weight: 700; font-variant-numeric: tabular-nums; }
   .cs-of { color: var(--muted); font-weight: 400; font-size: .74rem; }
   .cs-set { display: block; color: var(--muted); font-size: .72rem;
@@ -807,6 +820,15 @@
   .acc-fill { height: 100%; border-radius: 6px; transition: width .3s; }
   .acc-val { text-align: right; font-variant-numeric: tabular-nums; font-weight: 600; }
   .acc-note { font-size: .78rem; color: var(--muted); margin-top: 12px; line-height: 1.5; }
+  /* The three script rows under the headline. Indented and ruled so they read as
+     a breakdown OF the number above rather than as three more scores beside it --
+     they are recall over three subsets of the same characters, and they do not
+     add up to it. */
+  .acc-scripts { margin: 14px 0 0; padding: 10px 0 0 14px;
+                 border-left: 2px solid var(--border); }
+  .acc-scripts .acc-row { margin: 5px 0; font-size: .8rem; }
+  .acc-scripts .acc-note { margin-top: 10px; }
+  .acc-scripts .acc-val .cs-set { display: block; }
   .acc-sub { font-size: .78rem; text-transform: uppercase; letter-spacing: .07em;
              color: var(--muted); margin: 20px 0 8px; }
   #accDiff {
@@ -1098,6 +1120,19 @@ follows your desktop; Light is the one to pick for projecting or screenshotting.
         </label>
       </div>
       <p class="note" id="loopGuardNote"></p>
+      <!-- The read floor. One process setting behind two boxes -- this one and
+           the Random test pane's -- painted from what the server accepted and
+           never kept in step by each other's handlers. It decides whether a
+           field score is WRITTEN; the summary card's own floor decides whether a
+           written one is averaged, and only that second one can be undone. -->
+      <div class="row">
+        <label class="field" style="flex:0 0 210px">
+          Score fields only above
+          <input id="readFloorInp" type="number" min="0" max="100" step="1"
+                 value="{{ (min_read_for_fields * 100)|round(0)|int }}">
+        </label>
+      </div>
+      <p class="note" id="readFloorNote"></p>
       <div class="row">
         <label class="field" style="flex:1;min-width:200px">
           Field extraction
@@ -1290,6 +1325,17 @@ follows your desktop; Light is the one to pick for projecting or screenshotting.
         <div class="rt-ex" id="rtExExtractRow">
           <span class="rt-ex-label">Models that may extract</span>
           <div class="rt-chips" id="rtExExtract"></div>
+        </div>
+
+        <!-- The same setting the Workspace pane holds, offered here because
+             this is where a run that comes back `unscored` is read. Both boxes
+             paint from the server, so moving either moves both. -->
+        <div class="row">
+          <label class="field" style="flex:0 0 210px">
+            Score fields only above
+            <input id="rtReadFloor" type="number" min="0" max="100" step="1"
+                   value="{{ (min_read_for_fields * 100)|round(0)|int }}">
+          </label>
         </div>
 
         <div class="row">
@@ -1592,10 +1638,13 @@ is fed the ground truth and never reads — and each half is worth looking at al
           <button data-pipe="extract" title="runs that extracted from a transcript they did not read — usually fed the ground truth">Extract only</button>
         </div>
       </label>
-      <label class="lv-num" title="transcript accuracy under which a field score is
-not a measurement of the extractor: pass 2 can only map the values pass 1 gave it,
-so a score over a broken transcript is the read's mistake wearing the extractor's
-name. 0 scores every extraction whatever the read did.">Read floor
+      <label class="lv-num" title="transcript accuracy under which a field score in
+the log is not averaged: pass 2 can only map the values pass 1 gave it, so a score
+over a broken transcript is the read's mistake wearing the extractor's name. This
+one only decides what the tables AVERAGE and can be moved back at any time; the
+Workspace and Random test panes hold the floor that decides what gets WRITTEN, and
+a figure never written is not here to recover. 0 averages every score in the
+file.">Read floor
         <span><input id="lvFloor" type="number" min="0" max="100" step="5"><span class="u"> %</span></span>
       </label>
       <label class="lv-num" title="how many recent runs OF EACH setting, model and
@@ -1631,6 +1680,7 @@ highlighted. Dominated by a pairing, not itself hard.">
       <button data-panel="ocr">Best reading</button>
       <button data-panel="extract">Best extraction</button>
       <button data-panel="case">Per document</button>
+      <button data-panel="weak" title="what each model and each document is WEAK at, rather than how good it is: the transcript score split into Thai, English and numerals, and the field score split into the individual keys. Every other tab averages over both.">Weak spots</button>
       <button data-panel="analysis">Time × Doc × Accuracy</button>
       <button data-panel="error">Errors</button>
       <button data-panel="raw">Raw data</button>
@@ -1677,6 +1727,13 @@ matched.">
          (accuracy vs time) split by model and by document, correlation ratios
          for the categorical pairings, and the model x document grid the numbers
          summarise. From `runlog.ocr_analysis`. -->
+    <!-- Not how good, but at WHAT: pass 1 split into the three scripts these
+         pages are written in, pass 2 split into the individual keys. Every
+         other tab on this card ranks on a mean and therefore averages exactly
+         this away -- a model at 92% overall can be at 71% on the digits, and
+         the digits are every Mandatory field in the requirement. From
+         `runlog.script_accuracy` and `runlog.field_weakness`. -->
+    <div class="lv-panel" id="panelWeak" hidden><div id="weakSum"></div></div>
     <div class="lv-panel" id="panelAnalysis" hidden><div id="analysisSum"></div></div>
     <!-- What is FAILING, ranked on the failures rather than folded into an
          accuracy score: the most-error model, the most-error document, and the
@@ -1794,7 +1851,12 @@ function caseFormNote(id) {
      would read as a form nobody can pass. */
   const m = (c.mandatory || []).length;
   return types + (n ? ' · ' + n + ' fields' : '')
-    + (m ? ' (' + m + ' required)' : '') + ' · ';
+    + (m ? ' (' + m + ' required)'
+      /* No requirement yet, so the form is the base field set and the score
+         will be over every key the ground truth states. Named before anything
+         runs, for the same reason the required count is. */
+      : c.unknown_type ? ' (unknown type — scored on the base fields)' : '')
+    + ' · ';
 }
 /* Set while the transcript on screen came out of `solution/<id>.md` rather than
    out of a read. It is what keeps a Re-extract from the Fields tab scored: the
@@ -2613,10 +2675,56 @@ function truthIndex(fs) {
    marked where it is read, so this is the summary of marks the reader has just
    been through rather than a verdict handed down before they see any of them.
    Absent on every document nobody has written a truth file for. */
+/* Why this run's fields carry no rate, or '' where they do.
+
+   Shared by the two tabs that would otherwise each draw one, so they cannot
+   describe the same run differently. The score is still on the result and every
+   value above is still marked with it -- what the read floor drops is the
+   headline, which over a broken transcript is the READ's number wearing the
+   extractor's name. Silent where there was never a rate to drop: a document with
+   no field ground truth has nothing to say here. */
+/* Which tally is THE score for this document, and what it is over.
+
+   The headline is the requirement's Mandatory set. **Some documents have no
+   requirement at all** -- a page that is only a tax invoice, or one nothing
+   could classify -- and for those `overall.expected` is 0 while every value the
+   truth file states sits in `optional`, judged and correct. Until 2026-09-04
+   that rendered as NOTHING: no bar, no list, no sentence, which is
+   indistinguishable from an extraction that found nothing and is what sent the
+   user looking at the read floor for a document the floor never touched.
+
+   Since 2026-09-04 the server does that half: a document no requirement covers
+   is scored over the BASE field set and comes back with `unknown_type` set, so
+   `overall` is populated and the fallback below is left for the other case that
+   empties it -- a document whose truth file happens to state only keys the
+   requirement marks Optional.
+
+   `required` decides whether the values are called required or merely stated;
+   `unknown` decides whether the page says no requirement covers the document.
+   They are not the same question, which is why the fallback sets one and not
+   the other. */
+function scoreTally(fs) {
+  const o = (fs && fs.overall) || {}, op = (fs && fs.optional) || {};
+  const unknown = !!(fs && fs.unknown_type);
+  if (o.expected) return { t: o, scope: fs.scored_scope || '',
+    required: !unknown, unknown: unknown };
+  if (op.expected) return { t: op, required: false, unknown: unknown,
+    scope: 'the keys the ground truth states that the requirement marks Optional '
+      + '— it states none of the Mandatory ones' };
+  return null;
+}
+
+function unscoredReason() {
+  if (!extracted || !extracted.fields_unscored) return '';
+  const o = ((extracted.field_score || {}).overall) || {};
+  return o.expected ? extracted.fields_unscored : '';
+}
+
 function fieldScoreNote(fs) {
   if (!fs || fs.error) return '';
-  const o = fs.overall || {};
-  if (!o.expected) return '';
+  const pick = scoreTally(fs);
+  if (!pick) return '';
+  const o = pick.t;
   const c = o.counts || {};
   const pct = v => (v === null || v === undefined) ? '—' : (v * 100).toFixed(1) + '%';
   const cov = fs.coverage || {};
@@ -2630,8 +2738,22 @@ function fieldScoreNote(fs) {
   /* What the rate is over. Since 2026-09-02 it is the requirement's Mandatory
      set, so a document can score 100% with an Optional field wrong -- which is
      correct, and unreadable unless the scope is printed beside the number. */
-  if (fs.scored_scope) {
-    html += ' <span class="how">Scored over ' + esc(fs.scored_scope) + '.</span>';
+  if (pick.scope) {
+    /* Said outright: a rate with no Mandatory set behind it is not a compliance
+       figure and must not be read as one. The unknown-type case states the
+       scope and the caveat in ONE sentence rather than printing the scope and
+       then explaining it -- the scope string already names the reason, and two
+       sentences saying it is the second-copy-of-the-page shape this tab had a
+       whole block deleted for. */
+    html += ' <span class="how">'
+      + (pick.unknown
+        ? 'No requirement covers this document type yet, so the rate is over the '
+          + 'base field set — every key the ground truth states. Nothing on it '
+          + 'is Mandatory: this is what the extractor found, not what it owed.'
+        : 'Scored over ' + esc(pick.scope) + '.'
+          + (pick.required ? '' : ' None of these is Mandatory here, so this is '
+            + 'what the extractor found, not what it owed.'))
+      + '</span>';
   }
   /* The Optional fields, judged the same way and deliberately outside the rate:
      nobody is held to them, so a document that leaves one out is compliant and
@@ -2639,7 +2761,7 @@ function fieldScoreNote(fs) {
      `other_fields` is -- a model good at the eleven that matter and poor at the
      rest is a different proposition from one that is evenly mediocre. */
   const op = fs.optional || {};
-  if (op.expected) {
+  if (pick.required && op.expected) {
     const oc = op.counts || {};
     html += ' <span class="how">Optional fields, not in that rate: '
       + oc.correct + ' of ' + op.expected + ' correct (' + pct(op.accuracy) + ').</span>';
@@ -2827,6 +2949,89 @@ async function setLoopGuard(on) {
 
 loopGuardChk.addEventListener('change', () => setLoopGuard(loopGuardChk.checked));
 paintLoopGuard();
+
+/* ---------- the read floor ---------------------------------------------------
+   The transcript score a read has to reach before the extraction taken from it
+   is worth a field score. Pass 2 can only map values pass 1 produced, so a score
+   over a broken transcript marks down whatever extracted and lets whatever read
+   get away with it -- measured: dots.mocr agentic scored 32.7% over its own
+   reads against 46.8% over the ground truth.
+
+   **Two floors, and only one of them is reversible.** This one decides whether a
+   figure is WRITTEN, at the moment a run happens, and a score never taken is not
+   in the log to recover. The Summary card's floor decides whether a figure
+   already in the log is AVERAGED, and moves freely because every table
+   re-derives trust from the row's own transcript score. So this is the one to
+   leave low and that is the one to raise.
+
+   ONE setting behind TWO boxes -- here and on the Random test pane -- both
+   painted from what the server accepted, never kept in step by each other's
+   handlers. Same rule as the model pickers: a control refused by the server has
+   to end up showing what is really in force, not what was typed. */
+const readFloorInp = document.getElementById('readFloorInp');
+const readFloorNote = document.getElementById('readFloorNote');
+const rtReadFloorInp = document.getElementById('rtReadFloor');
+let READ_FLOOR = {{ min_read_for_fields }};          /* a FRACTION, like the server's */
+const READ_FLOOR_DEFAULT = {{ min_read_default }};   /* what the process started at */
+
+function paintReadFloor() {
+  const pct = (READ_FLOOR * 100).toFixed(0);
+  readFloorInp.value = pct;
+  if (rtReadFloorInp) rtReadFloorInp.value = pct;
+  readFloorNote.innerHTML = READ_FLOOR > 0
+    ? 'A read scoring under <b>' + pct + '%</b> still extracts and still logs — '
+      + 'the fields come back, each one still marked against the ground truth — '
+      + 'but <b>no field score is written</b> for it. That figure would be a '
+      + 'measurement of the read that produced it rather than of the extractor: '
+      + 'a value pass 1 got wrong cannot then be '
+      + 'extracted right. Applies to every path that reads a page — this pane, '
+      + 'the queue and the random test alike. Set it to <b>0</b> to score '
+      + 'everything and let the run-log card decide what to average with its own '
+      + 'floor; '
+      + 'that one can be moved afterwards and this one cannot.'
+    : '<b>Off.</b> Every extraction is scored whatever the read did, so the '
+      + 'figure is in the log, and the read floor on the run-log card decides '
+      + 'which runs it averages. A looped or truncated read is still left '
+      + 'unscored: that transcript is a fragment whatever it scored.'
+      + (READ_FLOOR_DEFAULT > 0
+          ? ' This process started at ' + (READ_FLOOR_DEFAULT * 100).toFixed(0)
+            + '%.' : '');
+  /* The random test's scope note quotes the floor. A hoisted function, so this
+     is safe to call from here -- which runs long before that section. */
+  if (typeof rtPaintScope === 'function' && window.rtScopeNote) rtPaintScope();
+}
+
+/* Returns once the server holds the value on screen, so a run started straight
+   after a keystroke is read under the floor the user is looking at. Sending it
+   only when it differs keeps a Run click from paying for a request that changes
+   nothing. */
+async function pushReadFloor(box) {
+  const asked = Number((box || readFloorInp).value);
+  if (!isFinite(asked) || Math.round(asked) === Math.round(READ_FLOOR * 100)) {
+    paintReadFloor();
+    return;
+  }
+  readFloorInp.disabled = true;
+  if (rtReadFloorInp) rtReadFloorInp.disabled = true;
+  try {
+    const res = await fetch('/api/ocr/read-floor', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ min_read_pct: Math.max(0, Math.min(asked, 100)) })
+    });
+    const body = await res.json();
+    /* What the server accepted, never what was typed. */
+    if (typeof body.min_read_pct === 'number') READ_FLOOR = body.min_read_pct / 100;
+  } catch (err) { /* leave it where it was */ }
+  readFloorInp.disabled = false;
+  if (rtReadFloorInp) rtReadFloorInp.disabled = false;
+  paintReadFloor();
+}
+
+readFloorInp.addEventListener('change', () => pushReadFloor(readFloorInp));
+if (rtReadFloorInp) {
+  rtReadFloorInp.addEventListener('change', () => pushReadFloor(rtReadFloorInp));
+}
+paintReadFloor();
 
 /* Step progress, from either the Re-extract stream or a full run's stream.
    Returns true when the message was a step message and has been consumed. */
@@ -3119,6 +3324,12 @@ function paintPipeline() {
                   // form is compulsory is the half stage 3 is judged on.
                   + ((c.mandatory || []).length
                      ? ', ' + c.mandatory.length + ' required' : '')));
+    /* No requirement covers this type yet, so the form is the base field set and
+       nothing on it is Mandatory. Said rather than left as a missing "N
+       required" clause: an absent clause reads as a form nobody can pass, and
+       the fact it stands for is the one that explains both why there are thirty
+       rows below and why the score beside them is not a compliance figure. */
+    if (c.unknown_type) bits.push('<b class="pipe-warn">unknown type</b>');
     if (c.steps && c.steps.length) bits.push(esc(c.steps.length + ' steps'));
     if (c.rules && c.rules.length) bits.push(esc(c.rules.length + ' extra checks'));
     /* The manifest's own answer, where this run did not use it and the two
@@ -3169,7 +3380,14 @@ function paintPipeline() {
                     + (c.doc_type_heading ? 'Heading read: ' + c.doc_type_heading + NL : '')
                     + 'Chose the form below: ' + c.fields.join(', ')
                     + (c.mandatory && c.mandatory.length
-                       ? NL + 'Mandatory on this type: ' + c.mandatory.join(', ') : '')
+                       ? NL + 'Mandatory on this type: ' + c.mandatory.join(', ')
+                       : c.unknown_type
+                       ? NL + 'No requirement covers this type yet, so this is the '
+                         + 'base field set -- the union of every requirement this '
+                         + 'project has. Nothing on it is Mandatory, no extra '
+                         + 'validation rule runs, and the field score below is '
+                         + 'taken over every key the ground truth states rather '
+                         + 'than over a compliance set.' : '')
                     + (c.rules && c.rules.length
                        ? NL + 'Validation rules these types add: '
                          + c.rules.join(', ').replace(/_/g, ' ') : '')
@@ -3507,7 +3725,15 @@ function paintFieldBody() {
 
   // Then the score: how did this run do, over the values just read. Nothing is
   // rendered where there is no truth file, which is most documents.
-  const score = fieldScoreNote(extracted.field_score);
+  const unscored = unscoredReason();
+  const score = unscored
+    ? '<p class="ground-note bad"><strong>Not scored</strong> — ' + esc(unscored)
+      + '. The extraction ran and is logged, and every value above is still '
+      + 'marked against the ground truth; what is left out is the rate, here and '
+      + 'in the run log, because over a transcript this poor it would be a '
+      + 'measurement of the read. Lower <b>Score fields only above</b> to score '
+      + 'runs like this one.</p>'
+    : fieldScoreNote(extracted.field_score);
   if (score) html += '<div class="fld-sec">Score</div>' + score;
 
   // There is no "Warnings and findings" block any more, and its absence is the
@@ -5134,7 +5360,7 @@ function anHeat(a) {
    zero -- while `across docs` is how much the documents differ from each other,
    which is a property of the fixtures as much as of the setting. Printing one
    number would invite reading it as an error bar on the mean, which neither is. */
-function msFig(block, unit, digits, colour) {
+function msFig(block, unit, digits, colour, outer) {
   if (!block || block.mean === null || block.mean === undefined)
     return '<span class="cs-none">&mdash;</span>';
   const d = digits === undefined ? 1 : digits;
@@ -5145,8 +5371,13 @@ function msFig(block, unit, digits, colour) {
   const sd = [];
   if (block.sd_repeat !== null && block.sd_repeat !== undefined)
     sd.push('&plusmn;' + Number(block.sd_repeat).toFixed(d) + ' repeat');
+  // What the outer spread is ACROSS is not always documents: the same figure
+  // grouped by document is spread across the models that read it, and calling
+  // that "across docs" would name the wrong axis on half the tables that use
+  // this. Defaulted, because it is documents everywhere it was before.
   if (block.sd_case !== null && block.sd_case !== undefined)
-    sd.push('&plusmn;' + Number(block.sd_case).toFixed(d) + ' across docs');
+    sd.push('&plusmn;' + Number(block.sd_case).toFixed(d) + ' '
+            + (outer || 'across docs'));
   return head + (sd.length ? '<span class="cs-set">' + sd.join(' &middot; ') + '</span>' : '');
 }
 
@@ -5176,7 +5407,7 @@ function paintOcrSummary(t) {
   // An empty table with retired rows behind it is the one case where the note
   // matters most -- every read this log holds ran at a preset that is gone, and
   // without it the card reads as a log nobody has written to.
-  if (!settings.length) { ocrSum.innerHTML = emptyPassNote('ocr', t) + retiredNote(t); return; }
+  if (!settings.length) { ocrSum.innerHTML = emptyPassNote('ocr', t) + retiredNote(t) + legacyNote(t); return; }
   // The server's ranking, kept before any sort: the top row is the best setting
   // by transcript accuracy, and it stays marked as such however the reader
   // reorders the table. A highlight that followed the sort would say "best" of
@@ -5207,6 +5438,26 @@ function paintOcrSummary(t) {
      title: 'character accuracy against solution/<id>.md, meaned over documents '
           + '— content in whatever order the model put it',
      cell: e => msFig(e.char, '%', 1, true)},
+    // The one number a headline cannot give: WHICH of the three scripts this
+    // setting is losing. Numbers first, against the order used elsewhere,
+    // because every Mandatory field in the requirement is a figure, a date or an
+    // ID -- a setting can read 92% overall and 71% of the digits, and only this
+    // column says so. Blank where the documents printed too little of a script
+    // to measure it, never zero.
+    {key: 'num', label: 'Numbers', n: true, value: e => e.digit.mean,
+     title: 'digits only, Arabic and Thai numerals — amounts, dates, tax IDs '
+          + 'and document numbers. Read this column first: the three script '
+          + 'rates do not add up to the transcript score, they are recall over '
+          + 'three subsets of it',
+     cell: e => msFig(e.digit, '%', 1, true)},
+    {key: 'thai', label: 'Thai', n: true, value: e => e.thai.mean,
+     title: 'Thai letters, tone marks and vowels included — the first thing to '
+          + 'go when a page is downscaled',
+     cell: e => msFig(e.thai, '%', 1, true)},
+    {key: 'eng', label: 'English', n: true, value: e => e.latin.mean,
+     title: 'the Latin alphabet — not a claim that the text is English, since a '
+          + 'romanised Thai name is Latin script too',
+     cell: e => msFig(e.latin, '%', 1, true)},
     // Prefill and decode apart, never summed. They move for different reasons --
     // prefill with pixels, decode with output length -- and the entire Detail
     // trade lives in the first of them, invisible in a total.
@@ -5253,7 +5504,8 @@ function paintOcrSummary(t) {
     + 're-read of a page it had already seen is lower than anyone gets cold. '
     + 'Every column sorts; the highlighted row is the best by transcript '
     + 'accuracy whichever column you sort by.</p>'
-    + retiredNote(t);
+    + retiredNote(t)
+    + legacyNote(t);
 }
 
 
@@ -5266,6 +5518,34 @@ function paintOcrSummary(t) {
    here, and there is one: `fast`, 1 MP, dropped because at that budget the model
    fabricates rather than misreads. Folding it into `low` would average 1 MP and
    2 MP under one name. */
+/* How many reads in view still carry the OLD character score -- an edit distance,
+   which charged text the page does not print exactly as much as text it lost.
+   Since 2026-09-04 the score is recall of the ground truth and that text is free,
+   which on this project's own fixtures is worth about +7.6 points of mean.
+
+   Said out loud for the reason `retiredNote` is: while both eras sit in one
+   window the pass-1 means are over two different questions, and a table that does
+   not admit it reads as a model that suddenly got better. **The log was
+   deliberately not reset** -- every table covers each setting's own most recent
+   runs, so the old rows leave on their own as new ones arrive, and this note
+   empties itself with them.
+
+   The test is exact and free: `invented_chars` was added in the same change, so
+   on a row that has a transcript score at all, a blank one is the old metric. */
+function legacyNote(t) {
+  const g = t.legacy_char || {};
+  if (!g.legacy || !g.scored) return '';
+  const pct = (g.legacy / g.scored) * 100;
+  return '<p class="note"><b>' + g.legacy + ' of ' + g.scored + ' scored read(s)</b> ('
+    + pct.toFixed(0) + '%) still carry the character score as it was computed before '
+    + '2026-09-04 &mdash; an edit distance, which charged text the page does not '
+    + 'print. It is recall of the ground truth now, so those rows read '
+    + '<b>lower</b> than the same transcript would score today. Nothing was reset: '
+    + 'each table covers its own setting&rsquo;s most recent runs, so these leave as '
+    + 'new ones arrive and this note goes with them. Until then, treat a rise in a '
+    + 'mean that mixes the two as the metric moving rather than the model.</p>';
+}
+
 function retiredNote(t) {
   const gone = t.retired_detail || {};
   const names = Object.keys(gone);
@@ -5936,6 +6216,25 @@ function paintPresent(t) {
      title: 'character accuracy against the hand-written transcript ground '
           + 'truth, meaned over each document first and then across documents',
      cell: e => prFig(e.value, '%', 1, presColour, (e.value.mean || 0) / 100)},
+    // WHICH of the three scripts the model loses, beside how much it loses.
+    // Numbers first, against the order used elsewhere: every Mandatory field in
+    // the requirement is a figure, a date or an ID, so a model at 92% overall
+    // and 71% on the digits is unusable in a way the column to the left cannot
+    // say. The three are recall over subsets of that column and do NOT add up
+    // to it — punctuation belongs to no script.
+    {key: 'digit', label: 'Numbers', n: true, value: e => e.digit.mean,
+     title: 'digits only, Arabic and Thai numerals — amounts, dates, tax IDs '
+          + 'and document numbers. Read this before the column to its left: '
+          + 'every Mandatory field in the requirement is one of these.',
+     cell: e => prFig(e.digit, '%', 1, presColour, (e.digit.mean || 0) / 100)},
+    {key: 'thai', label: 'Thai', n: true, value: e => e.thai.mean,
+     title: 'Thai letters, tone marks and vowels included — the first thing to '
+          + 'go when a page is downscaled',
+     cell: e => prFig(e.thai, '%', 1, presColour, (e.thai.mean || 0) / 100)},
+    {key: 'latin', label: 'English', n: true, value: e => e.latin.mean,
+     title: 'the Latin alphabet. Not a claim that the text is English: a '
+          + 'romanised Thai company name is Latin script too.',
+     cell: e => prFig(e.latin, '%', 1, presColour, (e.latin.mean || 0) / 100)},
     {key: 'err', label: 'Error rate', n: true, value: e => e.failure_rate,
      title: 'runs that did not finish — looped, truncated, cancelled or errored. '
           + 'A run that finished and read the page badly is not one of these; it '
@@ -6070,13 +6369,12 @@ function paintPresent(t) {
    unreadable during exactly the run it exists to explain. */
 let rtRows = [];
 let rtAbort = null;
-/* The server's own threshold, not a copy of it: `settings.MIN_READ_FOR_FIELDS`
-   is what actually decides, and a page quoting a different number would be
-   describing a build nobody is running. */
-const MIN_READ_FOR_FIELDS = {{ min_read_for_fields }};
 /* From the server, never repeated here: the bar the Python classifier has
    to clear before the model is asked. */
 const MIN_CLASSIFY_CONFIDENCE = {{ min_classify_confidence }};
+/* `scoring.SCRIPT_MIN_CHARS`: below this many characters of a script on
+   one page, no rate is reported for it and the count is shown instead. */
+const scriptMinChars = {{ script_min_chars }};
 const CONTEST = { top: {{ contest_top }}, bottom: {{ contest_bottom }},
                   detail: '{{ contest_detail }}' };
 /* Which scope each contest subject implies. Painted from the server's own table
@@ -6201,23 +6499,33 @@ function rtPaintContest() {
 }
 
 /* What the chosen scope will and will not measure, said before the run rather
-   than inferred from empty columns afterwards. */
-const RT_SCOPE_NOTE = {
-  full: 'Both passes. The field score is partly a measurement of the read — a '
-      + 'value pass 1 got wrong cannot then be extracted right — so a round '
-      + 'whose read failed'
-      + (MIN_READ_FOR_FIELDS > 0 ? ' or scored under '
-         + (MIN_READ_FOR_FIELDS * 100).toFixed(0) + '%' : '')
-      + ' still extracts and still logs, and its fields are left '
-      + '<b>unscored</b>.',
-  ocr: 'Pass 1 only. No extraction runs, so the row it logs has blank pass-2 '
-     + 'columns and there is no field score.',
-  fields: 'Pass 2 only, on <code>solution/&lt;id&gt;.md</code>. No page is read, so '
-        + 'nothing the extractor gets wrong belongs to the read — and any model '
-        + 'can be drawn, vision or not.'
-};
+   than inferred from empty columns afterwards.
+
+   A hoisted function rather than the const map it used to be: the read floor it
+   quotes moves at runtime now, and `paintReadFloor` repaints this note when it
+   does -- from the workspace section, which runs first. A const there would be
+   in its temporal dead zone at that moment, which throws and takes the whole
+   inline script down with it. */
+function rtScopeText(scope) {
+  if (scope === 'ocr') {
+    return 'Pass 1 only. No extraction runs, so the row it logs has blank pass-2 '
+         + 'columns and there is no field score.';
+  }
+  if (scope === 'fields') {
+    return 'Pass 2 only, on <code>solution/&lt;id&gt;.md</code>. No page is read, so '
+         + 'nothing the extractor gets wrong belongs to the read — and any model '
+         + 'can be drawn, vision or not.';
+  }
+  return 'Both passes. The field score is partly a measurement of the read — a '
+       + 'value pass 1 got wrong cannot then be extracted right — so a round '
+       + 'whose read failed'
+       + (READ_FLOOR > 0 ? ' or scored under ' + (READ_FLOOR * 100).toFixed(0) + '%'
+                         : '')
+       + ' still extracts and still logs, and its fields are left '
+       + '<b>unscored</b>.';
+}
 function rtPaintScope() {
-  rtScopeNote.innerHTML = RT_SCOPE_NOTE[rtScope.value] || '';
+  rtScopeNote.innerHTML = rtScopeText(rtScope.value) || '';
 }
 
 /* The Result card and the random test take turns in the same place. Both belong
@@ -6279,8 +6587,17 @@ function rtPaint() {
                     ? '<td><span class="cs-none">unscored</span>'
                       + '<span class="rt-plan">' + esc(out.unscored) + '</span></td>'
                     : '<td>' + rtPct(out.field)
-                      + '<span class="rt-plan">' + out.correct + '+' + out.partial + 'p/'
-                      + out.expected + '</span></td>')
+                      // What the rate is over -- the requirement's Mandatory
+                      // set -- and, where the truth file rules on any, the
+                      // optional keys judged beside it and left out of it.
+                      + '<span class="rt-plan"' + (out.scope
+                          ? ' title="scored over ' + esc(out.scope) + '"' : '') + '>'
+                      + out.correct + '+' + out.partial + 'p/' + out.expected
+                      + (out.unknown_type ? ' base' : ' req')
+                      + (out.optional_expected
+                          ? ', ' + out.optional_correct + '/' + out.optional_expected
+                            + ' opt' : '')
+                      + '</span></td>')
                 + '<td>' + out.other
                   + (out.partial_reply
                      ? '<span class="rt-plan" style="color:var(--danger)">salvaged</span>' : '')
@@ -6290,7 +6607,11 @@ function rtPaint() {
   }).join('');
   rtOut.innerHTML = '<table class="queue"><tr><th>Round</th>'
     + '<th title="character accuracy of the transcript against solution/&lt;id&gt;.md">Read</th>'
-    + '<th title="priority-1 fields, a partial counting half">Fields</th>'
+    + '<th title="the fields the requirement marks Mandatory for this document '
+      + 'type, a partial counting half. Optional fields are extracted and judged '
+      + 'beside it and are not in the rate. A type no requirement covers is '
+      + 'scored over the base field set instead and reads &quot;base&quot;'
+      + '">Fields</th>'
     + '<th title="entries returned under other_fields">Extra</th>'
     + '<th>Time</th></tr>' + body + '</table>';
 }
@@ -6337,6 +6658,10 @@ async function rtStart(contest) {
   rtRows = [];
   rtPaint();
   rtBusy(true);
+  // Same reason as the Read button: the rounds below are judged by this floor,
+  // so it is pushed before the first one rather than whenever the box lost
+  // focus. A contest pays for it too -- its rounds are ordinary runs.
+  await pushReadFloor(rtReadFloorInp || readFloorInp);
   rtNote.classList.remove('err');
   rtNote.textContent = 'Planning…';
   rtShowing(true);
@@ -6883,6 +7208,263 @@ lvReset.addEventListener('click', () => {
   refreshRuns();
 });
 
+/* ---------- what each model and each document is WEAK at ----------
+   Added 2026-09-04 at the user's request -- *add to summary to check each model
+   strength and weakness, also each doc to see in each doc the model weakness is
+   in what field*.
+
+   Every other tab on this card answers *which is best*, and a mean is the wrong
+   shape for *what is it bad at*: a model reading 92% overall can be reading 71%
+   of the digits, and the digits are every Mandatory field in the requirement.
+   Same one level down in pass 2 -- a field score of 8 of 11 says nothing about
+   WHICH three, and it is the same three on every document until somebody looks.
+
+   Four tables, two per pass, and each pass asks the same question of a model and
+   of a document. From `runlog.script_accuracy` and `runlog.field_weakness`; the
+   eligibility rules live there. */
+
+/* One field name as the page spells it. `FIELD_LABELS` is the Fields tab's own
+   map, so a key is named the same on both -- a key it does not know (one this
+   build no longer asks for, still in the log) falls back to its raw name rather
+   than being dropped, because a run that happened is a run that happened. */
+function wkField(key) {
+  return (FIELD_LABELS && FIELD_LABELS[key]) || key;
+}
+
+/* A rate as a coloured cell of a grid, on the same scale as everything else on
+   this card. `null` is NOT a zero -- it is a cell nothing measured -- so it is
+   an em dash rather than a red 0%. */
+function wkCell(rate, tip, sub) {
+  // A cell with no rate still has something to say where the reason is that
+  // the model INVENTED a value: on the keys this corpus leaves empty by
+  // construction that is the whole story, and a bare dash would report the one
+  // measurable failure of those keys as nothing having been measured.
+  if (rate === null || rate === undefined)
+    return '<td class="an-empty" title="' + esc(tip || '') + '">&mdash;'
+      + (sub ? '<span class="an-t">' + esc(sub) + '</span>' : '') + '</td>';
+  return '<td class="an-cell" title="' + esc(tip || '') + '" style="background:'
+    + hexA(accColour(rate / 100), 0.16) + '"><b style="color:'
+    + accColour(rate / 100) + '">' + rate.toFixed(0) + '%</b>'
+    + (sub ? '<span class="an-t">' + esc(sub) + '</span>' : '') + '</td>';
+}
+
+/* The three script rates for one model or one document, as a sortable table.
+   Numbers first, against the order used elsewhere: every Mandatory field in the
+   requirement is a figure, a date or an ID, so that is the column to read first
+   and the one a reader should not have to hunt for. */
+function wkScriptTable(id, entries, what, labels) {
+  // A document row is meaned over the MODELS that read it, so its spread is
+  // across models and not across documents. Naming the wrong axis in a tooltip
+  // is the kind of small lie that gets a table quoted wrongly.
+  const spread = what === 'model' ? 'across docs' : 'across models';
+  const cols = [
+    {key: 'key', label: what === 'model' ? 'Model' : 'Document',
+     value: e => csModel(e.key),
+     cell: e => '<b title="' + esc(e.key) + '">' + esc(csModel(e.key)) + '</b>'
+       + '<span class="cs-set">' + e.runs + ' read(s) &middot; ' + e.documents
+       + (what === 'model' ? ' document(s)' : ' model(s)') + '</span>'},
+    {key: 'char', label: 'Transcript', n: true, value: e => e.char.mean,
+     title: 'every content character — the headline this card ranks on '
+          + 'elsewhere. The three columns to its right are recall over three '
+          + 'subsets of it and do NOT add up to it: punctuation and symbols '
+          + 'belong to no script',
+     cell: e => msFig(e.char, '%', 1, true, spread)},
+    {key: 'digit', label: 'Numbers', n: true, value: e => e.digit.mean,
+     title: 'digits, Arabic and Thai numerals — amounts, dates, tax IDs and '
+          + 'document numbers',
+     cell: e => msFig(e.digit, '%', 1, true, spread)
+       + wkChars(e.digit_chars, 'digits')},
+    {key: 'thai', label: 'Thai', n: true, value: e => e.thai.mean,
+     title: 'Thai letters, tone marks and vowels included',
+     cell: e => msFig(e.thai, '%', 1, true, spread)
+       + wkChars(e.thai_chars, 'Thai chars')},
+    {key: 'latin', label: 'English', n: true, value: e => e.latin.mean,
+     title: 'the Latin alphabet. Not a claim that the text is English: a '
+          + 'romanised Thai company name is Latin script too',
+     cell: e => msFig(e.latin, '%', 1, true, spread)
+       + wkChars(e.latin_chars, 'Latin chars')},
+    // The answer said out loud. A reader can find the lowest of three numbers;
+    // what the numbers do not say is whether the gap is worth acting on, and a
+    // two-point gap is noise where a twenty-point one is a finding.
+    {key: 'gap', label: 'Weakest', n: true, value: e => e.gap,
+     title: 'the lowest of the three, and how far below the highest. Blank '
+          + 'where fewer than two of the three could be measured',
+     cell: e => e.weakest
+       ? '<span class="cs-val" style="color:' + (e.gap >= 10 ? 'var(--danger)'
+           : e.gap >= 5 ? 'var(--warn)' : 'var(--muted)') + '">'
+         + esc(labels[e.weakest] || e.weakest) + '</span>'
+         + '<span class="cs-set">' + e.gap.toFixed(1) + ' pts below its best</span>'
+       : '<span class="cs-none">&mdash;</span>'}
+  ];
+  return lvTable(id, entries, cols, {sort: {key: 'char', dir: 'desc'}});
+}
+
+/* The denominator under a script rate. "68% of ~1900 Thai characters" is a
+   finding and "68% of six" is not, and only the count separates them. */
+function wkChars(mean, what) {
+  if (mean === null || mean === undefined) return '';
+  return '<span class="cs-set">of ~' + Math.round(mean) + ' ' + esc(what)
+    + '</span>';
+}
+
+/* A model x field or document x field grid. The field ORDER is the ranking --
+   weakest overall first -- and it is the same order in both grids, so a column
+   means the same thing wherever it is read. */
+function wkFieldGrid(rows, order, what, required) {
+  if (!rows.length || !order.length) return '';
+  const head = '<tr><th class="an-corner">'
+    + (what === 'model' ? 'Model \\ Field' : 'Document \\ Field') + '</th>'
+    + order.map(f => '<th title="' + esc(f
+        + (required[f] ? ' — the requirement demands it ' + required[f] : ''))
+        + '">' + esc(wkField(f)) + '</th>').join('')
+    + '<th title="this row&rsquo;s mean over the fields it was judged on">Mean</th></tr>';
+  const body = rows.map(e => {
+    const cells = order.map(f => {
+      const c = e.cells[f];
+      if (!c) return '<td class="an-empty" title="not asked of this '
+        + (what === 'model' ? 'model' : 'document') + '">&mdash;</td>';
+      const counts = c.counts || {};
+      // The counts in the tooltip rather than in the cell: `missed` and
+      // `spurious` are OPPOSITE mistakes wanting opposite fixes, and a cell
+      // showing one rate cannot say which of them it is made of.
+      const tip = csModel(e.key) + ' · ' + f + ' — '
+        + ['correct', 'partial', 'wrong', 'missed', 'spurious', 'absent']
+            .filter(k => counts[k]).map(k => counts[k] + ' ' + k).join(', ');
+      return wkCell(c.rate, tip,
+                    c.spurious ? c.spurious + ' invented'
+                    : c.rate !== null && c.rate < 100 && c.worst ? c.worst : '');
+    }).join('');
+    return '<tr><td class="an-rowh" title="' + esc(e.key) + '">'
+      + esc(csModel(e.key)) + '<span class="an-t">' + e.runs + ' run(s)</span></td>'
+      + cells
+      + (e.mean === null
+         ? '<td class="an-mean-col an-empty">&mdash;</td>'
+         : '<td class="an-mean-col"><b style="color:' + accColour(e.mean / 100)
+           + '">' + e.mean.toFixed(0) + '%</b></td>')
+      + '</tr>';
+  }).join('');
+  return '<div class="an-grid"><table class="an-heat">' + head + body
+    + '</table></div>';
+}
+
+/* Every key, weakest first, pooled over everything -- what is hard, before the
+   question of who finds it hard. */
+function wkFieldTable(fields) {
+  const cols = [
+    {key: 'field', label: 'Field', value: e => wkField(e.field),
+     cell: e => '<b title="' + esc(e.field) + '">' + esc(wkField(e.field)) + '</b>'
+       + '<span class="cs-set">' + (e.required === 'always'
+           ? '<span class="tier p2">required</span>'
+           : e.required === 'sometimes'
+             ? 'required on ' + e.required_runs + ' of ' + e.asked_runs + ' run(s)'
+             : 'not required') + '</span>'},
+    {key: 'rate', label: 'Correct', n: true, value: e => e.rate,
+     title: 'correct, counting a partial as half — the same arithmetic the '
+          + 'field score uses, so this and field accuracy cannot disagree. '
+          + 'Blank where every verdict was absent or spurious: there was '
+          + 'nothing on the page to be right about',
+     cell: e => e.rate === null
+       ? '<span class="cs-none">&mdash;</span>'
+       : '<span class="cs-val" style="color:' + accColour(e.rate / 100) + '">'
+         + e.rate.toFixed(0) + '%</span><span class="cs-set">of ' + e.scored
+         + ' scored</span>'},
+    {key: 'worst', label: 'How it fails', value: e => e.worst,
+     title: 'missed and spurious are OPPOSITE mistakes and neither means '
+          + 'empty: missed is the page stating it and the extractor returning '
+          + 'nothing, spurious is the extractor filling a key the page leaves '
+          + 'blank. They want opposite fixes',
+     cell: e => {
+       const c = e.counts || {};
+       const bits = ['wrong', 'missed', 'spurious'].filter(k => c[k])
+         .map(k => '<b>' + c[k] + '</b> ' + k);
+       return bits.length ? bits.join(' &middot; ')
+         : '<span class="cs-none">nothing wrong</span>';
+     }},
+    {key: 'runs', label: 'Judged', n: true, value: e => e.runs,
+     title: 'how many extractions this key was judged on at all, including the '
+          + 'ones where both sides were empty and it was scored neither way',
+     cell: e => e.runs}
+  ];
+  return lvTable('wkFields', fields, cols, {sort: {key: 'rate', dir: 'asc'}});
+}
+
+function paintWeak(t) {
+  const sa = t.script_accuracy || {};
+  const fw = t.field_weakness || {};
+  const labels = sa.labels || {};
+  const required = {};
+  (fw.fields || []).forEach(e => {
+    required[e.field] = e.required === 'always' ? 'of every document here'
+      : e.required === 'sometimes'
+        ? 'on ' + e.required_runs + ' of ' + e.asked_runs + ' run(s)' : '';
+  });
+
+  let html = '<span class="cs-title">Pass 1 &mdash; which script each model '
+    + 'loses' + windowNote('model') + '</span>' + pipeNote('ocr');
+  // Each grid is windowed by the thing it groups on -- a model row is that
+  // model's own recent reads, a document row is that document's -- so the note
+  // has to name a different axis per table rather than once at the top.
+
+  if (!(sa.by_model || []).length) {
+    html += '<p class="note">No read in view carries the per-script figures. '
+      + 'They were added on 2026-09-04, so a run from before that has a '
+      + 'transcript score and no breakdown &mdash; which is not a low score, and '
+      + 'is left out rather than counted as zero. Read a benchmark document and '
+      + 'it will appear here.</p>';
+  } else {
+    html += wkScriptTable('wkScriptModel', sa.by_model, 'model', labels)
+      + '<span class="cs-title">&hellip; and which document loses it'
+      + windowNote('document') + '</span>'
+      + wkScriptTable('wkScriptCase', sa.by_case, 'case', labels)
+      + '<p class="note">The same recall as the transcript score, taken over the '
+      + 'ground truth&rsquo;s own characters of each script. <b>The three do not '
+      + 'add up to the transcript column</b> &mdash; punctuation, symbols and '
+      + 'currency signs belong to no script and are in the headline only. A '
+      + 'document printing fewer than ' + esc(String(sa.min_chars || ''))
+      + ' characters of a script reports no rate for it: three characters score '
+      + '0% or 100% and nothing in between. Models are keyed on the model alone, '
+      + 'without Detail or profile &mdash; this asks what a model is bad at '
+      + 'across everything it has read, not which setting to run, which is '
+      + '<b>Best reading</b>&rsquo;s question. Documents are ordered worst first: '
+      + 'this table is a work list, not a ranking.</p>';
+  }
+
+  html += '<span class="cs-title">Pass 2 &mdash; which field goes wrong'
+    + windowNote('document') + '</span>' + pipeNote('extract');
+  if (!(fw.fields || []).length) {
+    html += '<p class="note">No extraction in view carries per-field verdicts. '
+      + 'They were added on 2026-09-04 and are written only where the document '
+      + 'has a field ground truth (<code>solution/&lt;id&gt;.fields.json</code>) '
+      + 'and the read was good enough to judge the extraction by. Run a '
+      + 'benchmark document, or a fields-only test, and it will appear here.</p>';
+  } else {
+    html += wkFieldTable(fw.fields)
+      + '<span class="cs-title">Each model, field by field'
+      + windowNote('model') + '</span>'
+      + wkFieldGrid(fw.by_model || [], fw.order || [], 'model', required)
+      + '<span class="cs-title">Each document, field by field'
+      + windowNote('document') + '</span>'
+      + wkFieldGrid(fw.by_case || [], fw.order || [], 'case', required)
+      + '<p class="note">Every cell is the share of that key the extractor got '
+      + 'right, a partial counting half &mdash; the same arithmetic the field '
+      + 'score uses, so a cell here and the field accuracy on the same run '
+      + 'cannot disagree. <b>The column order is the ranking</b>, weakest key '
+      + 'first, and it is the same in both grids so a column means the same '
+      + 'thing in each. A cell is blank where nothing measured it: the key was '
+      + 'not asked of that document&rsquo;s type, or every verdict on it was '
+      + '<i>absent</i> (both sides empty, which is agreement) or <i>spurious</i> '
+      + '(the page states nothing, so there is nothing to be right about) '
+      + '&mdash; the second is called out under the cell, because on the keys '
+      + 'this corpus leaves empty by construction it is the whole story. '
+      + 'Extractions whose read scored under the floor above are excluded: a '
+      + 'field score taken over a broken transcript is the read&rsquo;s mistake '
+      + 'wearing the extractor&rsquo;s name. <b>This is not a model ranking</b> '
+      + '&mdash; <b>Best extraction</b> and <b>Full rank</b> answer that, over '
+      + 'the same runs.</p>';
+  }
+  weakSum.innerHTML = html;
+}
+
 function paintLog() {
   if (!logData) return;
   const t = logData.totals || {};
@@ -6893,6 +7475,7 @@ function paintLog() {
   paintAnalysis(t);
   paintOcrSummary(t);
   paintExtractSummary(t);
+  paintWeak(t);
   paintPresent(t);
   paintRunRows();
   paintFilters();
@@ -7156,12 +7739,55 @@ function accColour(v) {
   if (v >= 0.80) return '#d9a441';
   return '#ff6b6b';
 }
-function accRow(label, value, hint) {
+/* The same recall over the three scripts the page is written in, under the
+   headline. Three rows rather than three numbers in a sentence because the whole
+   point of them is the COMPARISON -- a model at 96% Thai and 71% numbers is a
+   different problem from one evenly at 85%, and three bars side by side say that
+   at a glance where three figures in prose do not.
+
+   The digits row is FIRST, against the order everywhere else: every Mandatory
+   field in the requirement is a figure, a date or an ID, so it is the one to
+   read first and the one a reader should not have to look for.
+
+   A script the page prints too little of to measure has no bar and says so with
+   its count -- blank here means *not enough of it*, never *scored zero*. */
+const ACC_SCRIPTS = [
+  ['digit', 'Numbers', 'digits, in Arabic or Thai numerals — amounts, dates, '
+   + 'tax IDs and document numbers. Every Mandatory field in the requirement is '
+   + 'one of these, so a page can score well overall and still be unusable'],
+  ['thai', 'Thai', 'Thai letters, including the tone marks and the upper and '
+   + 'lower vowels — the first thing to go when a page is downscaled'],
+  ['latin', 'English', 'the Latin alphabet. Not a claim that the text is '
+   + 'English: a romanised Thai company name is Latin script too']
+];
+function accScriptRows(t) {
+  const rows = ACC_SCRIPTS.map(spec => {
+    const name = spec[0], value = t[name + '_accuracy'], total = t[name + '_chars'];
+    if (total === undefined) return '';
+    if (value === null || value === undefined)
+      return '<div class="acc-row"><span class="label" title="' + esc(spec[2])
+        + '">' + spec[1] + '</span><span class="acc-track"></span>'
+        + '<span class="acc-val cs-none">' + total + ' chars</span></div>';
+    return accRow(spec[1], value, spec[2],
+                  Math.round(value * total) + ' of ' + total);
+  }).join('');
+  if (!rows) return '';
+  return '<div class="acc-scripts">' + rows
+    + '<p class="acc-note">The same measure over the three scripts, on the '
+    + 'ground truth&rsquo;s own characters. <b>They do not add up to the figure '
+    + 'above</b> — punctuation and symbols belong to no script and are in it '
+    + 'only. A script printed fewer than ' + (scriptMinChars || 20) + ' times on '
+    + 'the page shows its count and no rate: three characters score 0% or 100% '
+    + 'and nothing in between, which is not a measurement of anything.</p></div>';
+}
+function accRow(label, value, hint, extra) {
   return '<div class="acc-row">'
     + '<span class="label" title="' + (hint || '') + '">' + label + '</span>'
     + '<span class="acc-track"><span class="acc-fill" style="width:'
     + (value * 100).toFixed(1) + '%;background:' + accColour(value) + '"></span></span>'
-    + '<span class="acc-val">' + (value * 100).toFixed(1) + '%</span></div>';
+    + '<span class="acc-val">' + (value * 100).toFixed(1) + '%'
+    + (extra ? '<span class="cs-set">' + esc(extra) + '</span>' : '')
+    + '</span></div>';
 }
 /* This run against the best this document has ever scored, under any model,
    backend, detail or prompt. A percentage on its own says nothing about whether
@@ -7194,8 +7820,9 @@ function bestNote(t) {
    the truth file in yet would be a score, and there is no score. */
 function fieldAccNote(fs) {
   if (!fs || fs.error) return '';
-  const o = fs.overall || {};
-  if (!o.expected) return '';
+  const pick = scoreTally(fs);
+  if (!pick) return '';
+  const o = pick.t;
   const c = o.counts || {};
   const cov = fs.coverage || {};
   const items = fs.line_items;
@@ -7204,17 +7831,23 @@ function fieldAccNote(fs) {
                 'Extracted values against the value the field ground truth says '
                 + 'belongs in that key -- a different question from whether the '
                 + 'text was read correctly'
-                + (fs.scored_scope ? '\nScored over ' + fs.scored_scope : ''))
+                + (pick.scope ? '\nScored over ' + pick.scope : ''))
     + '<p class="acc-note">' + c.correct + ' of ' + o.expected
     // What the bar is OVER, on the bar's own line. The Fields tab says it too,
     // and this tab is read without that one: a rate whose scope is only stated
     // elsewhere is a rate that will be read as covering everything.
-    + (fs.scored_scope ? ' required' : '') + ' value(s) correct'
+    + (pick.required ? ' required' : ' stated') + ' value(s) correct'
     + (c.partial ? ', ' + c.partial + ' partly' : '')
     + ' — ' + c.wrong + ' wrong, ' + c.missed + ' missed, ' + c.spurious
     + ' filled where the page states nothing'
-    + (op.expected ? '. ' + (op.counts || {}).correct + ' of ' + op.expected
-       + ' found-only value(s) correct, outside this bar' : '')
+    + (pick.required && op.expected
+        ? '. ' + (op.counts || {}).correct + ' of ' + op.expected
+          + ' found-only value(s) correct, outside this bar' : '')
+    + (pick.unknown
+        ? '. <b>No requirement covers this document type yet</b>, so this bar is '
+          + 'over the base field set: nothing here is Mandatory, and it is what '
+          + 'the extractor found rather than what it owed'
+        : '')
     + (items ? '; ' + items.rows_matched + '/' + items.rows_expected
                + ' line-item row(s) matched, from the table in '
                + esc(((items.derived || {}).source) || 'the ground truth') : '')
@@ -7242,17 +7875,55 @@ function paintAccuracy() {
   // this project; the page now says only that.
   accBars.innerHTML =
       accRow('Character accuracy', truth.char_accuracy,
-             'Content characters only, in whatever order the model put them — '
+             'How much of the ground truth the transcript actually produced. '
+             + 'Content characters only, in whatever order the model put them — '
              + 'whitespace and zero-width marks come off both sides first, table '
              + 'markup is normalised, and blocks are matched to the ground truth '
-             + 'by content rather than by position')
+             + 'by content rather than by position. Text the transcript has and '
+             + 'the page does not costs nothing')
     + '<p class="acc-note">Expected ' + truth.expected_chars + ' content chars · got '
-    + truth.actual_chars + '.'
+    + truth.actual_chars
+    + (truth.matched_chars === undefined ? '.'
+        // Both halves of the score on one line: what it charges for, and what
+        // it deliberately does not. The invented count is ALWAYS printed, even
+        // when it is two characters -- a number that appears only past a
+        // threshold is one a reader cannot trust the absence of.
+        : ' · <b>' + (truth.expected_chars - truth.matched_chars)
+          + '</b> missed (dropped or misread) · <b>' + (truth.invented_chars || 0)
+          + '</b> invented (not charged).')
     + ' Scored on <b>content, not layout</b>: spacing, line breaks, HTML-vs-pipe'
-    + ' tables and the order the model walked the page in cannot lower it. What'
-    + ' does lower it is content that is missing, invented or misread.</p>'
+    + ' tables and the order the model walked the page in cannot lower it, and'
+    + ' neither can <b>extra</b> text — a value the read dropped cannot then be'
+    + ' extracted, while text the page does not print leaves every real value'
+    + ' where it was. What lowers it is content that is missing or misread.</p>'
+    + accScriptRows(truth)
+    // The count is on the line above whatever it is; this paragraph is the
+    // explanation, and it appears only where the number is material. Two stray
+    // characters do not need three sentences of warning, and a warning printed
+    // under every read is one nobody reads by the third document.
+    + (truth.invented_chars > Math.max(20, truth.expected_chars * 0.02)
+        ? '<p class="acc-note' + (truth.invented_chars > truth.expected_chars * 0.1
+                                  ? ' err' : '') + '"><b>'
+          + (truth.invented_chars / Math.max(truth.expected_chars, 1) * 100).toFixed(0)
+          + '% of the page length is text the page does not print.</b> That '
+          + 'costs the score nothing by design — extra text leaves every real '
+          + 'value where it was — and it is the half worth looking at anyway: a '
+          + 'figure caption or a stamp described in words is harmless, an '
+          + 'invented value is not, and pass 2 will ground an invented value '
+          + 'happily because it is in the transcript. The <b>differences</b> '
+          + 'below show it as <span class="add">+</span> lines.</p>'
+        : '')
     + bestNote(truth)
-    + fieldAccNote(extracted && extracted.field_score);
+    + (unscoredReason()
+        // No bar, because there is no figure -- a bar drawn at whatever the
+        // suppressed score happened to be is the exact number this rule exists
+        // to keep off the board.
+        ? '<p class="acc-note"><b>Fields not scored</b> — ' + esc(unscoredReason())
+          + '. The extraction ran and is in the run log with its coverage and '
+          + 'grounding; the correctness figure is not, because it would be a '
+          + 'measurement of this read rather than of the extractor. The '
+          + '<b>Fields</b> tab still marks each value.</p>'
+        : fieldAccNote(extracted && extracted.field_score));
 
   if (!truth.diff || !truth.diff.length) {
     // "the same content", not "byte for byte the same page": `scoring.diff_lines`
@@ -8097,6 +8768,11 @@ runBtn.addEventListener('click', async () => {
   // run log, and the Read button is disabled while a random test is in flight,
   // so this can only ever discard a finished one.
   if (rtRows.length) { rtRows = []; rtPaint(); }
+  // The read floor on screen, before the read that will be judged by it. The
+  // change handler has almost always sent it already; this makes "the floor this
+  // run used" the one the reader is looking at rather than the one that happened
+  // to have landed. No-ops when they match.
+  await pushReadFloor(readFloorInp);
   runBtn.disabled = true; stopBtn.disabled = false; copyBtn.disabled = true;
   text = ''; pageStats = []; pageTexts = []; curPage = -1; cmpPage = 0;
   layPage = 0; laySel = null; enableLayout();

@@ -400,6 +400,22 @@ def step_rules(step, codes, bullets=True):
 # unless the heading it quotes is really printed on the page. It is not part of
 # the extraction: it names the form, and the form is then asked for by the
 # prompts below in the ordinary way.
+#
+# **IT ASKS FOR NOTHING BUT TEXT THE PAGE PRINTS AND A CODE FROM A CLOSED LIST,
+# AND IT MUST NEVER ASK FOR A CONFIDENCE, A PERCENTAGE OR A SCORE.** A model can
+# produce a number that reads like one, and it is not a measurement of anything
+# -- it is a token sequence about a token sequence, with nothing behind it to
+# check. Every percentage in this project is computed in Python from something
+# that can be re-derived: character accuracy from an edit distance against the
+# ground truth, `grounded_pct` from a search of the transcript, the field score
+# from a comparison with a human's answer sheet, and the validation counts from
+# arithmetic. A figure the model handed over would sit among those looking like
+# one of them.
+#
+# The same rule in the other direction: where a confidence in the classification
+# IS wanted, it is derived here from the evidence -- how much of the matched
+# heading line the matched needles account for -- and never asked for.
+# `_selftest` asserts this prompt does not ask.
 CLASSIFY_PROMPT = """Below is the text of a Thai/English business document. Say what KIND of
 document it is, from this list and no other:
 
@@ -1374,6 +1390,13 @@ def mandatory_for_types(codes):
     # No requirement in play, so nothing is demanded. NOT the union of every
     # requirement: demanding a key of a document no table covers would report a
     # compliance failure this project has no authority to claim.
+    #
+    # **Empty is a THIRD state to `fieldscore`, not the same as saying nothing**
+    # (2026-09-04). It scores such a document over the base field set and marks
+    # the score `unknown_type`, because the ground truth states values and
+    # throwing that measurement away rendered as no score at all. Nothing about
+    # compliance changes: this still returns (), `validate` still demands
+    # nothing, and the page still marks no key REQUIRED.
     return DEFAULT_MANDATORY
 
 
@@ -2099,6 +2122,16 @@ def _selftest():
     assert type_block((), _SCALAR_KEYS) == "" and type_line(()) == ""
     for step in EXTRACT_STEPS:
         assert step_rules(step, ()) == step["rules"]
+
+    # 6b. The model is never asked for a number. Every percentage in this
+    #     project is computed in Python from evidence that can be re-derived,
+    #     and a figure a model handed over would sit among them looking like one
+    #     of them. This is the only prompt that asks a question whose answer is
+    #     not copied text, so it is the only one that could drift.
+    low = CLASSIFY_PROMPT.lower()
+    for word in ("confidence", "confident", "how sure", "certainty",
+                 "probability", "percent", "score", "%"):
+        assert word not in low, f"the classify prompt asks for a {word}"
 
     # 7. Every rule is about a key that exists and a type that has one, and the
     #    key is one that type actually asks for -- a bullet about a key the form

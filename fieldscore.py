@@ -907,15 +907,43 @@ def score(truth: dict, fields, table: dict = None, keys=None,
     **`None` and `()` are different, and the difference is the usual one here.**
     `None` is *nobody said*, and scores everything asked, which is what this did
     before the requirement tables arrived and is still right for a caller that
-    did not classify. `()` is *no requirement covers this type*, and scores
-    nothing: a tax invoice on its own is held to no table, so there is no
-    compliance rate to state about it. `scored_scope` says which of the three
-    happened, because 100% of nothing and 100% of eleven are the same number.
+    did not classify. `()` is *no requirement covers this type yet* -- a tax
+    invoice on its own, or a page nothing could place -- and **it scores the
+    base field set, marked as an unknown type** (2026-09-04, at the user's
+    request: *on the unknown doc type just score with the base field we have*,
+    since the ground truth exists and the requirement is coming later).
+
+    That reverses what `()` did until then, which was to score NOTHING on the
+    grounds that a document no table covers has no compliance rate. The rate is
+    honest either way; what made scoring nothing the wrong answer is that the
+    truth file states values, the extractor either got them or did not, and a
+    headline of 0 of 0 threw a real measurement away and rendered as no score at
+    all -- indistinguishable from an extraction that found nothing.
+
+    **What it must NOT do is turn into a compliance claim**, so the reversal is
+    confined to this module: `prompts.mandatory_for_types` still returns `()`,
+    `validate` still demands nothing and the page still marks no key REQUIRED.
+    `unknown_type` rides on the result and `scored_scope` says so, because a
+    rate over the base fields and a rate over a requirement's Mandatory set are
+    different claims and only the second says whether the document can be filed.
     """
     fields = fields if isinstance(fields, dict) else {}
     asked = list(keys) if keys is not None else list(SCALARS)
     required = None if mandatory is None else set(mandatory)
+    # An empty-but-given Mandatory set is the third state: the caller classified
+    # the document and no requirement covers what it found. Scored like `None`
+    # -- every key asked for, which is the base field set -- and reported apart
+    # from it, so nothing downstream reads the rate as a compliance figure.
+    unknown_type = required is not None and not required
     required_cells = None if items_mandatory is None else set(items_mandatory)
+    if unknown_type:
+        required = None
+        # The table's cells follow the scalars, or one form would put its
+        # scalars in the headline and its cells outside it. No type does both
+        # today -- the only one that rules a table has a requirement -- and the
+        # day one does, a silent split between the two halves of one form is
+        # exactly the kind of inconsistency that is found months later.
+        required_cells = None
     scalar_rows = []
     for key, value in truth["scalars"].items():
         if key not in asked:
@@ -996,9 +1024,16 @@ def score(truth: dict, fields, table: dict = None, keys=None,
         # Which of the three states the caller put this in. 100% of nothing and
         # 100% of eleven are the same number and not the same claim, so the scope
         # travels with the rate rather than being inferred from a count.
-        "scored_scope": ("everything asked" if required is None
-                         else "the requirement's Mandatory fields" if required
-                         else "nothing -- no requirement covers this type"),
+        "scored_scope": ("every key asked for -- no requirement covers this "
+                         "document type yet" if unknown_type
+                         else "everything asked" if required is None
+                         else "the requirement's Mandatory fields"),
+        # Whether that rate is over a requirement's Mandatory set or over the
+        # base field set for a type no requirement covers. A boolean rather than
+        # a string match on the scope: the page, the CLI and the round table all
+        # have to word themselves differently for it, and three of them parsing
+        # one sentence is three chances to disagree with it.
+        "unknown_type": unknown_type,
         "scalars": scalars,
         "line_items": items,
         "other_fields": others,

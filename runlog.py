@@ -15,13 +15,57 @@ which is live rather than historical.
 import contextlib
 import csv
 import os
+import sys
 import threading
 from datetime import datetime
 
+import requests
+
 import config
 import grounding
+import prompts
+import scoring
 import settings
 from settings import SUMMARY_RUNS
+
+# The HTTP functions every model-server call in this project goes through, taken
+# at import BEFORE anything can replace them. `backends` and `app` both call
+# `requests.post`/`requests.get` by module attribute, so a test that fakes the
+# model server does it here, and this pair stops matching.
+_REAL_HTTP = (requests.post, requests.get)
+_transport_warned = False
+
+
+def live_transport() -> bool:
+    """False when something has replaced the HTTP this app reaches a model with.
+
+    **A stubbed model server is an experiment, and an experiment does not belong
+    in the run log.** On 2026-09-03 a fixture verification stubbed
+    `requests.post`, ran 26 cells through the real routes in a process pointed at
+    the real log, and wrote 52 rows under a model called `stub`. Because the stub
+    answered with the ground truth, 24 of them scored 100% -- so a model that does
+    not exist sat at the TOP of `by_extract`, above the best real one, and seventh
+    in the extract ranking. Nothing on a row says whether the reply came from a
+    model or from a fixture, so nothing downstream could have caught it.
+
+    The rule that should have prevented it was already written (*experiments run
+    on a second instance with its own `OCR_LOG_DIR`*) and was simply forgotten,
+    which is what makes a guard worth having instead of another sentence.
+
+    **Its reach is the mechanism, not the intent.** It catches a replacement of
+    `requests.post`/`requests.get`, which is how every stub of this app's model
+    server has been written; it cannot see one that swaps the whole `requests`
+    module inside another module's namespace, or a fake server on a real socket.
+    Neither is a reason to skip the cheap case.
+
+    Set `runlog.ALLOW_PATCHED_TRANSPORT = True` to log anyway -- for a wrapper
+    that is not a fake, such as a retry adapter.
+    """
+    return ALLOW_PATCHED_TRANSPORT or (requests.post, requests.get) == _REAL_HTTP
+
+
+# Deliberate opt-out for a process that wraps `requests` without faking it.
+ALLOW_PATCHED_TRANSPORT = False
 
 ROOT = config.BASE_DIR
 LOG_DIR = config.LOG_DIR
@@ -203,6 +247,74 @@ COLUMNS = [
     # rows written before 2026-08-31 and on any run that never extracted.
     "doc_types",
     "doc_type_from",
+    # Transcript characters that answer to nothing on the page -- text the model
+    # produced and the document does not print. **Appended 2026-09-04, when
+    # `char_accuracy` stopped charging for it**: the score is recall of the
+    # ground truth now, so a read that transcribes the whole page and adds a
+    # paragraph of its own scores like one that added nothing. That is the right
+    # rule for pass 2 -- extra text leaves every real value where it was, a
+    # dropped value cannot be extracted at all -- and it makes the one failure
+    # this project was built to catch invisible in the headline. So it is
+    # counted here instead. Read it against `expected_chars`, which is not in
+    # this file: 181 invented characters means one thing on a 3400-character
+    # page and another on a 634-character one.
+    #
+    # Blank on a row that read no page, and on every row written before the
+    # column existed -- which is every row whose `char_accuracy` was an edit
+    # distance, and therefore every row that must not be averaged with a newer
+    # one anyway.
+    "invented_chars",
+    # The same transcript recall taken over the three scripts these pages are
+    # written in, and how many characters of each the ground truth holds
+    # (`scoring.SCRIPTS`). **Appended 2026-09-04 at the user's request** -- one
+    # headline cannot say which of the three a model is bad at, and they are not
+    # worth the same: every Mandatory field in the requirement is a figure, a
+    # date or an ID, so `digit_accuracy` is the column to read first and a page
+    # can score 95% overall while losing the one digit that makes an amount
+    # wrong.
+    #
+    # `latin` is the Latin ALPHABET, which is what "English" means on these
+    # pages -- a romanised Thai company name is Latin script and is not English.
+    #
+    # **The three rates do not add up to `char_accuracy`**: punctuation, symbols
+    # and currency signs belong to no script and are in the headline only.
+    #
+    # The `_chars` cells are the denominators, and they are the reason a rate
+    # here can be blank on a row that has a `char_accuracy`: a document printing
+    # fewer than `scoring.SCRIPT_MIN_CHARS` of a script scores 0% or 100% and
+    # nothing between, so no rate is written and the count says why. Blank is
+    # never zero, here as everywhere else in this file.
+    "thai_accuracy",
+    "latin_accuracy",
+    "digit_accuracy",
+    "thai_chars",
+    "latin_chars",
+    "digit_chars",
+    # Which FIELD each extraction got right, as `key=letter` pairs joined by
+    # `;` -- the one thing this file has never held that a per-document
+    # weakness table needs. Appended 2026-09-04 at the user's request: *each doc
+    # to see in each doc the model weakness is in what field*.
+    #
+    # The letters are `fieldscore`'s six verdicts, first letter each:
+    #   c correct   p partial   w wrong
+    #   m missed (the page states it, the extractor returned nothing)
+    #   s spurious (the page does not state it, the extractor filled it anyway)
+    #   a absent (both empty -- agreement, and scored neither way)
+    # `m` and `s` are OPPOSITE mistakes and neither means "empty"; see
+    # `fieldscore.STATUS_MEANING`, which this is the compressed form of.
+    #
+    # **Scalars only, and the field NAMES only.** No value ever reaches this
+    # file -- the same rule that keeps the transcript out of it -- and a table
+    # row's cells are left out because `income_items[0].amount_paid` is a path,
+    # not a field, and one row of a table is not a weakness of a key.
+    #
+    # Blank where the document has no field truth file, where the read was too
+    # poor to judge the extraction by (`app.apply_read_floor`), and on every row
+    # written before the column: the same rows on which `field_acc` is blank, and
+    # for the same reason. Requiredness is NOT encoded here -- `doc_types` on the
+    # same row says which requirement was in force, and `prompts` says what it
+    # demands, so encoding it twice would let the two disagree.
+    "field_verdicts",
 ]
 
 # The value the run was actually made with, taken from `settings` rather than
@@ -345,7 +457,8 @@ EXTRACT_COLUMNS = ("extract_seconds", "extract_tokens", "extract_mode",
                    "p3_present", "p3_absent",
                    "field_acc", "field_expected", "p1_correct", "p1_scored",
                    "p1_partial", "other_distinct", "extract_looped",
-                   "extract_model", "doc_types", "doc_type_from")
+                   "extract_model", "doc_types", "doc_type_from",
+                   "field_verdicts")
 
 _TIERS = ("p1_present", "p1_absent", "p2_present", "p2_absent",
           "p3_present", "p3_absent")
@@ -400,7 +513,19 @@ def _extract_cells(summary: dict) -> dict:
         # was counted against when it was written.
         **(grounding.tier_counts(fields, extracted.get("fields_asked")) if fields
            else {k: "" for k in _TIERS}),
-        **_field_cells(extracted.get("field_score")),
+        # **No correctness figure where the read was too poor to judge one by**
+        # (`app.apply_read_floor`): a field score taken over a broken transcript
+        # marks down whatever extracted and lets whatever read get away with it.
+        # The score itself is still on the result and the page still marks each
+        # value with it -- what must not reach this file is the NUMBER, because
+        # every table over this file reads it as the extractor's.
+        #
+        # Blank here means the same thing it means everywhere else in this row:
+        # not measured. `_field_trusted` refuses a written figure from the same
+        # kind of row at view time, so the two rules agree; the difference is
+        # that this one cannot be undone and that one can.
+        **_field_cells(None if extracted.get("fields_unscored")
+                       else extracted.get("field_score")),
     }
 
 
@@ -414,7 +539,7 @@ def _field_cells(score: dict) -> dict:
     overall = (score or {}).get("overall") or {}
     if not overall.get("expected"):
         return {k: "" for k in ("field_acc", "field_expected", "p1_correct",
-                                "p1_scored", "p1_partial")}
+                                "p1_scored", "p1_partial", "field_verdicts")}
     # **The counts come from the headline, which since 2026-09-02 is the
     # requirement's Mandatory set rather than the priority-1 tier.** The column
     # names are a file format and are not renamed, so read a `p1_*` cell as
@@ -429,7 +554,44 @@ def _field_cells(score: dict) -> dict:
             "field_expected": overall["expected"],
             "p1_correct": counts.get("correct", "") if scored else "",
             "p1_partial": counts.get("partial", "") if scored else "",
-            "p1_scored": scored if scored else ""}
+            "p1_scored": scored if scored else "",
+            "field_verdicts": field_verdicts(score)}
+
+
+# The six verdicts as one letter each, and back. `fieldscore.STATUS_MEANING` is
+# the authority on what they claim; this is only how they are spelled in a CSV
+# cell that has to hold eleven of them.
+VERDICT_LETTERS = {"correct": "c", "partial": "p", "wrong": "w",
+                   "missed": "m", "spurious": "s", "absent": "a"}
+VERDICT_OF_LETTER = {v: k for k, v in VERDICT_LETTERS.items()}
+
+
+def field_verdicts(score: dict) -> str:
+    """`key=letter;key=letter` for the scalars one extraction was judged on.
+
+    **Optional fields are in it too.** The headline is the requirement's
+    Mandatory set, but *which field is this model weak on* is a question about
+    every key it was asked for -- and a key that is Optional on a receipt is
+    Mandatory on an invoice, so dropping the Optional half here would make the
+    weakness table blind on exactly the documents where the field is easiest to
+    fix. Requiredness is read back from `doc_types` and `prompts`, never stored.
+
+    Table cells are deliberately left out: `income_items[0].amount_paid` is a
+    path into one row, and one row going wrong is not a weakness of a key.
+    """
+    rows = ((score or {}).get("scalars") or {}).get("rows") or []
+    return ";".join(f"{r['path']}={VERDICT_LETTERS[r['status']]}"
+                    for r in rows if r.get("status") in VERDICT_LETTERS)
+
+
+def parse_verdicts(cell: str) -> dict:
+    """One `field_verdicts` cell back as {field: verdict}. {} when unwritten."""
+    out = {}
+    for part in str(cell or "").split(";"):
+        key, _, letter = part.partition("=")
+        if key and letter in VERDICT_OF_LETTER:
+            out[key] = VERDICT_OF_LETTER[letter]
+    return out
 
 
 def _num(value, default=-1.0) -> float:
@@ -497,7 +659,25 @@ def record(summary: dict, source: dict = None, extras: dict = None) -> dict:
     truth/extracted). Nothing here is required: a failed run logs what it
     knows and leaves the rest blank, because a row saying a read failed after 40 s
     is the row you most want later.
+
+    **Nothing is written while the model server is being faked** -- see
+    `live_transport`. It is refused HERE, at the one place this file is appended
+    to, rather than at each of the six callers: the caller that forgets is
+    exactly the one that will be written next, and the one that did forget was an
+    ad-hoc script that no reviewer of this repo would ever have seen.
     """
+    if not live_transport():
+        global _transport_warned
+        if not _transport_warned:
+            _transport_warned = True
+            config.say("[runlog] the model server's HTTP is stubbed in this "
+                       "process, so runs are NOT being logged -- a fixture's "
+                       "answer is not a measurement. Point OCR_LOG_DIR at a "
+                       "scratch directory to keep the rows, or set "
+                       "runlog.ALLOW_PATCHED_TRANSPORT to log anyway.",
+                       stream=sys.stderr)
+        return None
+
     summary = summary or {}
     source = source or {}
     extras = extras or {}
@@ -529,6 +709,16 @@ def record(summary: dict, source: dict = None, extras: dict = None) -> dict:
         "char_accuracy": _pct(truth.get("char_accuracy")),
         "word_accuracy": _pct(truth.get("word_accuracy")),
         "char_accuracy_no_marks": _pct(truth.get("char_accuracy_no_marks")),
+        # Thai, Latin and numerals apart. `_pct` writes blank for a rate the
+        # page had too little of that script to measure, which is exactly what
+        # blank has to mean here -- the count beside it says why.
+        **{f"{name}_accuracy": _pct(truth.get(f"{name}_accuracy"))
+           for name in scoring.SCRIPTS},
+        **{f"{name}_chars": truth.get(f"{name}_chars", "")
+           for name in scoring.SCRIPTS},
+        # Blank rather than 0 where nothing scored the page: no read, or no
+        # ground truth to be extra to. The standing rule -- blank is not zero.
+        "invented_chars": truth.get("invented_chars", ""),
         "error": str(error)[:300],
         "run_type": extras.get("run_type") or "ocr",
         "ocr_profile": summary.get("ocr_profile", ""),
@@ -1153,6 +1343,34 @@ def retired_detail(rows: list = None) -> dict:
     return counts
 
 
+def legacy_char_rows(rows: list = None) -> dict:
+    """Reads whose `char_accuracy` was the OLD metric, and how many there are.
+
+    **The scorer changed on 2026-09-04** -- `char_accuracy` was an edit distance
+    and is now recall of the ground truth, which stopped charging for content the
+    page does not print. Measured on the ten saved outputs, that is worth about
+    +7.6 points of mean, so a table averaging both eras under one column name is
+    averaging two different questions.
+
+    **The log was deliberately NOT reset for it** (the user's call, and the third
+    time this has come up): the rows are real records of real runs, `SUMMARY_RUNS`
+    windows every table to each setting's own recent runs, and the old rows
+    therefore leave the tables on their own as new ones arrive. This function is
+    how far along that is -- reported while it is non-zero and silent afterwards,
+    so the mechanism removes its own notice.
+
+    **The discriminator is exact and cost nothing to get.** `invented_chars` was
+    appended in the same change, so on any row that has a `char_accuracy` at all,
+    a blank one means the edit distance and a filled one means recall. A row with
+    no `char_accuracy` scored no page and is in no accuracy mean either way, so it
+    is counted in neither figure here.
+    """
+    rows = read(limit=10 ** 6) if rows is None else rows
+    scored = [r for r in rows if not _blank(r.get("char_accuracy"))]
+    legacy = [r for r in scored if _blank(r.get("invented_chars"))]
+    return {"legacy": len(legacy), "scored": len(scored)}
+
+
 # The knobs one run can be repeated with. Every "best" in `by_case` carries the
 # whole set, for the reason `totals` already gives for `best_by_case`: a winning
 # score with nothing attached is not a setting anyone can adopt. Kept as one
@@ -1547,6 +1765,16 @@ def by_ocr(rows: list = None) -> list:
                          and (_num(r.get("char_accuracy"), None) or 0) <= 0.0
                          and not _blank(r.get("char_accuracy"))),
             "char": _per_case(scored, lambda r: _num(r.get("char_accuracy"), None)),
+            # The same recall over Thai, Latin and numerals, so a setting can be
+            # read for WHICH of the three it loses rather than only for how much
+            # it loses -- a setting at 92% overall can be at 71% on the digits,
+            # and the digits are every Mandatory field in the requirement. Blank
+            # on rows written before 2026-09-04 and on documents that print too
+            # little of a script to measure; `_per_case` skips both, so a setting
+            # with no such rows reports no rate rather than a zero.
+            **{name: _per_case(scored,
+                               lambda r, n=name: _num(r.get(f"{n}_accuracy"), None))
+               for name in scoring.SCRIPTS},
             "word": _per_case(scored, lambda r: _num(r.get("word_accuracy"), None)),
             "prefill": _per_case(scored, lambda r: _num(r.get("prefill_seconds"), None)),
             "decode": _per_case(scored, lambda r: _num(r.get("decode_seconds"), None)),
@@ -1993,6 +2221,388 @@ def standouts(rows: list = None) -> dict:
     return {pass_: {kind: {"ranked": ranked, **_headline(ranked)}
                     for kind, ranked in kinds.items()}
             for pass_, kinds in lists.items()}
+
+
+# --------------------------------------------------------------------------
+# Where a model is weak, rather than how good it is
+#
+# Two compilations, both added 2026-09-04 at the user's request -- *add to
+# summary to check each model strength and weakness, also each doc to see in
+# each doc the model weakness is in what field*. Neither is a new measurement:
+# every figure in them comes from cells `record` already writes. What they add
+# is the axis the ranking tables deliberately average over.
+#
+# `by_ocr`, `by_extract` and `standouts` all answer *which is best*, and a mean
+# is exactly the wrong shape for *what is it bad at*: a model reading 92% overall
+# can be reading 71% of the digits, and the digits are every Mandatory field in
+# the requirement. Same one level down in pass 2 -- a field score of 8/11 says
+# nothing about WHICH three, and the three are the same three on every document
+# until somebody looks.
+# --------------------------------------------------------------------------
+
+# What each script column is called on screen. `latin` is the Latin ALPHABET,
+# which is what "English" means on these pages -- a romanised Thai company name
+# is Latin script and is not English.
+SCRIPT_LABELS = {"thai": "Thai", "latin": "English", "digit": "Numbers"}
+
+
+def _script_reads(rows: list) -> list:
+    """Reads that carry at least one per-script rate.
+
+    A row written before 2026-09-04 has none, which is not a low score and must
+    not read as one -- so it is left out of this table entirely rather than
+    counted as a model that cannot read Thai. Incomplete runs are excluded on the
+    standing rule: a run that did not finish did not measure anything.
+    """
+    return [r for r in rows
+            if (r.get("run_type") or "ocr") != "extract"
+            and not _incomplete(r)
+            and any(not _blank(r.get(f"{name}_accuracy"))
+                    for name in scoring.SCRIPTS)]
+
+
+def _script_entry(key: str, cases: dict) -> dict:
+    """One row of a script table: the three rates, the headline, and the gap.
+
+    `cases` is {inner -> [runs]} and every figure is `_per_case`-shaped, so the
+    per-document-first rule holds here as everywhere else on this card: a model
+    run five times on one fixture is one document's worth of evidence.
+
+    `weakest` and `gap` are the answer said out loud. A reader can find the
+    lowest of three numbers, but the whole point of the table is that the lowest
+    one is not the same for every model -- and a gap of two points is noise while
+    a gap of twenty is a finding, which the three rates side by side do not say.
+    """
+    runs = [row for rows_ in cases.values() for row in rows_]
+    entry = {
+        "key": key,
+        "runs": len(runs),
+        "documents": len(cases),
+        "char": _per_case(cases, lambda r: _num(r.get("char_accuracy"), None)),
+    }
+    for name in scoring.SCRIPTS:
+        entry[name] = _per_case(
+            cases, lambda r, n=name: _num(r.get(f"{n}_accuracy"), None))
+        # The denominator, meaned the same way: "68% of ~1900 Thai characters"
+        # is a finding and "68% of six" is not, and only the count separates
+        # them. A rate is blank where the page had too little of that script to
+        # measure (`scoring.SCRIPT_MIN_CHARS`); the count is written anyway, so
+        # blank says *not enough of it* rather than *nobody looked*.
+        entry[f"{name}_chars"] = _per_case(
+            cases, lambda r, n=name: _num(r.get(f"{n}_chars"), None))["mean"]
+    rated = {name: entry[name]["mean"] for name in scoring.SCRIPTS
+             if entry[name]["mean"] is not None}
+    if len(rated) > 1:
+        worst = min(rated, key=rated.get)
+        entry["weakest"] = worst
+        entry["gap"] = round(max(rated.values()) - rated[worst], 1)
+    else:
+        entry["weakest"], entry["gap"] = None, None
+    return entry
+
+
+def script_accuracy(rows: list = None) -> dict:
+    """Transcript accuracy split into Thai, English and numerals.
+
+    Pass 1 only, and every rate is recall of the ground truth's own characters of
+    that script -- so a model that answers a Thai word with Latin letters loses
+    the Thai and does not gain the Latin.
+
+    **The three do not add up to the headline.** Punctuation, symbols and
+    currency signs belong to no script and are in `char_accuracy` only.
+
+    Two tables because there are two questions and one grouping cannot answer
+    both:
+
+    | | grouped by | ordered |
+    |---|---|---|
+    | `by_model` | the model that read, WITHOUT its Detail or profile | best first -- it is a ranking |
+    | `by_case` | the document | **worst first** -- it is a work list |
+
+    The model table is keyed on the model alone, like `standouts` and unlike
+    `by_ocr`: this asks what a model is bad at across everything it has been
+    given, not which setting to run.
+    """
+    rows = _for_summary(read(limit=10 ** 6) if rows is None else rows)
+    reads = _script_reads(rows)
+    by_model = lambda r: r.get("model")                          # noqa: E731
+    by_doc = lambda r: r.get("case")                             # noqa: E731
+    models = [_script_entry(key, cases) for key, cases in
+              _bucket(recent_by(reads, by_model), by_model, _document_key).items()]
+    cases = [_script_entry(key, cases) for key, cases in
+             _bucket(recent_by(reads, by_doc), by_doc, by_model).items()]
+    models.sort(key=lambda e: (e["char"]["mean"] if e["char"]["mean"] is not None
+                               else -1.0), reverse=True)
+    # Worst first: a document every model reads badly is where the work is, and
+    # a table of documents sorted best first buries it under the easy ones.
+    cases.sort(key=lambda e: (e["char"]["mean"] if e["char"]["mean"] is not None
+                              else 10 ** 6))
+    return {"scripts": list(scoring.SCRIPTS), "labels": dict(SCRIPT_LABELS),
+            "by_model": models, "by_case": cases,
+            "reads": len(reads), "min_chars": scoring.SCRIPT_MIN_CHARS}
+
+
+# What one verdict is worth when a field's rate is taken. The same arithmetic
+# `fieldscore` uses for the headline, so a field's rate here and `field_acc` on
+# the same row cannot disagree: a partial is half -- the model found the right
+# thing and took too much or too little of it -- and `absent` is agreement
+# rather than a score, so it is in no denominator.
+#
+# **`spurious` is not in the denominator either, and it is counted separately.**
+# The page does not state the value and the model filled it in anyway, so there
+# is nothing to be right about -- but on the keys this corpus leaves empty by
+# construction (`po_gr_rtv_number`) it is the entire story, and a table that
+# folded it into a rate would report those keys as unmeasured.
+_VERDICT_POINTS = {"correct": 1.0, "partial": 0.5, "wrong": 0.0, "missed": 0.0}
+
+
+def _verdict_reads(rows: list) -> list:
+    """(row, {field: verdict}) for extractions whose field score is trustworthy.
+
+    The same three exclusions `by_extract` and `standouts` apply, for the same
+    reasons: a restricted step run answered part of the form on purpose, an
+    incomplete extraction measured nothing, and a field score taken over a
+    transcript pass 1 got wrong is the read's mistake wearing the extractor's
+    name (`_field_trusted`).
+    """
+    out = []
+    for row in rows:
+        if row.get("extract_steps") or _extract_incomplete(row):
+            continue
+        if not _field_trusted(row):
+            continue
+        verdicts = parse_verdicts(row.get("field_verdicts"))
+        if verdicts:
+            out.append((row, verdicts))
+    return out
+
+
+def _required_of(row: dict) -> set:
+    """The keys the requirement demands of the document this row read.
+
+    Taken from the row's own `doc_types` through `prompts`, never stored beside
+    the verdicts: the same key is Mandatory on an invoice and Optional on a
+    credit note, and two copies of that fact would eventually disagree. A row
+    written before `doc_types` existed says nothing, which is why the answer can
+    be "unknown" and is reported as such rather than guessed at.
+    """
+    codes = [c for c in str(row.get("doc_types") or "").split("+") if c]
+    if not codes:
+        return set()
+    return set(prompts.mandatory_for_types(codes))
+
+
+def _verdict_cell(buckets: dict) -> dict:
+    """One (group, field) cell: the pooled counts, and the inner-first rate.
+
+    `buckets` is {inner -> [verdicts]}. The rate is the mean of each inner
+    group's own rate -- documents for a model's row, models for a document's row
+    -- so a model run five times on one fixture does not describe itself with
+    that fixture. The COUNTS are pooled, because a count is what happened and
+    averaging one would be arithmetic about nothing.
+    """
+    counts = {k: 0 for k in VERDICT_LETTERS}
+    rates = []
+    for verdicts in buckets.values():
+        points, scored = 0.0, 0
+        for verdict in verdicts:
+            counts[verdict] = counts.get(verdict, 0) + 1
+            if verdict in _VERDICT_POINTS:
+                points += _VERDICT_POINTS[verdict]
+                scored += 1
+        if scored:
+            rates.append(100.0 * points / scored)
+    scored_total = sum(counts[k] for k in _VERDICT_POINTS)
+    return {
+        "rate": round(sum(rates) / len(rates), 1) if rates else None,
+        "counts": counts,
+        "scored": scored_total,
+        "spurious": counts["spurious"],
+        "runs": sum(counts.values()),
+        # The commonest way this field goes wrong, which is the thing a rate
+        # cannot say: `missed` and `spurious` are OPPOSITE mistakes and want
+        # opposite fixes -- one is the page saying something the extractor did
+        # not, the other the extractor saying something the page does not.
+        "worst": max(("wrong", "missed", "spurious"), key=lambda k: counts[k])
+                 if any(counts[k] for k in ("wrong", "missed", "spurious"))
+                 else None,
+    }
+
+
+def _verdict_group(pairs: list, key_of, inner_of) -> list:
+    """Ranked rows of one field-weakness grid.
+
+    Each row is a group (a model, or a document) and holds one cell per field it
+    was ever judged on. Ordered by the group's own mean over its fields, worst
+    first: this table is a work list, not a ranking.
+    """
+    groups = {}
+    for row, verdicts in pairs:
+        key, inner = key_of(row), inner_of(row)
+        if not key:
+            continue
+        entry = groups.setdefault(key, {"key": key, "rows": [], "fields": {}})
+        entry["rows"].append(row)
+        for field, verdict in verdicts.items():
+            entry["fields"].setdefault(field, {}).setdefault(
+                inner or "", []).append(verdict)
+
+    out = []
+    for entry in groups.values():
+        cells = {field: _verdict_cell(buckets)
+                 for field, buckets in entry["fields"].items()}
+        rated = [c["rate"] for c in cells.values() if c["rate"] is not None]
+        required = set()
+        for row in entry["rows"]:
+            required |= _required_of(row)
+        out.append({
+            "key": entry["key"],
+            "runs": len(entry["rows"]),
+            "inner": len({inner_of(r) or "" for r in entry["rows"]}),
+            "cells": cells,
+            "mean": round(sum(rated) / len(rated), 1) if rated else None,
+            # Named on the row so the answer does not have to be read off a
+            # grid of eleven numbers. Three at most: a list of everything below
+            # par is the grid again.
+            "worst_fields": [f for f, _ in sorted(
+                ((f, c["rate"]) for f, c in cells.items() if c["rate"] is not None),
+                key=lambda pair: pair[1])[:3]],
+            "required": sorted(required),
+        })
+    out.sort(key=lambda e: (e["mean"] if e["mean"] is not None else 10 ** 6))
+    return out
+
+
+def field_weakness(rows: list = None) -> dict:
+    """Which FIELD each model gets wrong, and which field each document loses.
+
+    Reads `field_verdicts`, the per-field column appended 2026-09-04. Rows
+    written before it have none and are simply absent -- blank is not a low
+    score, here as everywhere else in this file.
+
+    Three views over the same verdicts:
+
+    | | says |
+    |---|---|
+    | `fields` | every key, weakest first, pooled over everything -- *what is hard* |
+    | `by_model` | a model x field grid -- *what is THIS model bad at* |
+    | `by_case` | a document x field grid -- *what does this page lose* |
+
+    **The field order is the ranking**, weakest first, and it is the same order
+    in all three grids so a column means the same thing wherever it is read.
+
+    Two things this deliberately does not do. It does not score table cells: a
+    path like `income_items[0].amount_paid` is one row of a table going wrong,
+    which is not a weakness of a key. And it does not rank a model on this --
+    `by_extract` and `standouts` do that, over the same runs, and a second
+    ranking computed a second way would eventually disagree with them.
+    """
+    rows = _for_summary(read(limit=10 ** 6) if rows is None else rows)
+    rows = [{**r, "extract_on": (r.get("extract_model") or r.get("model") or "")}
+            for r in rows]
+    by_model = lambda r: r.get("extract_on")                     # noqa: E731
+    by_doc = lambda r: r.get("case")                             # noqa: E731
+    # Windowed by the thing each grid groups on, the standing rule: a model's
+    # row is its own recent runs and a document's row is that document's.
+    models = _verdict_group(_verdict_reads(recent_by(rows, by_model)),
+                            by_model, _document_key)
+    pairs = _verdict_reads(recent_by(rows, by_doc))
+    cases = _verdict_group(pairs, by_doc, by_model)
+
+    pooled, required_on, asked_on = {}, {}, {}
+    for row, verdicts in pairs:
+        required = _required_of(row)
+        for field, verdict in verdicts.items():
+            pooled.setdefault(field, {}).setdefault(
+                _document_key(row), []).append(verdict)
+            asked_on[field] = asked_on.get(field, 0) + 1
+            if field in required:
+                required_on[field] = required_on.get(field, 0) + 1
+    fields = []
+    for field, buckets in pooled.items():
+        cell = _verdict_cell(buckets)
+        demanded = required_on.get(field, 0)
+        fields.append({
+            "field": field,
+            **cell,
+            # How often the requirement demanded this key, rather than a flag:
+            # the same key is Mandatory on an invoice and Optional on a credit
+            # note, so "always", "sometimes" and "never" are three different
+            # things and only a count can say which.
+            "required_runs": demanded,
+            "asked_runs": asked_on.get(field, 0),
+            "required": ("always" if demanded == asked_on.get(field, 0) and demanded
+                         else "never" if not demanded else "sometimes"),
+        })
+    fields.sort(key=lambda e: (e["rate"] if e["rate"] is not None else 10 ** 6,
+                               e["field"]))
+    return {
+        "fields": fields,
+        "order": [e["field"] for e in fields],
+        "by_model": models,
+        "by_case": cases,
+        "runs": len(pairs),
+        "verdicts": dict(VERDICT_LETTERS),
+    }
+
+
+def best_models(rows: list = None) -> dict:
+    """Which models this log ranks first, per pass, best first.
+
+    **Built 2026-09-03 at the user's request** -- *auto default model to the best
+    one that is shown* -- and it is deliberately the SAME figure the Summary
+    tab's headline card and `standouts` print, not a second opinion computed
+    beside them. `backends._resolve_model` used to default pass 1 by a substring
+    test on the model's NAME; this defaults it by what the model has actually
+    scored here, and a default the page cannot explain is worse than no default.
+
+    Returns `{"ocr": [name, ...], "extract": [name, ...]}` -- a preference order
+    rather than one winner, because the caller is choosing among the models one
+    endpoint happens to serve and the leader is regularly not one of them.
+
+    Two rules, both taken from `_headline` rather than invented here:
+
+    * **A group nothing scored is left out.** `score is None` means the log has
+      no measurement of that model, and a default has to be a measurement.
+    * **Thin evidence never outranks evidenced.** Groups at or above
+      `STANDOUT_MIN_RUNS` come first, in score order, and the thin ones follow in
+      their own score order -- so one lucky read cannot become the default while
+      a model with a track record is served, and a freshly pulled model is still
+      reachable as a default when nothing else is.
+
+    Windowed per model like everything else on that card (`standouts` calls
+    `recent_by`), so this says *best lately* and not *best ever*.
+    """
+    lists = standouts(rows)
+
+    def order(ranked):
+        scored = [e for e in ranked if e["score"] is not None]
+        return [e["key"] for e in scored if not e["thin"]] +                [e["key"] for e in scored if e["thin"]]
+
+    return {pass_: order(lists[pass_]["models"]["ranked"])
+            for pass_ in ("ocr", "extract")}
+
+
+def servers_seen(rows: list = None) -> list:
+    """Every endpoint URL this log has a run against, most recently used first.
+
+    The picker's list is a CONSTANT (`backends._defaults`) and the log is the
+    HISTORY, and until now nothing joined them: an endpoint that had served a
+    hundred runs was not offered again after a restart unless it happened to be
+    one of the two defaults or was typed in by hand.
+
+    Most recent first because that is the order a person means by "the server I
+    was using", and because `backends.autoselect` probes in order and a dead port
+    costs a full connect timeout -- the ones most likely to answer should be
+    asked first.
+    """
+    rows = _read_all() if rows is None else rows
+    out = []
+    for row in reversed(rows):
+        url = (row.get("server") or "").strip()
+        if url and url not in out:
+            out.append(url)
+    return out
 
 
 # --------------------------------------------------------------------------
@@ -2875,6 +3485,15 @@ def _pres_points(rows: list, pass_: str) -> list:
                 # nowhere in this column, so it is the length of the transcript
                 # and not the cost of the request. Named for that on the page.
                 "tokens": None if failed else _num(row.get("tokens"), None),
+                # The same recall over the three scripts, so the tab that is
+                # meant to be SHOWN can say which of them a model loses rather
+                # than only how much it loses overall. Blank on a run written
+                # before 2026-09-04 and on a document that prints too little of
+                # a script to measure it; `_pres_group` skips a blank, so a
+                # model with none reports no rate rather than a zero.
+                **{name: (None if failed
+                          else _num(row.get(f"{name}_accuracy"), None))
+                   for name in scoring.SCRIPTS},
             })
         else:
             # The same test `by_extract` uses to decide a row has a pass-2
@@ -2900,6 +3519,10 @@ def _pres_points(rows: list, pass_: str) -> list:
                 # column draws is a field the next reader has to work out the
                 # status of. Add it when a column wants it.
                 "tokens": None,
+                # Pass 2 reads no page, so it has no script rates. Written as
+                # None rather than left out, so every point has the same shape
+                # and `_pres_group` can take the same figures of both passes.
+                **{name: None for name in scoring.SCRIPTS},
             })
     return points
 
@@ -2962,6 +3585,8 @@ def _pres_group(points: list, key_of) -> list:
             # this pair.
             "failure_rate": round(100.0 * len(failed) / len(runs), 1) if runs else None,
             "value": per_case(lambda p: p["value"]),
+            **{name: per_case(lambda p, n=name: p.get(n))
+               for name in scoring.SCRIPTS},
             "seconds": per_case(lambda p: p["seconds"]),
             "tps": per_case(lambda p: p["tps"]),
             "tokens": per_case(lambda p: p["tokens"]),
@@ -3307,6 +3932,12 @@ def totals(rows: list = None, logged: int = None) -> dict:
         # does accuracy depend on time, on the document, or on the model? Pass 1
         # only, because the question is about reading a page. See `ocr_analysis`.
         "ocr_analysis": ocr_analysis(everything),
+        # And the same runs asked what each model and each document is WEAK at,
+        # which every table above averages over by construction: the transcript
+        # score split into Thai, English and numerals, and the field score split
+        # into the individual keys. See `script_accuracy` and `field_weakness`.
+        "script_accuracy": script_accuracy(everything),
+        "field_weakness": field_weakness(everything),
         "seconds": round(seconds, 1),
         "tokens": tokens,
         # What this is a summary OF. `logged` is the file; `window` is how many
@@ -3333,5 +3964,12 @@ def totals(rows: list = None, logged: int = None) -> dict:
         # missing a quarter of the log reads as a table nobody has run much.
         # Empty on a log with none, which is what a fresh one looks like.
         "retired_detail": retired_detail(everything),
+        # How many of the reads in view still carry the pre-2026-09-04
+        # `char_accuracy` -- an edit distance rather than recall of the ground
+        # truth. Said out loud for the same reason `retired_detail` is: while
+        # both eras are in one window, the pass-1 means are over two different
+        # questions. It empties itself as the window rolls over, and the note
+        # disappears with it.
+        "legacy_char": legacy_char_rows(everything),
         "path": str(LOG_PATH),
     }
