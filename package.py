@@ -32,6 +32,7 @@ BASE = config.BASE_DIR
 FILES = [
     "README.md",
     "requirements.txt",
+    "requirements-paddle.txt",
     ".env.example",
     ".gitignore",
     "app.py",
@@ -42,6 +43,8 @@ FILES = [
     "grounding.py",
     "fieldscore.py",
     "jobs.py",
+    "paddle_runtime.py",
+    "paddle_worker.py",
     "runlog.py",
     "scoring.py",
     "verify.py",

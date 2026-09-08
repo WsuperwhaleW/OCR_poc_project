@@ -82,7 +82,7 @@ COLUMNS = [
     "detail",           # resolution preset
     "source",           # upload | folder | case | queue
     "server",           # endpoint URL
-    "backend",          # llama.cpp | ollama
+    "backend",          # llama.cpp | ollama | paddleocr
     "model",
     "status",           # ok | truncated | looped | error | cancelled
     "seconds",          # wall clock for the whole document
@@ -315,6 +315,15 @@ COLUMNS = [
     # same row says which requirement was in force, and `prompts` says what it
     # demands, so encoding it twice would let the two disagree.
     "field_verdicts",
+    # Local PaddleOCR provenance. Appended so older CSV rows migrate safely.
+    # Blank for model-server reads; confidence is the arithmetic mean of the
+    # recognizer's per-line scores and stays in Paddle's native 0..1 scale.
+    "ocr_lines",
+    "ocr_confidence",
+    "ocr_device",
+    "ocr_version",
+    "paddle_version",
+    "ocr_detector",
 ]
 
 # The value the run was actually made with, taken from `settings` rather than
@@ -722,6 +731,12 @@ def record(summary: dict, source: dict = None, extras: dict = None) -> dict:
         "error": str(error)[:300],
         "run_type": extras.get("run_type") or "ocr",
         "ocr_profile": summary.get("ocr_profile", ""),
+        "ocr_lines": summary.get("ocr_lines", ""),
+        "ocr_confidence": summary.get("ocr_confidence", ""),
+        "ocr_device": summary.get("ocr_device", ""),
+        "ocr_version": summary.get("ocr_version", ""),
+        "paddle_version": summary.get("paddle_version", ""),
+        "ocr_detector": summary.get("ocr_detector", ""),
         "dry": _DRY,
     }
 
