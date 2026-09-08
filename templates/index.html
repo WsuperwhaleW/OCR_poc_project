@@ -141,6 +141,11 @@
   #mapchip.none { border-color: var(--border); background: transparent; color: var(--muted); }
   #mapchip .how { opacity: .8; }
   .row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 16px; }
+  /* Author display rules override the browser's weak [hidden] default. These
+     controls are model-server page-reading settings and must truly disappear
+     while PaddleOCR or EasyOCR owns pass 1. */
+  #ocrProfileRow[hidden], #ocrProfileNote[hidden], #ocrProfileHelp[hidden],
+  #loopGuardRow[hidden], #loopGuardNote[hidden] { display: none !important; }
   button, select {
     font: inherit; border-radius: 9px; padding: 9px 16px;
     border: 1px solid var(--border); background: transparent; color: var(--text); cursor: pointer;
@@ -1050,7 +1055,7 @@ follows your desktop; Light is the one to pick for projecting or screenshotting.
           </select>
         </label>
         <label class="field" style="flex:1;min-width:200px">
-          Model server
+          <span id="serverFieldLabel">Model server</span>
           <select id="endpointSel">
             {% for e in endpoints %}
             <option value="{{ e }}" {% if e == server.url %}selected{% endif %}>{{ e }}</option>
@@ -1096,7 +1101,7 @@ follows your desktop; Light is the one to pick for projecting or screenshotting.
           </select>
         </label>
         <label class="field" style="flex:1;min-width:150px">
-          Context
+          <span id="ctxFieldLabel">Context</span>
           <select id="ctxSel">
             {% for c in ctx_choices %}
             <option value="{{ c }}" {% if c == num_ctx %}selected{% endif %}>{{ c }} tokens</option>
@@ -1328,8 +1333,12 @@ follows your desktop; Light is the one to pick for projecting or screenshotting.
              because a model can be poor at one and good at the other -- this
              project has two of those. -->
         <div class="rt-ex" id="rtExReadRow">
-          <span class="rt-ex-label">Models that may read</span>
+          <span class="rt-ex-label">Readers that may read &mdash; tick any combination</span>
           <div class="rt-chips" id="rtExRead"></div>
+          <p class="note">Model-server vision models and available local readers
+            share this list. Keep exactly the combination you want Random Test
+            to draw from; a local reader still uses the model server for field
+            extraction in a Full pipeline round.</p>
         </div>
         <div class="rt-ex" id="rtExExtractRow">
           <span class="rt-ex-label">Models that may extract</span>
@@ -4405,6 +4414,8 @@ function paintBests(t) {
    attribute wherever this is used, because two `hf.co/...` repacks of one model
    differ only in the part this drops. */
 function csModel(name) {
+  if (name === 'local:paddle') return 'Local PaddleOCR';
+  if (name === 'local:easyocr') return 'Local EasyOCR';
   return String(name || '')
     .replace(/^hf\.co\//, '').replace(/:latest$/, '').split('/').pop();
 }
@@ -6419,6 +6430,9 @@ function rtPct(value, digits) {
    reads as a pass that ran and found nothing. */
 function rtPlanLines(p) {
   const line = t => '<span class="rt-plan">' + t + '</span>';
+  const reader = esc(csModel(p.reader))
+    + (String(p.reader || '').startsWith('local:') ? ''
+       : ' (' + esc(p.profile) + ')');
   // Which end of the ranking a contender came from. Absent on a random round,
   // and absent on a contest where every ranked model is running -- there is no
   // top half when everyone is in it.
@@ -6432,9 +6446,9 @@ function rtPlanLines(p) {
   }
   if (p.scope === 'ocr') {
     return line('read only &middot; no extraction')
-      + line(rank + esc(csModel(p.reader)) + ' (' + esc(p.profile) + ') &middot; ' + esc(p.detail));
+      + line(rank + reader + ' &middot; ' + esc(p.detail));
   }
-  return line(rank + esc(csModel(p.reader)) + ' (' + esc(p.profile) + ')'
+  return line(rank + reader
               + ' &rarr; ' + esc(p.extractor ? csModel(p.extractor) : 'same'))
     + line(esc(p.detail) + ' &middot; ' + esc(p.mode));
 }
@@ -6471,6 +6485,11 @@ function rtChips(box, names, set) {
 }
 function rtPaintLocks() {
   const models = server.models || [];
+  const localReaders = (readerState.readers || [])
+    .filter(r => r.id !== 'server' && r.available)
+    .map(r => 'local:' + r.id);
+  const readers = models.filter(m => m.vision !== false).map(m => m.name)
+    .concat(localReaders);
   const keep = (sel, names) => {
     const chosen = sel.value;
     sel.innerHTML = '<option value="">— random —</option>'
@@ -6479,7 +6498,7 @@ function rtPaintLocks() {
     // pointing at something else.
     if (sel.value !== chosen) sel.value = '';
   };
-  keep(rtLockReader, models.filter(m => m.vision !== false).map(m => m.name));
+  keep(rtLockReader, readers);
   keep(rtLockExtract, rtScope.value === 'fields'
     ? models.map(m => m.name)
     : ((extractInfo && extractInfo.choices) || []).filter(Boolean));
@@ -6490,8 +6509,7 @@ function rtPaintLocks() {
   rtLockModeField.style.display = rtScope.value === 'ocr' ? 'none' : 'flex';
   // The chips are painted from the same two pools as the locks, so a model this
   // endpoint cannot use for a pass is not offered as one to exclude from it.
-  rtChips(rtExRead, models.filter(m => m.vision !== false).map(m => m.name),
-          rtExcluded.readers);
+  rtChips(rtExRead, readers, rtExcluded.readers);
   rtChips(rtExExtract, rtScope.value === 'fields'
     ? models.map(m => m.name)
     : ((extractInfo && extractInfo.choices) || []).filter(Boolean),
@@ -8178,6 +8196,8 @@ const endpointUse = document.getElementById('endpointUse');
 const serverNote = document.getElementById('serverNote');
 const subKind = document.getElementById('subKind');
 const subUrl = document.getElementById('subUrl');
+const serverFieldLabel = document.getElementById('serverFieldLabel');
+const ctxFieldLabel = document.getElementById('ctxFieldLabel');
 
 function selectedReader() {
   return (readerState.readers || []).find(r => r.id === readerSel.value) || {};
@@ -8190,6 +8210,12 @@ function paintReader() {
   modelRole.textContent = local
     ? 'Model · server default for fields'
     : 'Model · reads the page';
+  serverFieldLabel.textContent = local
+    ? 'Model server · field extraction only'
+    : 'Model server';
+  ctxFieldLabel.textContent = local
+    ? 'Context · field extraction'
+    : 'Context';
   for (const el of [ocrProfileRow, ocrProfileNote, ocrProfileHelp,
                     loopGuardRow, loopGuardNote]) {
     if (el) el.hidden = local;

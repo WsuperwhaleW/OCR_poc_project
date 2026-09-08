@@ -10,6 +10,7 @@ import app
 import easy_runtime
 import easy_worker
 import jobs
+import randomtest
 import runlog
 import scoring
 
@@ -171,6 +172,42 @@ class EasyAppTests(unittest.TestCase):
         self.assertEqual(result["text"], "queue text")
         self.assertEqual(job.stage, "finished")
         consumed.assert_called_once()
+
+    def test_random_pool_offers_both_available_local_readers(self):
+        available = {"available": True}
+        with patch("app.llama_status", return_value={"models": []}), \
+             patch("app.paddle_runtime.configured_status",
+                   return_value=available), \
+             patch("app.easy_runtime.configured_status",
+                   return_value=available):
+            pools = app._random_pools()
+        self.assertIn("local:paddle", pools["readers"])
+        self.assertIn("local:easyocr", pools["readers"])
+        narrowed = randomtest.apply_exclusions(
+            pools, {"readers": ["local:paddle"]}, "ocr")
+        self.assertNotIn("local:paddle", narrowed["readers"])
+        self.assertIn("local:easyocr", narrowed["readers"])
+        planned = randomtest.plan(
+            rounds=1, cases=["sol001"], readers=narrowed["readers"],
+            extractors=narrowed["extractors"], details=["medium"],
+            modes=["single"], text_models=narrowed["text_models"],
+            scope="ocr", lock={"reader": "local:easyocr"}, seed=1)
+        self.assertEqual(planned["rounds"][0]["reader"], "local:easyocr")
+        self.assertEqual(planned["rounds"][0]["profile"], "easyocr")
+
+    def test_random_round_routes_local_reader_without_model_switch(self):
+        round_ = {"scope": "ocr", "reader": "local:easyocr",
+                  "profile": "easyocr", "extractor": "", "case": "sol001",
+                  "detail": "medium", "mode": ""}
+        with patch("app._read_case", return_value={"reader": "easyocr"}) as read, \
+             patch("app.backends.select") as select, \
+             patch("app.backends.select_extract") as select_extract:
+            result = app._run_round(round_)
+        self.assertEqual(result["reader"], "easyocr")
+        read.assert_called_once_with("sol001", "medium", extract=False,
+                                     reader="easyocr")
+        select.assert_not_called()
+        select_extract.assert_not_called()
 
 
 class EasyPersistenceTests(unittest.TestCase):

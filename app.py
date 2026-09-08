@@ -3954,7 +3954,13 @@ def _random_pools():
     """
     cases = [c["id"] for c in scoring.cases_index().values()
              if fieldscore.has_truth(c["id"])]
-    return randomtest.pools(llama_status()["models"], cases)
+    local = []
+    if paddle_runtime.configured_status().get("available"):
+        local.append("local:paddle")
+    if easy_runtime.configured_status().get("available"):
+        local.append("local:easyocr")
+    return randomtest.pools(llama_status()["models"], cases,
+                            local_readers=local)
 
 
 def _random_plan(body: dict) -> dict:
@@ -4126,13 +4132,25 @@ def _run_round(round_: dict) -> dict:
         set_extract_mode(round_["mode"])
         return _extract_case(round_["case"], round_["mode"])
 
-    backends.select(None, round_["reader"], unload=True)
-    backends.select_extract(round_["extractor"], unload=False)
-    set_ocr_profile(round_["profile"])
+    local_reader = randomtest.local_reader(round_["reader"])
+    if local_reader:
+        # The local worker does pass 1. Pass 2, when requested, still belongs to
+        # the active model server: "" means its reading/default model, exactly
+        # as it does when Workspace runs Paddle or EasyOCR with field extraction.
+        set_reader(local_reader)
+        if scope != "ocr":
+            backends.select_extract(round_["extractor"], unload=False)
+    else:
+        set_reader("server")
+        backends.select(None, round_["reader"], unload=True)
+        backends.select_extract(round_["extractor"], unload=False)
+        set_ocr_profile(round_["profile"])
     if scope == "ocr":
-        return _read_case(round_["case"], round_["detail"], extract=False)
+        return _read_case(round_["case"], round_["detail"], extract=False,
+                          reader=local_reader or "server")
     set_extract_mode(round_["mode"])
-    return _read_case(round_["case"], round_["detail"])
+    return _read_case(round_["case"], round_["detail"],
+                      reader=local_reader or "server")
 
 
 def _extract_case(case_id: str, mode: str) -> dict:
@@ -4156,7 +4174,8 @@ def _extract_case(case_id: str, mode: str) -> dict:
             "status": "error" if result.get("error") else "ok"}
 
 
-def _read_case(case_id: str, detail: str, extract: bool = True) -> dict:
+def _read_case(case_id: str, detail: str, extract: bool = True,
+               reader: str = "server") -> dict:
     """One benchmark document, read and extracted, exactly as `/api/ocr` does it.
 
     Shares `prepare_input`, `summarise`, `evaluate_if_known`, `extract_fields`
@@ -4171,12 +4190,19 @@ def _read_case(case_id: str, detail: str, extract: bool = True) -> dict:
     source = describe_source(case["pdf"], data, "case")
     pages, detail, job_id, case = prepare_input(data, detail, case, source)
 
+    reader = resolve_reader(reader)
     started = time.perf_counter()
     page_texts, all_stats = [], []
-    for page in pages:
-        stats = {}
-        page_texts.append(read_page(page, stats))
-        all_stats.append(stats)
+    if reader in ("paddle", "easyocr"):
+        consume = (consume_paddle_pages if reader == "paddle"
+                   else consume_easy_pages)
+        page_texts, all_stats, model_info = consume(pages)
+    else:
+        model_info = None
+        for page in pages:
+            stats = {}
+            page_texts.append(read_page(page, stats))
+            all_stats.append(stats)
 
     if len(page_texts) > 1:
         text = "\n\n".join(f"--- page {i} ---\n{t}"
@@ -4184,7 +4210,11 @@ def _read_case(case_id: str, detail: str, extract: bool = True) -> dict:
     else:
         text = page_texts[0]
 
-    payload = summarise(all_stats, detail, started, job_id)
+    payload = (local_summary(reader, all_stats, detail, started, job_id,
+                             model_info)
+               if reader != "server"
+               else summarise(all_stats, detail, started, job_id))
+    payload["reader"] = reader
     payload["truth"] = evaluate_if_known(case, text)
     if extract and EXTRACT and text.strip():
         payload["extracted"] = extract_fields(text, case_id=case["id"] if case else None)

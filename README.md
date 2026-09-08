@@ -1291,11 +1291,14 @@ extraction-from-a-real-transcript untested by anything automatic.
 | **Runs** | 1 to 50. A round is a real read plus a real extraction, so tens of seconds each |
 | **Seed** | leave blank for a new one; the seed used is put in the box when the run starts. It fixes the models, Details and shapes, and their order; the documents are chosen from the run log as it stands, so a seed replays the same plan exactly only while the log has not moved |
 
-**Exclusions.** Every served model appears as a chip under **Models that may read** and
-**Models that may extract**; unticking one takes it out of the draw. The two lists are
+**Exclusions.** Every served vision model plus each available local Paddle/EasyOCR reader
+appears as a chip under **Readers that may read**; every eligible server model appears under
+**Models that may extract**. Unticking one takes it out of the draw, so model-server only,
+model-server + Paddle, model-server + EasyOCR, and all three are ordinary checkbox choices. The two lists are
 separate because a model can be poor at one pass and good at the other. Exclusions apply to
 contests as well, `""` (same as reading model) is never excluded, and emptying a pool the
-run actually needs is refused with a reason. On the CLI: `--exclude-reader MODEL`,
+run actually needs is refused with a reason. On the CLI: `--exclude-reader MODEL`
+(local identifiers are `local:paddle` and `local:easyocr`),
 `--exclude-extractor MODEL`, repeatable.
 
 **Locks.** Any of the document, the OCR model, the extraction model and the extraction
@@ -1394,8 +1397,9 @@ report neither number only proves the request did not crash.
 
 **Which models each pass may draw on:**
 
-- **a reader is any model that reports vision.** Pass 1 sends an image, so a text-only model is
-  not a candidate; nothing else is excluded. A fields-only round has no reader at all.
+- **a reader is any model-server model that reports vision, plus an installed local
+  PaddleOCR or EasyOCR worker.** Pass 1 sends an image, so a text-only model is not a
+  candidate; nothing else is excluded. A fields-only round has no reader at all.
 - **an extractor is the reading model itself, or a model that is not an OCR fine-tune** — the
   same rule the server enforces, so a plan never contains a round it would refuse.
 
