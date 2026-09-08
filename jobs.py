@@ -39,7 +39,7 @@ class Job:
         self.name = name
         self.kind = kind              # "upload" | "case"
         self.detail = detail
-        self.reader = reader            # server | paddle; captured when queued
+        self.reader = reader            # server | paddle | easyocr; captured here
         self.payload = payload        # bytes for upload, case id for case
         self.status = "queued"        # queued|running|done|failed|cancelled
         self.created = time.time()

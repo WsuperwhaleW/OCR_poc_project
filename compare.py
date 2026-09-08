@@ -7,6 +7,7 @@
     python compare.py --app http://ocr.internal:5000    # score a deployed app
     python compare.py --model dots.ocr --profile dots     # a different model entirely
     python compare.py --reader paddle sol001              # local PaddleOCR
+    python compare.py --reader easyocr sol001             # local EasyOCR
 
 `--model` takes any unique substring of a served model's name and switches the
 running app to it before the sweep, the same way the page's picker does (add
@@ -219,7 +220,8 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("ids", nargs="*", help="case ids, e.g. sol001 (default: all)")
     ap.add_argument("--detail", default=None, help="original|medium|low")
-    ap.add_argument("--reader", default="server", choices=["server", "paddle"],
+    ap.add_argument("--reader", default="server",
+                    choices=["server", "paddle", "easyocr"],
                     help="OCR reader (default: server)")
     ap.add_argument("--no-run", action="store_true", help="score saved output only")
     ap.add_argument("--keep-tables", action="store_true",
@@ -270,7 +272,8 @@ def main():
                    or (fields and not args.no_extract))
     if calls_reader:
         try:
-            reader_info = select_reader(app, args.reader, probe=args.reader == "paddle")
+            reader_info = select_reader(app, args.reader,
+                                        probe=args.reader != "server")
         except Exception as err:
             say(f"reader: {err}", sys.stderr)
             return 2
@@ -347,7 +350,7 @@ def main():
             out_path.write_text(actual, "utf-8")
             flags = [f for f, on in (("LOOPED", body.get("looped")),
                                      ("TRUNCATED", body.get("truncated"))) if on]
-            if body.get("backend") == "paddleocr":
+            if body.get("backend") in ("paddleocr", "easyocr"):
                 meta = (f"  [{body['seconds']}s, {body.get('ocr_lines', 0)} lines, "
                         f"{float(body.get('ocr_confidence') or 0) * 100:.1f}% confidence, "
                         f"{body['detail']}]")

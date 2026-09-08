@@ -4011,7 +4011,7 @@ queueBody.addEventListener('click', async e => {
     roPage = 0; enableRawOut();
     paint(); renderStats(r);
     meta.textContent = `${r.page_count} page(s) · ${r.detail} · `
-      + (r.backend === 'paddleocr'
+      + (['paddleocr', 'easyocr'].includes(r.backend)
         ? `${r.ocr_lines || 0} lines · ${((r.ocr_confidence || 0) * 100).toFixed(1)}% mean confidence · `
         : `${r.tokens || 0} tokens · `)
       + `${r.seconds}s`
@@ -8184,23 +8184,24 @@ function selectedReader() {
 }
 
 function paintReader() {
-  const paddle = readerSel.value === 'paddle';
+  const local = readerSel.value !== 'server';
   const info = selectedReader();
   readerState.selected = readerSel.value;
-  modelRole.textContent = paddle
+  modelRole.textContent = local
     ? 'Model · server default for fields'
     : 'Model · reads the page';
   for (const el of [ocrProfileRow, ocrProfileNote, ocrProfileHelp,
                     loopGuardRow, loopGuardNote]) {
-    if (el) el.hidden = paddle;
+    if (el) el.hidden = local;
   }
-  subKind.textContent = paddle ? 'local PaddleOCR' : (server.kind || 'no server');
-  subUrl.textContent = paddle ? (info.python || 'not installed') : (server.url || '');
-  if (paddle) {
+  subKind.textContent = local ? ('local ' + (info.label || readerSel.value))
+                              : (server.kind || 'no server');
+  subUrl.textContent = local ? (info.python || 'not installed') : (server.url || '');
+  if (local) {
     readerReason.classList.toggle('err', !info.available);
     readerReason.textContent = info.available
-      ? `${info.detector || 'PP-OCRv5_mobile_det'} + ${info.recognizer || 'th_PP-OCRv5_mobile_rec'} · ${info.device || 'cpu'} · models stay loaded between runs`
-      : ('⚠ ' + (info.reason || 'PaddleOCR is not available.'));
+      ? `${info.detector || 'detector'} + ${info.recognizer || 'recognizer'} · ${info.device || 'cpu'} · models stay loaded between runs`
+      : ('⚠ ' + (info.reason || 'The local OCR reader is not available.'));
   } else {
     readerReason.classList.remove('err');
     readerReason.textContent = 'The selected model server reads each prepared page image.';
@@ -8212,7 +8213,7 @@ async function switchReader(next) {
   try {
     const res = await fetch('/api/ocr/reader', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ reader: next, probe: next === 'paddle' })
+      body: JSON.stringify({ reader: next, probe: next !== 'server' })
     });
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || 'Could not select reader.');
@@ -8390,18 +8391,19 @@ for (const sel of [extractModelSel, fxExtract]) {
 
 function paintServer() {
   const reading = selectedReader();
-  const ok = readerSel.value === 'paddle' ? !!reading.available : !!server.available;
+  const local = readerSel.value !== 'server';
+  const ok = local ? !!reading.available : !!server.available;
   const kind = server.kind || 'server';
   dot.className = 'dot ' + (ok ? 'ok' : 'bad');
-  serverText.textContent = readerSel.value === 'paddle'
-    ? (ok ? (reading.recognizer || 'PaddleOCR') + ' · ' + (reading.device || 'cpu')
-          : 'Local PaddleOCR unavailable')
+  serverText.textContent = local
+    ? (ok ? (reading.label || reading.recognizer || readerSel.value) + ' · ' + (reading.device || 'cpu')
+          : (reading.label || 'Local OCR') + ' unavailable')
     : ok ? (server.model || kind) + ' · ' + kind
       + (server.vision ? ' · vision ready'
                        : (server.vision_known ? ' · no vision' : ' · vision not reported'))
     : (server.model ? server.model + ' · unusable' : 'No model server at ' + server.url);
-  serverReason.textContent = ok ? '' : ('⚠ ' + (readerSel.value === 'paddle'
-    ? (reading.reason || 'PaddleOCR is not available.')
+  serverReason.textContent = ok ? '' : ('⚠ ' + (local
+    ? (reading.reason || 'The local OCR reader is not available.')
     : (server.reason || '')));
   // Uploading is pointless while the server can't read images. A selected
   // benchmark case is its own input, so no upload is needed for that.
@@ -8495,8 +8497,8 @@ function startTicker() {
   clearInterval(ticker);
   ticker = setInterval(() => {
     const s = ((Date.now() - runStart) / 1000).toFixed(1);
-    if (readerSel.value === 'paddle') {
-      meta.textContent = `${s}s · PaddleOCR running`;
+    if (readerSel.value !== 'server') {
+      meta.textContent = `${s}s · ${(selectedReader().label || readerSel.value)} running`;
       return;
     }
     const rate = liveTokens > 0 ? ' · ' + (liveTokens / ((Date.now() - runStart) / 1000)).toFixed(2) + ' tok/s' : '';
@@ -8507,9 +8509,9 @@ function stopTicker() { clearInterval(ticker); ticker = null; }
 
 function renderStats(summary) {
   if (!pageStats.length) { statsEl.innerHTML = ''; return; }
-  const paddle = (summary && summary.backend === 'paddleocr')
-    || pageStats.some(s => s.backend === 'paddleocr');
-  if (paddle) {
+  const local = (summary && ['paddleocr', 'easyocr'].includes(summary.backend))
+    || pageStats.some(s => ['paddleocr', 'easyocr'].includes(s.backend));
+  if (local) {
     const head = '<thead><tr><th>Page</th><th>Resolution</th><th>Lines</th>'
       + '<th>Mean confidence</th><th>OCR time</th></tr></thead>';
     const body = pageStats.map((s, i) =>
@@ -8517,7 +8519,7 @@ function renderStats(summary) {
       + `<td>${s.mean_confidence == null ? '—' : (s.mean_confidence * 100).toFixed(1) + '%'}</td>`
       + `<td>${(s.seconds ?? 0).toFixed(1)}s</td></tr>`).join('');
     const f = summary || {};
-    const foot = `<tfoot><tr><td>Total</td><td>${f.model || 'PaddleOCR'}</td>`
+    const foot = `<tfoot><tr><td>Total</td><td>${f.model || 'Local OCR'}</td>`
       + `<td>${f.ocr_lines ?? pageStats.reduce((n, s) => n + (s.line_count || 0), 0)}</td>`
       + `<td>${f.ocr_confidence == null ? '—' : (f.ocr_confidence * 100).toFixed(1) + '%'}</td>`
       + `<td>${(f.seconds ?? pageStats.reduce((n, s) => n + (s.seconds || 0), 0)).toFixed(1)}s</td></tr></tfoot>`;
@@ -8926,7 +8928,7 @@ runBtn.addEventListener('click', async () => {
         if (!line.trim()) continue;
         const msg = JSON.parse(line);
         if (msg.event === 'progress') {
-          pagebar.innerHTML = '<span class="spin"></span> ' + esc(msg.message || 'PaddleOCR is still running…');
+          pagebar.innerHTML = '<span class="spin"></span> ' + esc(msg.message || 'Local OCR is still running…');
         } else if (msg.event === 'page') {
           pagebar.innerHTML = '<span class="spin"></span> Reading page ' + msg.page
             + ' of ' + msg.total + ' (' + msg.resolution + ')…';
@@ -8980,7 +8982,7 @@ runBtn.addEventListener('click', async () => {
             meta.textContent += ` · ${(truth.char_accuracy * 100).toFixed(1)}% vs ${truth.case}`;
           }
           if (tabAccuracy.classList.contains('on')) paintAccuracy();
-          meta.textContent = msg.backend === 'paddleocr'
+          meta.textContent = ['paddleocr', 'easyocr'].includes(msg.backend)
             ? `${msg.page_count} page(s) · ${msg.detail} · ${msg.ocr_lines || 0} lines · `
               + `${((msg.ocr_confidence || 0) * 100).toFixed(1)}% mean confidence · `
               + `${msg.seconds}s total · ${msg.model}`
@@ -9036,7 +9038,7 @@ runBtn.addEventListener('click', async () => {
     pagebar.textContent = '';
     if (err.name === 'AbortError') {
       const s = ((Date.now() - runStart) / 1000).toFixed(1);
-      meta.textContent = `Stopped after ${s}s · ${readerSel.value === 'paddle' ? 'Paddle worker reset' : liveTokens + ' tokens'} · partial result kept.`;
+      meta.textContent = `Stopped after ${s}s · ${readerSel.value !== 'server' ? 'local OCR worker reset' : liveTokens + ' tokens'} · partial result kept.`;
       copyBtn.disabled = !text;
     } else {
       meta.textContent = err.message;

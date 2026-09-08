@@ -29,6 +29,7 @@ from flask import Flask, Response, jsonify, render_template, request
 
 import backends
 import config
+import easy_runtime
 import fieldscore
 import grounding
 import jobs
@@ -191,7 +192,7 @@ def job_context(job_id: str) -> dict:
 # model server
 # --------------------------------------------------------------------------
 
-READERS = ("server", "paddle")
+READERS = ("server", "paddle", "easyocr")
 _reader_lock = threading.Lock()
 _reader = config.env_str("OCR_READER", "server").strip().lower()
 if _reader not in READERS:
@@ -206,7 +207,7 @@ def current_reader() -> str:
 def resolve_reader(value=None) -> str:
     reader = (value or current_reader()).strip().lower()
     if reader not in READERS:
-        raise ValueError("reader must be 'server' or 'paddle'.")
+        raise ValueError("reader must be 'server', 'paddle', or 'easyocr'.")
     return reader
 
 
@@ -218,9 +219,13 @@ def set_reader(value) -> str:
     return reader
 
 
-def reader_status(probe=False) -> dict:
-    server = llama_status(force=probe)
-    paddle = paddle_runtime.status(probe=probe)
+def reader_status(probe=False, probe_reader=None) -> dict:
+    """Reader inventory, optionally probing one selected implementation."""
+    server = llama_status(force=probe and probe_reader in (None, "server"))
+    paddle = paddle_runtime.status(
+        probe=probe and probe_reader in (None, "paddle"))
+    easy = easy_runtime.status(
+        probe=probe and probe_reader in (None, "easyocr"))
     return {
         "selected": current_reader(),
         "readers": [
@@ -229,6 +234,7 @@ def reader_status(probe=False) -> dict:
              "model": server.get("model"), "backend": server.get("kind"),
              "reason": server.get("reason") or ""},
             paddle,
+            easy,
         ],
     }
 
@@ -2615,6 +2621,89 @@ def summarise_paddle(all_stats, detail, started, job_id=None, model_info=None):
     }
 
 
+def easy_events(pages, cancel=None):
+    """Yield EasyOCR worker events for the same prepared page pixels."""
+    with tempfile.TemporaryDirectory(prefix="thai-ocr-easy-") as directory:
+        paths = []
+        for index, page in enumerate(pages, 1):
+            path = Path(directory) / f"page-{index}.png"
+            page.save(path, format="PNG")
+            paths.append(path)
+        yield from easy_runtime.WORKER.run_pages(paths, cancel)
+
+
+def easy_page_result(event: dict, image: Image.Image) -> tuple[str, dict]:
+    lines = event.get("lines") or []
+    text = "\n".join(str(line.get("text") or "") for line in lines).strip()
+    confidences = [float(line["confidence"]) for line in lines
+                   if isinstance(line.get("confidence"), (int, float))]
+    status = easy_runtime.configured_status()
+    layout = [{
+        "bbox": line.get("bbox"), "category": "Text",
+        "text": str(line.get("text") or ""),
+        "confidence": line.get("confidence"),
+        "polygon": line.get("polygon"), "rect": line.get("rect"),
+    } for line in lines]
+    return text, {
+        "ocr_profile": "easyocr",
+        "resolution": f"{image.width}x{image.height}",
+        "megapixels": round(image.width * image.height / 1e6, 2),
+        "seconds": event.get("seconds", 0),
+        "model": status["recognizer"], "backend": "easyocr", "url": "local",
+        "line_count": len(lines),
+        "mean_confidence": (round(sum(confidences) / len(confidences), 4)
+                            if confidences else None),
+        "layout": layout,
+        "raw": json.dumps(lines, ensure_ascii=False, indent=2),
+    }
+
+
+def consume_easy_pages(pages, cancel=None, progress=None):
+    texts, all_stats, model_info = [], [], {}
+    for event in easy_events(pages, cancel):
+        if progress:
+            progress(event)
+        if event.get("event") == "page_result":
+            index = int(event.get("page") or len(all_stats) + 1) - 1
+            text, stats = easy_page_result(event, pages[index])
+            texts.append(text)
+            all_stats.append(stats)
+        elif event.get("event") == "done":
+            model_info = event.get("modelInfo") or {}
+    return texts, all_stats, model_info
+
+
+def summarise_easy(all_stats, detail, started, job_id=None, model_info=None):
+    model_info = model_info or {}
+    confidences = [(s.get("mean_confidence"), s.get("line_count", 0))
+                   for s in all_stats if s.get("mean_confidence") is not None]
+    line_count = sum(int(s.get("line_count") or 0) for s in all_stats)
+    weighted = sum(value * count for value, count in confidences)
+    status = easy_runtime.configured_status()
+    return {
+        "page_count": len(all_stats), "detail": detail,
+        "ocr_profile": "easyocr", "job": job_id,
+        "model": model_info.get("recognizer") or status["recognizer"],
+        "url": "local", "backend": "easyocr",
+        "resolutions": [s.get("resolution") for s in all_stats],
+        "truncated": False, "looped": False,
+        "seconds": round(time.perf_counter() - started, 2),
+        "page_stats": all_stats, "ocr_lines": line_count,
+        "ocr_confidence": round(weighted / line_count, 4) if line_count else None,
+        "ocr_device": model_info.get("device") or status["device"],
+        "easyocr_version": model_info.get("easyOcrVersion", ""),
+        "torch_version": model_info.get("torchVersion", ""),
+        "ocr_detector": model_info.get("detector") or status["detector"],
+        "ocr_languages": ",".join(model_info.get("languages") or status["languages"]),
+    }
+
+
+def local_summary(reader, all_stats, detail, started, job_id=None, model_info=None):
+    return (summarise_paddle(all_stats, detail, started, job_id, model_info)
+            if reader == "paddle"
+            else summarise_easy(all_stats, detail, started, job_id, model_info))
+
+
 def join_page_texts(page_texts) -> str:
     if len(page_texts) > 1:
         return "\n\n".join(f"--- page {i} ---\n{text}"
@@ -2898,29 +2987,33 @@ def run_job(job):
     # Logged from `finally` so a cancelled or failed job still leaves a row --
     # a read that died after four minutes is exactly what you want recorded.
     try:
-        if reader == "paddle":
+        if reader in ("paddle", "easyocr"):
+            label = "PaddleOCR" if reader == "paddle" else "EasyOCR"
+            consume = (consume_paddle_pages if reader == "paddle"
+                       else consume_easy_pages)
             # A second queue thread blocks on the singleton worker's request
             # lock. Name that wait before entering it; there are deliberately no
             # heartbeat events until this job owns the worker.
-            job.stage = "waiting for PaddleOCR worker"
+            job.stage = f"waiting for {label} worker"
 
             def progress(event):
                 kind = event.get("event")
                 if kind == "loading":
-                    job.stage = "loading PaddleOCR models"
+                    job.stage = f"loading {label} models"
                 elif kind == "heartbeat":
                     if not job.stage:
-                        job.stage = "waiting for PaddleOCR worker"
+                        job.stage = f"waiting for {label} worker"
                 elif kind == "page_start":
-                    job.stage = (f"PaddleOCR page {event['page']} of "
+                    job.stage = (f"{label} page {event['page']} of "
                                  f"{event['total']}")
                 elif kind == "page_result":
                     job.pages_done = int(event.get("page") or job.pages_done)
 
             try:
-                collected, all_stats, model_info = consume_paddle_pages(
+                collected, all_stats, model_info = consume(
                     pages, job._cancel, progress)
-            except paddle_runtime.PaddleCancelled:
+            except (paddle_runtime.PaddleCancelled,
+                    easy_runtime.EasyCancelled):
                 raise jobs.Cancelled()
         else:
             model_info = None
@@ -2939,8 +3032,9 @@ def run_job(job):
         job.check_cancelled()
         text = join_page_texts(collected)
 
-        summary = (summarise_paddle(all_stats, detail, started, page_job_id, model_info)
-                   if reader == "paddle"
+        summary = (local_summary(reader, all_stats, detail, started,
+                                 page_job_id, model_info)
+                   if reader != "server"
                    else summarise(all_stats, detail, started, page_job_id))
         payload = {"text": text, "pages": collected, "reader": reader, **summary}
         payload["truth"] = evaluate_if_known(case, text)
@@ -2968,17 +3062,17 @@ def run_job(job):
         log_run(payload, source)
         return payload
     except jobs.Cancelled:
-        partial = (summarise_paddle(all_stats, detail, started, page_job_id,
-                                    locals().get("model_info"))
-                   if reader == "paddle"
+        partial = (local_summary(reader, all_stats, detail, started, page_job_id,
+                                 locals().get("model_info"))
+                   if reader != "server"
                    else summarise(all_stats, detail, started, page_job_id))
         log_run(payload or partial,
                 source, status="cancelled")
         raise
     except Exception as err:
-        partial = (summarise_paddle(all_stats, detail, started, page_job_id,
-                                    locals().get("model_info"))
-                   if reader == "paddle"
+        partial = (local_summary(reader, all_stats, detail, started, page_job_id,
+                                 locals().get("model_info"))
+                   if reader != "server"
                    else summarise(all_stats, detail, started, page_job_id))
         log_run(payload or partial,
                 source, error=err)
@@ -3479,7 +3573,10 @@ def ocr_reader_set():
         set_reader(body.get("reader"))
     except ValueError as error:
         return jsonify(error=str(error), **reader_status()), 400
-    return jsonify(reader_status(probe=body.get("probe") is True))
+    return jsonify(reader_status(
+        probe=body.get("probe") is True,
+        probe_reader=current_reader(),
+    ))
 
 
 @app.get("/api/ocr/profile")
@@ -4116,8 +4213,10 @@ def ocr():
     started = time.perf_counter()
     page_texts, all_stats = [], []
     try:
-        if reader == "paddle":
-            page_texts, all_stats, model_info = consume_paddle_pages(pages)
+        if reader in ("paddle", "easyocr"):
+            consume = (consume_paddle_pages if reader == "paddle"
+                       else consume_easy_pages)
+            page_texts, all_stats, model_info = consume(pages)
         else:
             model_info = None
             for page in pages:
@@ -4127,9 +4226,9 @@ def ocr():
     except ValueError as err:
         log_run(summarise(all_stats, detail, started, job_id), source, error=err)
         return jsonify(error=str(err)), 400
-    except paddle_runtime.PaddleError as err:
-        summary = summarise_paddle(all_stats, detail, started, job_id,
-                                   locals().get("model_info"))
+    except (paddle_runtime.PaddleError, easy_runtime.EasyError) as err:
+        summary = local_summary(reader, all_stats, detail, started, job_id,
+                                locals().get("model_info"))
         log_run(summary, source, error=err)
         return jsonify(error=str(err)), 503
     except requests.RequestException as err:
@@ -4138,8 +4237,8 @@ def ocr():
 
     text = join_page_texts(page_texts)
 
-    payload = (summarise_paddle(all_stats, detail, started, job_id, model_info)
-               if reader == "paddle"
+    payload = (local_summary(reader, all_stats, detail, started, job_id, model_info)
+               if reader != "server"
                else summarise(all_stats, detail, started, job_id))
     payload["reader"] = reader
     payload["truth"] = evaluate_if_known(case, text)
@@ -4150,20 +4249,27 @@ def ocr():
     return jsonify(text=text, pages=page_texts, **payload)
 
 
-def paddle_stream_generate(pages, detail, job_id, case, source, want_extract):
-    """The ordinary OCR stream contract, produced by the local Paddle worker."""
+def local_stream_generate(reader, pages, detail, job_id, case, source,
+                          want_extract):
+    """The ordinary OCR stream contract, produced by a local OCR worker."""
+    label = "PaddleOCR" if reader == "paddle" else "EasyOCR"
+    events = paddle_events if reader == "paddle" else easy_events
+    page_result = (paddle_page_result if reader == "paddle"
+                   else easy_page_result)
+    worker = (paddle_runtime.WORKER if reader == "paddle"
+              else easy_runtime.WORKER)
     started = time.perf_counter()
     collected, all_stats, model_info = [], [], {}
     summary = {}
     cancel = threading.Event()
     worker_finished = False
     try:
-        for event in paddle_events(pages, cancel):
+        for event in events(pages, cancel):
             kind = event.get("event")
             if kind in {"loading", "heartbeat"}:
-                yield json.dumps({"event": "progress", "stage": "paddle",
+                yield json.dumps({"event": "progress", "stage": reader,
                                   "message": event.get("message")
-                                  or "PaddleOCR is still running"}) + "\n"
+                                  or f"{label} is still running"}) + "\n"
             elif kind == "page_start":
                 index = int(event.get("page") or 1)
                 page = pages[index - 1]
@@ -4171,11 +4277,11 @@ def paddle_stream_generate(pages, detail, job_id, case, source, want_extract):
                     "event": "page", "page": index,
                     "total": len(pages),
                     "resolution": f"{page.width}x{page.height}",
-                    "job": job_id, "reader": "paddle",
+                    "job": job_id, "reader": reader,
                 }) + "\n"
             elif kind == "page_result":
                 index = int(event.get("page") or len(all_stats) + 1)
-                text, stats = paddle_page_result(event, pages[index - 1])
+                text, stats = page_result(event, pages[index - 1])
                 collected.append(text)
                 all_stats.append(stats)
                 # Reuse the existing transcript path. Paddle returns complete
@@ -4195,8 +4301,9 @@ def paddle_stream_generate(pages, detail, job_id, case, source, want_extract):
                 worker_finished = True
 
         text = join_page_texts(collected)
-        summary = summarise_paddle(all_stats, detail, started, job_id, model_info)
-        summary["reader"] = "paddle"
+        summary = local_summary(reader, all_stats, detail, started, job_id,
+                                model_info)
+        summary["reader"] = reader
         summary["truth"] = evaluate_if_known(case, text)
         yield json.dumps({"event": "done", "text": text, "pages": collected,
                           **summary}, ensure_ascii=False) + "\n"
@@ -4219,14 +4326,14 @@ def paddle_stream_generate(pages, detail, job_id, case, source, want_extract):
     except GeneratorExit:
         cancel.set()
         if not worker_finished:
-            paddle_runtime.WORKER.cancel_active()
-        partial = summary or summarise_paddle(
-            all_stats, detail, started, job_id, model_info)
+            worker.cancel_active()
+        partial = summary or local_summary(
+            reader, all_stats, detail, started, job_id, model_info)
         log_run(partial, source, status="cancelled")
         raise
     except Exception as err:
-        partial = summary or summarise_paddle(
-            all_stats, detail, started, job_id, model_info)
+        partial = summary or local_summary(
+            reader, all_stats, detail, started, job_id, model_info)
         log_run(partial, source, error=err)
         yield json.dumps({"event": "error", "error": str(err)},
                          ensure_ascii=False) + "\n"
@@ -4242,9 +4349,10 @@ def ocr_stream():
         return jsonify(error=str(err)), 400
     want_extract = request.form.get("extract", "1") != "0"
 
-    if reader == "paddle":
+    if reader in ("paddle", "easyocr"):
         return Response(
-            paddle_stream_generate(pages, detail, job_id, case, source, want_extract),
+            local_stream_generate(reader, pages, detail, job_id, case, source,
+                                  want_extract),
             mimetype="application/x-ndjson",
         )
 

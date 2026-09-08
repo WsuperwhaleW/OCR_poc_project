@@ -5,6 +5,7 @@ __pycache__/
 # Virtual environments
 .venv/
 .venv-paddle/
+.venv-easyocr/
 venv/
 env/
 
@@ -12,6 +13,10 @@ env/
 # not source and never belong in a release archive.
 paddle-models/
 .paddle-cache/
+
+# Optional offline EasyOCR model directory/cache.
+easyocr-models/
+.easyocr-cache/
 
 # Local configuration. .env.example is the template and IS tracked; every other
 # variant is ignored, because a per-deployment file (.env.prod, .env.local) is
