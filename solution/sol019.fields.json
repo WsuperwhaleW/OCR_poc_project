@@ -1,0 +1,38 @@
+{
+  "_mandatory": {
+    "types": ["WHT_CERTIFICATE"],
+    "required": [
+      "payer_tax_id", "payer_name", "payee_tax_id", "payee_name",
+      "total_amount_paid", "total_wht_amount"
+    ],
+    "found_only": [
+      "book_no", "certificate_no", "sequence_no", "payer_branch",
+      "payer_address", "payee_branch", "payee_address",
+      "dividend_rate_option"
+    ]
+  },
+  "book_no": "",
+  "certificate_no": "WT-00000012",
+  "sequence_no": "",
+  "payer_tax_id": "1-2345-67890-00-1",
+  "payer_name": "บริษัท ล้านฟ้า จำกัด",
+  "payer_branch": "สำนักงานใหญ่",
+  "payer_address": "1 ลาดพร้าว 62 ถ.ลาดพร้าว แขวงวังทองหลาง เขตวังทองหลาง กทม 10310",
+  "payee_tax_id": "1-2345-67890-98-7",
+  "payee_name": "นายร่ำรวย มีมาก",
+  "payee_branch": "",
+  "payee_address": "ลาดพร้าว กทม",
+  "dividend_rate_option": "",
+  "total_amount_paid": "10,000.00",
+  "total_wht_amount": "500.00",
+  "income_items": [
+    {
+      "income_type": "อื่น ๆ (ระบุ) 5% RI-20180338",
+      "payment_date": "6 มี.ค. 2561",
+      "amount_paid": "10,000.00",
+      "wht_amount": "500.00"
+    }
+  ],
+  "other_fields": null,
+  "score_table": false
+}

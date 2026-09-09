@@ -1,0 +1,38 @@
+{
+  "_mandatory": {
+    "types": ["WHT_CERTIFICATE"],
+    "required": [
+      "payer_tax_id", "payer_name", "payee_tax_id", "payee_name",
+      "total_amount_paid", "total_wht_amount"
+    ],
+    "found_only": [
+      "book_no", "certificate_no", "sequence_no", "payer_branch",
+      "payer_address", "payee_branch", "payee_address",
+      "dividend_rate_option"
+    ]
+  },
+  "book_no": "",
+  "certificate_no": "TX630901",
+  "sequence_no": "",
+  "payer_tax_id": "0105552094564",
+  "payer_name": "บริษัท ทีเอ็นเอ แลคตาซอยส์ จำกัด",
+  "payer_branch": "",
+  "payer_address": "2077 บางนา-ตราด กม.26 แขวงบางโฉลง เขตบางพลี กรุงเทพมหานคร 10540",
+  "payee_tax_id": "3176543210123",
+  "payee_name": "นายสมชาย ใจดี (ตัวอย่าง)",
+  "payee_branch": "",
+  "payee_address": "123/45 หมู่ที่ 2 แขวงจตุจักร เขตจตุจักร กรุงเทพมหานคร 10900",
+  "dividend_rate_option": "",
+  "total_amount_paid": "51,546.39",
+  "total_wht_amount": "1,546.39",
+  "income_items": [
+    {
+      "income_type": "การจ่ายเงินได้พึงประเมินที่ต้องหักภาษี ณ ที่จ่าย ตามคำสั่งกรมสรรพากรที่ออกตามมาตรา 3 เตรส",
+      "payment_date": "02/09/63",
+      "amount_paid": "51,546.39",
+      "wht_amount": "1,546.39"
+    }
+  ],
+  "other_fields": null,
+  "score_table": false
+}
