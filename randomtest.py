@@ -771,6 +771,14 @@ def main(argv=None):
     parser.add_argument("app", nargs="?", default="http://localhost:5000")
     parser.add_argument("--rounds", type=int, default=DEFAULT_ROUNDS)
     parser.add_argument("--seed", type=int, default=None)
+    # Which pipeline's readers may be drawn. `both` is the default here and the
+    # page's default is whichever tab is showing -- a CLI sweep is the place a
+    # cross-engine comparison is actually wanted, and the pane is the place one
+    # pipeline is being worked on.
+    parser.add_argument("--engine", choices=("llm", "library", "both"),
+                        default="both",
+                        help="which pipeline may read: the model server, a "
+                             "local OCR library, or both (default)")
     parser.add_argument("--scope", choices=SCOPES, default=DEFAULT_SCOPE,
                         help="full: read and extract. ocr: read only. "
                              "fields: extract from solution/<id>.md only.")
@@ -817,10 +825,11 @@ def main(argv=None):
     request_body = ({"contest": True, "documents": args.documents,
                      "seed": args.seed, "subject": args.subject,
                      "top": args.top, "exclude": exclude,
+                     "engine": args.engine,
                      "bottom": 0 if args.no_bottom else args.top} if args.contest
                     else {"rounds": args.rounds, "seed": args.seed,
                           "scope": args.scope, "lock": lock,
-                          "exclude": exclude})
+                          "engine": args.engine, "exclude": exclude})
     body, code = _call(args.app, "/api/randomtest", request_body, timeout=120)
     if code:
         print(f"could not plan: {body.get('error', code)}")

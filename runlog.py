@@ -351,6 +351,25 @@ COLUMNS = [
     "easyocr_version",
     "torch_version",
     "ocr_languages",
+    # Which family of code read the page: `llm` (the model server over HTTP) or
+    # `library` (PaddleOCR or EasyOCR in this machine's own processes). Appended
+    # 2026-09-09, when the two stopped sharing a pane.
+    #
+    # **Do not read this as `FILTER_FIELDS["pipeline"]`, which is a different
+    # question with an unfortunately similar name.** That one answers *which
+    # PASSES did this run perform* -- both, read, extract -- and predates this by
+    # three weeks. This one answers *what read the page*. The two are orthogonal:
+    # a `library` row can be `read` or `both`, and an `extract` row is neither
+    # engine because it read no page.
+    #
+    # **Blank on every row written before the column, and blank is DERIVED
+    # rather than left standing** -- see `row_engine`. This is the one place the
+    # standing blank-is-not-zero rule does not apply, because the answer is
+    # recoverable with certainty: `backend` already says `paddleocr` or
+    # `easyocr` on a library read and a model server's kind on every other, so
+    # folding it in `_for_summary` puts 1700 older rows in the right column
+    # instead of in a third bucket nobody asked for.
+    "ocr_engine",
 ]
 
 # The value the run was actually made with, taken from `settings` rather than
@@ -829,6 +848,11 @@ def record(summary: dict, source: dict = None, extras: dict = None) -> dict:
         "easyocr_version": summary.get("easyocr_version", ""),
         "torch_version": summary.get("torch_version", ""),
         "ocr_languages": summary.get("ocr_languages", ""),
+        # Written from what the run said it was, and derived from `backend` when
+        # it said nothing -- the same answer `row_engine` gives an older row, so
+        # a fresh row and a folded one cannot disagree.
+        "ocr_engine": summary.get("ocr_engine")
+                      or ("" if not summary else engine_of_backend(summary.get("backend"))),
         "dry": _DRY,
     }
 
@@ -1012,6 +1036,39 @@ def signature() -> dict:
 PIPELINES = ("both", "read", "extract")
 
 
+# The backends a Python OCR library reports. `backends.py` never produces these
+# -- a model server answers `llamacpp` or `ollama` -- so the test is exact
+# rather than a heuristic, which is what lets `row_engine` fold an older row
+# instead of leaving it blank.
+LIBRARY_BACKENDS = frozenset({"paddleocr", "easyocr"})
+
+
+def engine_of_backend(backend) -> str:
+    """`library` for an OCR library's backend, `llm` for anything else."""
+    return ("library" if str(backend or "").strip().lower() in LIBRARY_BACKENDS
+            else "llm")
+
+
+def row_engine(row: dict) -> str:
+    """What read this row's page: `llm`, `library`, or blank if nothing did.
+
+    Blank for a `run_type=extract` row, which read no page and therefore has no
+    reading engine -- the same rule `FILTER_FIELDS["model"]` follows, and for the
+    same reason: a fields-only row answering a question about pass 1 is what put
+    80 rows in the wrong half of the reading picker once already.
+
+    The stored cell wins where there is one; older rows are derived from
+    `backend`. See the `ocr_engine` note in `COLUMNS` for why deriving is right
+    here and blank is right almost everywhere else.
+    """
+    if (row.get("run_type") or "ocr") == "extract":
+        return ""
+    stored = (row.get("ocr_engine") or "").strip().lower()
+    if stored in ("llm", "library"):
+        return stored
+    return engine_of_backend(row.get("backend"))
+
+
 def _pipeline(row: dict) -> str:
     """`both`, `read` (pass 1 only) or `extract` (pass 2 only, no page read)."""
     if (row.get("run_type") or "ocr") == "extract":
@@ -1096,6 +1153,10 @@ FILTER_FIELDS = {
     "extract_model": lambda r: "" if _pipeline(r) == "read"
                      else (r.get("extract_model") or r.get("model") or ""),
     "pipeline": _pipeline,
+    # What READ the page -- not to be confused with `pipeline` directly above,
+    # which is which passes ran. Blank on a row that read nothing, so `facets`
+    # does not offer an empty bucket and an include still excludes those rows.
+    "ocr_engine": row_engine,
     "extract_mode": lambda r: r.get("extract_mode") or "",
     "backend": lambda r: r.get("backend") or "",
     # A lambda, not the function itself: `detail_of` is defined below this
@@ -1428,8 +1489,11 @@ def _for_summary(rows: list) -> list:
     folded = []
     for row in rows:
         name = detail_of(row)
-        folded.append(row if name == (row.get("detail") or "")
-                      else {**row, "detail": name})
+        engine = row_engine(row)
+        if name == (row.get("detail") or "") and engine == (row.get("ocr_engine") or ""):
+            folded.append(row)
+        else:
+            folded.append({**row, "detail": name, "ocr_engine": engine})
     return folded
 
 
@@ -1494,7 +1558,11 @@ def legacy_char_rows(rows: list = None) -> dict:
 # so a reader that draws a second name only where this is non-blank says
 # "one model" by saying nothing -- rather than printing the same name twice.
 SETTING_COLUMNS = ("model", "extract_model", "backend", "detail", "ocr_profile",
-                   "extract_mode")
+                   "extract_mode",
+                   # What read the page. `_for_summary` fills it on every row,
+                   # including the 1700 written before the column existed, so a
+                   # record named here always says which engine set it.
+                   "ocr_engine")
 
 
 def _setting(row: dict) -> dict:
@@ -1886,6 +1954,12 @@ def by_ocr(rows: list = None) -> list:
         scored = _complete_only(cases, _incomplete)
         out.append({
             **dict(zip(OCR_SETTING, key)),
+            # Which family read the page. DERIVED from the group's own rows
+            # rather than added to `OCR_SETTING`, because `backend` already
+            # determines it -- putting it in the key would add a component that
+            # can never split a group, and a key column that never separates
+            # anything is one more thing to keep in step for nothing.
+            "ocr_engine": row_engine(runs[0]) if runs else "",
             "runs": len(runs),
             "documents": len(cases),
             "failed": len(failed),
@@ -2227,8 +2301,15 @@ def _standouts(groups: dict, failed, pick, scored_test) -> list:
         # Only the runs that finished reach the mean -- the same rule the setting
         # tables follow, and the reason the failure rate is printed beside it.
         accuracy = _per_case(_complete_only(inner, failed), pick)
+        # Which engine's runs these are, where they are all one engine. A
+        # reading model belongs to exactly one by construction; a DOCUMENT read
+        # by both leaves this blank rather than naming whichever run came first,
+        # because "sol003 is a library document" would be a claim about the page
+        # made out of who happened to read it.
+        engines = {row_engine(row) for row in runs} - {""}
         out.append({
             "key": key,
+            "ocr_engine": engines.pop() if len(engines) == 1 else "",
             "runs": len(runs),
             "groups": len(inner),
             "failed": len(bad),

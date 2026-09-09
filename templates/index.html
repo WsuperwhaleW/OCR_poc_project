@@ -141,11 +141,29 @@
   #mapchip.none { border-color: var(--border); background: transparent; color: var(--muted); }
   #mapchip .how { opacity: .8; }
   .row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 16px; }
-  /* Author display rules override the browser's weak [hidden] default. These
-     controls are model-server page-reading settings and must truly disappear
-     while PaddleOCR or EasyOCR owns pass 1. */
-  #ocrProfileRow[hidden], #ocrProfileNote[hidden], #ocrProfileHelp[hidden],
-  #loopGuardRow[hidden], #loopGuardNote[hidden] { display: none !important; }
+  /* The two pipeline panes.
+
+     Nothing here is hidden by script any more: a control that belongs to one
+     pipeline lives in that pipeline's pane and simply is not in the other, so
+     the old rules forcing model-server settings to disappear while PaddleOCR
+     owned pass 1 have no work left to do. What replaced them is the tab. */
+  #paneParts { display: none; }
+  .pipe-h {
+    font-size: 13px; font-weight: 600; letter-spacing: .02em;
+    margin: 22px 0 0; padding-top: 16px; border-top: 1px solid var(--border);
+    color: var(--text);
+  }
+  /* The lead paragraph says what the pane's machine IS, and it is the first
+     thing in each pane rather than a note at the bottom: the difference between
+     the two pipelines is the reason to be on one tab rather than the other. */
+  .pipe-lead { margin-top: 0; }
+  .eng-tag {
+    display: inline-block; font-size: 10px; line-height: 1.6; padding: 0 6px;
+    border-radius: 5px; border: 1px solid var(--border); color: var(--muted);
+    background: var(--tint); margin-left: 6px; vertical-align: 1px;
+    white-space: nowrap;
+  }
+  .eng-tag.library { border-color: var(--info); color: var(--info); }
   button, select {
     font: inherit; border-radius: 9px; padding: 9px 16px;
     border: 1px solid var(--border); background: transparent; color: var(--text); cursor: pointer;
@@ -1096,7 +1114,20 @@ follows your desktop; Light is the one to pick for projecting or screenshotting.
   <div class="grid">
     <div class="card side">
       <div class="side-tabs" id="sideTabs">
-        <button type="button" data-pane="source" class="on">Workspace</button>
+        <!-- The two pipelines are two tabs, not one tab with a dropdown in it.
+             They are different machines that happen to produce the same kind of
+             transcript: one sends the page image to a model server over HTTP
+             and has a prompt, a sampler and a token budget; the other runs a
+             detector and a recognizer in this machine's own processes and has
+             none of those. A single pane carrying both meant every control had
+             to be relabelled or hidden depending on the other's setting, which
+             is how a model-server profile ended up applying to a run that never
+             touched a model server.
+
+             What they DO share is deliberately shared rather than duplicated --
+             see `workBlock` and `serverGroup` below. -->
+        <button type="button" data-pane="llm" class="on" title="the model server reads the page: llama.cpp or Ollama over HTTP, with a prompt and a token budget">LLM pipeline</button>
+        <button type="button" data-pane="library" title="PaddleOCR or EasyOCR reads the page in this machine's own processes: a detector and a recognizer, no prompt and no tokens">Python library</button>
         <button type="button" data-pane="queue">Queue<span class="count" id="qCount">0</span></button>
         <button type="button" data-pane="fields">Fields only</button>
         <button type="button" data-pane="random">Random test</button>
@@ -1107,7 +1138,30 @@ follows your desktop; Light is the one to pick for projecting or screenshotting.
         <button type="button" data-pane="schema" title="which document types carry a field requirement, what each one demands, and what is asked of a document no requirement covers">Doc types</button>
       </div>
 
-      <div class="pane on" id="paneSource">
+      <!-- ================= the movable blocks =================
+           Three pieces of this card are the SAME piece in both pipelines, and
+           they are moved between the panes rather than written twice:
+
+             workDrop    the drop zone, the preview and the file chips
+             serverGroup the model server -- reads AND extracts on the LLM
+                         pipeline, extracts only on the library one
+             workRun     Detail, the read floor, the extraction shape, the
+                         benchmark picker and the Run button
+
+           **Moved, not duplicated, because the staged file is one file.** Two
+           drop zones would be two file states, and a user who dropped into one
+           pane and pressed Run in the other would be told to drop a file they
+           can see on screen. One block also means one set of listeners and one
+           `#run`, so every handler on this page keeps working untouched -- and
+           it buys the comparison the whole split is for: stage a document once,
+           read it with the model server, switch tab, read the same staged file
+           with PaddleOCR.
+
+           `paintPanes` does the moving. The parking div below is where they sit
+           before the first paint and is never displayed. -->
+      <div id="paneParts" hidden>
+
+      <div id="workDrop">
       <div id="drop">
         <p><strong>Drop a file here</strong></p>
         <p class="hint">or click to browse · or paste with Ctrl+V</p>
@@ -1123,16 +1177,12 @@ follows your desktop; Light is the one to pick for projecting or screenshotting.
       </div>
       <div id="filechip"><strong>📄</strong><span id="filechipname"></span></div>
       <div id="mapchip"></div>
+      </div><!-- /workDrop -->
 
+      <div id="serverGroup">
+        <h3 class="pipe-h" id="serverGroupHead">Model server</h3>
+        <p class="note" id="serverGroupNote"></p>
       <div class="row">
-        <label class="field" style="flex:1;min-width:180px">
-          Reading engine
-          <select id="readerSel">
-            {% for item in reader.readers %}
-            <option value="{{ item.id }}" {% if item.id == reader.selected %}selected{% endif %}>{{ item.label }}</option>
-            {% endfor %}
-          </select>
-        </label>
         <label class="field" style="flex:1;min-width:200px">
           <span id="serverFieldLabel">Model server</span>
           <select id="endpointSel">
@@ -1168,17 +1218,7 @@ follows your desktop; Light is the one to pick for projecting or screenshotting.
       </div>
       <p class="note err" id="serverReason"></p>
       <p class="note" id="serverNote"></p>
-      <p class="note" id="readerReason"></p>
-
-      <div class="row">
-        <label class="field">
-          Detail
-          <select id="detail">
-            {% for d in details %}
-            <option value="{{ d }}" {% if d == default_detail %}selected{% endif %}>{{ d }}</option>
-            {% endfor %}
-          </select>
-        </label>
+        <div class="row">
         <label class="field" style="flex:1;min-width:150px">
           <span id="ctxFieldLabel">Context</span>
           <select id="ctxSel">
@@ -1187,32 +1227,21 @@ follows your desktop; Light is the one to pick for projecting or screenshotting.
             {% endfor %}
           </select>
         </label>
-      </div>
-      <p class="note" id="ctxNote"></p>
-      <div class="row" id="ocrProfileRow">
-        <label class="field" style="flex:1;min-width:200px">
-          Page reading
-          <select id="ocrProfileSel">
-            {% for p in ocr_profiles %}
-            <option value="{{ p.id }}" {% if p.id == ocr_profile %}selected{% endif %}>{{ p.label }}</option>
+        </div>
+        <p class="note" id="ctxNote"></p>
+      </div><!-- /serverGroup -->
+
+      <div id="workRun">
+        <div class="row">
+        <label class="field">
+          Detail
+          <select id="detail">
+            {% for d in details %}
+            <option value="{{ d }}" {% if d == default_detail %}selected{% endif %}>{{ d }}</option>
             {% endfor %}
           </select>
         </label>
-      </div>
-      <p class="note" id="ocrProfileNote"></p>
-      <p class="note" id="ocrProfileHelp"><b>This follows the model.</b> Picking a reading model
-        selects the shape it needs &mdash; the prompt and whether a system
-        message is sent are properties of the model, and the wrong pairing
-        returns an empty transcript at HTTP&nbsp;200 rather than an error. You
-        can still override it here to compare a prompt against a model; the
-        override stands until the next model switch.</p>
-      <div class="row" id="loopGuardRow">
-        <label class="check" style="flex:1;min-width:200px">
-          <input id="loopGuardChk" type="checkbox" {% if loop_guard %}checked{% endif %}>
-          Stop a read that starts repeating
-        </label>
-      </div>
-      <p class="note" id="loopGuardNote"></p>
+        </div>
       <!-- The read floor. One process setting behind two boxes -- this one and
            the Random test pane's -- painted from what the server accepted and
            never kept in step by each other's handlers. It decides whether a
@@ -1281,7 +1310,79 @@ follows your desktop; Light is the one to pick for projecting or screenshotting.
       several documents use the <b>Queue</b> tab, which decides how many run at
       once and starts on its own Run. Device placement belongs to the model server
       (llama-server's <code>-ngl</code>, Ollama's own scheduler), not to this app.</p>
-      </div><!-- /paneSource -->
+      </div><!-- /workRun -->
+
+      </div><!-- /paneParts -->
+
+      <!-- ================= the LLM pipeline pane ================= -->
+      <div class="pane on" id="paneLlm">
+        <p class="note pipe-lead"><b>The model server reads the page.</b> The
+          prepared page image goes to llama.cpp or Ollama over HTTP with a
+          prompt, and the transcript streams back a token at a time. Everything
+          this pane adds over the other one &mdash; the reading model, the
+          page-reading shape, the token budget, the repetition guard &mdash; is a
+          property of that request, and none of it exists on a library read.</p>
+        <div id="llmOnly">
+      <div class="row" id="ocrProfileRow">
+        <label class="field" style="flex:1;min-width:200px">
+          Page reading
+          <select id="ocrProfileSel">
+            {% for p in ocr_profiles %}
+            <option value="{{ p.id }}" {% if p.id == ocr_profile %}selected{% endif %}>{{ p.label }}</option>
+            {% endfor %}
+          </select>
+        </label>
+      </div>
+      <p class="note" id="ocrProfileNote"></p>
+      <p class="note" id="ocrProfileHelp"><b>This follows the model.</b> Picking a reading model
+        selects the shape it needs &mdash; the prompt and whether a system
+        message is sent are properties of the model, and the wrong pairing
+        returns an empty transcript at HTTP&nbsp;200 rather than an error. You
+        can still override it here to compare a prompt against a model; the
+        override stands until the next model switch.</p>
+      <div class="row" id="loopGuardRow">
+        <label class="check" style="flex:1;min-width:200px">
+          <input id="loopGuardChk" type="checkbox" {% if loop_guard %}checked{% endif %}>
+          Stop a read that starts repeating
+        </label>
+      </div>
+      <p class="note" id="loopGuardNote"></p>
+        </div><!-- /llmOnly -->
+      </div><!-- /paneLlm -->
+
+      <!-- ================= the Python library pane ================= -->
+      <div class="pane" id="paneLibrary">
+        <p class="note pipe-lead"><b>A Python OCR library reads the page, in
+          this machine's own processes.</b> A detector finds the text boxes and
+          a recognizer reads each one: no prompt, no sampler, no token budget,
+          and none of the failure modes that come with them. The models load
+          once into a long-lived worker and stay loaded between runs.</p>
+        <div id="libOnly">
+          <div class="row">
+            <label class="field" style="flex:1;min-width:200px">
+              Reading library
+              <select id="readerSel">
+                {% for item in reader.readers %}{% if item.engine == 'library' %}
+                <option value="{{ item.id }}" {% if item.id == reader.selected %}selected{% endif %}>{{ item.label }}</option>
+                {% endif %}{% endfor %}
+              </select>
+            </label>
+          </div>
+          <p class="note" id="readerReason"></p>
+          <!-- Both libraries are OPTIONAL and each lives in its own virtual
+               environment, so its dependency tree cannot destabilise the small
+               Flask app's. A machine without one is a normal machine, and the
+               status line above says which is missing and what to do about it
+               rather than the Run button failing at the end of a read. -->
+          <p class="note" id="readerHelp"></p>
+        </div><!-- /libOnly -->
+        <!-- **Pass 2 is not split, and this pane says so rather than hiding
+             it.** Mapping a transcript onto a form is a text task; no OCR
+             library does it, so a library run still sends its transcript to the
+             model server. A pane showing no server at all would be claiming an
+             independence the run has not got, and the first failed extraction
+             would be a mystery. -->
+      </div><!-- /paneLibrary -->
 
       <div class="pane" id="paneQueue">
         <div id="qdrop">
@@ -1291,6 +1392,13 @@ follows your desktop; Light is the one to pick for projecting or screenshotting.
         </div>
         <input id="qfile" type="file" multiple
                accept="image/*,application/pdf,.pdf,.heic,.heif,.tif,.tiff,.webp,.bmp" hidden>
+        <!-- The queue reads with whichever pipeline tab is selected, and the
+             reader is stamped on each job as it is submitted rather than read
+             again when the job runs. A batch is a measurement: switching tab
+             half way through must not relabel the pages already read, which is
+             the same reasoning that keeps the profile on the page rather than
+             on the process. -->
+        <p class="note" id="qEngineNote"></p>
 
         <div class="row" style="margin-top:12px">
           <button id="queueAll" class="ghost-sm">Queue all cases</button>
@@ -1907,6 +2015,10 @@ const serverText = document.getElementById('serverText');
 const serverReason = document.getElementById('serverReason');
 const recheckBtn = document.getElementById('recheck');
 const readerSel = document.getElementById('readerSel');
+const readerHelp = document.getElementById('readerHelp');
+const serverGroupHead = document.getElementById('serverGroupHead');
+const serverGroupNote = document.getElementById('serverGroupNote');
+const qEngineNote = document.getElementById('qEngineNote');
 const readerReason = document.getElementById('readerReason');
 const modelRole = document.getElementById('modelRole');
 const ocrProfileRow = document.getElementById('ocrProfileRow');
@@ -2126,9 +2238,46 @@ function showPane(name) {
     if (pane) pane.classList.toggle('on', on);
   });
   scOpen = name === 'schema';
+  // The two pipeline tabs own the shared blocks and the process's reader; every
+  // other tab leaves both exactly where the last pipeline tab put them.
+  if (name === 'llm' || name === 'library') {
+    paintPanes(name);
+    if (currentEngine() !== name) switchEngine(name, engineReader[name]);
+  }
   paintMain();
   if (scOpen) paintSchema();
 }
+
+/* Move the three shared blocks into the pipeline pane that is showing.
+
+   `appendChild` MOVES a node: one `#drop`, one `#run`, one staged file, and
+   every listener already on them survives untouched. Duplicating the markup
+   instead would have meant two file inputs and two Run buttons, and the first
+   time somebody dropped a file on one tab and pressed Run on the other the page
+   would have refused a file that was plainly on screen.
+
+   The two panes order the blocks differently on purpose. On the LLM pipeline
+   the page-reading shape and the loop guard are settings OF the server request,
+   so they sit under the server; on the library pipeline the library is what
+   reads and the server is only pass 2, so the library comes first and the
+   server after it.
+
+   Ids only and a hoisted `function`: this is called from `showPane`, which is
+   defined long before any of these elements' own consts are. */
+function paintPanes(engine) {
+  const el = id => document.getElementById(id);
+  const pane = el(engine === 'library' ? 'paneLibrary' : 'paneLlm');
+  const order = engine === 'library'
+    ? ['workDrop', 'libOnly', 'serverGroup', 'workRun']
+    : ['workDrop', 'serverGroup', 'llmOnly', 'workRun'];
+  order.forEach(id => { const node = el(id); if (node) pane.appendChild(node); });
+}
+/* First paint. The blocks ship parked in a hidden holder so the markup has one
+   copy of each and no pane owns them in the file; until this runs, the pipeline
+   pane is an empty tab. `readerState` is already initialised above, and both
+   functions this reads are hoisted declarations. */
+paintPanes(currentEngine());
+showPane(currentEngine());
 
 /* Which full-width card owns the main column. Three things want it and only one
    can have it: the Result card (with Compare, which holds that same read's page
@@ -4365,7 +4514,7 @@ async function postQueue(body) {
 async function enqueueCases(ids) {
   const body = new FormData();
   body.append('detail', detailSel.value);
-  body.append('reader', readerSel.value);
+  body.append('reader', currentReader());
   ids.forEach(c => body.append('cases', c));
   return postQueue(body);
 }
@@ -4386,7 +4535,7 @@ if (!mockFile) {
     if (!listing.files.length) return;
     const body = new FormData();
     body.append('detail', detailSel.value);
-    body.append('reader', readerSel.value);
+    body.append('reader', currentReader());
     listing.files.forEach(f => body.append('files', f.name));
     postQueue(body);
   });
@@ -4400,7 +4549,7 @@ function queueDirect(list) {
   if (!files.length) return;
   const body = new FormData();
   body.append('detail', detailSel.value);
-  body.append('reader', readerSel.value);
+  body.append('reader', currentReader());
   files.forEach(f => body.append('image', f));
   postQueue(body);
 }
@@ -4725,6 +4874,30 @@ function csModel(name) {
   return String(name || '')
     .replace(/^hf\.co\//, '').replace(/:latest$/, '').split('/').pop();
 }
+/* ---------- the reading engine, on a table row ----------
+
+   The two pipelines are stored and scored in one place on purpose: a transcript
+   is a transcript, and the whole reason to run a library beside a model server
+   is to put the two accuracies on one scale. What the tables need is not a
+   separate store but a LABEL, so a row can be read as one or the other without
+   inferring it from a backend string.
+
+   Blank draws nothing rather than an "LLM" default. A document read by both
+   engines has no single answer, and a run that read no page has none at all --
+   in both cases a tag would be a claim the row cannot support. */
+function engineLabel(id) {
+  return id === 'library' ? 'Library' : id === 'llm' ? 'LLM' : '';
+}
+function engineTag(id) {
+  const text = engineLabel(id);
+  if (!text) return '';
+  return '<span class="eng-tag ' + esc(id) + '" title="'
+    + (id === 'library'
+       ? 'read by an OCR library in the processes of this machine — no prompt, '
+         + 'no sampler, no token budget'
+       : 'read by a model server over HTTP — a prompt, a sampler and a token budget')
+    + '">' + text + '</span>';
+}
 /* The setting a figure was reached under, on one line. `run_type` is spelled out
    for a re-extraction: that row scored pass 2 against a transcript some earlier
    run read, so the detail and profile beside it did not produce the number. */
@@ -4741,12 +4914,15 @@ function csSetting(b) {
                      : csModel(b.model);
   const bits = [models, b.backend, b.detail, b.ocr_profile, b.extract_mode]
     .filter(Boolean).join(' · ');
+  // Which engine produced it, beside the setting rather than inside the joined
+  // string: it is a category the row belongs to, not another setting to read.
+  const tag = engineTag(b.ocr_engine);
   const when = (b.timestamp || '').replace('T', ' ');
   const full = two ? b.model + ' read → ' + b.extract_model + ' extracted'
                    : (b.model || '');
   return '<span class="cs-set" title="' + esc(full) + (when ? ' — ' + esc(when) : '')
     + '">' + esc(bits || '—')
-    + (b.run_type === 'extract' ? ' <b>· re-extract only</b>' : '') + '</span>';
+    + (b.run_type === 'extract' ? ' <b>· re-extract only</b>' : '') + '</span>' + tag;
 }
 function csSecs(v) { return v === null || v === undefined ? '—' : Number(v).toFixed(1) + 's'; }
 /* A mean clock with what fed it underneath. The run count is not optional --
@@ -4794,7 +4970,11 @@ function stFails(e) {
 function stSentence(e, tag, cls, unit, noun) {
   if (!e) return '';
   return '<p class="st-line"><span class="st-tag ' + cls + '">' + tag + '</span>'
-    + '<b title="' + esc(e.key) + '">' + esc(csModel(e.key)) + '</b> &mdash; '
+    + '<b title="' + esc(e.key) + '">' + esc(csModel(e.key)) + '</b>'
+    // Blank on a DOCUMENT that both engines have read, which is the honest
+    // answer: "sol003 is a library document" would be a claim about the page
+    // made out of who happened to read it.
+    + engineTag(e.ocr_engine) + ' &mdash; '
     // The noun only belongs to a figure. "none survived transcript" is not a
     // sentence; "none survived" is the whole of what that entry has to say.
     + stFig(e, unit) + (e.accuracy === null || e.accuracy === undefined ? '' : ' ' + noun)
@@ -4819,7 +4999,13 @@ function stBox(id, title, data, unit, noun, hint) {
   const worstKey = data.worst ? data.worst.key : null;
   const cols = [
     {key: 'name', label: 'Name', value: e => csModel(e.key),
+     // The engine badge sits in the ranked table as well as in the two
+     // sentences above it. This is the one table where a library reader and a
+     // model server are ranked against each other on one score, which is the
+     // whole point of keeping them in one log -- and a reader cannot act on
+     // rank 2 without knowing which of the two it is.
      cell: e => '<b title="' + esc(e.key) + '">' + esc(csModel(e.key)) + '</b>'
+       + engineTag(e.ocr_engine)
        + (e.thin ? ' <span class="st-thin">' + e.runs + ' run</span>' : '')},
     {key: 'score', label: 'Score', n: true, value: e => e.score,
      title: 'accuracy x (1 - failure rate): what one attempt is worth',
@@ -5781,6 +5967,11 @@ function msCell(e, knobs, extra) {
   return '<b title="' + esc(e.model || '') + '">'
     + (e.model ? esc(csModel(e.model))
                : '<span class="cs-none">model not recorded</span>') + '</b>'
+    // Which pipeline this setting belongs to, beside its name. The two are on
+    // one scale by design -- that is the point of storing them together -- and a
+    // reader comparing a 90% row with an 86% one has to be able to see which is
+    // which without decoding `paddleocr` out of the backend column.
+    + engineTag(e.ocr_engine)
     + '<span class="cs-set">' + knobs.filter(Boolean).map(esc).join(' &middot; ') + '</span>'
     + '<span class="cs-set">' + e.runs + ' run(s) &middot; ' + e.documents
     + ' document(s)</span>'
@@ -6835,10 +7026,14 @@ function rtChips(box, names, set) {
 function rtPaintLocks() {
   const models = server.models || [];
   const localReaders = (readerState.readers || [])
-    .filter(r => r.id !== 'server' && r.available)
+    .filter(r => r.engine === 'library' && r.available)
     .map(r => 'local:' + r.id);
-  const readers = models.filter(m => m.vision !== false).map(m => m.name)
-    .concat(localReaders);
+  /* The reader pool follows the pipeline tab, because the run does: the pane
+     sends `engine`, and a lock or an exclusion offering a reader the sweep
+     cannot draw is a control that does nothing. The EXTRACTOR pool is not
+     narrowed -- pass 2 runs on the model server under either engine. */
+  const readers = currentEngine() === 'library' ? localReaders
+    : models.filter(m => m.vision !== false).map(m => m.name);
   const keep = (sel, names) => {
     const chosen = sel.value;
     sel.innerHTML = '<option value="">— random —</option>'
@@ -6919,7 +7114,16 @@ function rtScopeText(scope) {
        + '<b>unscored</b>.';
 }
 function rtPaintScope() {
-  rtScopeNote.innerHTML = rtScopeText(rtScope.value) || '';
+  /* Which pipeline the sweep will draw from, said before it is started rather
+     than inferred from the rounds afterwards. A read-only or full sweep follows
+     the tab; a fields-only one reads no page, so no engine is involved and
+     claiming one would be false. */
+  const eng = rtScope.value === 'fields' ? ''
+    : '<b>' + (currentEngine() === 'library' ? 'Python library' : 'LLM')
+      + ' pipeline.</b> Readers are drawn from this tab only — switch tab to '
+      + 'sweep the other, or use <code>randomtest.py --engine both</code> for '
+      + 'a sweep across the two. ';
+  rtScopeNote.innerHTML = eng + (rtScopeText(rtScope.value) || '');
 }
 
 /* The Result card and the random test take turns in the same place. Both belong
@@ -7067,7 +7271,13 @@ async function rtStart(contest) {
       // about the run, not about which button started it.
       body: JSON.stringify(Object.assign(
         { exclude: { readers: [...rtExcluded.readers],
-                     extractors: [...rtExcluded.extractors] } },
+                     extractors: [...rtExcluded.extractors] },
+          // The sweep follows the pipeline tab. A run started from the Python
+          // library tab draws library readers and nothing else, so its rounds
+          // measure that library rather than mostly drawing model-server rounds
+          // it happens to share a pool with. `randomtest.py --engine both` is
+          // the cross-engine sweep; a pane is where one pipeline is worked on.
+          engine: currentEngine() },
         contest
         ? { contest: true, documents, seed: rtSeed.value.trim() || null,
             subject: rtSubject.value,
@@ -7200,6 +7410,13 @@ let logBusy = false;
 const LV_FIELDS = [
   {field: 'case', label: 'Document',
    hint: 'the ground-truth case, or the file name where there is none'},
+  // What READ the page, which is not the same question as `pipeline` below --
+  // that one is which PASSES a run performed. Blank on a row that read nothing,
+  // so a fields-only row is not offered here and an include still drops it.
+  {field: 'ocr_engine', label: 'Reading engine',
+   hint: 'LLM: a model server read the page over HTTP. Library: PaddleOCR or '
+       + 'EasyOCR read it in the processes of this machine. Rows written before '
+       + 'the column are derived from their backend, so the whole log is here'},
   {field: 'model', label: 'Reading model',
    hint: 'the model that read the page (pass 1)'},
   {field: 'extract_model', label: 'Extraction model',
@@ -7227,6 +7444,7 @@ const LV_FIELDS = [
    chips and the tables rather than `gpu` in one place and `GPU` in the other. */
 function lvChipLabel(field, value) {
   if (field === 'hardware' || field === 'start') return anMarkLabel(field, value);
+  if (field === 'ocr_engine') return engineLabel(value);
   return csModel(value);
 }
 
@@ -8547,63 +8765,150 @@ const subUrl = document.getElementById('subUrl');
 const serverFieldLabel = document.getElementById('serverFieldLabel');
 const ctxFieldLabel = document.getElementById('ctxFieldLabel');
 
+/* ---------- which engine reads, and which reader inside it ----------
+
+   The ENGINE is the tab; the READER is a detail of it. `readerState.selected`
+   is the one truth for both, and it is always what the SERVER last accepted --
+   never what a control was set to. Two pickers kept in step by each other's
+   change handlers is what this page refuses everywhere else, and here it would
+   be worse than usual: a switch the server refused would leave a tab claiming
+   to be reading with something that is not selected.
+
+   `currentReader()` is what every request body asks for, so nothing has to know
+   whether the answer came from a tab or from the library picker. */
+function currentReader() {
+  return readerState.selected || 'server';
+}
+function currentEngine() {
+  const info = (readerState.readers || []).find(r => r.id === currentReader());
+  return (info && info.engine) || 'llm';
+}
 function selectedReader() {
-  return (readerState.readers || []).find(r => r.id === readerSel.value) || {};
+  return (readerState.readers || []).find(r => r.id === currentReader()) || {};
+}
+/* The reader this pane would use if it were switched to. Remembered per engine,
+   so going LLM -> library -> LLM -> library comes back to the library you were
+   on rather than resetting to Paddle. The server has one selection, not two, so
+   this lives here. */
+const engineReader = { llm: 'server', library: '' };
+
+/* Put the tab back on the engine that is really selected.
+
+   `readerState` is refreshed from the server on every status poll, so the
+   process can move under this page -- another browser tab, a script, a restart.
+   When it does, the pipeline tab has to follow, or the LLM tab would be sitting
+   there painted with library labels. The server is the truth and the tab is a
+   view of it, which is the same rule every picker on this page follows.
+
+   It moves the highlight and the blocks and sends NOTHING, so it cannot recurse
+   back into `switchEngine`. A non-pipeline tab is left alone: somebody reading
+   the Queue does not want to be thrown onto a pipeline pane. */
+function syncEngineTab() {
+  const want = currentEngine();
+  const showing = ['llm', 'library'].find(n =>
+    document.getElementById('pane' + n[0].toUpperCase() + n.slice(1))
+            .classList.contains('on'));
+  if (!showing || showing === want) return;
+  [...sideTabs.querySelectorAll('button[data-pane]')].forEach(b => {
+    if (b.dataset.pane !== 'llm' && b.dataset.pane !== 'library') return;
+    const on = b.dataset.pane === want;
+    b.classList.toggle('on', on);
+    document.getElementById(
+      'pane' + b.dataset.pane[0].toUpperCase() + b.dataset.pane.slice(1))
+      .classList.toggle('on', on);
+  });
+  paintPanes(want);
 }
 
 function paintReader() {
-  const local = readerSel.value !== 'server';
+  syncEngineTab();
+  const engine = currentEngine();
+  const local = engine === 'library';
   const info = selectedReader();
-  readerState.selected = readerSel.value;
-  modelRole.textContent = local
-    ? 'Model · server default for fields'
-    : 'Model · reads the page';
-  serverFieldLabel.textContent = local
-    ? 'Model server · field extraction only'
-    : 'Model server';
-  ctxFieldLabel.textContent = local
-    ? 'Context · field extraction'
-    : 'Context';
-  for (const el of [ocrProfileRow, ocrProfileNote, ocrProfileHelp,
-                    loopGuardRow, loopGuardNote]) {
-    if (el) el.hidden = local;
-  }
-  subKind.textContent = local ? ('local ' + (info.label || readerSel.value))
+  engineReader[engine] = currentReader();
+  if (local && readerSel.value !== currentReader()) readerSel.value = currentReader();
+  /* The server group is the same markup in both panes and says a different
+     thing in each, because on the LLM pipeline it is the whole run and on the
+     library one it is only pass 2. Saying so is not decoration: a library run
+     that could not extract would otherwise look like a library failure. */
+  serverGroupHead.textContent = local ? 'Model server · field extraction'
+                                      : 'Model server · reads and extracts';
+  serverGroupNote.textContent = local
+    ? 'The library above reads the page. Mapping that transcript onto a form is '
+      + 'a text task no OCR library does, so pass 2 still runs here.'
+    : 'This server reads each prepared page image and then extracts the fields '
+      + 'from its own transcript.';
+  modelRole.textContent = local ? 'Model · extracts fields'
+                                : 'Model · reads the page';
+  serverFieldLabel.textContent = local ? 'Model server · fields only'
+                                       : 'Model server';
+  ctxFieldLabel.textContent = local ? 'Context · field extraction' : 'Context';
+  subKind.textContent = local ? ('local ' + (info.label || currentReader()))
                               : (server.kind || 'no server');
   subUrl.textContent = local ? (info.python || 'not installed') : (server.url || '');
   if (local) {
     readerReason.classList.toggle('err', !info.available);
     readerReason.textContent = info.available
       ? `${info.detector || 'detector'} + ${info.recognizer || 'recognizer'} · ${info.device || 'cpu'} · models stay loaded between runs`
-      : ('⚠ ' + (info.reason || 'The local OCR reader is not available.'));
+      : ('⚠ ' + (info.reason || 'This OCR library is not available.'));
+    /* An unavailable library is a normal state on a machine that never
+       installed it, so the pane explains it rather than the Run button failing
+       at the end of a read. */
+    readerHelp.textContent = info.available
+      ? 'No prompt, no sampler and no token budget — so no prompt echo, no '
+        + 'repetition loop and no empty transcript at HTTP 200. What it cannot '
+        + 'do is read a layout it was not trained for.'
+      : 'It is optional, and it lives in its own virtual environment so its '
+        + 'dependency tree cannot destabilise this app. Install it, or use the '
+        + 'LLM pipeline tab.';
   } else {
     readerReason.classList.remove('err');
-    readerReason.textContent = 'The selected model server reads each prepared page image.';
+    readerReason.textContent = '';
+    readerHelp.textContent = '';
+  }
+  if (qEngineNote) {
+    qEngineNote.innerHTML = 'Queued files are read by the <b>'
+      + esc(local ? (info.label || 'Python library') : 'model server')
+      + '</b> — the pipeline tab selected now. Each job keeps the reader it was '
+      + 'submitted with, so switching tab mid-batch does not relabel what has '
+      + 'already run.';
   }
 }
 
-async function switchReader(next) {
+/* Switch engine, optionally naming a reader inside it. One request, and the
+   answer repaints from what came back -- a refused switch must leave every
+   control on the page showing what is really active, the same rule the queue's
+   409 taught the model pickers. */
+async function switchEngine(engine, reader) {
   readerSel.disabled = true;
+  const before = currentReader();
   try {
-    const res = await fetch('/api/ocr/reader', {
+    const res = await fetch('/api/ocr/engine', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ reader: next, probe: next !== 'server' })
+      body: JSON.stringify({ engine: engine, reader: reader || undefined,
+                             probe: engine === 'library' })
     });
     const data = await res.json();
-    if (!res.ok) throw new Error(data.error || 'Could not select reader.');
+    if (!res.ok) throw new Error(data.error || 'Could not select that engine.');
     readerState = data;
-    readerSel.value = data.selected;
-    setServerNote('Now reading with ' + (selectedReader().label || data.selected) + '.');
+    if (data.selected !== before)
+      setServerNote('Now reading with ' + (selectedReader().label || data.selected) + '.');
   } catch (err) {
-    readerSel.value = readerState.selected || 'server';
+    if (readerSel.value !== before) readerSel.value = before;
     setServerNote(err.message, true);
   } finally {
     readerSel.disabled = false;
     paintReader();
     paintServer();
+    // The Random test pane draws from this engine, so its locks, its exclusion
+    // chips and its scope note all describe the wrong pool until they are
+    // repainted. Guarded because a switch can land before that pane's own
+    // consts exist on a very early click.
+    if (typeof rtPaintLocks === 'function') rtPaintLocks();
+    if (typeof rtPaintScope === 'function') rtPaintScope();
   }
 }
-readerSel.addEventListener('change', () => switchReader(readerSel.value));
+readerSel.addEventListener('change', () => switchEngine('library', readerSel.value));
 
 // Add the active URL to a list if it was typed in rather than configured.
 function addUrlOption(sel, url) {
@@ -8765,23 +9070,39 @@ for (const sel of [extractModelSel, fxExtract]) {
 
 function paintServer() {
   const reading = selectedReader();
-  const local = readerSel.value !== 'server';
-  const ok = local ? !!reading.available : !!server.available;
+  const local = currentEngine() === 'library';
   const kind = server.kind || 'server';
+  /* **The bar describes the MODEL SERVER, on both panes, because that is the
+     group it sits in.** It described whichever reader was active until the two
+     pipelines became two panes -- and on the library pane that put "Local
+     PaddleOCR unavailable" inside a box headed *Model server*, which reads as
+     the server being down. The library has its own status line directly under
+     its own picker; this one has never had anywhere else to be said.
+
+     Vision is only asked of a server that is going to read a page. On the
+     library pane it extracts and nothing else, and a text pass does not need
+     it -- the same rule the Fields-only pane measures under. */
+  const ok = local ? !!server.text_available : !!server.available;
   dot.className = 'dot ' + (ok ? 'ok' : 'bad');
-  serverText.textContent = local
-    ? (ok ? (reading.label || reading.recognizer || readerSel.value) + ' · ' + (reading.device || 'cpu')
-          : (reading.label || 'Local OCR') + ' unavailable')
-    : ok ? (server.model || kind) + ' · ' + kind
-      + (server.vision ? ' · vision ready'
-                       : (server.vision_known ? ' · no vision' : ' · vision not reported'))
-    : (server.model ? server.model + ' · unusable' : 'No model server at ' + server.url);
+  serverText.textContent = ok
+    ? (server.model || kind) + ' · ' + kind
+      + (local ? ' · fields only'
+               : (server.vision ? ' · vision ready'
+                                : (server.vision_known ? ' · no vision'
+                                                       : ' · vision not reported')))
+    : (server.model ? server.model + ' · unusable'
+                    : 'No model server at ' + server.url);
   serverReason.textContent = ok ? '' : ('⚠ ' + (local
-    ? (reading.reason || 'The local OCR reader is not available.')
+    ? (server.text_reason || server.reason || '')
     : (server.reason || '')));
-  // Uploading is pointless while the server can't read images. A selected
-  // benchmark case is its own input, so no upload is needed for that.
-  runBtn.disabled = !ok || !(current || (benchCase && benchCase.value) || (mockFile && mockFile.value));
+  /* What has to be working before Run means anything, and it differs by pane:
+     the LLM pipeline needs a server that can read an image, the library
+     pipeline needs the library itself. Pass 2 not being reachable does NOT
+     disable Run on the library pane -- a transcript is a result, and refusing
+     to read a page because the extractor is down would throw away the half of
+     the work that was available. */
+  const canRun = local ? !!reading.available : !!server.available;
+  runBtn.disabled = !canRun || !(current || (benchCase && benchCase.value) || (mockFile && mockFile.value));
   // Whether the context picker does anything depends on which kind is active.
   paintCtx();
   paintFieldsOnly();
@@ -8853,7 +9174,6 @@ async function refreshServer() {
     server = data.server;
     if (data.extract) extractInfo = data.extract;
     readerState = readers;
-    readerSel.value = readers.selected;
     paintEndpoint();
   } catch {
     serverText.textContent = was;
@@ -8871,8 +9191,8 @@ function startTicker() {
   clearInterval(ticker);
   ticker = setInterval(() => {
     const s = ((Date.now() - runStart) / 1000).toFixed(1);
-    if (readerSel.value !== 'server') {
-      meta.textContent = `${s}s · ${(selectedReader().label || readerSel.value)} running`;
+    if (currentEngine() === 'library') {
+      meta.textContent = `${s}s · ${(selectedReader().label || currentReader())} running`;
       return;
     }
     const rate = liveTokens > 0 ? ' · ' + (liveTokens / ((Date.now() - runStart) / 1000)).toFixed(2) + ' tok/s' : '';
@@ -9086,7 +9406,7 @@ function prepBody() {
   else if (current) body.append('image', current);
   else return null;
   body.append('detail', detailSel.value);
-  body.append('reader', readerSel.value);
+  body.append('reader', currentReader());
   return body;
 }
 function prepStem() {
@@ -9279,7 +9599,7 @@ runBtn.addEventListener('click', async () => {
   else if (fileName) body.append('file', fileName); // ditto, from mockOcr/
   else body.append('image', current);
   body.append('detail', detailSel.value);
-  body.append('reader', readerSel.value);
+  body.append('reader', currentReader());
   controller = new AbortController();
 
   try {
@@ -9426,7 +9746,7 @@ runBtn.addEventListener('click', async () => {
     pagebar.textContent = '';
     if (err.name === 'AbortError') {
       const s = ((Date.now() - runStart) / 1000).toFixed(1);
-      meta.textContent = `Stopped after ${s}s · ${readerSel.value !== 'server' ? 'local OCR worker reset' : liveTokens + ' tokens'} · partial result kept.`;
+      meta.textContent = `Stopped after ${s}s · ${currentEngine() === 'library' ? 'local OCR worker reset' : liveTokens + ' tokens'} · partial result kept.`;
       copyBtn.disabled = !text;
     } else {
       meta.textContent = err.message;

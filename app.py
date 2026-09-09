@@ -199,10 +199,65 @@ def job_context(job_id: str) -> dict:
 # --------------------------------------------------------------------------
 
 READERS = ("server", "paddle", "easyocr")
+
+# --------------------------------------------------------------------------
+# Pipelines
+#
+# An ENGINE is which family of code reads the page in pass 1, and it is the
+# split the two side panes are built on:
+#
+#   llm      the model server reads the page -- llama.cpp or Ollama over HTTP,
+#            a prompt, a sampler, a token budget, and every failure mode this
+#            project's prompt sections document.
+#   library  a Python OCR library reads it in this machine's own processes --
+#            PaddleOCR or EasyOCR, a detector and a recognizer, no prompt and
+#            no tokens at all.
+#
+# **The engine is derived from the reader and is never stored beside it.**
+# Two settings that can disagree about one fact is the failure this file keeps
+# recording (`runlog._DRY` is why), and an engine held separately could say
+# `library` while the reader said `server`. `ENGINE_OF` is the whole mapping.
+#
+# **The split is honest about what it does NOT split: pass 2.** Mapping a
+# transcript onto a form is a text task and no OCR library does it, so a
+# library run still sends its transcript to the model server. That is why the
+# Library pane carries the endpoint and the extraction model rather than
+# hiding them -- a pane that showed no server at all would be claiming an
+# independence the run does not have.
+ENGINES = ("llm", "library")
+ENGINE_OF = {"server": "llm", "paddle": "library", "easyocr": "library"}
+ENGINE_LABEL = {"llm": "LLM pipeline", "library": "Python library"}
+# The reader an engine falls back to when it is selected with no reader named.
+# `library` prefers Paddle and takes EasyOCR when only that one is installed --
+# picked at the moment of the switch rather than fixed, so a machine with one
+# of the two never lands on the one it has not got.
+ENGINE_DEFAULT_READER = {"llm": "server", "library": "paddle"}
+
 _reader_lock = threading.Lock()
 _reader = config.env_str("OCR_READER", "server").strip().lower()
 if _reader not in READERS:
     _reader = "server"
+
+
+def engine_of(reader) -> str:
+    """Which engine a reader belongs to. Unknown names read as `llm`.
+
+    Unknown falls to `llm` rather than raising because this is called on values
+    off the run log as well as on chosen ones, and a row naming a reader this
+    build no longer has is still a row -- see `runlog.row_engine`, which has
+    to answer for every row ever written.
+    """
+    return ENGINE_OF.get(str(reader or "").strip().lower(), "llm")
+
+
+def readers_in(engine: str) -> tuple:
+    """The readers of one engine, in offer order."""
+    return tuple(r for r in READERS if ENGINE_OF[r] == engine)
+
+
+def current_engine() -> str:
+    """Which engine is selected, derived from the selected reader."""
+    return engine_of(current_reader())
 
 
 def current_reader() -> str:
@@ -232,16 +287,22 @@ def reader_status(probe=False, probe_reader=None) -> dict:
         probe=probe and probe_reader in (None, "paddle"))
     easy = easy_runtime.status(
         probe=probe and probe_reader in (None, "easyocr"))
+    readers = [
+        {"id": "server", "label": "Model server",
+         "available": bool(server.get("available")),
+         "model": server.get("model"), "backend": server.get("kind"),
+         "reason": server.get("reason") or ""},
+        paddle,
+        easy,
+    ]
+    for item in readers:
+        item["engine"] = engine_of(item["id"])
     return {
         "selected": current_reader(),
-        "readers": [
-            {"id": "server", "label": "Model server",
-             "available": bool(server.get("available")),
-             "model": server.get("model"), "backend": server.get("kind"),
-             "reason": server.get("reason") or ""},
-            paddle,
-            easy,
-        ],
+        "engine": current_engine(),
+        "engines": [{"id": e, "label": ENGINE_LABEL[e],
+                     "readers": list(readers_in(e))} for e in ENGINES],
+        "readers": readers,
     }
 
 def llama_status(force: bool = False):
@@ -2981,7 +3042,7 @@ def paddle_page_result(event: dict, image: Image.Image) -> tuple[str, dict]:
         "megapixels": round(image.width * image.height / 1e6, 2),
         "seconds": event.get("seconds", 0),
         "model": status["recognizer"],
-        "backend": "paddleocr",
+        "backend": "paddleocr", "ocr_engine": "library",
         "url": "local",
         "line_count": len(lines),
         "mean_confidence": (round(sum(confidences) / len(confidences), 4)
@@ -3024,7 +3085,7 @@ def summarise_paddle(all_stats, detail, started, job_id=None, model_info=None):
         "model": model_info.get("recognizer")
                  or paddle_runtime.configured_status()["recognizer"],
         "url": "local",
-        "backend": "paddleocr",
+        "backend": "paddleocr", "ocr_engine": "library",
         "resolutions": [s.get("resolution") for s in all_stats],
         # Token/prefill/decode values are intentionally absent. PaddleOCR is not
         # a generative model and zero would be a real, misleading measurement.
@@ -3071,7 +3132,8 @@ def easy_page_result(event: dict, image: Image.Image) -> tuple[str, dict]:
         "resolution": f"{image.width}x{image.height}",
         "megapixels": round(image.width * image.height / 1e6, 2),
         "seconds": event.get("seconds", 0),
-        "model": status["recognizer"], "backend": "easyocr", "url": "local",
+        "model": status["recognizer"], "backend": "easyocr",
+        "ocr_engine": "library", "url": "local",
         "line_count": len(lines),
         "mean_confidence": (round(sum(confidences) / len(confidences), 4)
                             if confidences else None),
@@ -3106,7 +3168,7 @@ def summarise_easy(all_stats, detail, started, job_id=None, model_info=None):
         "page_count": len(all_stats), "detail": detail,
         "ocr_profile": "easyocr", "job": job_id,
         "model": model_info.get("recognizer") or status["recognizer"],
-        "url": "local", "backend": "easyocr",
+        "url": "local", "backend": "easyocr", "ocr_engine": "library",
         "resolutions": [s.get("resolution") for s in all_stats],
         "truncated": False, "looped": False,
         "seconds": round(time.perf_counter() - started, 2),
@@ -3155,6 +3217,11 @@ def summarise(all_stats, detail, started, job_id=None):
         "model": models[0] if models else None,
         "url": urls[0] if urls else backends.active_url(),
         "backend": kinds[0] if kinds else None,
+        # Which family read these pages. Stated rather than left to be derived
+        # from `backend` downstream: `runlog.row_engine` can derive it and does
+        # for every row written before the column, but a run that knows the
+        # answer should say so -- a derivation is a fallback, not a design.
+        "ocr_engine": "llm",
         "resolutions": [s.get("resolution") for s in all_stats],
         "tokens": tokens,
         "truncated": any(s.get("truncated") for s in all_stats),
@@ -4085,6 +4152,73 @@ def ocr_reader_set():
     ))
 
 
+def select_engine(engine, reader=None) -> str:
+    """Move to an engine, and answer with the reader that carries it.
+
+    A pane switch names an ENGINE; the reader is a detail of it. Where the
+    caller also names a reader that belongs to the engine it is honoured --
+    that is the Library pane's own Paddle/EasyOCR picker, which must not be
+    overruled by the pane it sits in.
+
+    **An unavailable default is stepped over, not selected.** `library` prefers
+    Paddle, and on a machine with only EasyOCR installed selecting Paddle would
+    hand the user a pane whose Run button refuses. Availability is read from
+    `configured_status()`, which is a file test rather than a probe, so this
+    costs no import and no subprocess.
+    """
+    if engine not in ENGINES:
+        raise ValueError("engine must be 'llm' or 'library'.")
+    if reader:
+        chosen = resolve_reader(reader)
+        if engine_of(chosen) != engine:
+            raise ValueError(
+                f"reader {chosen!r} is not part of the {engine} engine.")
+        return set_reader(chosen)
+    options = readers_in(engine)
+    preferred = ENGINE_DEFAULT_READER[engine]
+    ordered = ([preferred] + [r for r in options if r != preferred]
+               if preferred in options else list(options))
+    for candidate in ordered:
+        if candidate == "server" or _local_available(candidate):
+            return set_reader(candidate)
+    # Nothing in this engine is installed. The switch still happens: the pane
+    # has to be reachable in order to say what is missing, and its own status
+    # line is where that is said. Refusing here would leave the user on the
+    # other pane with an error and no way to read the instructions.
+    return set_reader(ordered[0])
+
+
+def _local_available(reader: str) -> bool:
+    runtime = paddle_runtime if reader == "paddle" else easy_runtime
+    return bool(runtime.configured_status().get("available"))
+
+
+@app.get("/api/ocr/engine")
+def ocr_engine_get():
+    probe = request.args.get("probe", "0").lower() in ("1", "true", "yes")
+    return jsonify(reader_status(probe=probe))
+
+
+@app.post("/api/ocr/engine")
+def ocr_engine_set():
+    """Switch engine, optionally naming the reader inside it.
+
+    Answers with the whole reader status rather than an acknowledgement, so the
+    pane paints from what was ACCEPTED and never from what it asked for -- the
+    rule every picker on this page follows.
+    """
+    body = request.get_json(silent=True) or {}
+    try:
+        select_engine((body.get("engine") or "").strip().lower(),
+                        body.get("reader"))
+    except ValueError as error:
+        return jsonify(error=str(error), **reader_status()), 400
+    return jsonify(reader_status(
+        probe=body.get("probe") is True,
+        probe_reader=current_reader(),
+    ))
+
+
 @app.get("/api/ocr/profile")
 def ocr_profile_get():
     """The pass-1 shape in force, and every shape on offer."""
@@ -4451,12 +4585,25 @@ def preview_prepared():
     })
 
 
-def _random_pools():
+def _random_pools(engine=None):
     """What this endpoint can currently randomise over.
 
     Cases need a *transcript* truth to score pass 1 and a *field* truth to score
     pass 2; both are required here, because a round that can report neither
     number is a round that only proves the request did not crash.
+
+    `engine` narrows the READER pool to one pipeline -- `llm` drops the local
+    libraries, `library` keeps only them -- and the page sends whichever tab is
+    showing, so a sweep started from the Python library tab is a sweep of that
+    library rather than a sweep that mostly drew model-server rounds.
+
+    **`None` is both, and it is not the page's default but the CLI's.** A sweep
+    across the two engines is a legitimate and interesting thing to run -- the
+    whole point of this mode is combinations nobody would choose -- so the
+    narrowing is a choice the caller makes rather than a rule. Note that the
+    EXTRACTOR pool is never narrowed: pass 2 runs on the model server under
+    either engine, and a library round with no extractor to draw would be a
+    read-only round wearing a full round's name.
     """
     cases = [c["id"] for c in scoring.cases_index().values()
              if fieldscore.has_truth(c["id"])]
@@ -4465,8 +4612,12 @@ def _random_pools():
         local.append("local:paddle")
     if easy_runtime.configured_status().get("available"):
         local.append("local:easyocr")
-    return randomtest.pools(llama_status()["models"], cases,
-                            local_readers=local)
+    models = llama_status()["models"]
+    if engine == "library":
+        models = []
+    elif engine == "llm":
+        local = []
+    return randomtest.pools(models, cases, local_readers=local)
 
 
 def _random_plan(body: dict) -> dict:
@@ -4488,7 +4639,26 @@ def _random_plan(body: dict) -> dict:
     # Exclusions narrow the pools before anything is planned, so they hold for a
     # contest as well: "do not test that model" is a statement about the run, not
     # about one button on the pane.
-    pools = randomtest.apply_exclusions(_random_pools(), body.get("exclude"), scope)
+    # Which engines' readers may be drawn. The page sends the tab that is
+    # showing; a caller that says nothing gets both, which is what the CLI and
+    # every existing script already expect.
+    engine = (body.get("engine") or "").strip().lower() or None
+    if engine not in (None, "both", *ENGINES):
+        raise ValueError("engine must be 'llm', 'library' or 'both'.")
+    if engine == "both":
+        engine = None
+    pools = randomtest.apply_exclusions(_random_pools(engine),
+                                        body.get("exclude"), scope)
+    # A narrowing that empties the pool is refused HERE, naming the engine,
+    # rather than reaching the planner and coming back as "no model reports
+    # vision" -- which would send someone to look at their model server when the
+    # answer is that this pipeline has nothing installed.
+    if engine and scope != "fields" and not pools["readers"]:
+        raise ValueError(
+            "the LLM pipeline has no vision model to read with."
+            if engine == "llm" else
+            "no OCR library is installed, so the Python library pipeline has "
+            "nothing to read with.")
     # A lock and an exclusion naming the same model is a contradiction, and the
     # refusal it would otherwise get -- "not served here" -- would send someone
     # looking at their model server.
@@ -4538,7 +4708,15 @@ def random_test_plan():
     # `history` rides along so the page can say what it is balancing against:
     # a plan that gives one document three rounds and another none is correct
     # when the log already holds the other one, and unreadable without it.
-    return jsonify({**planned, "pools": _random_pools(),
+    return jsonify({**planned,
+                    # The pools the plan was drawn from, narrowed the same way,
+                    # so the pane's chips describe what could have been chosen
+                    # rather than everything this endpoint serves.
+                    "pools": _random_pools(
+                        (body.get("engine") or "").strip().lower() or None
+                        if (body.get("engine") or "").strip().lower() != "both"
+                        else None),
+                    "engine": (body.get("engine") or "").strip().lower() or "both",
                     "history": runlog.case_counts(),
                     "scopes": list(randomtest.SCOPES),
                     "max_rounds": randomtest.MAX_ROUNDS})
