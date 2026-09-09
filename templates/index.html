@@ -107,16 +107,16 @@
   .side-tabs .count.show { display: inline-block; }
   .pane { display: none; }
   .pane.on { display: block; }
-  #drop, #qdrop {
+  #drop {
     border: 2px dashed var(--border); border-radius: 12px;
     padding: 22px 16px; text-align: center; cursor: pointer;
     transition: border-color .15s, background .15s;
   }
-  #drop:hover, #drop.over, #qdrop:hover, #qdrop.over {
+  #drop:hover, #drop.over {
     border-color: var(--accent); background: var(--accent-soft);
   }
-  #drop p, #qdrop p { margin: 5px 0; }
-  #drop .hint, #qdrop .hint { color: var(--muted); font-size: 0.82rem; }
+  #drop p { margin: 5px 0; }
+  #drop .hint { color: var(--muted); font-size: 0.82rem; }
   #preview { display: none; margin-top: 14px; width: 100%; border-radius: 10px; border: 1px solid var(--border); }
   #filechip {
     display: none; margin-top: 14px; padding: 18px; border-radius: 10px;
@@ -141,22 +141,18 @@
   #mapchip.none { border-color: var(--border); background: transparent; color: var(--muted); }
   #mapchip .how { opacity: .8; }
   .row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 16px; }
-  /* The two pipeline panes.
-
-     Nothing here is hidden by script any more: a control that belongs to one
-     pipeline lives in that pipeline's pane and simply is not in the other, so
-     the old rules forcing model-server settings to disappear while PaddleOCR
-     owned pass 1 have no work left to do. What replaced them is the tab. */
-  #paneParts { display: none; }
+  /* Author display rules override the browser's weak `[hidden]` default. These
+     are model-server settings -- a page-reading prompt and a guard on a stream
+     -- and they must truly disappear while an OCR library owns pass 1, not sit
+     there greyed: a control that cannot do anything is worse than an absent
+     one. */
+  #ocrProfileRow[hidden], #ocrProfileNote[hidden], #ocrProfileHelp[hidden],
+  #loopGuardRow[hidden], #loopGuardNote[hidden] { display: none !important; }
   .pipe-h {
     font-size: 13px; font-weight: 600; letter-spacing: .02em;
     margin: 22px 0 0; padding-top: 16px; border-top: 1px solid var(--border);
     color: var(--text);
   }
-  /* The lead paragraph says what the pane's machine IS, and it is the first
-     thing in each pane rather than a note at the bottom: the difference between
-     the two pipelines is the reason to be on one tab rather than the other. */
-  .pipe-lead { margin-top: 0; }
   .eng-tag {
     display: inline-block; font-size: 10px; line-height: 1.6; padding: 0 6px;
     border-radius: 5px; border: 1px solid var(--border); color: var(--muted);
@@ -423,29 +419,6 @@
 
   #compareCard { margin-top: 20px; }
   #runlogCard { margin-top: 20px; }
-  #queueBody:empty::after {
-    content: 'Nothing queued.'; color: var(--muted); font-size: .85rem;
-    display: block; padding: 10px 0;
-  }
-  /* The queue lives in the narrow column now, so its rows are stacked cards
-     rather than the six-column table the run log still uses. */
-  .qi {
-    border: 1px solid var(--border); border-radius: 9px; padding: 8px 10px;
-    margin-top: 7px; background: var(--bg); font-size: .8rem;
-  }
-  .qi.q-running { border-color: var(--accent); background: var(--accent-soft); }
-  .qi.q-failed { border-color: var(--danger); background: rgba(255,107,107,.07); }
-  .qi.q-cancelled { opacity: .55; }
-  .qi-top { display: flex; align-items: center; gap: 7px; }
-  .qi-name { flex: 1; min-width: 0; word-break: break-all; font-weight: 600; }
-  .qi-sub { color: var(--muted); font-size: .74rem; margin-top: 3px; word-break: break-word; }
-  .qi-foot {
-    display: flex; align-items: center; gap: 8px; margin-top: 6px;
-    color: var(--muted); font-size: .74rem;
-  }
-  .qi-foot .sp { flex: 1; }
-  .qi-foot button { padding: 1px 8px; font-size: .72rem; border-radius: 5px; }
-  .qi .qbar { margin-top: 6px; }
   #runBody:empty::after {
     content: 'Nothing logged yet — the first read writes a row.';
     color: var(--muted); font-size: .85rem; display: block; padding: 10px 0;
@@ -511,7 +484,6 @@
   #lvEmpty b { color: var(--text); }
   #runBody td.pick, #runBody th.pick { width: 26px; padding-right: 0; }
   #rtOut { margin-top: 10px; }
-  .rt-contest { border-top: 1px solid var(--border); margin-top: 12px; padding-top: 10px; }
   /* Include/exclude chips. An excluded model stays visible and greyed rather
      than disappearing: a pool you cannot see is a pool you cannot put back. */
   .rt-ex { margin-top: 10px; }
@@ -1114,21 +1086,26 @@ follows your desktop; Light is the one to pick for projecting or screenshotting.
   <div class="grid">
     <div class="card side">
       <div class="side-tabs" id="sideTabs">
-        <!-- The two pipelines are two tabs, not one tab with a dropdown in it.
-             They are different machines that happen to produce the same kind of
-             transcript: one sends the page image to a model server over HTTP
-             and has a prompt, a sampler and a token budget; the other runs a
-             detector and a recognizer in this machine's own processes and has
-             none of those. A single pane carrying both meant every control had
-             to be relabelled or hidden depending on the other's setting, which
-             is how a model-server profile ended up applying to a run that never
-             touched a model server.
+        <!-- One workspace, and the reading engine is a control inside it.
 
-             What they DO share is deliberately shared rather than duplicated --
-             see `workBlock` and `serverGroup` below. -->
-        <button type="button" data-pane="llm" class="on" title="the model server reads the page: llama.cpp or Ollama over HTTP, with a prompt and a token budget">LLM pipeline</button>
-        <button type="button" data-pane="library" title="PaddleOCR or EasyOCR reads the page in this machine's own processes: a detector and a recognizer, no prompt and no tokens">Python library</button>
-        <button type="button" data-pane="queue">Queue<span class="count" id="qCount">0</span></button>
+             The two pipelines were two tabs for a day and are one again at the
+             user's request. They are still two different machines -- a model
+             server over HTTP with a prompt and a token budget, or an OCR library
+             in this machine's own processes with neither -- and the pane says so
+             and swaps its own settings to match. What they are NOT is two
+             workflows: the file, the Detail, the extraction model and the Run
+             button are the same in both, and splitting them put one document
+             behind two tabs.
+
+             The engine still reaches the run log, the filter chips and the
+             summary badges (`ocr_engine`), which is where the comparison
+             actually happens. -->
+        <button type="button" data-pane="source" class="on">Workspace</button>
+        <!-- Pass 1 alone against a document's transcript ground truth, the
+             mirror of Fields only. Between them they isolate the two passes:
+             this one has no extraction to blame a bad number on, that one has
+             no read. -->
+        <button type="button" data-pane="ocr" title="read a benchmark document and score the transcript, with no extraction at all">OCR only</button>
         <button type="button" data-pane="fields">Fields only</button>
         <button type="button" data-pane="random">Random test</button>
         <!-- Reference, not a run. It is the only side tab that reads nothing
@@ -1138,30 +1115,7 @@ follows your desktop; Light is the one to pick for projecting or screenshotting.
         <button type="button" data-pane="schema" title="which document types carry a field requirement, what each one demands, and what is asked of a document no requirement covers">Doc types</button>
       </div>
 
-      <!-- ================= the movable blocks =================
-           Three pieces of this card are the SAME piece in both pipelines, and
-           they are moved between the panes rather than written twice:
-
-             workDrop    the drop zone, the preview and the file chips
-             serverGroup the model server -- reads AND extracts on the LLM
-                         pipeline, extracts only on the library one
-             workRun     Detail, the read floor, the extraction shape, the
-                         benchmark picker and the Run button
-
-           **Moved, not duplicated, because the staged file is one file.** Two
-           drop zones would be two file states, and a user who dropped into one
-           pane and pressed Run in the other would be told to drop a file they
-           can see on screen. One block also means one set of listeners and one
-           `#run`, so every handler on this page keeps working untouched -- and
-           it buys the comparison the whole split is for: stage a document once,
-           read it with the model server, switch tab, read the same staged file
-           with PaddleOCR.
-
-           `paintPanes` does the moving. The parking div below is where they sit
-           before the first paint and is never displayed. -->
-      <div id="paneParts" hidden>
-
-      <div id="workDrop">
+      <div class="pane on" id="paneSource">
       <div id="drop">
         <p><strong>Drop a file here</strong></p>
         <p class="hint">or click to browse · or paste with Ctrl+V</p>
@@ -1177,9 +1131,29 @@ follows your desktop; Light is the one to pick for projecting or screenshotting.
       </div>
       <div id="filechip"><strong>📄</strong><span id="filechipname"></span></div>
       <div id="mapchip"></div>
-      </div><!-- /workDrop -->
 
-      <div id="serverGroup">
+      <!-- WHAT READS THE PAGE. One control, three answers, and the pane below
+           it changes to match: the model server needs an address, a vision
+           model, a page-reading shape and a repetition guard; an OCR library
+           needs none of those and has a detector and a recognizer instead.
+
+           Selecting a library does NOT hide the model server, because pass 2
+           still runs on it -- mapping a transcript onto a form is a text task
+           and no OCR library does it. What changes is what the server is FOR,
+           and the group below says which. -->
+      <div class="row">
+        <label class="field" style="flex:1;min-width:220px">
+          Reading engine
+          <select id="readerSel">
+            {% for item in reader.readers %}
+            <option value="{{ item.id }}" {% if item.id == reader.selected %}selected{% endif %}>{{ item.label }}</option>
+            {% endfor %}
+          </select>
+        </label>
+      </div>
+      <p class="note" id="readerReason"></p>
+      <p class="note" id="readerHelp"></p>
+
         <h3 class="pipe-h" id="serverGroupHead">Model server</h3>
         <p class="note" id="serverGroupNote"></p>
       <div class="row">
@@ -1229,9 +1203,32 @@ follows your desktop; Light is the one to pick for projecting or screenshotting.
         </label>
         </div>
         <p class="note" id="ctxNote"></p>
-      </div><!-- /serverGroup -->
 
-      <div id="workRun">
+      <div class="row" id="ocrProfileRow">
+        <label class="field" style="flex:1;min-width:200px">
+          Page reading
+          <select id="ocrProfileSel">
+            {% for p in ocr_profiles %}
+            <option value="{{ p.id }}" {% if p.id == ocr_profile %}selected{% endif %}>{{ p.label }}</option>
+            {% endfor %}
+          </select>
+        </label>
+      </div>
+      <p class="note" id="ocrProfileNote"></p>
+      <p class="note" id="ocrProfileHelp"><b>This follows the model.</b> Picking a reading model
+        selects the shape it needs &mdash; the prompt and whether a system
+        message is sent are properties of the model, and the wrong pairing
+        returns an empty transcript at HTTP&nbsp;200 rather than an error. You
+        can still override it here to compare a prompt against a model; the
+        override stands until the next model switch.</p>
+      <div class="row" id="loopGuardRow">
+        <label class="check" style="flex:1;min-width:200px">
+          <input id="loopGuardChk" type="checkbox" {% if loop_guard %}checked{% endif %}>
+          Stop a read that starts repeating
+        </label>
+      </div>
+      <p class="note" id="loopGuardNote"></p>
+
         <div class="row">
         <label class="field">
           Detail
@@ -1265,39 +1262,6 @@ follows your desktop; Light is the one to pick for projecting or screenshotting.
         </label>
       </div>
       <p class="note" id="extractNote"></p>
-      {% if mock_files %}
-      <div class="row">
-        <label class="field" style="flex:1">
-          From mockOcr folder
-          <select id="mockFile">
-            <option value="">— none —</option>
-            {% for f in mock_files %}
-            <option value="{{ f.name }}">{{ f.name }}{% if f.case %} · {{ f.case }}{% endif %} · {{ f.size_mb }} MB</option>
-            {% endfor %}
-          </select>
-        </label>
-      </div>
-      {% endif %}
-      {% if cases %}
-      <div class="row">
-        <label class="field" style="flex:1">
-          Benchmark case <span class="muted-inline">(scored against ground truth)</span>
-          <select id="benchCase">
-            <option value="">— none, use uploaded file —</option>
-            {# Grouped by the manifest's doc_type so a set can be picked by kind
-               of document -- the same codes as the mockOcr/ filenames. #}
-            {% for doc_type, group in cases|groupby('doc_type') %}
-            <optgroup label="{{ doc_type or 'unclassified' }}">
-              {% for c in group %}
-              <option value="{{ c.id }}">{{ c.id }} · {{ c.kind }}{% if c.doc_types|length > 1 %} · also {{ c.doc_types[1:]|join(', ')|lower|replace('_', ' ') }}{% endif %}{% if c.documents|length > 1 %} &middot; {{ c.documents|length }} documents{% endif %}</option>
-              {% endfor %}
-            </optgroup>
-            {% endfor %}
-          </select>
-        </label>
-      </div>
-      <p class="note" id="benchFormNote"></p>
-      {% endif %}
       <div class="row">
         <button id="run" class="primary" disabled>Read document</button>
         <button id="stop" disabled>Stop</button>
@@ -1306,128 +1270,81 @@ follows your desktop; Light is the one to pick for projecting or screenshotting.
       <p class="note" id="runNote"></p>
       <p class="note" id="detailNote"></p>
       <p class="note">One document at a time, streamed in as it is generated —
-      the workspace holds a single file, and dropping another replaces it. For
-      several documents use the <b>Queue</b> tab, which decides how many run at
-      once and starts on its own Run. Device placement belongs to the model server
+      the workspace holds a single file, and dropping another replaces it. A
+      dropped file is scored automatically when its name or its contents match a
+      benchmark case; to read a case by name with no extraction at all, use the
+      <b>OCR only</b> tab. Device placement belongs to the model server
       (llama-server's <code>-ngl</code>, Ollama's own scheduler), not to this app.</p>
-      </div><!-- /workRun -->
+      </div><!-- /paneSource -->
 
-      </div><!-- /paneParts -->
-
-      <!-- ================= the LLM pipeline pane ================= -->
-      <div class="pane on" id="paneLlm">
-        <p class="note pipe-lead"><b>The model server reads the page.</b> The
-          prepared page image goes to llama.cpp or Ollama over HTTP with a
-          prompt, and the transcript streams back a token at a time. Everything
-          this pane adds over the other one &mdash; the reading model, the
-          page-reading shape, the token budget, the repetition guard &mdash; is a
-          property of that request, and none of it exists on a library read.</p>
-        <div id="llmOnly">
-      <div class="row" id="ocrProfileRow">
-        <label class="field" style="flex:1;min-width:200px">
-          Page reading
-          <select id="ocrProfileSel">
-            {% for p in ocr_profiles %}
-            <option value="{{ p.id }}" {% if p.id == ocr_profile %}selected{% endif %}>{{ p.label }}</option>
-            {% endfor %}
-          </select>
-        </label>
-      </div>
-      <p class="note" id="ocrProfileNote"></p>
-      <p class="note" id="ocrProfileHelp"><b>This follows the model.</b> Picking a reading model
-        selects the shape it needs &mdash; the prompt and whether a system
-        message is sent are properties of the model, and the wrong pairing
-        returns an empty transcript at HTTP&nbsp;200 rather than an error. You
-        can still override it here to compare a prompt against a model; the
-        override stands until the next model switch.</p>
-      <div class="row" id="loopGuardRow">
-        <label class="check" style="flex:1;min-width:200px">
-          <input id="loopGuardChk" type="checkbox" {% if loop_guard %}checked{% endif %}>
-          Stop a read that starts repeating
-        </label>
-      </div>
-      <p class="note" id="loopGuardNote"></p>
-        </div><!-- /llmOnly -->
-      </div><!-- /paneLlm -->
-
-      <!-- ================= the Python library pane ================= -->
-      <div class="pane" id="paneLibrary">
-        <p class="note pipe-lead"><b>A Python OCR library reads the page, in
-          this machine's own processes.</b> A detector finds the text boxes and
-          a recognizer reads each one: no prompt, no sampler, no token budget,
-          and none of the failure modes that come with them. The models load
-          once into a long-lived worker and stay loaded between runs.</p>
-        <div id="libOnly">
-          <div class="row">
-            <label class="field" style="flex:1;min-width:200px">
-              Reading library
-              <select id="readerSel">
-                {% for item in reader.readers %}{% if item.engine == 'library' %}
-                <option value="{{ item.id }}" {% if item.id == reader.selected %}selected{% endif %}>{{ item.label }}</option>
-                {% endif %}{% endfor %}
-              </select>
-            </label>
-          </div>
-          <p class="note" id="readerReason"></p>
-          <!-- Both libraries are OPTIONAL and each lives in its own virtual
-               environment, so its dependency tree cannot destabilise the small
-               Flask app's. A machine without one is a normal machine, and the
-               status line above says which is missing and what to do about it
-               rather than the Run button failing at the end of a read. -->
-          <p class="note" id="readerHelp"></p>
-        </div><!-- /libOnly -->
-        <!-- **Pass 2 is not split, and this pane says so rather than hiding
-             it.** Mapping a transcript onto a form is a text task; no OCR
-             library does it, so a library run still sends its transcript to the
-             model server. A pane showing no server at all would be claiming an
-             independence the run has not got, and the first failed extraction
-             would be a mystery. -->
-      </div><!-- /paneLibrary -->
-
-      <div class="pane" id="paneQueue">
-        <div id="qdrop">
-          <p><strong>Drop files straight into the queue</strong></p>
-          <p class="hint">or click to browse · several at once is fine here</p>
-          <p class="hint">Nothing starts until you press <b>Run queue</b></p>
-        </div>
-        <input id="qfile" type="file" multiple
-               accept="image/*,application/pdf,.pdf,.heic,.heif,.tif,.tiff,.webp,.bmp" hidden>
-        <!-- The queue reads with whichever pipeline tab is selected, and the
-             reader is stamped on each job as it is submitted rather than read
-             again when the job runs. A batch is a measurement: switching tab
-             half way through must not relabel the pages already read, which is
-             the same reasoning that keeps the profile on the page rather than
-             on the process. -->
-        <p class="note" id="qEngineNote"></p>
-
-        <div class="row" style="margin-top:12px">
-          <button id="queueAll" class="ghost-sm">Queue all cases</button>
-          <button id="queueFolder" class="ghost-sm">Queue whole folder</button>
-        </div>
-
+      <!-- Pass 1 on its own, against a document's transcript ground truth.
+           The mirror of Fields only, and it exists for the mirror reason: a
+           field that came back wrong may be the extractor's fault or the read's,
+           and the only way to attribute either is to run one pass at a time.
+           This is `compare.py --no-extract` with a button on it. -->
+      <div class="pane" id="paneOcr">
+        <p class="note">Reading only, scored against a document&rsquo;s
+          <b>hand-written transcript</b>. Pass 2 does not run, so there are no
+          fields and no field score &mdash; what comes back wrong here is the
+          reader&rsquo;s, whichever engine did it.</p>
+        {% if cases %}
         <div class="row">
           <label class="field" style="flex:1">
-            Run mode
-            <div class="seg" id="modeSeg">
-              <button type="button" data-mode="sequential" class="on">Sequential</button>
-              <button type="button" data-mode="concurrent">Concurrent</button>
-            </div>
-          </label>
-          <label class="field">
-            Workers
-            <input id="workers" type="number" min="1" max="64" value="1" style="width:66px">
+            Ground-truth document
+            <select id="ocCase">
+              <option value="">&mdash; pick a case &mdash;</option>
+              {% for doc_type, group in cases|groupby('doc_type') %}
+              <optgroup label="{{ doc_type or 'unclassified' }}">
+                {% for c in group %}
+                <option value="{{ c.id }}">{{ c.id }} &middot; {{ c.kind }}{% if c.doc_types|length > 1 %} &middot; also {{ c.doc_types[1:]|join(', ')|lower|replace('_', ' ') }}{% endif %}{% if c.documents|length > 1 %} &middot; {{ c.documents|length }} documents{% endif %}</option>
+                {% endfor %}
+              </optgroup>
+              {% endfor %}
+            </select>
           </label>
         </div>
-        <p class="note" id="workerNote"></p>
 
-        <div class="row" style="margin-top:12px">
-          <button id="queueRun" class="primary" disabled>Run queue</button>
-          <button id="queueClear" class="ghost-sm" style="margin-left:auto">Clear finished</button>
+        <!-- The same process setting the Workspace holds, offered here because
+             this is where a transcript score is read. Painted from the server,
+             never kept in step by the other pane's change handler. -->
+        <div class="row">
+          <label class="field" style="flex:1;min-width:200px">
+            Reading engine
+            <select id="ocReader">
+              {% for item in reader.readers %}
+              <option value="{{ item.id }}" {% if item.id == reader.selected %}selected{% endif %}>{{ item.label }}</option>
+              {% endfor %}
+            </select>
+          </label>
+          <label class="field" style="flex:0 0 130px">
+            Detail
+            <select id="ocDetail">
+              {% for d in details %}
+              <option value="{{ d }}" {% if d == default_detail %}selected{% endif %}>{{ d }}</option>
+              {% endfor %}
+            </select>
+          </label>
         </div>
-        <div class="row" style="margin-top:8px">
-          <span id="queueStats" class="muted-inline" style="font-size:.78rem;flex:1"></span>
+        <div class="serverbar">
+          <span class="dot" id="ocDot"></span>
+          <span id="ocServerText"></span>
         </div>
-        <div id="queueBody"></div>
+        <p class="note" id="ocReason"></p>
+
+        <div class="row">
+          <button id="ocRun" class="primary" disabled>Read document</button>
+          <button id="ocStop" disabled>Stop</button>
+        </div>
+        <p class="note" id="ocNote"></p>
+        <p class="note">The transcript streams into the <b>Result</b> card and is
+          scored on the <b>Accuracy</b> tab exactly as a Workspace read is, and
+          the run appends an ordinary <code>ocr</code> row to the run log with
+          its pass-2 columns blank &mdash; blank because nothing extracted, not
+          because an extraction found nothing.</p>
+        {% else %}
+        <p class="note err">No benchmark cases with ground truth were found, so
+          there is nothing to read against here.</p>
+        {% endif %}
       </div>
 
       <!-- Pass 2 on its own, fed the hand-written transcript. This is
@@ -1522,10 +1439,10 @@ follows your desktop; Light is the one to pick for projecting or screenshotting.
         <div class="rt-ex" id="rtExReadRow">
           <span class="rt-ex-label">Readers that may read &mdash; tick any combination</span>
           <div class="rt-chips" id="rtExRead"></div>
-          <p class="note">Model-server vision models and available local readers
-            share this list. Keep exactly the combination you want Random Test
-            to draw from; a local reader still uses the model server for field
-            extraction in a Full pipeline round.</p>
+          <p class="note">Model-server vision models and installed OCR
+            libraries share this list &mdash; keep exactly the combination you
+            want drawn. A library round still uses the model server for field
+            extraction, because pass 2 is a text task no library does.</p>
         </div>
         <div class="rt-ex" id="rtExExtractRow">
           <span class="rt-ex-label">Models that may extract</span>
@@ -1548,46 +1465,6 @@ follows your desktop; Light is the one to pick for projecting or screenshotting.
           <button id="rtStop" class="ghost-sm" disabled>Stop</button>
         </div>
         <p class="note" id="rtScopeNote"></p>
-
-        <!-- The contest is the standouts table's rematch button: the ends of one
-             ranking, run again on the same documents with everything else
-             pinned. The random test answers "what breaks"; this answers "was
-             that ranking real", and it cannot be answered by a plan that gives
-             each contender a different Detail and a different page.
-
-             The subject picks WHICH ranking, and with it the scope: a reader
-             contest that also extracted would be scored partly on the other
-             pass. So the scope picker above does not apply here. -->
-        <div class="rt-contest">
-          <div class="row">
-            <label class="field" style="flex:1;min-width:180px">
-              Contest between
-              <select id="rtSubject">
-                {% for s in contest_subjects %}
-                <option value="{{ s.id }}">{{ s.label }}</option>
-                {% endfor %}
-              </select>
-            </label>
-          </div>
-          <div class="row" style="align-items:flex-end">
-            <label class="field" style="flex:0 0 90px">
-              Top
-              <input id="rtTop" type="number" min="1" max="10" value="{{ contest_top }}">
-            </label>
-            <label class="field" style="flex:0 0 130px" id="rtDocsField">
-              Documents
-              <input id="rtDocs" type="number" min="1" max="10" value="1">
-            </label>
-            <label class="check" style="flex:1;min-width:120px">
-              <input id="rtBottom" type="checkbox" checked>
-              and the bottom
-            </label>
-          </div>
-          <div class="row">
-            <button id="rtContest" class="ghost-sm">Run contest</button>
-          </div>
-          <p class="note" id="rtContestNote"></p>
-        </div>
 
         <p class="note">Every round is a <b>real run</b> and appends its own row
           to the run log &mdash; a random test whose results were kept out of it
@@ -2018,7 +1895,6 @@ const readerSel = document.getElementById('readerSel');
 const readerHelp = document.getElementById('readerHelp');
 const serverGroupHead = document.getElementById('serverGroupHead');
 const serverGroupNote = document.getElementById('serverGroupNote');
-const qEngineNote = document.getElementById('qEngineNote');
 const readerReason = document.getElementById('readerReason');
 const modelRole = document.getElementById('modelRole');
 const ocrProfileRow = document.getElementById('ocrProfileRow');
@@ -2100,7 +1976,6 @@ const fxServerNote = document.getElementById('fxServerNote');
 const fxServerText = document.getElementById('fxServerText');
 const fxDot = document.getElementById('fxDot');
 const FX_CASES = {{ cases | tojson }};
-const benchFormNote = document.getElementById('benchFormNote');
 
 /* What a case will be asked for, as a phrase for a note. The form is decided by
    the document's TYPE and the types differ in what they ask -- a receipt is not
@@ -2110,21 +1985,6 @@ const benchFormNote = document.getElementById('benchFormNote');
 
    Empty for a case the manifest does not classify: the default form is asked,
    and naming a type there would claim a classification nobody made. */
-/* Which form a picked case will be asked for, under the Workspace picker.
-   The same phrase the Fields pane shows, and it is worth having in both places
-   for the same reason: the form is decided by the document's TYPE, so what a
-   run will even try to extract changes with the case -- a receipt is not asked
-   its own number or date, an invoice is not asked for a cheque. Knowing that
-   before pressing Read is the difference between reading an empty row as "the
-   page does not say" and as "nobody asked". */
-function paintBenchForm() {
-  if (!benchFormNote) return;
-  const id = benchCase && benchCase.value;
-  const note = id ? caseFormNote(id) : '';
-  // The phrase ends in a separator for the Fields pane, which follows it with
-  // the transcript's own line. Nothing follows it here.
-  benchFormNote.textContent = note ? note.replace(/ · $/, '') : '';
-}
 
 function caseFormNote(id) {
   const c = (FX_CASES || []).find(x => x.id === id);
@@ -2177,11 +2037,6 @@ const accuracyEl = document.getElementById('accuracy');
 const accHead = document.getElementById('accHead');
 const accBars = document.getElementById('accBars');
 const accDiff = document.getElementById('accDiff');
-const benchCase = document.getElementById('benchCase');
-const mockFile = document.getElementById('mockFile');
-const MOCK_CASE_OF = {{ mock_files | map(attribute='name') | list | tojson }}
-  .reduce((acc, name, i) => (acc[name] = {{ mock_files | map(attribute='case') | list | tojson }}[i], acc), {});
-const BENCH_IDS = {{ cases | map(attribute='id') | list | tojson }};
 const mapChip = document.getElementById('mapchip');
 let truth = null, matchedCase = null;
 const compareEl = document.getElementById('compare');
@@ -2222,7 +2077,6 @@ let current = null, controller = null, text = '';
 
 /* ---------- left-hand panes ---------- */
 const sideTabs = document.getElementById('sideTabs');
-const qCount = document.getElementById('qCount');
 const runNote = document.getElementById('runNote');
 /* The pane list is derived from the tabs rather than written out beside them.
    It used to be a literal ['source', 'queue', 'fields'], and adding a fourth tab
@@ -2238,46 +2092,13 @@ function showPane(name) {
     if (pane) pane.classList.toggle('on', on);
   });
   scOpen = name === 'schema';
-  // The two pipeline tabs own the shared blocks and the process's reader; every
-  // other tab leaves both exactly where the last pipeline tab put them.
-  if (name === 'llm' || name === 'library') {
-    paintPanes(name);
-    if (currentEngine() !== name) switchEngine(name, engineReader[name]);
-  }
   paintMain();
   if (scOpen) paintSchema();
 }
 
-/* Move the three shared blocks into the pipeline pane that is showing.
-
-   `appendChild` MOVES a node: one `#drop`, one `#run`, one staged file, and
-   every listener already on them survives untouched. Duplicating the markup
-   instead would have meant two file inputs and two Run buttons, and the first
-   time somebody dropped a file on one tab and pressed Run on the other the page
-   would have refused a file that was plainly on screen.
-
-   The two panes order the blocks differently on purpose. On the LLM pipeline
-   the page-reading shape and the loop guard are settings OF the server request,
-   so they sit under the server; on the library pipeline the library is what
-   reads and the server is only pass 2, so the library comes first and the
-   server after it.
-
-   Ids only and a hoisted `function`: this is called from `showPane`, which is
-   defined long before any of these elements' own consts are. */
-function paintPanes(engine) {
-  const el = id => document.getElementById(id);
-  const pane = el(engine === 'library' ? 'paneLibrary' : 'paneLlm');
-  const order = engine === 'library'
-    ? ['workDrop', 'libOnly', 'serverGroup', 'workRun']
-    : ['workDrop', 'serverGroup', 'llmOnly', 'workRun'];
-  order.forEach(id => { const node = el(id); if (node) pane.appendChild(node); });
-}
-/* First paint. The blocks ship parked in a hidden holder so the markup has one
-   copy of each and no pane owns them in the file; until this runs, the pipeline
-   pane is an empty tab. `readerState` is already initialised above, and both
-   functions this reads are hoisted declarations. */
-paintPanes(currentEngine());
-showPane(currentEngine());
+/* One pane, so nothing moves between panes any more. `paintPanes` and
+   `syncEngineTab` went with the second tab: the engine is a control INSIDE the
+   workspace now, and a control cannot disagree with the tab it sits in. */
 
 /* Which full-width card owns the main column. Three things want it and only one
    can have it: the Result card (with Compare, which holds that same read's page
@@ -4335,231 +4156,12 @@ cmpToggle.addEventListener('click', () => {
   if (!compareEl.hidden) paintCompare();
 });
 
-/* ---------- job queue ---------- */
-const queueBody = document.getElementById('queueBody');
-const queueStats = document.getElementById('queueStats');
-const queueAllBtn = document.getElementById('queueAll');
-const queueClearBtn = document.getElementById('queueClear');
-const queueRun = document.getElementById('queueRun');
-const workersInput = document.getElementById('workers');
-const workerNote = document.getElementById('workerNote');
-let queuePoll = null;
-
-/* One stacked card per job: the queue sits in the narrow column, where the old
-   six-column table had nowhere to put its cells. */
-function qcell(job) {
-  const pct = job.pages_total ? Math.round(job.pages_done / job.pages_total * 100)
-            : (job.status === 'done' ? 100 : 0);
-  const s = job.summary || {};
-  const bits = [];
-  if (s.tokens) bits.push(s.tokens + ' tok');
-  if (s.ocr_lines !== undefined && s.ocr_lines !== null)
-    bits.push(s.ocr_lines + ' lines');
-  if (s.char_accuracy !== undefined && s.char_accuracy !== null)
-    bits.push((s.char_accuracy * 100).toFixed(1) + '% acc');
-  if (s.looped) bits.push('LOOPED');
-  if (s.truncated) bits.push('TRUNCATED');
-  // A failed job keeps the stage it died in, so the stage must not win here --
-  // otherwise every failure reads "preparing" and the reason is never shown.
-  const why = job.status === 'failed' ? (job.error || job.stage) : (job.stage || job.error);
-  const sub = [why || '', bits.join(' · ')].filter(Boolean).join(' · ');
-  const live = ['queued', 'running'].includes(job.status);
-  return '<div class="qi q-' + job.status + '">'
-    + '<div class="qi-top"><span class="qbadge ' + job.status + '">' + job.status + '</span>'
-      + '<span class="qi-name">' + esc(job.name) + '</span></div>'
-    + (sub ? '<div class="qi-sub">' + esc(sub) + '</div>' : '')
-    + (job.status === 'running' || job.pages_total
-        ? '<div class="qbar"><span style="width:' + pct + '%"></span></div>' : '')
-    + '<div class="qi-foot"><span>' + esc(job.reader || 'server') + ' · ' + esc(job.detail)
-      + (job.pages_total ? ' · ' + job.pages_done + '/' + job.pages_total + ' pages' : '')
-      + (job.elapsed !== null && job.elapsed !== undefined ? ' · ' + job.elapsed + 's' : '')
-      + '</span><span class="sp"></span>'
-      + (live ? '<button class="ghost-sm" data-cancel="' + job.id + '">Cancel</button>' : '')
-      + (job.status === 'done'
-          ? '<button class="ghost-sm" data-load="' + job.id + '">Open</button>' : '')
-      + '</div></div>';
-}
-
-/* Run / Pause. The state comes from the queue rather than being remembered here,
-   because the gate is server-side: a reload mid-batch, or a second tab, would
-   otherwise show a button that does not match what the queue is doing. */
-function paintQueueRun(data) {
-  const c = data.counts || {};
-  const queued = c.queued || 0, running = c.running || 0;
-  const started = !!data.started;
-  queueRun.textContent = started ? (running ? 'Pause after current' : 'Pause')
-                                 : 'Run queue' + (queued ? ' (' + queued + ')' : '');
-  // Nothing to start, and nothing in flight to pause.
-  queueRun.disabled = !started && !queued;
-  const on = modeSeg.querySelector('button.on');
-  queueRun.title = started
-    ? 'Stop handing out new documents. One already reading is left to finish.'
-    : 'Start reading the queued documents'
-      + (on ? ', ' + on.dataset.mode : '') + '.';
-}
-
-async function refreshQueue() {
-  let data;
-  try { data = await (await fetch('/api/queue')).json(); } catch { return; }
-  const c = data.counts || {};
-  const queued = c.queued || 0, running = c.running || 0;
-  queueStats.textContent = `${queued} queued · ${running} running · `
-    + `${c.done || 0} done · ${c.failed || 0} failed · ${data.workers} worker(s)`
-    // Said in words as well as on the button: a queue with three documents in it
-    // and nothing happening is otherwise indistinguishable from a stalled one.
-    // "idle" is only true with nothing queued *and* nothing in flight -- a paused
-    // queue still has a document reading, and calling that idle is a plain lie.
-    + (data.started ? ''
-       : queued ? ' · holding — press Run queue'
-       : running ? ' · finishing the current document'
-       : ' · idle');
-  if (document.activeElement !== workersInput) workersInput.value = data.workers;
-  paintQueueRun(data);
-
-  // The tab badge counts only unfinished work -- that is what "still to do" means.
-  const outstanding = queued + running;
-  qCount.textContent = outstanding;
-  qCount.classList.toggle('show', outstanding > 0);
-
-  queueBody.innerHTML = data.jobs.map(qcell).join('');
-
-  // Poll only while something is actually moving: a job in flight, or a released
-  // queue with work left in it. A queue that is holding with nothing running is
-  // not moving, and it changes only when the user does something -- every one of
-  // those paths refreshes this itself. Pausing mid-batch still polls, because the
-  // document already reading is left to finish and its progress is real.
-  const active = running > 0 || (data.started && outstanding > 0);
-  if (active && !queuePoll) queuePoll = setInterval(refreshQueue, 1500);
-  if (!active && queuePoll) {
-    clearInterval(queuePoll); queuePoll = null;
-    refreshRuns();   // the queue just drained: its rows are now in the log
-  }
-}
-
-queueRun.addEventListener('click', async () => {
-  const start = queueRun.textContent.startsWith('Run');
-  queueRun.disabled = true;
-  try {
-    await fetch('/api/queue/run', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ start })
-    });
-  } catch { /* refreshQueue below reports the real state either way */ }
-  refreshQueue();
-});
-
-queueBody.addEventListener('click', async e => {
-  const cancel = e.target.closest('[data-cancel]');
-  const load = e.target.closest('[data-load]');
-  if (cancel) {
-    await fetch('/api/queue/' + cancel.dataset.cancel, { method: 'DELETE' });
-    refreshQueue();
-  } else if (load) {
-    const job = await (await fetch('/api/queue/' + load.dataset.load)).json();
-    const r = job.result;
-    if (!r) return;
-    // Drop a finished job's output into the result panel.
-    text = r.text || '';
-    pageTexts = r.pages || [];
-    job_id_from_result(r);
-    pageStats = r.page_stats || [];
-    truth = r.truth || null;
-    // The stored result carries its own step records; the live list belongs to
-    // whatever ran in this tab and would otherwise be shown against this one.
-    setExtracted(r.extracted || null);
-    extractSteps = null;
-    tabAccuracy.disabled = !truth;
-    tabFields.disabled = !extracted;
-    enableCompare();   // this job's own case, not whatever the workspace holds
-    layPage = 0; laySel = null; enableLayout();
-    roPage = 0; enableRawOut();
-    paint(); renderStats(r);
-    meta.textContent = `${r.page_count} page(s) · ${r.detail} · `
-      + (['paddleocr', 'easyocr'].includes(r.backend)
-        ? `${r.ocr_lines || 0} lines · ${((r.ocr_confidence || 0) * 100).toFixed(1)}% mean confidence · `
-        : `${r.tokens || 0} tokens · `)
-      + `${r.seconds}s`
-      + (truth && !truth.error ? ` · ${(truth.char_accuracy * 100).toFixed(1)}% vs ${truth.case}` : '');
-    showTab('rendered');
-  }
-});
-function job_id_from_result(r) { job = r.job || null; enableCompare(); }
-
-/* One POST per batch. The server queues everything in it before releasing any
-   of it to a worker, so what lands in the list is what starts together. */
-async function postQueue(body) {
-  let data;
-  try {
-    const res = await fetch('/api/queue', { method: 'POST', body });
-    data = await res.json();
-    if (!res.ok) throw new Error(data.error || 'Could not queue.');
-  } catch (err) {
-    meta.textContent = err.message; meta.classList.add('err');
-    return null;
-  }
-  const added = (data.added || []).length;
-  // Says what to do next: nothing is running yet, and a queue that looked busy
-  // but was not would be read as a stall.
-  meta.textContent = `${added} document(s) queued · ${data.workers} worker(s)`
-    + (data.started ? '' : ' · press Run queue to start');
-  meta.classList.remove('err');
-  refreshQueue();
-  showPane('queue');
-  return data;
-}
-
-/* The two batch actions live on the Queue tab, beside its drop zone. The
-   workspace has no queue button at all any more: it holds the one document being
-   tested, and what it does with it is read it. */
-async function enqueueCases(ids) {
-  const body = new FormData();
-  body.append('detail', detailSel.value);
-  body.append('reader', currentReader());
-  ids.forEach(c => body.append('cases', c));
-  return postQueue(body);
-}
-queueAllBtn.addEventListener('click', () => enqueueCases(BENCH_IDS));
-// Nothing to queue means nothing to click: both of these would otherwise post an
-// empty batch and come back with an error the user could do nothing about.
-if (!BENCH_IDS.length) {
-  queueAllBtn.disabled = true;
-  queueAllBtn.title = 'No benchmark cases in solution/';
-}
-const queueFolderBtn = document.getElementById('queueFolder');
-if (!mockFile) {
-  queueFolderBtn.disabled = true;
-  queueFolderBtn.title = 'No files in mockOcr/';
-} else {
-  queueFolderBtn.addEventListener('click', async () => {
-    const listing = await (await fetch('/api/files')).json();
-    if (!listing.files.length) return;
-    const body = new FormData();
-    body.append('detail', detailSel.value);
-    body.append('reader', currentReader());
-    listing.files.forEach(f => body.append('files', f.name));
-    postQueue(body);
-  });
-}
-
-/* ---------- queue pane: files dropped here skip the workspace ---------- */
-const qdrop = document.getElementById('qdrop');
-const qFileInput = document.getElementById('qfile');
-function queueDirect(list) {
-  const files = [...(list || [])].filter(Boolean);
-  if (!files.length) return;
-  const body = new FormData();
-  body.append('detail', detailSel.value);
-  body.append('reader', currentReader());
-  files.forEach(f => body.append('image', f));
-  postQueue(body);
-}
-qdrop.addEventListener('click', () => qFileInput.click());
-qFileInput.addEventListener('change', e => { queueDirect(e.target.files); qFileInput.value = ''; });
-['dragenter', 'dragover'].forEach(ev =>
-  qdrop.addEventListener(ev, e => { e.preventDefault(); qdrop.classList.add('over'); }));
-['dragleave', 'drop'].forEach(ev =>
-  qdrop.addEventListener(ev, e => { e.preventDefault(); qdrop.classList.remove('over'); }));
-qdrop.addEventListener('drop', e => queueDirect(e.dataTransfer.files));
+/* The job queue was removed on 2026-09-09 at the user's request. Its server
+   side is untouched -- `jobs.py`, the `/api/queue*` routes, and the 409 that
+   refuses a server switch while a batch is in flight -- because those guards
+   protect any caller, not just the tab that is gone. Nothing in this page
+   submits work to it now; `randomtest.py` and `compare.py` drive batches from
+   the CLI instead. */
 
 /* ---------- run log ----------
    Measurements only: the CSV behind this holds no transcript, no extracted
@@ -6953,11 +6555,6 @@ const MIN_CLASSIFY_CONFIDENCE = {{ min_classify_confidence }};
 /* `scoring.SCRIPT_MIN_CHARS`: below this many characters of a script on
    one page, no rate is reported for it and the count is shown instead. */
 const scriptMinChars = {{ script_min_chars }};
-const CONTEST = { top: {{ contest_top }}, bottom: {{ contest_bottom }},
-                  detail: '{{ contest_detail }}' };
-/* Which scope each contest subject implies. Painted from the server's own table
-   so the page cannot describe a subject the planner does not have. */
-const SUBJECT_SCOPE = { {% for s in contest_subjects %}'{{ s.id }}': '{{ s.scope }}',{% endfor %} };
 
 function rtPct(value, digits) {
   if (value === null || value === undefined) return '<span class="cs-none">&mdash;</span>';
@@ -7028,12 +6625,13 @@ function rtPaintLocks() {
   const localReaders = (readerState.readers || [])
     .filter(r => r.engine === 'library' && r.available)
     .map(r => 'local:' + r.id);
-  /* The reader pool follows the pipeline tab, because the run does: the pane
-     sends `engine`, and a lock or an exclusion offering a reader the sweep
-     cannot draw is a control that does nothing. The EXTRACTOR pool is not
-     narrowed -- pass 2 runs on the model server under either engine. */
-  const readers = currentEngine() === 'library' ? localReaders
-    : models.filter(m => m.vision !== false).map(m => m.name);
+  /* Both engines in one list, because a sweep across them is the comparison the
+     shared run log exists for: a vision model and an installed OCR library are
+     both things that can read a page, and which is better on which document is
+     the question. Tick the combination you want. The EXTRACTOR pool is separate
+     and is never narrowed -- pass 2 runs on the model server either way. */
+  const readers = models.filter(m => m.vision !== false).map(m => m.name)
+    .concat(localReaders);
   const keep = (sel, names) => {
     const chosen = sel.value;
     sel.innerHTML = '<option value="">— random —</option>'
@@ -7062,30 +6660,6 @@ function rtPaintLocks() {
   rtExExtractRow.style.display = rtScope.value === 'ocr' ? 'none' : 'block';
 }
 
-/* What a contest is about to do, from the controls rather than from the run that
-   already made the choice. The Documents box is hidden for a document contest:
-   there the documents ARE the contenders, and a count of them would be a second,
-   contradictory answer to the same question. */
-function rtPaintContest() {
-  const subject = rtSubject.options[rtSubject.selectedIndex];
-  const label = subject ? subject.text : 'model';
-  const top = Math.max(1, Number(rtTop.value) || CONTEST.top);
-  const isCase = rtSubject.value === 'case';
-  const isPipe = rtSubject.value === 'pipeline';
-  rtDocsField.style.display = isCase ? 'none' : 'flex';
-  rtContestNote.innerHTML = 'Re-runs the <b>top ' + top + '</b>'
-    + (rtBottom.checked ? ' and the <b>bottom ' + top + '</b>' : '')
-    + ' ' + esc(label) + (isPipe ? ' pairs' : 's') + ' from Standouts'
-    + (isCase ? ', read by the model the log ranks first'
-              : ', on the same documents')
-    + (isPipe ? ' — every top reader against every top extractor' : '')
-    + '. Everything but the ' + esc(label) + ' is pinned'
-    + (SUBJECT_SCOPE[rtSubject.value] === 'fields' ? ''
-       : ', Detail included (<b>' + CONTEST.detail + '</b>)')
-    + ', which is what a ranking has to be re-tested on. The scope picker above '
-    + 'does not apply: a contest\'s scope comes from its subject ('
-    + esc(SUBJECT_SCOPE[rtSubject.value] || '') + ').';
-}
 
 /* What the chosen scope will and will not measure, said before the run rather
    than inferred from empty columns afterwards.
@@ -7114,15 +6688,12 @@ function rtScopeText(scope) {
        + '<b>unscored</b>.';
 }
 function rtPaintScope() {
-  /* Which pipeline the sweep will draw from, said before it is started rather
-     than inferred from the rounds afterwards. A read-only or full sweep follows
-     the tab; a fields-only one reads no page, so no engine is involved and
-     claiming one would be false. */
+  /* What may read, said before the run rather than inferred from its rounds
+     afterwards. A fields-only sweep reads no page, so no engine is involved and
+     naming one would be false. */
   const eng = rtScope.value === 'fields' ? ''
-    : '<b>' + (currentEngine() === 'library' ? 'Python library' : 'LLM')
-      + ' pipeline.</b> Readers are drawn from this tab only — switch tab to '
-      + 'sweep the other, or use <code>randomtest.py --engine both</code> for '
-      + 'a sweep across the two. ';
+    : 'Vision models and installed OCR libraries are drawn from the same pool — '
+      + 'narrow it with the chips below. ';
   rtScopeNote.innerHTML = eng + (rtScopeText(rtScope.value) || '');
 }
 
@@ -7213,15 +6784,11 @@ function rtPaint() {
     + '<th>Time</th></tr>' + body + '</table>';
 }
 
-/* One runner for both shapes. A contest is not a different stream, a different
-   table or a different row -- it is the same rounds with everything but the
-   model pinned, which is exactly why it can share all three. */
-/* Both Stop buttons and both Run buttons move together: the run is one thing,
-   and a Stop that looks live in the pane while the card's is greyed out is a
-   control that lies about what it will do. */
+/* Both Stop buttons move with the Run button: the run is one thing, and a Stop
+   that looks live in the pane while the card's is greyed out is a control that
+   lies about what it will do. */
 function rtBusy(on) {
   rtRun.disabled = on;
-  rtContest.disabled = on;
   rtStop.disabled = !on;
   rtStop2.disabled = !on;
   // The two share one card, so they cannot share the screen: a read started
@@ -7229,35 +6796,16 @@ function rtBusy(on) {
   // `paintServer` owns this button otherwise and puts it back on its own terms.
   if (on) runBtn.disabled = true; else paintServer();
 }
-/* What a contest actually assembled, said in the run's own note rather than
-   guessed at in advance: which models it found at each end of the ranking, and
-   what it could not run. */
-function rtContestLine(c) {
-  const names = (c.models || []).map(csModel).join(', ')
-    + (c.extractors ? ' × ' + c.extractors.map(csModel).join(', ') : '');
-  return 'Contest (' + esc(c.label || '') + '): ' + (c.all_ranked
-      ? 'every ranked ' + esc(c.label || 'entry') + ' (' + (c.models || []).length + ')'
-      : (c.top || []).length + ' top, ' + (c.bottom || []).length + ' bottom')
-    + ' × ' + c.documents + ' document(s)'
-    + (c.detail ? ' at ' + c.detail : '') + (c.mode ? ' · ' + c.mode : '')
-    + ' — ' + names
-    + ((c.missing || []).length
-        ? '. ' + c.missing.length + ' ranked model(s) not served here, skipped.' : '')
-    + ((c.unranked || []).length
-        ? ' ' + c.unranked.length + ' unranked, not entered.' : '');
-}
 
-async function rtStart(contest) {
+async function rtStart() {
   const rounds = Math.max(1, Math.min(Number(rtRounds.value) || 5, 50));
   rtRounds.value = rounds;
-  const documents = Math.max(1, Math.min(Number(rtDocs.value) || 1, 10));
-  rtDocs.value = documents;
   rtRows = [];
   rtPaint();
   rtBusy(true);
   // Same reason as the Read button: the rounds below are judged by this floor,
   // so it is pushed before the first one rather than whenever the box lost
-  // focus. A contest pays for it too -- its rounds are ordinary runs.
+  // focus.
   await pushReadFloor(rtReadFloorInp || readFloorInp);
   rtNote.classList.remove('err');
   rtNote.textContent = 'Planning…';
@@ -7269,25 +6817,18 @@ async function rtStart(contest) {
       signal: rtAbort.signal,
       // Exclusions go with both shapes: "do not test that model" is a statement
       // about the run, not about which button started it.
-      body: JSON.stringify(Object.assign(
-        { exclude: { readers: [...rtExcluded.readers],
-                     extractors: [...rtExcluded.extractors] },
-          // The sweep follows the pipeline tab. A run started from the Python
-          // library tab draws library readers and nothing else, so its rounds
-          // measure that library rather than mostly drawing model-server rounds
-          // it happens to share a pool with. `randomtest.py --engine both` is
-          // the cross-engine sweep; a pane is where one pipeline is worked on.
-          engine: currentEngine() },
-        contest
-        ? { contest: true, documents, seed: rtSeed.value.trim() || null,
-            subject: rtSubject.value,
-            top: Math.max(1, Number(rtTop.value) || CONTEST.top),
-            // 0, not false: the planner reads it as "how many from the bottom".
-            bottom: rtBottom.checked
-              ? Math.max(1, Number(rtTop.value) || CONTEST.bottom) : 0 }
-        : { rounds, seed: rtSeed.value.trim() || null, scope: rtScope.value,
-            lock: { case: rtLockCase.value, reader: rtLockReader.value,
-                    extractor: rtLockExtract.value, mode: rtLockMode.value } }))
+      body: JSON.stringify({
+        // Exclusions are a statement about the run: do not draw that model.
+        exclude: { readers: [...rtExcluded.readers],
+                   extractors: [...rtExcluded.extractors] },
+        // Both engines are drawn from. `randomtest.py --engine llm|library`
+        // narrows it for a CLI sweep that wants one; the pane offers the chips
+        // instead, which is the finer control and the one already here.
+        engine: 'both',
+        rounds, seed: rtSeed.value.trim() || null, scope: rtScope.value,
+        lock: { case: rtLockCase.value, reader: rtLockReader.value,
+                extractor: rtLockExtract.value, mode: rtLockMode.value }
+      })
     });
     if (!res.ok) {
       const data = await res.json().catch(() => ({}));
@@ -7312,7 +6853,7 @@ async function rtStart(contest) {
           const locked = Object.entries(ev.lock || {})
             .map(([k, v]) => k + '=' + csModel(v)).join(', ');
           rtNote.textContent = 'Seed ' + ev.seed + ' — ' + ev.rounds.length
-            + ' round(s). ' + (ev.contest ? rtContestLine(ev.contest)
+            + ' round(s). ' + (false ? ''
                                           : 'Re-run with this seed for the same plan.')
             + (locked ? ' Locked: ' + locked + '.' : '');
           // Only the round actually in flight is `pending`; the rest are
@@ -7359,8 +6900,7 @@ async function rtStart(contest) {
 }
 
 if (rtRun) {
-  rtRun.addEventListener('click', () => rtStart(false));
-  rtContest.addEventListener('click', () => rtStart(true));
+  rtRun.addEventListener('click', () => rtStart());
   const stop = () => { if (rtAbort) rtAbort.abort(); };
   rtStop.addEventListener('click', stop);
   rtStop2.addEventListener('click', stop);
@@ -7369,11 +6909,7 @@ if (rtRun) {
   // Painted on change and once at load: the caveat belongs beside the choice,
   // not in the results of a run that already made it.
   rtScope.addEventListener('change', () => { rtPaintScope(); rtPaintLocks(); });
-  rtSubject.addEventListener('change', rtPaintContest);
-  rtBottom.addEventListener('change', rtPaintContest);
-  rtTop.addEventListener('change', rtPaintContest);
   rtPaintScope();
-  rtPaintContest();
   rtPaintLocks();
 }
 
@@ -8276,68 +7812,9 @@ themeSeg.addEventListener('click', ev => {
 
 applyTheme(storedTheme());
 
-const modeSeg = document.getElementById('modeSeg');
-// How many documents can genuinely run at once depends on the server:
-// llama-server states its slot count, Ollama's parallelism is an environment
-// variable it does not expose, so nothing is claimed about it.
-function workerAdvice(data) {
-  const mode = data.mode || (data.workers > 1 ? 'concurrent' : 'sequential');
-  if (mode === 'sequential') {
-    return 'One document at a time, whatever is queued.';
-  }
-  // The pool grows to fit the batch, so the worker box is a floor, not a cap.
-  const head = `Queue N documents and N requests go out at once (worker count is `
-    + `a minimum of ${data.workers}, raised to fit the batch).`;
-  if (data.llama_slots && data.workers > data.llama_slots) {
-    return head + ` The server advertises ${data.llama_slots} slot(s), so beyond `
-      + `that the wait moves inside it — restart llama-server with a larger -np `
-      + `to overlap them for real.`;
-  }
-  if (data.llama_slots) {
-    return head + ` The server advertises ${data.llama_slots} slot(s).`;
-  }
-  return head + ' Ollama does not report a slot count; its parallelism comes '
-    + 'from OLLAMA_NUM_PARALLEL.';
-}
-async function applyMode(mode, workers) {
-  const res = await fetch('/api/queue/mode', {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(workers ? { mode, workers } : { mode })
-  });
-  const data = await res.json();
-  if (!res.ok) { workerNote.textContent = data.error || ''; return; }
-  [...modeSeg.querySelectorAll('button')].forEach(b =>
-    b.classList.toggle('on', b.dataset.mode === data.mode));
-  workersInput.value = data.workers;
-  workersInput.disabled = data.mode === 'sequential';
-  workerNote.textContent = workerAdvice(data);
-  paintRun();      // the Run note quotes the mode and the worker count
-  refreshQueue();
-}
-modeSeg.addEventListener('click', e => {
-  const btn = e.target.closest('button[data-mode]');
-  if (btn && !btn.classList.contains('on')) applyMode(btn.dataset.mode);
-});
-
-// Reflect the pool the server already has, without POSTing on page load.
-async function initMode() {
-  let data;
-  try { data = await (await fetch('/api/queue')).json(); } catch { return; }
-  const mode = data.workers > 1 ? 'concurrent' : 'sequential';
-  [...modeSeg.querySelectorAll('button')].forEach(b =>
-    b.classList.toggle('on', b.dataset.mode === mode));
-  workersInput.value = data.workers;
-  workersInput.disabled = mode === 'sequential';
-  workerNote.textContent = workerAdvice({ mode, workers: data.workers,
-                                          llama_slots: server.slots });
-  paintRun();
-}
-queueClearBtn.addEventListener('click', async () => {
-  await fetch('/api/queue/clear', { method: 'POST' });
-  refreshQueue();
-});
-workersInput.addEventListener('change', () =>
-  applyMode('concurrent', Number(workersInput.value)));
+/* The queue's run-mode and worker controls went with its tab. `jobs.py` keeps
+   its pool and `/api/queue/mode` still sets it -- the setting is a property of
+   the process, not of a tab -- but nothing on this page reads or moves it now. */
 
 /* ---------- accuracy vs ground truth ---------- */
 function accColour(v) {
@@ -8779,58 +8256,31 @@ const ctxFieldLabel = document.getElementById('ctxFieldLabel');
 function currentReader() {
   return readerState.selected || 'server';
 }
-function currentEngine() {
-  const info = (readerState.readers || []).find(r => r.id === currentReader());
+function engineOfReader(id) {
+  const info = (readerState.readers || []).find(r => r.id === id);
   return (info && info.engine) || 'llm';
+}
+function currentEngine() {
+  return engineOfReader(currentReader());
 }
 function selectedReader() {
   return (readerState.readers || []).find(r => r.id === currentReader()) || {};
 }
-/* The reader this pane would use if it were switched to. Remembered per engine,
-   so going LLM -> library -> LLM -> library comes back to the library you were
-   on rather than resetting to Paddle. The server has one selection, not two, so
-   this lives here. */
-const engineReader = { llm: 'server', library: '' };
-
-/* Put the tab back on the engine that is really selected.
-
-   `readerState` is refreshed from the server on every status poll, so the
-   process can move under this page -- another browser tab, a script, a restart.
-   When it does, the pipeline tab has to follow, or the LLM tab would be sitting
-   there painted with library labels. The server is the truth and the tab is a
-   view of it, which is the same rule every picker on this page follows.
-
-   It moves the highlight and the blocks and sends NOTHING, so it cannot recurse
-   back into `switchEngine`. A non-pipeline tab is left alone: somebody reading
-   the Queue does not want to be thrown onto a pipeline pane. */
-function syncEngineTab() {
-  const want = currentEngine();
-  const showing = ['llm', 'library'].find(n =>
-    document.getElementById('pane' + n[0].toUpperCase() + n.slice(1))
-            .classList.contains('on'));
-  if (!showing || showing === want) return;
-  [...sideTabs.querySelectorAll('button[data-pane]')].forEach(b => {
-    if (b.dataset.pane !== 'llm' && b.dataset.pane !== 'library') return;
-    const on = b.dataset.pane === want;
-    b.classList.toggle('on', on);
-    document.getElementById(
-      'pane' + b.dataset.pane[0].toUpperCase() + b.dataset.pane.slice(1))
-      .classList.toggle('on', on);
-  });
-  paintPanes(want);
-}
-
 function paintReader() {
-  syncEngineTab();
-  const engine = currentEngine();
-  const local = engine === 'library';
+  const local = currentEngine() === 'library';
   const info = selectedReader();
-  engineReader[engine] = currentReader();
-  if (local && readerSel.value !== currentReader()) readerSel.value = currentReader();
-  /* The server group is the same markup in both panes and says a different
-     thing in each, because on the LLM pipeline it is the whole run and on the
-     library one it is only pass 2. Saying so is not decoration: a library run
-     that could not extract would otherwise look like a library failure. */
+  /* Snap the picker back to what is really selected -- but NOT while a switch
+     is in flight. `switchEngine` disables the select for the length of its
+     request, and a status poll landing in that window would otherwise reset the
+     value the user just chose, so the dropdown visibly jumps back and then
+     forward again. Painting from the server is the rule; fighting a request
+     that has not answered yet is not part of it. */
+  if (!readerSel.disabled && readerSel.value !== currentReader())
+    readerSel.value = currentReader();
+  /* The MODEL SERVER group says a different thing depending on what reads,
+     because on a library run it is only pass 2. Saying so is not decoration: a
+     library run whose extraction failed would otherwise read as a library
+     failure, and the fix is in a different place. */
   serverGroupHead.textContent = local ? 'Model server · field extraction'
                                       : 'Model server · reads and extracts';
   serverGroupNote.textContent = local
@@ -8846,6 +8296,16 @@ function paintReader() {
   subKind.textContent = local ? ('local ' + (info.label || currentReader()))
                               : (server.kind || 'no server');
   subUrl.textContent = local ? (info.python || 'not installed') : (server.url || '');
+  /* The page-reading shape and the repetition guard are settings OF a
+     model-server request -- a prompt, and whether to abort a stream that starts
+     cycling. A library read has neither a prompt nor a stream to abort, so they
+     are hidden rather than shown greyed: a control that cannot do anything is
+     worse than an absent one, and leaving them visible is how a model-server
+     profile came to be shown over a run that never touched a model server. */
+  for (const el of [ocrProfileRow, ocrProfileNote, ocrProfileHelp,
+                    loopGuardRow, loopGuardNote]) {
+    if (el) el.hidden = local;
+  }
   if (local) {
     readerReason.classList.toggle('err', !info.available);
     readerReason.textContent = info.available
@@ -8859,21 +8319,15 @@ function paintReader() {
         + 'repetition loop and no empty transcript at HTTP 200. What it cannot '
         + 'do is read a layout it was not trained for.'
       : 'It is optional, and it lives in its own virtual environment so its '
-        + 'dependency tree cannot destabilise this app. Install it, or use the '
-        + 'LLM pipeline tab.';
+        + 'dependency tree cannot destabilise this app. Install it, or pick the '
+        + 'model server above.';
   } else {
     readerReason.classList.remove('err');
-    readerReason.textContent = '';
+    readerReason.textContent = 'The model server reads each prepared page image.';
     readerHelp.textContent = '';
   }
-  if (qEngineNote) {
-    qEngineNote.innerHTML = 'Queued files are read by the <b>'
-      + esc(local ? (info.label || 'Python library') : 'model server')
-      + '</b> — the pipeline tab selected now. Each job keeps the reader it was '
-      + 'submitted with, so switching tab mid-batch does not relabel what has '
-      + 'already run.';
-  }
 }
+
 
 /* Switch engine, optionally naming a reader inside it. One request, and the
    answer repaints from what came back -- a refused switch must leave every
@@ -8881,6 +8335,7 @@ function paintReader() {
    409 taught the model pickers. */
 async function switchEngine(engine, reader) {
   readerSel.disabled = true;
+  if (ocReader) ocReader.disabled = true;
   const before = currentReader();
   try {
     const res = await fetch('/api/ocr/engine', {
@@ -8898,6 +8353,7 @@ async function switchEngine(engine, reader) {
     setServerNote(err.message, true);
   } finally {
     readerSel.disabled = false;
+    if (ocReader) ocReader.disabled = false;
     paintReader();
     paintServer();
     // The Random test pane draws from this engine, so its locks, its exclusion
@@ -8908,7 +8364,11 @@ async function switchEngine(engine, reader) {
     if (typeof rtPaintScope === 'function') rtPaintScope();
   }
 }
-readerSel.addEventListener('change', () => switchEngine('library', readerSel.value));
+/* The picker names a READER; the engine follows from it. One request, and the
+   pane repaints from what came back -- a refused switch must leave every control
+   showing what is really active, the rule the queue's 409 taught these pickers. */
+readerSel.addEventListener('change', () =>
+  switchEngine(engineOfReader(readerSel.value), readerSel.value));
 
 // Add the active URL to a list if it was typed in rather than configured.
 function addUrlOption(sel, url) {
@@ -9038,7 +8498,6 @@ async function switchServer(url, model, extractModel) {
     customRow.style.display = 'none';
     paintEndpoint();
     paintServer();
-    initMode();
   } catch (err) {
     setServerNote(err.message, true);
     paintServer();
@@ -9102,64 +8561,19 @@ function paintServer() {
      to read a page because the extractor is down would throw away the half of
      the work that was available. */
   const canRun = local ? !!reading.available : !!server.available;
-  runBtn.disabled = !canRun || !(current || (benchCase && benchCase.value) || (mockFile && mockFile.value));
+  runBtn.disabled = !canRun || !current;
   // Whether the context picker does anything depends on which kind is active.
   paintCtx();
   paintFieldsOnly();
+  paintOcrOnly();
 }
-if (mockFile) {
-  mockFile.addEventListener('change', () => {
-    // Picking from the folder replaces any upload or benchmark selection.
-    if (mockFile.value) {
-      current = null; fileInput.value = '';
-      runNote.textContent = ''; paintRun();
-      dropPreview();
-      if (benchCase) benchCase.value = '';
-      showChip(mockFile.value);
-      const mapped = MOCK_CASE_OF[mockFile.value];
-      matchedCase = mapped || null;
-      mapChip.className = mapped ? '' : 'none';
-      mapChip.innerHTML = mapped
-        ? '✓ Ground truth <strong>' + esc(mapped) + '</strong> — will be scored'
-          + ' <span class="how">(from mockOcr folder)</span>'
-        : 'No matching solution file — this run will not be scored.';
-    } else {
-      matchedCase = null; mapChip.textContent = ''; mapChip.className = '';
-    }
-    paintServer();
-    // The ground-truth pane follows the selection, so it can be read before a run.
-    enableCompare();
-    refreshPrepared();
-  });
-}
-if (benchCase) {
-  benchCase.addEventListener('change', () => {
-    // Which form this case will be asked for. Painted from the same handler
-    // that already reacts to the picker rather than from a second listener --
-    // and it must live down here, because `benchCase` is a `const` declared
-    // below FX_CASES and reaching for it any earlier is a dead-zone throw that
-    // takes the whole script with it.
-    paintBenchForm();
-    // The server reads the case PDF from disk, so any attached file is ignored.
-    if (benchCase.value) {
-      current = null; fileInput.value = '';
-      runNote.textContent = ''; paintRun();
-      dropPreview();
-      showChip(benchCase.options[benchCase.selectedIndex].text);
-      matchedCase = benchCase.value;
-      mapChip.className = '';
-      mapChip.innerHTML = '✓ Ground truth <strong>' + esc(benchCase.value)
-        + '</strong> — will be scored <span class="how">(benchmark case)</span>';
-    } else {
-      matchedCase = null;
-      mapChip.className = 'none';
-      mapChip.textContent = '';
-    }
-    paintServer();
-    enableCompare();
-    refreshPrepared();
-  });
-}
+/* The mockOcr folder and benchmark-case pickers were removed on 2026-09-09 at
+   the user's request. The Workspace reads what is DROPPED on it and scores it
+   when `POST /api/match` recognises the file by name, alias or content hash; a
+   case is read by name on the OCR only tab, and extracted by name on Fields
+   only. `request_input` still resolves all three shapes server-side, because
+   `compare.py` and the random test name cases that way. */
+
 async function refreshServer() {
   recheckBtn.disabled = true;
   const was = serverText.textContent;
@@ -9351,13 +8765,7 @@ function dropPreview() {
    nothing left on the page to say so. */
 function localPreview() {
   dropPreview();
-  const fixture = (benchCase && benchCase.value)
-    ? benchCase.options[benchCase.selectedIndex].text
-    : ((mockFile && mockFile.value) || '');
-  if (!current) {
-    if (fixture) showChip(fixture); else chip.style.display = 'none';
-    return;
-  }
+  if (!current) { chip.style.display = 'none'; return; }
   if (current.type === 'application/pdf' || /\.(pdf|heic|heif)$/i.test(current.name)) {
     showChip(current.name);
     return;
@@ -9401,17 +8809,14 @@ function prepBody() {
   // The same three shapes `request_input` resolves, chosen the same way the Read
   // button chooses them, so the preview cannot be of a different document.
   const body = new FormData();
-  if (benchCase && benchCase.value) body.append('case', benchCase.value);
-  else if (mockFile && mockFile.value) body.append('file', mockFile.value);
-  else if (current) body.append('image', current);
+  if (current) body.append('image', current);
   else return null;
   body.append('detail', detailSel.value);
   body.append('reader', currentReader());
   return body;
 }
 function prepStem() {
-  const raw = (benchCase && benchCase.value) || (mockFile && mockFile.value)
-    || (current && current.name) || 'page';
+  const raw = (current && current.name) || 'page';
   // Only the extension comes off. The browser sanitises a `download` name
   // itself, and these documents have Thai names worth keeping.
   return raw.replace(/\.[^.]+$/, '');
@@ -9492,8 +8897,6 @@ function addFiles(list) {
   const file = incoming[0];
   const ignored = incoming.length - 1;
   // Hand-picked files override the folder and benchmark pickers.
-  if (benchCase && benchCase.value) benchCase.value = '';
-  if (mockFile && mockFile.value) mockFile.value = '';
   current = file;
   previewOne(file);
   paintRun();
@@ -9533,7 +8936,7 @@ window.addEventListener('paste', e => {
 // A file dropped anywhere else would otherwise be opened by the browser, which
 // navigates away from the page and loses whatever is on screen.
 ['dragover', 'drop'].forEach(ev => window.addEventListener(ev, e => {
-  if (e.target && e.target.closest && e.target.closest('#drop, #qdrop')) return;
+  if (e.target && e.target.closest && e.target.closest('#drop')) return;
   e.preventDefault();
 }));
 
@@ -9542,8 +8945,6 @@ clearBtn.addEventListener('click', () => {
   text = ''; fileInput.value = '';
   // The folder picker was left selected here, so a "cleared" page would still
   // run whatever was chosen in it.
-  if (benchCase) benchCase.value = '';
-  if (mockFile) mockFile.value = '';
   clearWorkspaceFile();
   copyBtn.disabled = true;
   pagebar.textContent = ''; warn.textContent = '';
@@ -9565,21 +8966,30 @@ copyBtn.addEventListener('click', async () => {
 stopBtn.addEventListener('click', () => { if (controller) controller.abort(); });
 
 /* ---------- streaming run ---------- */
-runBtn.addEventListener('click', async () => {
-  // Always the one document in the workspace, streamed into the result panel.
-  // A batch cannot be streamed into one panel, which is why the Queue tab exists
-  // and why the workspace holds a single file.
-  if (!current && !(benchCase && benchCase.value) && !(mockFile && mockFile.value)) return;
-  // A read by hand takes the Result card back. The rounds it replaces are in the
-  // run log, and the Read button is disabled while a random test is in flight,
-  // so this can only ever discard a finished one.
+/* ---------- one read driver, two buttons ----------
+
+   The Workspace reads what is DROPPED on it and extracts; the OCR only tab
+   reads a NAMED case and stops after pass 1. Everything between those two ends
+   -- the stream, the page events, the transcript, the layout blocks, the
+   scoring, the ticker, the Stop -- is identical, so it is one function.
+
+   Two copies would drift, and the half that drifted would be the half nobody
+   was looking at: this is the same rule `_reply_label` follows server-side, and
+   the reason `_read_case` shares `prepare_input` and `log_run` with the real
+   endpoint rather than reimplementing them. A test path that differs from the
+   real one is a test of the test path.
+
+   `opts` is `{case, image, detail, extract}`. `extract: false` sends
+   `extract=0`, which the route already understands -- it is what a read-only
+   random-test round sends. */
+async function startRead(opts) {
   if (rtRows.length) { rtRows = []; rtPaint(); }
   // The read floor on screen, before the read that will be judged by it. The
   // change handler has almost always sent it already; this makes "the floor this
   // run used" the one the reader is looking at rather than the one that happened
   // to have landed. No-ops when they match.
   await pushReadFloor(readFloorInp);
-  runBtn.disabled = true; stopBtn.disabled = false; copyBtn.disabled = true;
+  readBusy(true); copyBtn.disabled = true;
   text = ''; pageStats = []; pageTexts = []; curPage = -1; cmpPage = 0;
   layPage = 0; laySel = null; enableLayout();
   roPage = 0; enableRawOut();
@@ -9593,13 +9003,14 @@ runBtn.addEventListener('click', async () => {
   startTicker();
 
   const body = new FormData();
-  const caseId = benchCase ? benchCase.value : '';
-  const fileName = mockFile ? mockFile.value : '';
-  if (caseId) body.append('case', caseId);        // server loads the PDF itself
-  else if (fileName) body.append('file', fileName); // ditto, from mockOcr/
-  else body.append('image', current);
-  body.append('detail', detailSel.value);
+  if (opts.case) body.append('case', opts.case);   // the server loads the PDF
+  else body.append('image', opts.image);
+  body.append('detail', opts.detail);
   body.append('reader', currentReader());
+  // Pass 2 is skipped rather than run and discarded, so the row's pass-2 columns
+  // are blank because nothing extracted -- not because an extraction returned
+  // nothing. Those are different states and the run log has to keep them apart.
+  if (opts.extract === false) body.append('extract', '0');
   controller = new AbortController();
 
   try {
@@ -9754,9 +9165,29 @@ runBtn.addEventListener('click', async () => {
     }
     paint();
   } finally {
-    paintServer();
-    stopBtn.disabled = true; controller = null;
+    // **`controller` is cleared BEFORE the repaint, not after.** `paintOcrOnly`
+    // reads it to decide whether a read is in flight, so clearing it second left
+    // the OCR only tab's Run button disabled for good once a run had finished --
+    // the button was painted against a controller that was about to be dropped.
+    controller = null;
+    readBusy(false);
   }
+}
+
+/* Both Run buttons and both Stops move together, because there is one Result
+   card and one `controller`: a Stop that looks live on the tab you are not
+   looking at is a control lying about what it will do. `paintServer` owns the
+   Workspace button's enabled state otherwise, so it is asked rather than set. */
+function readBusy(on) {
+  if (on) { runBtn.disabled = true; if (ocRun) ocRun.disabled = true; }
+  else { paintServer(); paintOcrOnly(); }
+  stopBtn.disabled = !on;
+  if (ocStop) ocStop.disabled = !on;
+}
+
+runBtn.addEventListener('click', () => {
+  if (!current) return;
+  startRead({ image: current, detail: detailSel.value, extract: true });
 });
 
 /* ---------- Fields only: pass 2 against the hand-written transcript ---------
@@ -9770,6 +9201,82 @@ runBtn.addEventListener('click', async () => {
    fetched here is the same file for display -- so the input is on screen beside
    the fields it produced -- out of the cache the compare view already fills. */
 let fxBusy = false;
+
+/* ---------- OCR only: pass 1 against the hand-written transcript ----------
+
+   The mirror of the Fields pane, and the two exist for one reason between them:
+   a wrong field is otherwise unattributable. Fields only removes the read from
+   the question; this removes the extraction, so a transcript score here is the
+   reader's alone with nothing downstream to blame.
+
+   It shares the process's reading engine with the Workspace rather than holding
+   its own -- one process, one choice -- and both pickers are painted from what
+   the server accepted, never kept in step by each other's change handlers. */
+const ocCase = document.getElementById('ocCase');
+const ocReader = document.getElementById('ocReader');
+const ocDetail = document.getElementById('ocDetail');
+const ocRun = document.getElementById('ocRun');
+const ocStop = document.getElementById('ocStop');
+const ocDot = document.getElementById('ocDot');
+const ocServerText = document.getElementById('ocServerText');
+const ocReason = document.getElementById('ocReason');
+const ocNote = document.getElementById('ocNote');
+
+function paintOcrOnly() {
+  if (!ocRun) return;
+  const local = currentEngine() === 'library';
+  const info = selectedReader();
+  if (!ocReader.disabled && ocReader.value !== currentReader())
+    ocReader.value = currentReader();
+  if (ocDetail.value !== detailSel.value) ocDetail.value = detailSel.value;
+  /* Vision IS required here, unlike the Fields pane: this pass sends an image.
+     A library reads it in-process, so what has to be available is the library
+     rather than the server -- the same test the Workspace Run button makes. */
+  const ok = local ? !!info.available : !!server.available;
+  ocDot.className = 'dot ' + (ok ? 'ok' : 'bad');
+  ocServerText.textContent = local
+    ? (info.label || currentReader()) + (ok ? ' · ' + (info.device || 'cpu')
+                                            : ' · not installed')
+    : ok ? (server.model || server.kind || 'server') + ' · ' + (server.kind || '')
+    : 'No model server at ' + server.url;
+  ocReason.classList.toggle('err', !ok);
+  ocReason.textContent = ok
+    ? 'No extraction runs, so the row keeps its pass-1 figures and leaves the '
+      + 'pass-2 columns blank.'
+    : ('⚠ ' + (local ? (info.reason || 'This OCR library is not available.')
+                     : (server.reason || '')));
+  ocRun.disabled = !ok || !ocCase.value || !!controller;
+}
+
+if (ocRun) {
+  // The engine and the Detail are process-wide, so moving either here moves it
+  // in the Workspace too -- and the Workspace repaints from the server, not from
+  // this handler.
+  ocReader.addEventListener('change', () =>
+    switchEngine(engineOfReader(ocReader.value), ocReader.value));
+  ocDetail.addEventListener('change', () => {
+    detailSel.value = ocDetail.value;
+    detailSel.dispatchEvent(new Event('change'));
+    paintOcrOnly();
+  });
+  ocCase.addEventListener('change', () => {
+    /* What the READ is about, not what a form would ask for. The field count
+       and the required count belong to pass 2, and printing them on a tab that
+       never extracts would describe work this run is not going to do. */
+    const c = (FX_CASES || []).find(x => x.id === ocCase.value);
+    ocNote.textContent = c
+      ? c.kind + ' · scored against solution/' + c.id + '.md'
+        + ((c.documents || []).length > 1
+           ? ' · ' + c.documents.length + ' documents in this file' : '')
+      : '';
+    paintOcrOnly();
+  });
+  ocRun.addEventListener('click', () => {
+    if (!ocCase.value) return;
+    startRead({ case: ocCase.value, detail: ocDetail.value, extract: false });
+  });
+  ocStop.addEventListener('click', () => { if (controller) controller.abort(); });
+}
 
 function paintFieldsOnly() {
   if (!fxRun) return;
@@ -9834,8 +9341,6 @@ async function runFieldsOnly() {
      and sitting above these fields it reads as a property of them. */
   if (controller) controller.abort();
   clearWorkspaceFile();
-  if (benchCase) benchCase.value = '';
-  if (mockFile) mockFile.value = '';
   stopTicker(); pageStats = []; renderStats();
   job = null; pageTexts = []; curPage = -1; cmpPage = 0; truth = null;
   cmpImg.removeAttribute('src');
@@ -10072,9 +9577,7 @@ showTab('raw');
 enableCompare();
 paintEndpoint();
 paintServer();
-refreshQueue();
 refreshRuns();
-initMode();
 </script>
 </body>
 </html>

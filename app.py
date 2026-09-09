@@ -3607,7 +3607,6 @@ def index():
         # invoices" is one glance rather than a reading of ten prose `kind`
         # lines. Blank sorts into its own group rather than being guessed at.
         cases=[case_payload(c) for c in scoring.cases_index().values()],
-        mock_files=mock_files(),
         endpoints=backends.endpoints(),
         # What pass 2 will run on, seeded at render so both extraction pickers
         # are right on first paint rather than only after a switch or Re-check.
@@ -3647,18 +3646,12 @@ def index():
         # cell by quoting the threshold, and a page quoting a number the process
         # is not running describes a build nobody has.
         script_min_chars=scoring.SCRIPT_MIN_CHARS,
-        # What a contest pins: how many from each end of the ranking it runs, and
-        # the Detail every contender runs at. Sent rather than repeated in the
-        # template for the same reason as the threshold above -- the page must
-        # describe the build it is talking to.
-        contest_top=randomtest.CONTEST_TOP,
-        contest_bottom=randomtest.CONTEST_BOTTOM,
-        contest_detail=randomtest.CONTEST_DETAIL,
-        # What a contest can be about. The page paints its picker from this so a
-        # subject added here cannot be missing there -- the same failure the
-        # field-label maps had when the schema widened.
-        contest_subjects=[{"id": sid, "label": spec["label"], "scope": spec["scope"]}
-                          for sid, spec in randomtest.SUBJECTS.items()],
+        # The contest controls were removed from the page on 2026-09-09 at the
+        # user's request, so nothing here describes them any more.
+        # `randomtest.contest_plan` and `POST /api/randomtest` with
+        # `{"contest": true}` are untouched: the planner is a pure function and
+        # the CLI still drives it, which is where a rematch of a ranking
+        # belongs -- it was never a thing to press mid-session.
     )
 
 
@@ -4655,10 +4648,10 @@ def _random_plan(body: dict) -> dict:
     # answer is that this pipeline has nothing installed.
     if engine and scope != "fields" and not pools["readers"]:
         raise ValueError(
-            "the LLM pipeline has no vision model to read with."
-            if engine == "llm" else
-            "no OCR library is installed, so the Python library pipeline has "
-            "nothing to read with.")
+            "no vision model is served, so the model server has nothing to "
+            "read with." if engine == "llm" else
+            "no OCR library is installed, so there is nothing to read with on "
+            "the library engine.")
     # A lock and an exclusion naming the same model is a contradiction, and the
     # refusal it would otherwise get -- "not served here" -- would send someone
     # looking at their model server.
