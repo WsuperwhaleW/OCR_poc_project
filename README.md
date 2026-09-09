@@ -122,8 +122,8 @@ on the target machine; it is off by default for compatibility.
 
 Choose **Local PaddleOCR** under Reading engine in the Workspace. Paddle jobs are
 serialized through one persistent
-worker, so models load once; concurrent queue workers report that they are waiting instead
-of starting duplicate model copies. Stop/cancel terminates an active Paddle process and
+worker, so models load once and concurrent callers wait rather than starting duplicate
+model copies. Stop/cancel terminates an active Paddle process and
 the next request starts a clean worker.
 
 The same evaluator and run log are used for both readers:
@@ -496,7 +496,7 @@ Two things to know:
   records both per row either way.
 
 Set the starting profile with `OCR_PROFILE` (`typhoon` or `dots`). Switching it applies to
-this process — the queue and any other browser tab included — and takes effect on the next
+this process — any other browser tab included — and takes effect on the next
 page read; a page already streaming finishes under the profile it started with.
 
 ### Stop a read that starts repeating (the loop backstop)
@@ -537,7 +537,7 @@ it instead of the rate. **The per-value marks stay** — those are what explain 
 blanking them would remove the evidence along with the number. A random-test round says
 **unscored** with the reason in place of its score.
 
-It applies to **every path that reads a page** — this pane, the queue, `POST /api/ocr`,
+It applies to **every path that reads a page** — this pane, `POST /api/ocr`,
 `POST /api/ocr/stream` and the random test — and it is applied at the moment a run is logged.
 A read that looped, was cut off at the token cap, or came back empty is left unscored whatever
 the floor says: that transcript is a fragment however it scored. A document with no
@@ -669,14 +669,14 @@ what `other_fields` is — everything the document type's own field set does not
 the document's own labels, which nothing scores. A step that owns one of those keys is a
 failure when it breaks, exactly as before.
 
-The switch is server-side and takes effect on the next extraction — including queued
-documents and the run log's `extract_mode` column, which records the shape each row actually
-ran in. It is **not** refused while the queue is busy, unlike switching model server.
+The switch is server-side and takes effect on the next extraction — and on the run log's
+`extract_mode` column, which records the shape each row actually ran in. It is **not**
+refused while a random test is running, unlike switching model server.
 
 **The fields on screen say which shape produced them**, first thing on the Fields tab status
 line: `single prompt` or `agentic · 7 steps`, then the seconds, tokens, model and grounded
 share. That is the mode this result ran in, not the current setting — the picker may have been
-switched since, and a result loaded from the queue can be older still.
+switched since, and a result read back from an earlier run can be older still.
 
 `AGENTIC_EXTRACT=1` starts in agentic mode; `AGENTIC_RETRIES` sets how many times a step may
 be re-asked (default 1, `0` to turn the retry off). Over HTTP, send `{"mode": "agentic"}` to
@@ -806,9 +806,11 @@ running it. Between them they isolate the two passes on the same document.
 The engine and the Detail are process-wide, so moving either here moves it in the Workspace
 too, and both panes paint from what the server accepted rather than from each other.
 
-**There is no Queue tab.** It was removed on 2026-09-09; `jobs.py` and the `/api/queue*`
-routes are still there and still refuse a server switch mid-batch, but nothing in the page
-submits work to them. For several documents, use `compare.py` or `randomtest.py`.
+**There is no queue.** The tab, `jobs.py`, the worker pool and every `/api/queue*` route
+were removed on 2026-09-09. For several documents, `compare.py` reads and scores every
+benchmark case and `randomtest.py` sweeps combinations — both from the CLI, both appending
+ordinary rows. What the queue's 409 protected did *not* go with it; see **Switching server**
+below.
 
 ### Model server picker
 
@@ -896,11 +898,15 @@ The run log records `extract_model` only where the two passes differed, and the 
 groups rows by the model that *extracted*, naming the reading model as `reading: …` underneath —
 a field score taken over a real transcript is partly a measurement of pass 1.
 
-Switching is **refused while the queue is running** (HTTP 409) — half a document read on
-one server and half on another would be logged and scored as if one server had done it.
-Finish or cancel those jobs first. A single streaming run is not blocked, but the switch
-only affects the *next* run: the model, backend and URL are captured per page as it is
-read.
+Switching is **refused while a random test is running** (HTTP 409) — a batch half-read on
+one server and half on another would be logged and scored as if one server had done it. Wait
+for it or stop it first.
+
+**A single streaming read is not blocked**, and never was. One read is attributed correctly
+whatever is selected next — the model, backend and URL are captured per page as it is read —
+and the switch simply takes effect on the following run. Only a run made of *several* reads
+can be split across two servers, which until 2026-09-09 meant the job queue and now means the
+random test. The guard moved with the subject rather than being deleted with the queue.
 
 Switching a **model** on Ollama stops the models it was holding, so the new one loads onto
 a card the old one has let go of. Ollama keeps every model it has served resident for its
@@ -914,8 +920,8 @@ Three things to know about it:
   `OLLAMA_UNLOAD_ON_SWITCH=0` if the Ollama server is shared with anything else.
 * **llama-server is untouched.** It serves the one model it was started with for the life
   of the process, so there is nothing a switch could release.
-* **It is skipped while the queue is working**, even though a model-only switch is allowed
-  there. Eviction goes to the same scheduler that is serving the run in flight.
+* **It is skipped while a random test is running**, even though a model-only switch is
+  allowed there. Eviction goes to the same scheduler that is serving the read in flight.
 
 The app never polls the model server. It asks for status when the page renders, when you
 press **Re-check**, and once at startup, and that is all.
@@ -1508,7 +1514,7 @@ to run first. The **Fields** cell marks an updated row.
 | Column | |
 |---|---|
 | `timestamp` | local time, seconds resolution |
-| `file`, `file_size_mb`, `pages`, `detail`, `source` | what was read, and how it got in (`upload`/`folder`/`case`/`queue`) |
+| `file`, `file_size_mb`, `pages`, `detail`, `source` | what was read, and how it got in (`upload`/`folder`/`case`) |
 | `server`, `backend`, `model` | which endpoint and model actually ran it; local readers record `local`, `paddleocr` or `easyocr`, and their recognizer |
 | `seconds`, `prefill_seconds`, `decode_seconds` | runtime, split into prompt processing and generation. The card shows the split under the total, because the two move for different reasons — prefill scales with pixels, decode with output length |
 | `tokens`, `tokens_per_second` | OCR output tokens; the rate is decode-only |
@@ -2474,21 +2480,20 @@ asked for.
 
 `POST /api/ocr/reader` — `{"reader":"easyocr","probe":true}` selects a reader
 and optionally verifies it. Any read request may override the process default by sending
-multipart field `reader=server|paddle|easyocr`; a queued job captures the reader it was
-submitted with.
+multipart field `reader=server|paddle|easyocr`.
 
 `GET /api/ocr/profile` — the pass-1 profile in force and the ones on offer:
 `{"profile":"typhoon","profiles":[{"id","label","note","system","reply"}, ...]}`.
 
 `POST /api/ocr/profile` — `{"profile":"dots"}` switches it, and answers with what was
-accepted. `400` for an unknown name. Not refused while the queue is busy: every page records
+accepted. `400` for an unknown name. Not refused while a random test runs: every page records
 the profile it ran under, so a batch split across two is still readable afterwards.
 
 `GET /api/ocr/loop-guard` — whether a cycling read is cut short, and the cap it would run to
 without it: `{"loop_guard":true,"max_tokens":4096}`.
 
 `POST /api/ocr/loop-guard` — `{"loop_guard":false}` switches it, and answers with what was
-accepted. `400` for anything that is not `true` or `false`. Not refused while the queue is
+accepted. `400` for anything that is not `true` or `false`. Not refused while a sweep is
 busy, for the same reason as the profile. Turning it off stops reads being **aborted**; it does
 not stop them being **detected**, so a run that cycled still comes back `looped`.
 
@@ -2497,7 +2502,7 @@ scored, and what the process started at: `{"min_read_pct":75.0,"default_pct":75.
 
 `POST /api/ocr/read-floor` — `{"min_read_pct":0}` moves it, and answers with what was accepted.
 A **percentage**, clamped to 0–100; `400` for anything that is not a number. Not refused while
-the queue is busy, for the same reason as the profile — each run is flagged as it finishes, so
+a sweep runs, for the same reason as the profile — each run is flagged as it finishes, so
 a batch split across the switch still says which rule wrote each row. What it cannot do is go
 back: a score this floor stopped being taken is not in the log, which is why the run-log card
 keeps a floor of its own.
@@ -2538,12 +2543,10 @@ everything else, which is most documents.
 | `POST /api/preview` | the prepared page **before** any read, so the Detail can be seen rather than guessed at. Multipart, taking the same `image` / `case` / `file` field as `/api/ocr` plus `detail` and an optional `page` (0-based). Answers with the PNG; `X-Preview-Pages`, `X-Preview-Detail` (as resolved), `X-Preview-Width`/`-Height` and `X-Preview-Source-Width`/`-Height` carry the numbers. No model server needed, and nothing is cached or logged |
 | `GET /api/health` | active server status (reachable, kind, model, vision) and whether the PDF/HEIF decoders are available |
 | `GET /api/servers` | every configured endpoint, what each one is, and which is active. `?probe=1` bypasses the status cache |
-| `POST /api/servers` | `{"url": "...", "model": "..."}`, either field optional. 409 while the queue has a job running |
+| `POST /api/servers` | `{"url": "...", "model": "..."}`, either field optional. 409 while a random test is running |
 | `POST /api/context` | set the Ollama context window for subsequent requests |
 | `GET /api/cases` · `GET /api/files` | benchmark cases, and readable documents in `mockOcr/`. Each case says `doc_types` (a list — a document is often more than one) and `field_truth`: whether it has a `solution/<id>.fields.json`, and so whether an extraction of it can be scored |
 | `GET /api/truth/<case>` | the hand-written ground truth for one case, verbatim, plus the case's pdf, kind and page count. 404 for an id that is not a case |
-| `GET`/`POST /api/queue` | list or enqueue. `GET /api/queue/<id>`, `DELETE /api/queue/<id>`, `POST /api/queue/clear`, `POST /api/queue/mode`, `POST /api/queue/workers` |
-| `POST /api/queue/run` | release the queue so workers pick up what is in it; `{"start": false}` stops it handing out more. Queueing alone never starts a read. `started` in the queue's stats says which state it is in |
 | `POST /api/match` | look up the ground-truth case for a file by name or sha256 |
 | `GET /api/runs?limit=50` | recent run-log rows, newest first, plus the compiled tables under the process settings |
 | `POST /api/runs/query` | the same payload recompiled under a different window, read floor and filter. Body `{limit, window, min_read_pct, include: {field: [...]}, exclude: {field: [...]}}`, every key optional and `null` meaning *use the process setting*. Filterable fields: `case`, `model`, `extract_model`, `extract_mode`, `backend`, `detail`, `ocr_profile`, `status`, `run_type`, `source`, `pipeline` (`both`/`read`/`extract`). **Writes nothing** — `runs` is always the unfiltered log, `totals` is compiled over what matched |
@@ -2631,7 +2634,6 @@ still never parses `.env` itself.
 | `scoring.py` | Ground-truth lookup and accuracy scoring, shared by page and CLI |
 | `segment.py` | How many documents are in one file, and which pages are which |
 | `runlog.py` | The CSV run log |
-| `jobs.py` | The in-process queue and its worker pool |
 | `paddle_runtime.py` | Interpreter discovery, serialization, lifecycle, timeouts, and cancellation for the optional Paddle worker |
 | `paddle_worker.py` | Isolated long-lived PaddleOCR JSON-lines worker and coordinate decoding |
 | `easy_runtime.py` | Interpreter discovery, serialization, lifecycle, timeouts, and cancellation for the optional EasyOCR worker |

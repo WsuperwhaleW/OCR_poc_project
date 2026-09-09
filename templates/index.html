@@ -93,7 +93,7 @@
     background: var(--panel); border: 1px solid var(--border);
     border-radius: 14px; padding: 18px;
   }
-  /* The controls follow the result down the page: the queue stays in view while
+  /* The controls follow the result down the page: the side pane stays in view while
      a long transcript is being read. */
   .side { position: sticky; top: 18px; max-height: calc(100vh - 36px); overflow-y: auto; }
   @media (max-width: 1080px) { .side { position: static; max-height: none; } }
@@ -2072,14 +2072,14 @@ let cmpView = 'source-model';
 const truthCache = {};
 // `current` is the workspace: one file, dropped but not yet run. A new drop
 // replaces it -- reading a document is a measurement, and they are tested one at
-// a time. Batches go to the queue, which has its own drop zone and its own Run.
+// a time. Several documents go through compare.py or randomtest.py.
 let current = null, controller = null, text = '';
 
 /* ---------- left-hand panes ---------- */
 const sideTabs = document.getElementById('sideTabs');
 const runNote = document.getElementById('runNote');
 /* The pane list is derived from the tabs rather than written out beside them.
-   It used to be a literal ['source', 'queue', 'fields'], and adding a fourth tab
+   It used to be a literal ['source', 'queue', 'fields'], and adding another tab
    left every pane hidden -- the button highlighted, nothing appeared, and there
    was no error anywhere to say why. A tab and its pane are one thing; naming
    them in two places means one of them is eventually forgotten. */
@@ -3012,7 +3012,7 @@ function paintRaw(target, result, reply) {
 }
 
 /* ---------- extraction mode: one shot, or a few fields at a time ----------
-   The switch lives on the server, not in this page: it applies to the queue and
+   The switch lives on the server, not in this page: it applies to the random test and
    to a run started from another tab as well as to Re-extract here, and every
    result says which mode produced it, so the button and the result cannot
    disagree about what just happened. */
@@ -3049,7 +3049,7 @@ function paintMode() {
       + 'in a nearby field it does not belong to.';
 }
 
-/* The server owns the setting -- it applies to the queue and to a run started
+/* The server owns the setting -- it applies to the random test and to a run started
    from another tab as well as to Re-extract here -- so the controls only ever
    show what came back from it. */
 async function setMode(next) {
@@ -3181,7 +3181,7 @@ function paintReadFloor() {
       + 'measurement of the read that produced it rather than of the extractor: '
       + 'a value pass 1 got wrong cannot then be '
       + 'extracted right. Applies to every path that reads a page — this pane, '
-      + 'the queue and the random test alike. Set it to <b>0</b> to score '
+      + 'the Workspace and the random test alike. Set it to <b>0</b> to score '
       + 'everything and let the run-log card decide what to average with its own '
       + 'floor; '
       + 'that one can be moved afterwards and this one cannot.'
@@ -3858,7 +3858,7 @@ function paintFieldBody() {
   const truth = truthIndex(extracted.field_score);
   const val = valIndex(extracted.validation);
   /* The form this document's TYPE asked for. Falls back to every key when a
-     result predates per-type forms, so an old run read back from the queue still
+     result predates per-type forms, so an old run read back from the log still
      renders in full rather than blank. */
   const asked = new Set(extracted.fields_asked
                         || Object.keys(FIELD_LABELS));
@@ -4156,12 +4156,12 @@ cmpToggle.addEventListener('click', () => {
   if (!compareEl.hidden) paintCompare();
 });
 
-/* The job queue was removed on 2026-09-09 at the user's request. Its server
-   side is untouched -- `jobs.py`, the `/api/queue*` routes, and the 409 that
-   refuses a server switch while a batch is in flight -- because those guards
-   protect any caller, not just the tab that is gone. Nothing in this page
-   submits work to it now; `randomtest.py` and `compare.py` drive batches from
-   the CLI instead. */
+/* The job queue was removed on 2026-09-09, tab and subsystem both. What its
+   409 protected did NOT go with it: a run is attributed to the server that ran
+   it, so a batch split across two servers would be logged as one. The counter
+   moved onto the random test, which is the batch this process still runs --
+   `app.sweep_running`. Several documents go through `compare.py` or
+   `randomtest.py`. */
 
 /* ---------- run log ----------
    Measurements only: the CSV behind this holds no transcript, no extracted
@@ -4195,7 +4195,7 @@ const rawDelete = document.getElementById('rawDelete');
    ranks on -- and it is now a starting point rather than the only reading.
 
    Sort state is per table and lives outside the paint functions, because those
-   repaint on every refresh and a column that reset itself whenever the queue
+   repaint on every refresh and a column that reset itself whenever the log
    drained would be unusable during exactly the run it was sorting for.
 
    `logSort[id]` is `{key, dir}`; a table sets its default the first time it
@@ -7715,7 +7715,7 @@ runRefresh.addEventListener('click', refreshRuns);
 
 /* ---------- the card keeps itself current ----------
    **Every refresh used to be tied to something this page had started** — a read,
-   a queue drain, a filter change — so rows arriving from anywhere else sat
+   a sweep finishing, a filter change — so rows arriving from anywhere else sat
    unread until somebody reloaded. A `curl` against /api/ocr, a random test, a
    second tab, another process: all invisible. This watches for them.
 
@@ -7812,9 +7812,8 @@ themeSeg.addEventListener('click', ev => {
 
 applyTheme(storedTheme());
 
-/* The queue's run-mode and worker controls went with its tab. `jobs.py` keeps
-   its pool and `/api/queue/mode` still sets it -- the setting is a property of
-   the process, not of a tab -- but nothing on this page reads or moves it now. */
+/* The run-mode and worker controls went with the queue itself: with nothing
+   running batches in-process there is no pool to size. */
 
 /* ---------- accuracy vs ground truth ---------- */
 function accColour(v) {
@@ -8331,8 +8330,8 @@ function paintReader() {
 
 /* Switch engine, optionally naming a reader inside it. One request, and the
    answer repaints from what came back -- a refused switch must leave every
-   control on the page showing what is really active, the same rule the queue's
-   409 taught the model pickers. */
+   control on the page showing what is really active, the same rule a refused
+   server switch taught the model pickers. */
 async function switchEngine(engine, reader) {
   readerSel.disabled = true;
   if (ocReader) ocReader.disabled = true;
@@ -8366,7 +8365,7 @@ async function switchEngine(engine, reader) {
 }
 /* The picker names a READER; the engine follows from it. One request, and the
    pane repaints from what came back -- a refused switch must leave every control
-   showing what is really active, the rule the queue's 409 taught these pickers. */
+   showing what is really active, the rule a refused switch taught these pickers. */
 readerSel.addEventListener('change', () =>
   switchEngine(engineOfReader(readerSel.value), readerSel.value));
 
@@ -8420,7 +8419,7 @@ function paintModelPicker(sel, field, models) {
 }
 /* Both pairs of pickers are painted from the status that came back, never kept
    in step by each other's change handlers: a switch that is refused -- the 409
-   while the queue is working is the one that bites -- has to leave every picker
+   while a random test is running is the one that bites -- has to leave every picker
    on the page showing what is really active, not what was asked for. */
 function paintEndpoint() {
   paintReader();
@@ -8670,7 +8669,7 @@ updateNote();
 /* ---------- context window ----------
    Sent with every request, to whichever server is active: Ollama reads it as
    options.num_ctx, llama-server as n_ctx. Changeable at any time, including
-   mid-queue -- jobs already in flight keep the window they started on. */
+   mid-sweep -- a read already in flight keeps the window it started on. */
 const ctxSel = document.getElementById('ctxSel');
 const ctxNote = document.getElementById('ctxNote');
 function paintCtx() {

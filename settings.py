@@ -21,7 +21,6 @@ Three things worth knowing before editing anything here:
 """
 
 import config
-import jobs  # for MAX_WORKERS only; jobs.py imports nothing but the standard library
 
 # --------------------------------------------------------------------------
 # intake limits
@@ -49,13 +48,6 @@ ACCEPTED_SUFFIXES = {".pdf", ".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif",
 # Held in memory, so this is a RAM ceiling as much as a history depth: a 10-page
 # document at `medium` is ~40 MB of PNG. Lower it on a small server.
 MAX_JOBS = config.env_int("MAX_JOBS", 5, minimum=1, maximum=100)
-
-# Queue workers. 0 means "one per slot the model server advertises", which is the
-# right answer: more workers than slots adds no throughput, it just moves the wait
-# out of jobs.py -- where it is visible and cancellable -- into llama.cpp's own
-# queue, where it is neither. Set OCR_WORKERS only to override that.
-WORKERS_OVERRIDE = config.env_int("OCR_WORKERS", 0, minimum=0,
-                                  maximum=jobs.MAX_WORKERS)
 
 # --------------------------------------------------------------------------
 # request timeouts
@@ -288,7 +280,7 @@ AUTO_SELECT_MAX_CANDIDATES = config.env_int("AUTO_SELECT_MAX_CANDIDATES", 8,
 AUTO_BEST_MODEL = config.env_bool("AUTO_BEST_MODEL", True)
 
 # Which pass-1 shape to start in: a key of `prompts.OCR_PROFILES`. Not validated
-# here -- this module deliberately imports nothing but `config` and `jobs`, so
+# here -- this module deliberately imports nothing but `config`, so
 # `app.py` checks the name against the table and falls back with a warning, the
 # same way the env readers above degrade one setting instead of killing startup.
 #

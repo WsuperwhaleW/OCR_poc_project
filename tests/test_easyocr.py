@@ -9,7 +9,6 @@ from PIL import Image
 import app
 import easy_runtime
 import easy_worker
-import jobs
 import randomtest
 import runlog
 import scoring
@@ -109,7 +108,11 @@ class EasyAppTests(unittest.TestCase):
             response = self.client.post("/api/ocr", data={"reader": "easyocr"})
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.get_json()["extracted"], extracted)
-        extract.assert_called_once_with("Invoice INV-1", case_id=None)
+        # `pages` arrived with document segmentation (2026-09-08): pass 2 is
+        # given the page list so a multi-document file can be split into one
+        # form per document. A one-page read is a one-element list.
+        extract.assert_called_once_with("Invoice INV-1", case_id=None,
+                                        pages=["Invoice INV-1"])
 
     def test_worker_failure_is_a_clear_503(self):
         with patch("app.prepare", return_value=(
@@ -159,19 +162,26 @@ class EasyAppTests(unittest.TestCase):
         easy_status.assert_called_once_with(probe=True)
         paddle_status.assert_called_once_with(probe=False)
 
-    def test_queue_worker_uses_captured_easyocr_reader(self):
-        job = jobs.Job("sample.pdf", "upload", "medium", b"pdf", "easyocr")
-        with patch("app.prepare_input", return_value=(
-                [self.page], "medium", "queue-job", None)), \
-             patch("app.consume_easy_pages", return_value=(
-                ["queue text"], self.stats, self.model_info)) as consumed, \
-             patch("app.evaluate_if_known", return_value=None), \
-             patch("app.log_run"), patch.object(app, "EXTRACT", False):
-            result = app.run_job(job)
-        self.assertEqual(result["reader"], "easyocr")
-        self.assertEqual(result["text"], "queue text")
-        self.assertEqual(job.stage, "finished")
-        consumed.assert_called_once()
+    def test_request_reader_overrides_the_process_default(self):
+        """A per-request `reader` wins over whatever the process is set to.
+
+        This replaced a test of the queue worker when the queue was removed
+        (2026-09-09). It is the same property on the path that still exists: the
+        reader a REQUEST names is the one that reads it, so a script can drive
+        either engine without moving process state under anyone else.
+        """
+        app.set_reader("server")
+        self.addCleanup(app.set_reader, "server")
+        with patch("app.prepare", return_value=(
+                [self.page], "medium", "job-r", None, self.source)),              patch("app.consume_easy_pages", return_value=(
+                ["request text"], self.stats, self.model_info)),              patch("app.log_run"), patch.object(app, "EXTRACT", False):
+            response = self.client.post("/api/ocr", data={"reader": "easyocr"})
+        body = response.get_json()
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(body["text"], "request text")
+        self.assertEqual(body["backend"], "easyocr")
+        # And the process was NOT moved by it.
+        self.assertEqual(app.current_reader(), "server")
 
     def test_random_pool_offers_both_available_local_readers(self):
         available = {"available": True}
@@ -211,10 +221,6 @@ class EasyAppTests(unittest.TestCase):
 
 
 class EasyPersistenceTests(unittest.TestCase):
-    def test_queue_captures_reader(self):
-        job = jobs.Job("x.pdf", "upload", "medium", b"x", "easyocr")
-        self.assertEqual(job.to_dict()["reader"], "easyocr")
-
     def test_easyocr_metadata_is_written_to_shared_csv(self):
         path = Path("logs") / "test-easy-runs.csv"
         path.unlink(missing_ok=True)

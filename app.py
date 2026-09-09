@@ -32,7 +32,6 @@ import config
 import easy_runtime
 import fieldscore
 import grounding
-import jobs
 import machine
 import normalise
 import paddle_runtime
@@ -128,7 +127,6 @@ from settings import (
     TRIM_MARGINS,
     TRIM_PAD,
     TRIM_TOLERANCE,
-    WORKERS_OVERRIDE,
     sampler_extras,
 )
 
@@ -192,6 +190,75 @@ def job_context(job_id: str) -> dict:
     """
     with _jobs_lock:
         return dict(_job_meta.get(job_id or "", {}))
+
+
+# --------------------------------------------------------------------------
+# Sweeps in flight
+#
+# **What the queue's 409 was actually protecting, kept after the queue went.**
+# The rule is that a run is attributed to the server that ran it: model, backend
+# and URL are captured per page as it is read, so half a BATCH on one server and
+# half on another would be logged and scored as if one server had done it. The
+# job queue used to be the only batch this process could run, so the guard
+# counted queued jobs.
+#
+# The random test is a batch too -- many rounds, and it switches models between
+# every one of them -- and it was never covered by that count, because it was not
+# the queue. So the counter moved to the thing that still needs it rather than
+# being deleted with the thing that did.
+#
+# **A single streaming read is deliberately NOT counted.** That was true before
+# and stays true: one read is attributed correctly whatever is selected next, and
+# the switch simply takes effect on the following run. It is only a run made of
+# SEVERAL reads that can be split across two servers.
+# The thread running a sweep, or None. **The THREAD is the sweep** -- Werkzeug's
+# threaded server handles one request per thread and does not pool them, so a
+# request that ended, however it ended, is a thread that is no longer alive.
+_sweep_thread = None
+_sweep_lock = threading.Lock()
+
+
+def begin_sweep():
+    """Mark this thread as running a sweep."""
+    global _sweep_thread
+    with _sweep_lock:
+        _sweep_thread = threading.current_thread()
+
+
+def end_sweep():
+    """Release it. Idempotent, and only the thread that took it may release."""
+    global _sweep_thread
+    with _sweep_lock:
+        if _sweep_thread is threading.current_thread():
+            _sweep_thread = None
+
+
+def sweeps_running() -> bool:
+    """Is a multi-read run in flight on some OTHER thread?
+
+    **What a client disconnect actually does, measured rather than assumed, on a
+    minimal Flask app against the dev server:** an abandoned streaming response
+    is NOT stopped -- it runs every remaining chunk, then its generator's
+    `finally` runs and the request thread dies. `call_on_close` never fires at
+    all. Both halves of that are the opposite of what was assumed while this was
+    built, and both cost time: a guard that stayed at 409 for a minute after a
+    killed `curl` reads exactly like a leaked counter, and is not one -- the
+    sweep really was still reading.
+
+    So `end_sweep` in the generator's `finally` is sufficient on this server, and
+    the thread test is what makes it not DEPEND on that. A dead thread cannot
+    still be reading, so it is exact, needs no timeout to guess with, and cannot
+    strand the guard if a `finally` is ever skipped -- which is worth having
+    because the failure it prevents is a process that refuses every server switch
+    until it is restarted.
+
+    **A 409 that outlasts the client is therefore correct**, not stale: the run
+    is still going, and it is still the run the guard is protecting.
+    """
+    with _sweep_lock:
+        thread = _sweep_thread
+    return bool(thread and thread.is_alive()
+                and thread is not threading.current_thread())
 
 
 # --------------------------------------------------------------------------
@@ -1224,7 +1291,7 @@ def resolve_segments(text: str, pages=None, status: dict = None):
                            "splitting is off (SEGMENT_DOCUMENTS=0)"), "whole"
     if len(pages) > SEGMENT_MAX_PAGES:
         # A file this long is a batch of documents rather than a document, and
-        # the queue is the thing for a batch. Read as one rather than split
+        # a sweep is the thing for a batch. Read as one rather than split
         # badly, and it says so.
         return segment.one(pages, classify_transcript, text,
                            "the file has %d pages, over SEGMENT_MAX_PAGES=%d"
@@ -2079,7 +2146,7 @@ def _extract_agentic(text: str, status: dict, form: dict, only=None):
         "fields": ordered,
         "raw": "\n\n".join(replies),
         # On the result as well as on the event that announced the steps: a
-        # result read back from the queue, or from the blocking endpoint, never
+        # result read back from a sweep, or from the blocking endpoint, never
         # saw the event, and a step's question is unreadable without what led it.
         "prompt_prefix": prefix,
         "grounding": grounding.check(ordered, text, form["keys"],
@@ -2122,7 +2189,7 @@ def _extract_agentic(text: str, status: dict, form: dict, only=None):
 
 # Switched from the page rather than read from the environment per run, because it
 # is a thing you flip while looking at a document that came out wrong. Held for the
-# process, not per request: a batch queued now and a Re-extract clicked during it
+# process, not per request: a sweep running now and a Re-extract clicked during it
 # both extract the same way, and every result carries the mode it actually ran in
 # so a log row is still attributable when it is switched mid-batch.
 _extract_mode = "agentic" if AGENTIC_EXTRACT else "single"
@@ -2280,7 +2347,7 @@ def apply_read_floor(payload: dict, floor: float = None) -> str:
 
     **The one place the rule is applied, so no path can be left out of it.** It
     used to live in `_read_case` alone -- the random test's full rounds -- and a
-    document read through the page, the queue or `/api/ocr` wrote a field score
+    document read through the page or `/api/ocr` wrote a field score
     however badly it had been read. Two kinds of row in one file, with nothing in
     the CSV to say which rule each was written under. Called from `log_run`,
     which every read path goes through on its way to the log, and once more in
@@ -2858,7 +2925,7 @@ def finish_page(raw: str, stats: dict | None = None, profile: str = None) -> str
     """One page's raw reply -> its transcript, with the boxes kept on `stats`.
 
     Called wherever a page finishes -- the streaming endpoint, the blocking one
-    and the queue worker -- so all three produce the same thing from the same
+    and the random test -- so all three produce the same thing from the same
     bytes. `layout` rides on the page stats, which already travel to the browser
     in `page_done` and in `summarise`'s `page_stats`, so nothing new had to be
     plumbed for it; `runlog.record` names the columns it writes, so the log is
@@ -3054,7 +3121,7 @@ def paddle_page_result(event: dict, image: Image.Image) -> tuple[str, dict]:
 
 
 def consume_paddle_pages(pages, cancel=None, progress=None):
-    """Blocking Paddle read shared by the queue, CLI route and random helpers."""
+    """Blocking Paddle read shared by the CLI route and the random helpers."""
     texts, all_stats, model_info = [], [], {}
     for event in paddle_events(pages, cancel):
         kind = event.get("event")
@@ -3234,7 +3301,7 @@ def summarise(all_stats, detail, started, job_id=None):
     }
 
 
-# Two queued jobs for the same case would otherwise interleave their writes to
+# Two concurrent runs of the same case would otherwise interleave their writes to
 # solution/out/<id>.txt and leave a spliced transcript on disk.
 _out_lock = threading.Lock()
 
@@ -3299,7 +3366,7 @@ def log_run(summary: dict, source: dict, status: str = None, error=None,
     held open, and losing it costs the update, not the run.
 
     **The read floor is applied here**, before the row is built, because this is
-    the one funnel every read path goes through -- the page, the queue, the
+    the one funnel every read path goes through -- the page, the random test, the
     blocking route and the random test. Applying it at each of those instead is
     how it came to be applied at exactly one of them. See `apply_read_floor`.
     """
@@ -3447,148 +3514,6 @@ def prepare(request_files, form):
 # routes
 # --------------------------------------------------------------------------
 
-def run_job(job):
-    """Worker body: OCR every page, then extract the fields.
-
-    Cancellation is checked between pages rather than mid-page -- llama.cpp has no
-    way to abandon a generation already in flight, so a finer granularity would be
-    a lie about how quickly Cancel takes effect.
-    """
-    data, case = (None, None)
-    if job.kind == "case":
-        data, case = case_bytes(job.payload)
-    elif job.kind == "file":
-        data, case = resolve_mock(job.payload)
-    else:
-        data = job.payload
-        case, _how = scoring.case_for_upload(filename=job.name, data=data)
-    source = describe_source(job.name, data, "queue")
-
-    job.stage = "preparing"
-    pages, detail, page_job_id, case = prepare_input(data, job.detail, case, source)
-    job.pages_total = len(pages)
-    job.detail = detail
-
-    reader = resolve_reader(job.reader)
-    started = time.perf_counter()
-    collected, all_stats = [], []
-    payload = {}
-    # Logged from `finally` so a cancelled or failed job still leaves a row --
-    # a read that died after four minutes is exactly what you want recorded.
-    try:
-        if reader in ("paddle", "easyocr"):
-            label = "PaddleOCR" if reader == "paddle" else "EasyOCR"
-            consume = (consume_paddle_pages if reader == "paddle"
-                       else consume_easy_pages)
-            # A second queue thread blocks on the singleton worker's request
-            # lock. Name that wait before entering it; there are deliberately no
-            # heartbeat events until this job owns the worker.
-            job.stage = f"waiting for {label} worker"
-
-            def progress(event):
-                kind = event.get("event")
-                if kind == "loading":
-                    job.stage = f"loading {label} models"
-                elif kind == "heartbeat":
-                    if not job.stage:
-                        job.stage = f"waiting for {label} worker"
-                elif kind == "page_start":
-                    job.stage = (f"{label} page {event['page']} of "
-                                 f"{event['total']}")
-                elif kind == "page_result":
-                    job.pages_done = int(event.get("page") or job.pages_done)
-
-            try:
-                collected, all_stats, model_info = consume(
-                    pages, job._cancel, progress)
-            except (paddle_runtime.PaddleCancelled,
-                    easy_runtime.EasyCancelled):
-                raise jobs.Cancelled()
-        else:
-            model_info = None
-            for index, page in enumerate(pages, 1):
-                job.check_cancelled()
-                job.stage = f"reading page {index} of {len(pages)}"
-                stats = {}
-                text = "".join(stream_page(page, stats))
-                # Read back under the profile this page ran with, not the one set
-                # now: a layout-JSON reply flattened as Markdown would be logged
-                # and scored as a page of JSON.
-                collected.append(finish_page(text, stats))
-                all_stats.append(stats)
-                job.pages_done = index
-
-        job.check_cancelled()
-        text = join_page_texts(collected)
-
-        summary = (local_summary(reader, all_stats, detail, started,
-                                 page_job_id, model_info)
-                   if reader != "server"
-                   else summarise(all_stats, detail, started, page_job_id))
-        payload = {"text": text, "pages": collected, "reader": reader, **summary}
-        payload["truth"] = evaluate_if_known(case, text)
-
-        if EXTRACT and text.strip():
-            job.check_cancelled()
-            job.stage = "extracting fields"
-            # Stepped through rather than called, so agentic mode can name the
-            # step in the queue row and can be cancelled between steps. Single
-            # mode yields nothing, so this is the plain call it used to be.
-            stream = extract_fields_stream(
-                text, case_id=case["id"] if case else None, pages=collected)
-            while True:
-                try:
-                    event = next(stream)
-                except StopIteration as stop:
-                    payload["extracted"] = stop.value
-                    break
-                if event.get("event") == "extract_step" \
-                        and event.get("status") == "running":
-                    job.stage = (f"extracting {event['step']}/{event['total']}:"
-                                 f" {event['title']}")
-                    job.check_cancelled()
-        job.stage = "finished"
-        log_run(payload, source)
-        return payload
-    except jobs.Cancelled:
-        partial = (local_summary(reader, all_stats, detail, started, page_job_id,
-                                 locals().get("model_info"))
-                   if reader != "server"
-                   else summarise(all_stats, detail, started, page_job_id))
-        log_run(payload or partial,
-                source, status="cancelled")
-        raise
-    except Exception as err:
-        partial = (local_summary(reader, all_stats, detail, started, page_job_id,
-                                 locals().get("model_info"))
-                   if reader != "server"
-                   else summarise(all_stats, detail, started, page_job_id))
-        log_run(payload or partial,
-                source, error=err)
-        raise
-
-
-def server_slots():
-    """Parallel slots the active server advertises, or None if it does not.
-
-    llama-server reports `total_slots`; Ollama's parallelism is set by
-    OLLAMA_NUM_PARALLEL and is not exposed over the API, so it stays unknown and
-    the page simply does not claim a number.
-    """
-    try:
-        return backends.status().get("slots")
-    except Exception:
-        return None
-
-
-def default_workers():
-    """One worker per server slot: more just hides the wait inside the server."""
-    if WORKERS_OVERRIDE:
-        return WORKERS_OVERRIDE
-    return max(1, int(server_slots() or 1))
-
-
-job_queue = jobs.JobQueue(run_job, workers=default_workers())
 
 
 @app.get("/")
@@ -3664,7 +3589,7 @@ def health():
 def context_set():
     """Set the context window sent with every later request.
 
-    Deliberately not gated on the queue: the window is a per-request field, so
+    Deliberately not gated on a sweep: the window is a per-request field, so
     changing it mid-batch is a legitimate thing to do and the run log records
     what each row was read with. Jobs already in flight keep the window they
     started on.
@@ -3689,8 +3614,10 @@ def servers_list():
 def servers_select():
     """Switch the app to another model server, and optionally another model.
 
-    Refused while the queue is working: a document half-read on one server and
-    half on another would be logged and scored as if one server had done it.
+    Refused while a SWEEP is working -- a random test, which switches models
+    between rounds: a batch half-read on one server and half on another would be
+    logged and scored as if one server had done it. A single streaming read is
+    not blocked and never was; the switch takes effect on the next run.
     """
     body = request.get_json(silent=True) or {}
     url = (body.get("url") or "").strip()
@@ -3701,17 +3628,17 @@ def servers_select():
     if not url and not model and extract is None:
         return jsonify(error="Give a url, a model, or both."), 400
 
-    running = job_queue.stats()["counts"].get("running", 0)
+    running = sweeps_running()
     if running and url and backends.clean_url(url) != backends.active_url():
-        return jsonify(error=f"{running} job(s) still running on "
-                             f"{backends.active_url()}. Wait or cancel them "
-                             "before switching server."), 409
+        return jsonify(error=f"A run is in flight on {backends.active_url()}. "
+                             "Wait for it or stop it before switching "
+                             "server."), 409
 
     try:
-        # Unloading is vetoed while anything is running. A model-only switch is
-        # allowed mid-queue (it takes effect on the next run), but the eviction
-        # is a request to the same scheduler serving the run in flight, so a
-        # queue that is working keeps its weights and the next switch frees them.
+        # Unloading is vetoed while a sweep is running. A model-only switch is
+        # allowed mid-sweep (it takes effect on the next round), but the eviction
+        # is a request to the same scheduler serving the read in flight, so a
+        # sweep that is working keeps its weights and the next switch frees them.
         if url or model:
             server = backends.select(url or None, model or None, unload=not running)
         else:
@@ -3967,7 +3894,7 @@ def _requested_steps(body):
     A benchmark handle, not a setting: it is what makes a change to one step's
     prompt measurable over several documents and models without paying for the
     steps the change did not touch. Held per request rather than in process
-    state, so nothing the page or the queue does next inherits it.
+    state, so nothing the page or a later round inherits it.
 
     A restricted result carries `steps_only`, which turns off the field score and
     fills the run log's `extract_steps` column -- both because the keys the run
@@ -4112,7 +4039,7 @@ def extract_mode_get():
 def extract_mode_set():
     """Switch the shape of pass 2 for everything this process extracts next.
 
-    Unlike switching server, this is NOT refused while the queue is busy. Mixing
+    Unlike switching server, this is NOT refused while a sweep is running. Mixing
     the two within a batch costs nothing to interpret, because each result and
     each log row carries the mode that produced it -- what the server-switch 409
     protects against is a row that cannot say which server ran it, and there is no
@@ -4226,7 +4153,7 @@ def ocr_profile_get():
 def ocr_profile_set():
     """Switch the pass-1 shape for everything this process reads next.
 
-    Not refused while the queue is busy, for the same reason switching extraction
+    Not refused while a sweep is running, for the same reason switching extraction
     mode is not: every page stamps the profile it ran under onto its own stats, so
     a batch split across two profiles still says which read what. Switching
     *server* mid-batch is refused because nothing there could say so.
@@ -4249,7 +4176,7 @@ def loop_guard_get():
 def loop_guard_set():
     """Turn the read backstop on or off for everything this process reads next.
 
-    Not refused while the queue is busy, for the same reason the profile and the
+    Not refused while a sweep is running, for the same reason the profile and the
     extraction mode are not: every page stamps the guard it ran under onto its own
     stats, so a batch split across the switch still says which page ran under
     which rule.
@@ -4277,7 +4204,7 @@ def read_floor_set():
     every control that sets it. Getting that backwards scores everything or
     nothing.
 
-    Not refused while the queue is busy, for the same reason the profile and the
+    Not refused while a sweep is running, for the same reason the profile and the
     extraction mode are not: the flag it decides is written onto each run as that
     run finishes, so a batch split across the switch still says which rule each
     row was written under. What it cannot do is go back -- a score this floor
@@ -4337,148 +4264,6 @@ def resolve_mock(name: str):
 @app.get("/api/files")
 def files_list():
     return jsonify(folder=str(MOCK_DIR), files=mock_files())
-
-
-@app.post("/api/queue/mode")
-def queue_mode():
-    """Switch between running one document at a time and running several.
-
-    Concurrent mode is guided by the server's slot count: beyond that the extra
-    workers only queue inside the model server, where the wait is invisible.
-    """
-    body = request.get_json(silent=True) or {}
-    mode = (body.get("mode") or "").strip().lower()
-    if mode not in ("sequential", "concurrent"):
-        return jsonify(error="mode must be 'sequential' or 'concurrent'."), 400
-
-    slots = server_slots()
-
-    if mode == "sequential":
-        job_queue.set_auto_scale(False)
-        job_queue.set_workers(1)
-    else:
-        # Concurrent means "as wide as the batch": queueing five documents
-        # starts five requests. An explicit worker count is a floor, not a cap --
-        # the slot count is advice printed on the page, not a limit enforced here.
-        job_queue.set_auto_scale(True)
-        requested = body.get("workers")
-        target = int(requested) if requested else max(job_queue.worker_count, 2)
-        job_queue.set_workers(target)
-
-    return jsonify(mode=mode, llama_slots=slots, **job_queue.stats())
-
-
-@app.post("/api/queue/run")
-def queue_run():
-    """Start the queue, or stop it handing out more work.
-
-    Queueing a document no longer starts it: the queue holds until this is
-    called, which is what makes the run mode and the worker count settable
-    against a batch you can already see. `{"start": false}` pauses -- a document
-    already in flight finishes, because llama.cpp cannot abandon a generation
-    it has begun and pretending otherwise would be a lie about what the button
-    does. Cancelling is `DELETE /api/queue/<id>`.
-
-    A batch that drains closes the gate behind it, so the next one waits for its
-    own start.
-    """
-    body = request.get_json(silent=True) or {}
-    if body.get("start", True):
-        job_queue.start()
-    else:
-        job_queue.pause()
-    # stats() already carries "started"; passing it again would be a duplicate
-    # keyword argument.
-    return jsonify(**job_queue.stats())
-
-
-@app.get("/api/queue")
-def queue_list():
-    return jsonify(jobs=[j.to_dict() for j in job_queue.list()], **job_queue.stats())
-
-
-@app.post("/api/queue")
-def queue_add():
-    """Enqueue one or more documents. Accepts uploads and/or case ids.
-
-    Everything in the request is validated and read first, then handed to the
-    queue in one go. Nothing starts running until the whole batch is queued, so
-    a multi-file upload is a fair concurrency test rather than a head start for
-    whichever file was parsed first.
-    """
-    detail = resolve_detail(request.form.get("detail", DEFAULT_DETAIL))
-    try:
-        reader = resolve_reader(request.form.get("reader"))
-    except ValueError as error:
-        return jsonify(error=str(error)), 400
-
-    specs = []
-    # Case ids may be repeated: cases=sol001&cases=sol002
-    for case_id in request.form.getlist("cases"):
-        case_id = case_id.strip()
-        if not case_id:
-            continue
-        try:
-            _data, case = case_bytes(case_id)
-        except ValueError as err:
-            return jsonify(error=str(err)), 400
-        specs.append((case_id, "case", detail, case_id, reader))
-
-    for name in request.form.getlist("files"):
-        name = name.strip()
-        if not name:
-            continue
-        try:
-            resolve_mock(name)          # validate now, re-read in the worker
-        except ValueError as err:
-            return jsonify(error=str(err)), 400
-        specs.append((name, "file", detail, name, reader))
-
-    for upload in request.files.getlist("image"):
-        if not upload.filename:
-            continue
-        # Read now: the request object is gone by the time a worker picks it up.
-        specs.append((upload.filename, "upload", detail, upload.read(), reader))
-
-    if not specs:
-        return jsonify(error="Nothing to queue."), 400
-    added = job_queue.submit_many(specs)
-    return jsonify(added=[j.to_dict() for j in added], **job_queue.stats())
-
-
-@app.get("/api/queue/<job_id>")
-def queue_get(job_id):
-    job = job_queue.get(job_id)
-    if not job:
-        return jsonify(error="No such job."), 404
-    return jsonify(job.to_dict(include_result=True))
-
-
-@app.delete("/api/queue/<job_id>")
-def queue_cancel(job_id):
-    job = job_queue.cancel(job_id)
-    if not job:
-        return jsonify(error="No such job."), 404
-    return jsonify(job.to_dict())
-
-
-@app.post("/api/queue/clear")
-def queue_clear():
-    return jsonify(removed=job_queue.clear_finished(), **job_queue.stats())
-
-
-@app.post("/api/queue/workers")
-def queue_workers():
-    body = request.get_json(silent=True) or {}
-    try:
-        count = int(body.get("workers", 1))
-    except (TypeError, ValueError):
-        return jsonify(error="workers must be a number."), 400
-    job_queue.set_workers(count)
-    slots = server_slots()
-    # stats() already carries "workers"; passing it separately as well would be a
-    # duplicate keyword argument.
-    return jsonify(llama_slots=slots, **job_queue.stats())
 
 
 @app.post("/api/match")
@@ -4742,15 +4527,27 @@ def random_test_stream():
     except ValueError as err:
         return jsonify(error=str(err)), 400
 
-    # Refused for the same reason switching server is: a batch half-read on one
-    # model and half on another would be logged as if one had done it, and this
-    # switches models between every round.
-    running = job_queue.stats()["counts"].get("running", 0)
-    if running:
-        return jsonify(error=f"{running} job(s) still running. Wait or cancel "
-                             "them before starting a random test."), 409
+    # One sweep at a time, for the reason switching server is refused during one:
+    # two of these interleaved would each be switching the process's model out
+    # from under the other, and both would log rounds against a server the other
+    # had just moved. The page disables its own button; this is the same rule for
+    # a caller that is not the page.
+    if sweeps_running():
+        return jsonify(error="A random test is already running. Wait for it or "
+                             "stop it before starting another."), 409
+
+    begin_sweep()
 
     def generate():
+        try:
+            yield from rounds()
+        finally:
+            # The ordinary path: the rounds ran out, or one raised. An abandoned
+            # stream never reaches this, and does not need to -- see
+            # `sweeps_running`, which asks whether the thread is still alive.
+            end_sweep()
+
+    def rounds():
         started = time.perf_counter()
         yield json.dumps({"event": "plan", **planned}) + "\n"
         completed = failed = 0

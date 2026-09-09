@@ -7,7 +7,6 @@ from unittest.mock import patch
 from PIL import Image
 
 import app
-import jobs
 import paddle_runtime
 import paddle_worker
 import runlog
@@ -126,7 +125,11 @@ class PaddleAppTests(unittest.TestCase):
             response = self.client.post("/api/ocr", data={"reader": "paddle"})
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.get_json()["extracted"], extracted)
-        extract.assert_called_once_with("Invoice INV-1", case_id=None)
+        # `pages` arrived with document segmentation (2026-09-08): pass 2 is
+        # given the page list so a multi-document file can be split into one
+        # form per document. A one-page read is a one-element list.
+        extract.assert_called_once_with("Invoice INV-1", case_id=None,
+                                        pages=["Invoice INV-1"])
 
     def test_worker_failure_is_a_clear_503(self):
         with patch("app.prepare", return_value=(
@@ -176,10 +179,6 @@ class PaddleAppTests(unittest.TestCase):
 
 
 class PersistenceTests(unittest.TestCase):
-    def test_queue_captures_reader(self):
-        job = jobs.Job("x.pdf", "upload", "medium", b"x", "paddle")
-        self.assertEqual(job.to_dict()["reader"], "paddle")
-
     def test_paddle_metadata_is_written_to_shared_csv(self):
         path = Path("logs") / "test-paddle-runs.csv"
         path.unlink(missing_ok=True)
