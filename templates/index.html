@@ -376,6 +376,23 @@
      printed and grounding vouched for, and a computed figure sitting in
      the same weight would read as one of them. */
   #fields td.derived { color: var(--muted); }
+  /* The document strip: one button per document a split file was read as.
+     Drawn ONLY where there is more than one -- a strip of one button over an
+     ordinary receipt would be a control that says nothing and a claim that
+     something happened. */
+  .docs { display: flex; gap: 6px; flex-wrap: wrap; margin: 0 0 10px; }
+  .docs button { padding: 6px 11px; font-size: .8rem; border-radius: 8px;
+                 text-align: left; line-height: 1.3; }
+  .docs button.on { background: var(--accent-soft); border-color: var(--accent);
+                    font-weight: 600; }
+  .docs button small { display: block; font-weight: 400; color: var(--muted);
+                       font-size: .72rem; }
+  .docs button.bad { border-color: var(--danger); }
+  /* A boundary the rules could not settle and nothing else confirmed. Amber
+     rather than red: the document is real and its fields are real, and what is
+     uncertain is only where it begins. */
+  .docs button.guess small { color: var(--warn); }
+  .split-note { font-size: .8rem; color: var(--muted); margin: 0 0 12px; }
   .seg { display: flex; gap: 6px; }
   .seg button { flex: 1; padding: 8px 10px; font-size: .84rem; border-radius: 8px; }
   .seg button.on { background: var(--accent-soft); border-color: var(--accent); font-weight: 600; }
@@ -992,6 +1009,63 @@
   .note { font-size: .78rem; color: var(--muted); margin-top: 12px; line-height: 1.45; }
   .note.err { color: var(--warn); border-left: 3px solid var(--warn); padding-left: 10px; }
   .muted-inline { color: var(--muted); font-weight: 400; }
+
+  /* ---------- the Doc types tab ---------- */
+  /* The matrix scrolls inside its own box, header row and key column pinned --
+     the same shape as the analysis heatmap, with its own classes so the two
+     cannot drift into each other. A key column that scrolls away leaves five
+     columns of chips nobody can read. */
+  .sc-grid { overflow-x: auto; margin-top: 10px;
+    border: 1px solid var(--border); border-radius: 10px; }
+  table.sc-matrix { border-collapse: collapse; width: 100%; font-size: .78rem; }
+  table.sc-matrix th, table.sc-matrix td {
+    padding: 6px 10px; text-align: center; white-space: nowrap;
+    border-bottom: 1px solid var(--border); border-right: 1px solid var(--border); }
+  table.sc-matrix th { color: var(--muted); font-weight: 500; font-size: .7rem;
+    text-transform: uppercase; letter-spacing: .04em;
+    position: sticky; top: 0; background: var(--card); z-index: 1; }
+  table.sc-matrix td.sc-key, table.sc-matrix th.sc-corner {
+    position: sticky; left: 0; background: var(--card); text-align: left;
+    font-weight: 600; z-index: 1; min-width: 210px; }
+  table.sc-matrix th.sc-corner { z-index: 2; }
+  /* A section heading spans the whole row and repeats the grouping the Fields
+     tab draws, so the same thirty keys read in the same order in both places. */
+  table.sc-matrix tr.sc-sec td { background: var(--tint); text-align: left;
+    font-size: .68rem; text-transform: uppercase; letter-spacing: .06em;
+    color: var(--muted); font-weight: 700; position: sticky; left: 0; }
+  table.sc-matrix td.sc-req .req { margin-left: 0; }
+  /* Asked but Optional. A dot rather than a word: on a matrix this size the
+     word "optional" printed ninety times is the loudest thing on the page, and
+     the eye is looking for the REQUIRED chips. */
+  table.sc-matrix td.sc-ask { color: var(--accent); font-weight: 700; }
+  /* Muted, not border-coloured: `not asked` is a real state and has to be
+     legible at a glance, and the legend beside it draws the same dash in
+     the same colour. Faint enough to recede under the REQUIRED chips,
+     which are what the eye is hunting for. */
+  table.sc-matrix td.sc-no { color: var(--muted); opacity: .65; }
+  table.sc-matrix td.sc-unknown-col { background: var(--tint); }
+  /* One card per type: what classifies it, what it asks for, what it demands,
+     and the rules it adds. */
+  .sc-types { display: grid; gap: 12px; margin-top: 14px;
+    grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); }
+  .sc-type { border: 1px solid var(--border); border-radius: 10px; padding: 12px 14px; }
+  .sc-type.sc-noreq { border-style: dashed; }
+  .sc-type h4 { margin: 0 0 2px; font-size: .92rem; }
+  .sc-count { color: var(--muted); font-size: .76rem; }
+  .sc-headings { margin-top: 8px; display: flex; flex-wrap: wrap; gap: 5px; }
+  .sc-headings span { font-size: .74rem; padding: 2px 7px; border-radius: 5px;
+    background: var(--tint); color: var(--text); border: 1px solid var(--border); }
+  .sc-rules { margin: 8px 0 0; padding-left: 0; list-style: none;
+    font-size: .76rem; line-height: 1.5; }
+  .sc-rules li { margin-top: 4px; }
+  /* A rule that cannot run here is struck through rather than left out. Four of
+     the nine need data this process has not got, and a list of nine checks that
+     did not say so would read as nine a document passes. */
+  .sc-rules li.sc-dead { color: var(--muted); }
+  .sc-rules li.sc-dead b { text-decoration: line-through; }
+  .sc-legend { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 10px;
+    font-size: .74rem; color: var(--muted); align-items: center; }
+  .sc-legend b { color: var(--text); font-weight: 600; }
 </style>
 </head>
 <body>
@@ -1021,6 +1095,11 @@ follows your desktop; Light is the one to pick for projecting or screenshotting.
         <button type="button" data-pane="queue">Queue<span class="count" id="qCount">0</span></button>
         <button type="button" data-pane="fields">Fields only</button>
         <button type="button" data-pane="random">Random test</button>
+        <!-- Reference, not a run. It is the only side tab that reads nothing
+             from the run log and starts nothing: what the requirements ask for,
+             which is a question you have before a document rather than after
+             one. -->
+        <button type="button" data-pane="schema" title="which document types carry a field requirement, what each one demands, and what is asked of a document no requirement covers">Doc types</button>
       </div>
 
       <div class="pane on" id="paneSource">
@@ -1167,7 +1246,7 @@ follows your desktop; Light is the one to pick for projecting or screenshotting.
             {% for doc_type, group in cases|groupby('doc_type') %}
             <optgroup label="{{ doc_type or 'unclassified' }}">
               {% for c in group %}
-              <option value="{{ c.id }}">{{ c.id }} · {{ c.kind }}{% if c.doc_types|length > 1 %} · also {{ c.doc_types[1:]|join(', ')|lower|replace('_', ' ') }}{% endif %}</option>
+              <option value="{{ c.id }}">{{ c.id }} · {{ c.kind }}{% if c.doc_types|length > 1 %} · also {{ c.doc_types[1:]|join(', ')|lower|replace('_', ' ') }}{% endif %}{% if c.documents|length > 1 %} &middot; {{ c.documents|length }} documents{% endif %}</option>
               {% endfor %}
             </optgroup>
             {% endfor %}
@@ -1284,7 +1363,7 @@ follows your desktop; Light is the one to pick for projecting or screenshotting.
               {% for doc_type, group in cases|selectattr('field_truth')|list|groupby('doc_type') %}
               <optgroup label="{{ doc_type or 'unclassified' }}">
                 {% for c in group %}
-                <option value="{{ c.id }}">{{ c.id }} &middot; {{ c.kind }}{% if c.doc_types|length > 1 %} &middot; also {{ c.doc_types[1:]|join(', ')|lower|replace('_', ' ') }}{% endif %}</option>
+                <option value="{{ c.id }}">{{ c.id }} &middot; {{ c.kind }}{% if c.doc_types|length > 1 %} &middot; also {{ c.doc_types[1:]|join(', ')|lower|replace('_', ' ') }}{% endif %}{% if c.documents|length > 1 %} &middot; {{ c.documents|length }} documents{% endif %}</option>
                 {% endfor %}
               </optgroup>
               {% endfor %}
@@ -1391,6 +1470,19 @@ follows your desktop; Light is the one to pick for projecting or screenshotting.
           broke something is still selected when it stops.</p>
       </div>
 
+      <!-- The narrow half of the Doc types tab: what the tab is, and the
+           legend for the matrix beside it. Everything with a shape goes in
+           `schemaCard`, which is full width -- a five-column matrix of thirty
+           keys does not fit 360px, and this is the same split the Random test
+           pane already uses. -->
+      <div class="pane" id="paneSchema">
+        <h2>Document types</h2>
+        <p class="note">Every type this app can classify a page as, and the form
+        each one asks pass 2 for. Reference only — nothing here reads the run log,
+        and opening this tab starts nothing.</p>
+        <div id="scSide"></div>
+      </div>
+
       <div class="pane" id="paneFields">
         <p class="note">Extraction only, against a document&rsquo;s <b>hand-written
           ground truth</b>. <code>solution/&lt;id&gt;.md</code> goes straight into
@@ -1406,7 +1498,7 @@ follows your desktop; Light is the one to pick for projecting or screenshotting.
               {% for doc_type, group in cases|groupby('doc_type') %}
               <optgroup label="{{ doc_type or 'unclassified' }}">
                 {% for c in group %}
-                <option value="{{ c.id }}">{{ c.id }} &middot; {{ c.kind }}{% if c.doc_types|length > 1 %} &middot; also {{ c.doc_types[1:]|join(', ')|lower|replace('_', ' ') }}{% endif %}</option>
+                <option value="{{ c.id }}">{{ c.id }} &middot; {{ c.kind }}{% if c.doc_types|length > 1 %} &middot; also {{ c.doc_types[1:]|join(', ')|lower|replace('_', ' ') }}{% endif %}{% if c.documents|length > 1 %} &middot; {{ c.documents|length }} documents{% endif %}</option>
                 {% endfor %}
               </optgroup>
               {% endfor %}
@@ -1483,6 +1575,21 @@ follows your desktop; Light is the one to pick for projecting or screenshotting.
         <button id="rtClear" class="ghost-sm">Clear</button>
       </div>
       <div id="rtOut"></div>
+    </div>
+
+    <!-- The Doc types reference. It takes the Result card's place the way the
+         Random test card does, and sits in the same column for the same reason:
+         a static reference stacked above a Result card still showing whatever
+         somebody read an hour ago is worse than one that replaces it, and
+         outside the grid it would leave the main column empty above itself.
+         Drawn once from GET /api/schema and cached -- the requirement cannot
+         change while the process runs. -->
+    <div class="card" id="schemaCard" hidden>
+      <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+        <h2 style="margin:0">Document types and their fields</h2>
+        <span id="scHead" class="muted-inline" style="font-size:.8rem"></span>
+      </div>
+      <div id="scOut"></div>
     </div>
 
     <div class="card" id="resultCard">
@@ -1800,7 +1907,50 @@ const extractNote = document.getElementById('extractNote');
 const fldCopy = document.getElementById('fldCopy');
 const fldRawChk = document.getElementById('fldRawChk');
 const fldRaw = document.getElementById('fldRaw');
+/* The extraction being DISPLAYED, which is what this has always meant. On a
+   file holding several documents it points at the one the strip has selected,
+   and `extractedFile` holds the whole result -- so every function below renders
+   one document exactly as it did when a file could only ever be one. */
 let extracted = null;
+/* The whole pass-2 result: the same object as `extracted` for a one-document
+   file, and the merged one carrying `documents` for a split file. */
+let extractedFile = null;
+/* Which document of it is on screen. Reset to 0 by every new extraction, so a
+   two-document file followed by a one-document one cannot leave the strip
+   pointing at a document that is no longer there. */
+let extractedDoc = 0;
+function setExtracted(result) {
+  extractedFile = result;
+  const docs = (result && result.documents) || null;
+  extractedDoc = 0;
+  /* A one-document file has no `documents` list at all, so `extracted` is the
+     result itself and nothing downstream can tell the difference. That is the
+     point: the split added a shape, it did not change the old one. */
+  extracted = (docs && docs.length) ? docs[0] : result;
+  if (docs && docs.length) {
+    /* Stage 0 is per document, and the live `classified` event holds the LAST
+       document's -- so a finished split file would otherwise draw document 3's
+       type and confidence over document 1's values. Same reason `showDocument`
+       swaps it: the strip and the pipeline have to be describing one document.
+       The run is over, so nothing is running any more either. */
+    classified = extracted.classified || null;
+    extractSteps = extracted.steps || null;
+    runningDoc = null;
+  }
+}
+function showDocument(index) {
+  const docs = (extractedFile && extractedFile.documents) || null;
+  if (!docs || !docs[index]) return;
+  extractedDoc = index;
+  extracted = docs[index];
+  /* Stage 0 is per document, and the live event holds the LAST document's --
+     so a strip that switched the fields without switching the classification
+     would draw document 2's type over document 1's values. */
+  classified = extracted.classified || null;
+  extractSteps = extracted.steps || null;
+  paintFields();
+  if (tabAccuracy.classList.contains('on')) paintAccuracy();
+}
 /* The Fields-only pane: pass 2 against a fixture's hand-written transcript.
    Every one of these is absent when no case has ground truth, so everything
    that touches them checks first. */
@@ -1856,7 +2006,30 @@ function caseFormNote(id) {
          will be over every key the ground truth states. Named before anything
          runs, for the same reason the required count is. */
       : c.unknown_type ? ' (unknown type — scored on the base fields)' : '')
+    + packNote(c)
     + ' · ';
+}
+/* What ELSE is in the file, where the file holds more than one document.
+   Everything above it describes document 1 -- the form, the required count, the
+   type -- because that is what the truth file describes and what the extractor
+   is scored on. Said here so a reader knows before pressing Run: a seven-page
+   pack otherwise announces itself as one billing note, and the other six
+   documents turn up only in the result.
+
+   Drawn from the manifest's own per-document list, never worked out from the
+   page count: which pages are which document is a person's reading, and a
+   second copy of it in JavaScript would go stale the next time a pack arrives.
+   Empty for the thirteen ordinary cases, so nothing extra is drawn for them. */
+function packNote(c) {
+  const docs = (c && c.documents) || [];
+  if (docs.length < 2) return '';
+  const kinds = [];
+  for (const d of docs) {
+    const name = (d.doc_types || []).join(' + ').replace(/_/g, ' ').toLowerCase();
+    if (name && kinds.indexOf(name) < 0) kinds.push(name);
+  }
+  return ' · ' + docs.length + ' documents in this file'
+    + (kinds.length > 1 ? ' (' + kinds.join(', ') + ')' : '');
 }
 /* Set while the transcript on screen came out of `solution/<id>.md` rather than
    out of a read. It is what keeps a Re-extract from the Fields tab scored: the
@@ -1927,6 +2100,32 @@ function showPane(name) {
       'pane' + b.dataset.pane[0].toUpperCase() + b.dataset.pane.slice(1));
     if (pane) pane.classList.toggle('on', on);
   });
+  scOpen = name === 'schema';
+  paintMain();
+  if (scOpen) paintSchema();
+}
+
+/* Which full-width card owns the main column. Three things want it and only one
+   can have it: the Result card (with Compare, which holds that same read's page
+   images), the Random test's round table, and the Doc types reference.
+
+   **One function decides, rather than each caller hiding what it displaces.**
+   The alternative was tried on the Random test and is what `rtShowing` used to
+   do alone -- and with a third contender it stops working: opening Doc types
+   mid-test and going back would have left the round table hidden, because
+   nothing would have put it back.
+
+   `var`, and only ids inside, because `showPane` is defined long before the
+   card elements' own consts are -- a `let` read from here at parse time is a
+   temporal-dead-zone throw, which takes the whole inline script down with it. */
+var scOpen = false, rtWanted = false;
+function paintMain() {
+  const el = id => document.getElementById(id);
+  const rt = !scOpen && rtWanted;
+  el('schemaCard').hidden = !scOpen;
+  el('rtCard').hidden = !rt;
+  el('resultCard').hidden = scOpen || rt;
+  el('compareCard').hidden = scOpen || rt;
 }
 sideTabs.addEventListener('click', e => {
   const btn = e.target.closest('button[data-pane]');
@@ -3039,6 +3238,18 @@ function stepEvent(msg) {
   if (msg.event === 'classified') {
     const { event, ...rest } = msg;
     classified = rest;
+  } else if (msg.event === 'segmented') {
+    /* How many documents the file was read as, and on what authority. Kept
+       even when it is one: "one document" is a finding about a three-page file
+       quite as much as "three documents" is, and the strip below decides on
+       the count rather than on this event existing. */
+    fileSplit = msg;
+  } else if (msg.event === 'document' || msg.event === 'document_done') {
+    /* Which document the steps arriving now belong to. Without it a page
+       receiving twenty-one step events across three documents cannot say which
+       of them any one of them is about. */
+    runningDoc = msg;
+    if (msg.event === 'document') { classified = null; extractSteps = null; }
   } else if (msg.event === 'extract_steps') {
     extractSteps = msg.steps.map(s => Object.assign({}, s, { status: 'waiting' }));
     // The block every step's message opens with. Kept here so a step's question
@@ -3069,6 +3280,72 @@ const openStepPrompt = new Set();
    of what the design does. */
 let showStepPrefix = false;
 let extractPrefix = '';
+/* The `segmented` event: how many documents this file was read as, and how that
+   was decided. Cleared with the rest of a run's state. */
+let fileSplit = null;
+/* The `document` / `document_done` event, while a split file is being
+   extracted one document at a time. */
+let runningDoc = null;
+
+/* Which pages each document of a split file is, and how sure the split is.
+   Nothing here is worked out from the pages -- `segment.py` decided it and said
+   why, and a second reading of the same evidence in JavaScript would eventually
+   disagree with the one the fields were actually extracted under. */
+function docStrip() {
+  const docs = (extractedFile && extractedFile.documents) || null;
+  if (!docs || docs.length < 2) return '';
+  const segs = (extractedFile.segments) || [];
+  const how = {rules: 'read off the pages', model: 'decided by the model',
+               guess: 'a guess -- nothing on the pages settled it',
+               whole: 'not split'}[extractedFile.split_from] || '';
+  return '<div class="docs">' + docs.map((d, i) => {
+      const seg = segs[i] || {};
+      const types = (d.doc_types || []).join(' + ').replace(/_/g, ' ').toLowerCase();
+      const pages = d.page_range || (seg.page_range || '');
+      /* This document's own field score, where it has one. On the button
+         because the strip is where a reader decides which document to look at,
+         and "which of the seven went wrong" is the question they are asking. */
+      const own = ((d.field_score || {}).overall) || {};
+      const rate = (!d.fields_unscored && own.expected)
+        ? ' · ' + (own.accuracy * 100).toFixed(0) + '% of ' + own.expected : '';
+      return '<button type="button" data-doc="' + i + '"'
+        + (i === extractedDoc ? ' class="on' : ' class="')
+        + (d.error ? ' bad' : (seg.certain === false ? ' guess' : '')) + '"'
+        + ' title="' + esc(seg.start_reason || '') + '">'
+        + 'Document ' + (i + 1)
+        + '<small>' + esc(types || 'unclassified')
+        + ' · page' + (String(pages).indexOf('-') >= 0 ? 's ' : ' ') + esc(pages)
+        + esc(rate)
+        + (d.error ? ' · failed' : '')
+        + (seg.certain === false ? ' · uncertain start' : '') + '</small></button>';
+    }).join('') + '</div>'
+    /* Said once above the strip rather than on every button: it is a fact about
+       the FILE, and repeating it under each document would read as a separate
+       claim about each of them. */
+    + '<p class="split-note">This file was read as ' + docs.length
+    + ' documents' + (how ? ' — ' + esc(how) : '') + '. '
+    + 'Each is extracted from its own pages only, so a value on one page cannot '
+    + 'fill a key of another document.'
+    + fileScoreNote() + '</p>';
+}
+/* The FILE's score, where its documents were scored. The marks and the rate
+   above the fields are one document's -- the one on screen -- and this is the
+   other question: how did the file do. Pooled, so it follows from the counts
+   beside it; the unweighted mean of the documents' own rates is named after it
+   as the other reading, because a file of one big document and six small ones
+   answers the two differently. */
+function fileScoreNote() {
+  const score = (extractedFile || {}).field_score || {};
+  const o = score.overall || {};
+  if (!o.expected || !score.scored_documents) return '';
+  const macro = o.accuracy_macro;
+  return ' Over the whole file, <b>' + (o.accuracy * 100).toFixed(0) + '% of '
+    + o.expected + ' values</b> across ' + score.scored_documents
+    + ' scored document' + (score.scored_documents > 1 ? 's' : '')
+    + (macro === null || macro === undefined ? ''
+       : ' (' + (macro * 100).toFixed(0) + '% counting each document once)')
+    + '.';
+}
 function stepPrefixText() {
   return (extracted && extracted.prompt_prefix) || extractPrefix || '';
 }
@@ -3318,6 +3595,23 @@ function paintPipeline() {
   if (c) {
     const types = (c.doc_types || []).join(' + ').replace(/_/g, ' ').toLowerCase();
     const bits = [];
+    /* How many documents the file was read as, ahead of the field count and
+       only where it is more than one. It has to come first because it changes
+       what every figure after it is ABOUT: "11 fields" is the whole form on a
+       one-document file and one document's form on a split one. Neither good
+       nor bad, so it takes neither the green nor the amber -- a file really
+       holding three documents is the ordinary case for a file of three. */
+    const found = (extractedFile && extractedFile.documents_found)
+      || (fileSplit && fileSplit.documents) || 1;
+    if (found > 1) {
+      /* While the run is going, the document the events are arriving for;
+         once it is finished, the one the strip has selected. In that order:
+         `runningDoc` is cleared the moment the result lands, so a finished file
+         can never report itself as still on its last document. */
+      const at = (runningDoc && runningDoc.document) || (extractedDoc + 1);
+      bits.push('<b>' + found + ' documents</b> ('
+                + (runningDoc ? 'on ' : 'showing ') + at + ')');
+    }
     bits.push(esc(c.fields.length + ' fields'
                   // What the score will be over. On the box rather than only in
                   // its tooltip: this stage chose the form, and how much of that
@@ -3429,6 +3723,11 @@ function paintPipeline() {
 function paintFields() {
   paintPipeline();
   paintFieldBody();
+  /* Prepended here rather than at each of `paintFieldBody`'s five exits: that
+     function rewrites the whole body on every one of them, and a strip added at
+     four of the five would vanish on whichever path nobody tested. */
+  const strip = docStrip();
+  if (strip) fldBody.insertAdjacentHTML('afterbegin', strip);
   // Left on the normal body until there is a reply to show: an empty pane while
   // the pass is still running reads as "the model returned nothing", when the
   // body underneath is saying it has not been asked yet.
@@ -3763,8 +4062,9 @@ async function runExtract() {
 }
 /* The streaming half, shared by Re-extract and by the Fields-only pane. */
 async function extractInto(payload) {
-  extracted = { pending: true };
+  setExtracted({ pending: true });
   extractSteps = null;
+  fileSplit = null; runningDoc = null;
   // Cleared with the steps, and for the same reason: last document's answer
   // sitting over this run's fields would name the wrong form.
   classified = null;
@@ -3784,7 +4084,7 @@ async function extractInto(payload) {
       // A 400 from the request itself -- an unknown case, an empty transcript --
       // never opens a stream, so this is the whole reply. Returned as well as
       // painted: the caller reports it where the button that started it is.
-      extracted = await res.json();
+      setExtracted(await res.json());
       paintFields();
       return extracted;
     }
@@ -3802,9 +4102,9 @@ async function extractInto(payload) {
         const msg = JSON.parse(line);
         if (msg.event === 'fields') {
           const { event, ...rest } = msg;
-          extracted = rest;
+          setExtracted(rest);
         } else if (msg.event === 'error') {
-          extracted = { error: msg.error };
+          setExtracted({ error: msg.error });
         } else {
           stepEvent(msg);
         }
@@ -3812,7 +4112,7 @@ async function extractInto(payload) {
       paintFields();
     }
   } catch (err) {
-    extracted = { error: err.message };
+    setExtracted({ error: err.message });
   }
   paintFields();
   // A re-extraction moves the field score too, and the Accuracy tab shows it.
@@ -3839,6 +4139,12 @@ fldBody.addEventListener('click', e => {
 });
 fldRerun.addEventListener('click', runExtract);
 fldRawChk.addEventListener('change', paintFields);
+/* Delegated, because the strip is rebuilt on every repaint and a listener bound
+   to a button would go with the button it was bound to. */
+fldBody.addEventListener('click', ev => {
+  const button = ev.target.closest('.docs button');
+  if (button) showDocument(Number(button.dataset.doc));
+});
 fldCopy.addEventListener('click', async () => {
   if (!extracted || !extracted.fields) return;
   await navigator.clipboard.writeText(JSON.stringify(extracted.fields, null, 2));
@@ -3982,7 +4288,7 @@ queueBody.addEventListener('click', async e => {
     truth = r.truth || null;
     // The stored result carries its own step records; the live list belongs to
     // whatever ran in this tab and would otherwise be shown against this one.
-    extracted = r.extracted || null;
+    setExtracted(r.extracted || null);
     extractSteps = null;
     tabAccuracy.disabled = !truth;
     tabFields.disabled = !extracted;
@@ -4386,14 +4692,41 @@ function csModel(name) {
    run read, so the detail and profile beside it did not produce the number. */
 function csSetting(b) {
   if (!b) return '';
-  const bits = [csModel(b.model), b.backend, b.detail, b.ocr_profile, b.extract_mode]
+  // **Two models is two names.** `extract_model` is blank on the one-model
+  // setup -- the CSV column’s own rule -- so one name means both passes ran on
+  // it and the arrow is drawn only where the row really carried a second model.
+  // Printing `model` alone made a typhoon-reads/qwen-extracts run look as though
+  // typhoon had done the extracting, which is the pass this table ranks in two
+  // of its four columns.
+  const two = b.extract_model && b.extract_model !== b.model;
+  const models = two ? csModel(b.model) + ' → ' + csModel(b.extract_model)
+                     : csModel(b.model);
+  const bits = [models, b.backend, b.detail, b.ocr_profile, b.extract_mode]
     .filter(Boolean).join(' · ');
   const when = (b.timestamp || '').replace('T', ' ');
-  return '<span class="cs-set" title="' + esc(b.model || '') + (when ? ' — ' + esc(when) : '')
+  const full = two ? b.model + ' read → ' + b.extract_model + ' extracted'
+                   : (b.model || '');
+  return '<span class="cs-set" title="' + esc(full) + (when ? ' — ' + esc(when) : '')
     + '">' + esc(bits || '—')
     + (b.run_type === 'extract' ? ' <b>· re-extract only</b>' : '') + '</span>';
 }
 function csSecs(v) { return v === null || v === undefined ? '—' : Number(v).toFixed(1) + 's'; }
+/* A mean clock with what fed it underneath. The run count is not optional --
+   these cells are two or three runs deep as often as not -- and the range is
+   printed beside the SD because a tight SD with a wide range is one stray run,
+   which a mean over three cannot say on its own. Same reading as `anFig` on the
+   analysis tab, in this table’s own type. */
+function csFig(f) {
+  if (!f || f.mean === null || f.mean === undefined)
+    return '<span class="cs-none">no complete run</span>';
+  const parts = [f.runs + ' run' + (f.runs === 1 ? '' : 's')];
+  if (f.sd !== null && f.sd !== undefined)
+    parts.push('±' + Number(f.sd).toFixed(1) + 's');
+  if (f.min !== null && f.min !== undefined && f.min !== f.max)
+    parts.push(csSecs(f.min) + '–' + csSecs(f.max));
+  return '<span class="cs-val">' + csSecs(f.mean) + '</span>'
+    + '<span class="cs-set">' + parts.join(' · ') + '</span>';
+}
 function csPct(v) {
   return '<span class="cs-val" style="color:' + accColour(Number(v) / 100) + '">'
     + Number(v).toFixed(1) + '%</span>';
@@ -4715,6 +5048,18 @@ function paintCaseSummary(t) {
             : ' · fields ' + Number(e.fastest.field_acc).toFixed(0) + '%')
          + '</span>'
        : '<span class="cs-none">no complete run</span>'},
+    // What the pipeline COSTS on this page on an ordinary run, beside what it
+    // cost on its best one. The fast column flatters and cannot say so: both
+    // servers cache -- llama.cpp reuses a prompt prefix and Ollama keeps a model
+    // resident -- so the quickest run of a document is very often a warm repeat
+    // nobody gets cold. Same population as Fastest, so the range under this mean
+    // opens on the figure in the column to its left.
+    {key: 'avgrun', label: 'Avg full run',
+     title: 'mean end-to-end clock, read plus extract, over the same runs the '
+          + 'Fastest column ranks: runs that finished, scored above zero and did '
+          + 'both passes',
+     value: e => e.pipeline_seconds ? e.pipeline_seconds.mean : null,
+     cell: e => csFig(e.pipeline_seconds)},
     // Character accuracy alone. Word accuracy is still computed and logged, and
     // is a useful diagnostic in the CSV, but it is order-sensitive where this
     // number deliberately is not -- printing both invites reading the gap as an
@@ -4737,9 +5082,13 @@ function paintCaseSummary(t) {
     + 'document, with the setting that produced it — they are three different '
     + 'runs more often than one. Fields and transcript are separate scores: a '
     + 'run can read the page well and still put the values in the wrong keys. '
-    + 'Fastest counts reads that finished, scored above zero and ran both '
-    + 'passes, and llama.cpp caches prompts, so re-reading the same page again '
-    + 'is quicker than the first time under any setting. A run that <b>did not '
+    + 'Fastest and Avg full run count reads that finished, scored above zero '
+    + 'and ran both passes — the same runs, so the average is what this page '
+    + 'usually costs and the fastest is the best it has managed. Prefer the '
+    + 'average: llama.cpp caches prompts and Ollama keeps a model resident, so '
+    + 'a record time is often a warm repeat nobody gets cold. Where a run used '
+    + 'two models the setting reads <b>reader → extractor</b>; one name means '
+    + 'both passes ran on it. A run that <b>did not '
     + 'finish</b> — looped, truncated, cancelled or errored — is counted in the '
     + 'read count and can hold no record; a run that finished and read badly is '
     + 'not a failure and is eligible for all three. Any column here sorts.</p>';
@@ -6534,9 +6883,8 @@ function rtPaintScope() {
    somebody read by hand an hour ago. Compare goes with the Result card, since
    it holds that same read's page images. */
 function rtShowing(on) {
-  rtCard.hidden = !on;
-  resultCard.hidden = on;
-  compareCard.hidden = on;
+  rtWanted = on;
+  paintMain();
 }
 function rtPaint() {
   rtShowing(!!rtRows.length);
@@ -8744,7 +9092,8 @@ clearBtn.addEventListener('click', () => {
   pagebar.textContent = ''; warn.textContent = '';
   meta.textContent = ''; meta.classList.remove('err');
   stopTicker(); pageStats = []; renderStats();
-  extracted = null; extractSteps = null; tabFields.disabled = true;
+  setExtracted(null); extractSteps = null; tabFields.disabled = true;
+  fileSplit = null; runningDoc = null;
   truthOnlyCase = null;
   job = null; pageTexts = []; curPage = -1; cmpPage = 0;
   cmpImg.removeAttribute('src');
@@ -8778,7 +9127,8 @@ runBtn.addEventListener('click', async () => {
   layPage = 0; laySel = null; enableLayout();
   roPage = 0; enableRawOut();
   truth = null; tabAccuracy.disabled = true;
-  extracted = null; extractSteps = null; tabFields.disabled = true;
+  setExtracted(null); extractSteps = null; tabFields.disabled = true;
+  fileSplit = null; runningDoc = null;
   if (['accuracy','fields'].some(m => document.querySelector('#tab' + m[0].toUpperCase() + m.slice(1)).classList.contains('on'))) showTab('rendered');
   paint(); renderStats();
   pagebar.innerHTML = '<span class="spin"></span> Starting…';
@@ -8875,17 +9225,29 @@ runBtn.addEventListener('click', async () => {
           copyBtn.disabled = !text;
         } else if (msg.event === 'extracting') {
           // OCR is finished and on screen; the second pass runs after it.
-          extracted = { pending: true };
+          setExtracted({ pending: true });
           extractSteps = null;
-          classified = null;
+          classified = null; fileSplit = null; runningDoc = null;
           tabFields.disabled = false;
           pagebar.innerHTML = '<span class="spin"></span> Extracting fields…';
           if (tabFields.classList.contains('on')) paintFields();
+        } else if (msg.event === 'segmented' || msg.event === 'document'
+                   || msg.event === 'document_done') {
+          // How many documents the file holds, and which of them pass 2 is on.
+          // A three-document file otherwise spends three classifications and
+          // twenty-one steps saying nothing about which document any of it is.
+          stepEvent(msg);
+          if (msg.event === 'document') {
+            pagebar.innerHTML = '<span class="spin"></span> Document ' + msg.document
+              + ' of ' + msg.documents + ' (page' + (msg.pages.length > 1 ? 's ' : ' ')
+              + esc(msg.page_range) + ')...';
+          }
         } else if (msg.event === 'classified') {
           // Stage 2 of three, and on a full run it is the only moment the page
           // can say WHY the fields about to appear are the ones they are.
           stepEvent(msg);
           pagebar.innerHTML = '<span class="spin"></span> '
+            + (msg.documents > 1 ? 'Document ' + msg.document + ' of ' + msg.documents + ': ' : '')
             + esc((msg.doc_types || []).join(' + ').replace(/_/g, ' ').toLowerCase()
                   || 'unclassified')
             + ' — asking for ' + msg.fields.length + ' fields…';
@@ -8899,7 +9261,7 @@ runBtn.addEventListener('click', async () => {
           }
         } else if (msg.event === 'fields') {
           const { event, ...rest } = msg;
-          extracted = rest;
+          setExtracted(rest);
           tabFields.disabled = false;
           pagebar.textContent = '';
           if (tabFields.classList.contains('on')) paintFields();
@@ -9047,6 +9409,198 @@ if (fxCase) {
   fxCase.addEventListener('change', () => { fxDescribe(); paintFieldsOnly(); });
   fxMode.addEventListener('change', () => setMode(fxMode.value));
   fxRun.addEventListener('click', runFieldsOnly);
+}
+
+/* ---------- the Doc types tab (2026-09-07) ----------
+   What each document type asks pass 2 for, and what it demands. Reference: it
+   reads nothing from the run log, contacts no model server and logs nothing.
+
+   **Every fact in it comes from GET /api/schema.** Which keys a requirement
+   asks for, which of them it makes Mandatory, which validation rules a type
+   adds and what wording classifies a page as that type are each stated once, in
+   `prompts` / `normalise` / `validate`, and a second copy in this file is
+   exactly how fifteen keys silently vanished from the Fields tab on 2026-08-19.
+   What this file owns is the WORDING of a label, the grouping into sections and
+   nothing else -- `FIELD_LABELS`, `FIELD_HINTS`, `FIELD_SECTIONS` and
+   `INCOME_COLS`, which the Fields tab already draws from, so one key reads the
+   same on both tabs.
+
+   Cached for the life of the page: the requirement cannot change while the
+   process runs. */
+var scData = null, scPending = false;
+
+/* `TYPE_NAMES` is the article form a prompt uses in a sentence -- "an invoice",
+   "a withholding tax certificate (50 ทวิ)". A heading wants the noun. Trimmed
+   here rather than sent twice from the server: one string, two presentations. */
+function scTypeName(name) {
+  return (name || '').replace(/^(an|a|the) /, '');
+}
+
+function paintSchema() {
+  if (scData) { scRender(); return; }
+  if (scPending) return;
+  scPending = true;
+  document.getElementById('scOut').innerHTML =
+    '<p class="note">Loading the field requirements…</p>';
+  fetch('/api/schema')
+    .then(r => r.json())
+    .then(d => { scData = d; scPending = false; scRender(); })
+    .catch(err => {
+      scPending = false;
+      document.getElementById('scOut').innerHTML =
+        '<p class="note err">Could not load the field requirements: '
+        + esc(String(err)) + '</p>';
+    });
+}
+
+/* One matrix cell. Three states, and deliberately not three words: REQUIRED is
+   what a reader is scanning for, so it is the only one that gets a chip. The
+   word "optional" printed ninety times would be the loudest thing on the page. */
+function scCell(col, key, mandatory, asked) {
+  const tint = col.unknown ? ' sc-unknown-col' : '';
+  if (mandatory.has(key)) {
+    return '<td class="sc-req' + tint + '"><span class="req" title="Mandatory in '
+      + 'the ' + esc(col.label) + ' requirement">required</span></td>';
+  }
+  if (asked.has(key)) {
+    return '<td class="sc-ask' + tint + '" title="asked for, and the requirement '
+      + 'does not demand it">●</td>';
+  }
+  return '<td class="sc-no' + tint + '" title="not asked for on this type — the '
+    + 'prompt never mentions it, so the model cannot answer with it">–</td>';
+}
+
+function scRender() {
+  const d = scData;
+  const withReq = d.types.filter(t => t.has_requirement);
+  const without = d.types.filter(t => !t.has_requirement);
+
+  document.getElementById('scHead').textContent =
+    withReq.length + ' of ' + d.types.length + ' types carry a requirement · '
+    + d.keys.length + ' keys in the schema';
+
+  /* The narrow pane: the legend for the matrix, and the two rules that decide
+     how to read it. */
+  document.getElementById('scSide').innerHTML =
+    '<div class="sc-legend">'
+    + '<span><span class="req" style="margin-left:0">required</span> demanded</span>'
+    + '<span><b style="color:var(--accent)">●</b> asked, optional</span>'
+    + '<span><b style="color:var(--muted)">–</b> not asked</span>'
+    + '</div>'
+    + '<p class="note">A document is often more than one type at once — a receipt '
+    + 'that is also a tax invoice — and its form is the <b>union</b> of theirs. '
+    + 'The type is read off the printed heading in Python, never out of an '
+    + 'extracted field.</p>'
+    + '<p class="note">A type no requirement covers adds no key of its own. Where '
+    + 'nothing in play has one, the whole base set is asked and none of it is '
+    + 'demanded — the <b>Unknown type</b> column.</p>';
+
+  /* Columns: the types that have a requirement, then what an unplaced document
+     gets. The unknown column is last and tinted because it is not a peer of the
+     four -- it is the fallback, and reading it as a fifth requirement is the
+     misreading worth designing against. */
+  const cols = withReq.map(t => ({
+      code: t.code, label: scTypeName(t.name), unknown: false,
+      asked: new Set(t.fields), mandatory: new Set(t.mandatory),
+      items: new Set(t.items), mandatoryItems: new Set(t.mandatory_items)
+    })).concat([{
+      code: '', label: 'Unknown type', unknown: true,
+      asked: new Set(d.unknown.fields), mandatory: new Set(d.unknown.mandatory),
+      items: new Set(d.unknown.items), mandatoryItems: new Set()
+    }]);
+
+  let rows = '';
+  for (const [title, keys] of FIELD_SECTIONS) {
+    const live = keys.filter(k => d.keys.indexOf(k) !== -1);
+    if (!live.length) continue;
+    rows += '<tr class="sc-sec"><td colspan="' + (cols.length + 1) + '">'
+      + esc(title) + '</td></tr>';
+    for (const key of live) {
+      rows += '<tr><td class="sc-key'
+        + (FIELD_HINTS[key] ? ' has-hint" title="' + esc(FIELD_HINTS[key]) : '')
+        + '">' + esc(FIELD_LABELS[key] || key) + '</td>'
+        + cols.map(c => scCell(c, key, c.mandatory, c.asked)).join('') + '</tr>';
+    }
+  }
+
+  /* The certificate's income table, in the same matrix rather than beside it.
+     A cell of that table is not a key -- it is one column of a table, Mandatory
+     of EVERY row -- so it gets its own section, and the point it makes is
+     visible in the Unknown column: the base set asks for no table at all. A
+     scalar nobody rules comes back empty; a table nobody rules comes back
+     FILLED, from whatever was nearest. */
+  const itemRows = (d.item_keys || []).filter(
+    k => INCOME_COLS.some(c => c[0] === k));
+  if (itemRows.length) {
+    rows += '<tr class="sc-sec"><td colspan="' + (cols.length + 1) + '">'
+      + 'Income table — one row per line, every cell required of every row'
+      + '</td></tr>';
+    for (const key of itemRows) {
+      const col = INCOME_COLS.find(c => c[0] === key) || [key, key];
+      rows += '<tr><td class="sc-key'
+        + (INCOME_HINTS[key] ? ' has-hint" title="' + esc(INCOME_HINTS[key]) : '')
+        + '">' + esc(col[1]) + '</td>'
+        + cols.map(c => scCell(c, key, c.mandatoryItems, c.items)).join('')
+        + '</tr>';
+    }
+  }
+
+  const head = '<tr><th class="sc-corner">Field</th>'
+    + cols.map(c => '<th' + (c.unknown
+        ? ' class="sc-unknown-col" title="no requirement covers the type, so the '
+          + 'base field set is asked and nothing is Mandatory"' : '')
+      + '>' + esc(c.label) + '</th>').join('') + '</tr>';
+
+  /* A card per type, in the order everything else ranks them: most specific
+     first. The three with no requirement are listed rather than left out --
+     being classifiable and being scoreable are different things, and a reader
+     looking for TAX INVOICE should find it here rather than conclude the page
+     is broken. */
+  const cards = d.types.map(t => {
+    const rules = (t.rules || []).map(name => {
+      const note = (d.rule_notes || {})[name] || {};
+      return '<li' + (note.runs ? '' : ' class="sc-dead"') + '><b>'
+        + esc(name.replace(/_/g, ' ')) + '</b> — ' + esc(note.what || '')
+        + (note.runs ? ''
+           : '. <i>Cannot run here: ' + esc(note.why || '') + '</i>')
+        + '</li>';
+    }).join('');
+    return '<div class="sc-type' + (t.has_requirement ? '' : ' sc-noreq') + '">'
+      + '<h4>' + esc(scTypeName(t.name)) + '</h4>'
+      + '<div class="sc-count">' + (t.has_requirement
+          ? t.fields.length + ' fields · ' + t.mandatory.length + ' required'
+            + (t.items.length ? ' · plus a table, ' + t.items.length
+                                + ' cells per row' : '')
+          : 'no requirement — adds no field of its own')
+        + '</div>'
+      + (t.headings.length
+         ? '<div class="sc-headings" title="the printed wordings that classify a '
+           + 'page as this, matched against the heading with spacing and '
+           + 'punctuation removed">'
+           + t.headings.map(h => '<span>' + esc(h) + '</span>').join('')
+           + '</div>'
+         : '')
+      + (rules ? '<ul class="sc-rules">' + rules + '</ul>' : '')
+      + (t.has_requirement ? ''
+         : '<p class="note">Classified, and it contributes nothing to a form. A '
+           + 'page that is <i>only</i> this is asked the base field set and is '
+           + 'held to none of it.</p>')
+      + '</div>';
+  }).join('');
+
+  document.getElementById('scOut').innerHTML =
+    '<div class="sc-grid"><table class="sc-matrix"><thead>' + head
+    + '</thead><tbody>' + rows + '</tbody></table></div>'
+    + '<div class="sc-types">' + cards + '</div>'
+    + '<p class="note">These requirements are the whole of what is extracted. '
+    + 'Everything else a page states comes back under its own printed label in '
+    + '<b>other_fields</b>, unscored — nothing is lost, it is simply not on a '
+    + 'form. ' + (without.length
+        ? without.map(t => esc(scTypeName(t.name))).join(', ')
+          + ' are recognised and carry no requirement yet, so a page that is only '
+          + 'one of them is asked all ' + d.unknown.fields.length + ' keys and '
+          + 'scored on what the ground truth states rather than on what it owes.'
+        : '') + '</p>';
 }
 
 paint();

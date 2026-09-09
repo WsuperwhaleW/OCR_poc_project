@@ -91,7 +91,14 @@ def _needles(*words):
 # all-of is present and at least one from any-of is, an empty any-of meaning
 # nothing further is required. Needles are matched against the squashed heading,
 # so spacing, punctuation and slashes do not matter.
-DOCUMENT_TYPES = [
+# The wordings themselves, NOT the squashed needles (2026-09-07). This table
+# used to hold `_needles(...)` calls and nothing else, so the printed heading a
+# code is recognised BY was thrown away at import: nothing could say what makes
+# a page a receipt, only that it is one. The Doc types tab shows those wordings,
+# so they are kept here and the needles derived from them -- one statement,
+# squashed once, rather than a display copy that drifts from the table that
+# actually classifies.
+_TYPE_HEADINGS = [
     # FIRST, and the order matters here more than anywhere else in this table:
     # a withholding tax certificate shares not one field with the commercial
     # documents below it, so a page that is one is nothing else, and it is what
@@ -105,7 +112,7 @@ DOCUMENT_TYPES = [
     # classification reads the heading band alone: `app._TYPE_SCAN_LINES` looks
     # at the top of the page and at lines short enough to be a heading, so a
     # "50" and a "ทว" adrift in body text are never seen.
-    ("WHT_CERTIFICATE", (), _needles(
+    ("WHT_CERTIFICATE", (), (
         "หนังสือรับรองการหักภาษี ณ ที่จ่าย",
         "หนังสือรับรองการหักภาษี",
         "ใบรับรองการหักภาษี",
@@ -114,27 +121,62 @@ DOCUMENT_TYPES = [
         "withholding tax certificate",
         "certificate of withholding tax",
         "tax withholding certificate")),
-    ("CREDIT_NOTE", (), _needles("ใบลดหนี้", "ใบหักหนี้", "credit note",
-                                 "credit notice")),
-    ("DEBIT_NOTE", (), _needles("ใบเพิ่มหนี้", "debit note")),
+    # The five types added with sol014 and sol015 (2026-09-08). All of them sit
+    # ABOVE the commercial documents for the reason WHT_CERTIFICATE does: a page
+    # that is one of these is nothing else, and none of them has a requirement
+    # behind it, so each contributes no key and nothing Mandatory.
+    #
+    # They exist to make the SPLIT work. `segment._boundary` opens a document on
+    # a page that heads itself with other types, and a returns note or a payment
+    # schedule the table cannot place is a page that "heads itself with nothing"
+    # -- which is the rule for a CONTINUATION. sol012's page 2 is the standing
+    # example of what that costs: unknown to this table it classified as
+    # RECEIPT+TAX_INVOICE off one of its own table rows.
+    ("RTV_SHIP_CREDIT", (), ("ใบส่งคืนสินค้า", "ใบคืนสินค้า",
+                             "rtv ship credit", "return to vendor")),
+    ("CHEQUE_DELIVERY", (), ("ใบแจ้งนำส่งเช็ค", "ใบนำส่งเช็ค",
+                             "delivery acknowledgement",
+                             "delivery acknowledgment")),
+    ("PAYMENT_ADVICE", (), ("payment advice", "credit advice",
+                            "ใบแจ้งการโอนเงิน")),
+    ("PAYMENT_SCHEDULE", (), ("ใบนัดจ่าย", "ใบนัดชำระ")),
+    # ใบวางบิล was a needle under INVOICE until 2026-09-08. A billing note is a
+    # covering slip that lists OTHER documents' numbers, dates and totals, so
+    # asking the invoice form of one fills its keys from the invoices it names.
+    # No fixture printed the word before sol015.
+    ("BILLING_NOTE", (), ("ใบวางบิล", "ใบแจ้งวางบิล", "billing note")),
+    ("CREDIT_NOTE", (), ("ใบลดหนี้", "ใบหักหนี้", "credit note",
+                         "credit notice")),
+    ("DEBIT_NOTE", (), ("ใบเพิ่มหนี้", "debit note")),
     # Its own code since 2026-08-31. It was a needle under INVOICE, on a reading
     # of the requirement, and a statement of account is a different document: it
     # summarises what is owed rather than charging for one delivery. sol001
     # prints ใบแจ้งหนี้ in Thai and STATEMENT OF ACCOUNT in English, so it now
     # comes back as both -- which is what the page says, and the manifest is
     # where a human overrules it.
-    ("STATEMENT_OF_ACCOUNT", (), _needles("statement of account",
-                                          "ใบแจ้งยอด", "ใบสรุปยอด")),
-    ("INVOICE", (), _needles("ใบแจ้งหนี้", "ใบวางบิล", "ใบกำกับสินค้า",
-                             "invoice", "billing note")),
-    ("RECEIPT", (), _needles("ใบเสร็จรับเงิน", "ใบรับเงิน", "receipt")),
+    ("STATEMENT_OF_ACCOUNT", (), ("statement of account",
+                                  "ใบแจ้งยอด", "ใบสรุปยอด")),
+    ("INVOICE", (), ("ใบแจ้งหนี้", "ใบกำกับสินค้า", "invoice")),
+    ("RECEIPT", (), ("ใบเสร็จรับเงิน", "ใบรับเงิน", "receipt")),
     # LAST on purpose, and this decides `primary_type`. Being a tax invoice is
     # the least distinguishing thing about a document here -- six of the ten
     # fixtures are one -- so a receipt/tax-invoice files as a receipt and a
     # credit-note/tax-invoice as a credit note. It is a qualifier that changes
     # which FIELDS are required, not a family to file under.
-    ("TAX_INVOICE", (), _needles("ใบกำกับภาษี", "tax invoice")),
+    ("TAX_INVOICE", (), ("ใบกำกับภาษี", "tax invoice")),
 ]
+
+# (code, all-of, any-of) with every wording squashed, which is what `match_types`
+# tests against. Derived rather than written out, so a heading added above is a
+# heading the classifier uses.
+DOCUMENT_TYPES = [(code, _needles(*required), _needles(*any_of))
+                  for code, required, any_of in _TYPE_HEADINGS]
+
+# {code: the printed wordings that classify it}, for display only. Never matched
+# against anything -- `DOCUMENT_TYPES` is what matches, and these are the same
+# strings before squashing.
+TYPE_HEADINGS = {code: tuple(required) + tuple(any_of)
+                 for code, required, any_of in _TYPE_HEADINGS}
 
 # `invoice` is a substring of `tax invoice` once both are squashed, so a page
 # headed only "TAX INVOICE" would come back as both unless the narrower reading

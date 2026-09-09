@@ -315,6 +315,29 @@ COLUMNS = [
     # same row says which requirement was in force, and `prompts` says what it
     # demands, so encoding it twice would let the two disagree.
     "field_verdicts",
+    # How many DOCUMENTS pass 2 found in this file. Appended 2026-09-08, when
+    # one upload stopped meaning one document: a three-page file can hold three
+    # documents of three types, three of one type, or one document three pages
+    # long, and until now every row in this file silently claimed the last.
+    #
+    # It is worth a column because it re-reads every pass-2 cell on the row.
+    # `p1_present`, `p1_absent`, `other_fields` and `ungrounded` are SUMS over
+    # the documents in the file when this reads 2 or more, so `11 of 13` on a
+    # one-document row and `22 of 26` on a two-document row are the same
+    # statement made about different amounts of paper. Without the count there
+    # is no way to tell those apart, and a mean over the column would be a mean
+    # over two populations.
+    #
+    # `field_acc` and the `p1_correct`/`p1_scored` pair are NOT summed: at most
+    # one document of a file is scored, because a truth file is a person's
+    # record of one document. `doc_types` holds the union of every document's
+    # types, which is why a row can name more types than any one form asks for.
+    #
+    # 1 is a real measurement and is written. Blank means pass 2 never ran, the
+    # same rule every other pass-2 cell follows -- and blank is also every row
+    # written before the column, which were all read as one document whether or
+    # not they were.
+    "documents",
 ]
 
 # The value the run was actually made with, taken from `settings` rather than
@@ -458,15 +481,27 @@ EXTRACT_COLUMNS = ("extract_seconds", "extract_tokens", "extract_mode",
                    "field_acc", "field_expected", "p1_correct", "p1_scored",
                    "p1_partial", "other_distinct", "extract_looped",
                    "extract_model", "doc_types", "doc_type_from",
-                   "field_verdicts")
+                   "field_verdicts", "documents")
 
 _TIERS = ("p1_present", "p1_absent", "p2_present", "p2_absent",
           "p3_present", "p3_absent")
 
 
 def _extract_cells(summary: dict) -> dict:
-    """The pass-2 half of a row: what was extracted, how, and how real it is."""
+    """The pass-2 half of a row: what was extracted, how, and how real it is.
+
+    **One read is one row however many documents the file held**, and where it
+    held several the counting cells are sums over them -- see `_document_cells`.
+    The read is what this row is about: one upload, one clock, one transcript,
+    one set of pass-1 columns. Splitting a multi-document file across several
+    rows would put pass-1 figures on rows that read no page of their own, or
+    repeat one read's figures under several rows and count it several times in
+    every mean over this file.
+    """
     extracted = (summary or {}).get("extracted") or {}
+    documents = extracted.get("documents")
+    if isinstance(documents, list) and len(documents) > 1:
+        return _document_cells(summary, extracted, documents)
     fields = extracted.get("fields")
     grounded = extracted.get("grounding") or {}
     repetition = grounding.list_repetition(fields if isinstance(fields, dict) else {})
@@ -479,6 +514,10 @@ def _extract_cells(summary: dict) -> dict:
         # splits by hand.
         "doc_types": "+".join(extracted.get("doc_types") or []),
         "doc_type_from": extracted.get("doc_type_from", ""),
+        # 1 is a measurement and is written; blank means pass 2 never ran. A
+        # result from before the file was split into documents carries no count
+        # and was one document by construction.
+        "documents": extracted.get("documents_found") or (1 if extracted else ""),
         "extract_seconds": extracted.get("seconds", ""),
         "extract_tokens": extracted.get("tokens", ""),
         "extract_mode": extracted.get("mode", ""),
@@ -527,6 +566,52 @@ def _extract_cells(summary: dict) -> dict:
         **_field_cells(None if extracted.get("fields_unscored")
                        else extracted.get("field_score")),
     }
+
+
+def _document_cells(summary: dict, extracted: dict, documents: list) -> dict:
+    """One row for a file that held several documents.
+
+    **Every counting cell is a SUM over the documents, and the row says how many
+    there were.** `p1_present` of 22 out of 26 is a complete run of two
+    thirteen-key forms, and `documents` beside it is the only thing that makes
+    it readable as that rather than as a form nobody has -- which is the same
+    denominator-on-the-row rule the tier columns have followed since they were
+    added.
+
+    Built by calling `_extract_cells` once per document rather than by a second
+    implementation of it, so a cell can never mean one thing on a one-document
+    row and another on a two-document row. The file-level cells -- the clock,
+    the mode, the model, the grounding ratio -- are taken from the merged result
+    `app._merge_documents` produced, which is where they were computed over
+    every document at once.
+
+    `field_acc` and its counts are NOT summed. At most one document of a file is
+    scored, because `solution/<id>.fields.json` is a person's record of one
+    document; the merged result carries that document's score and this passes it
+    through untouched. Summing the unscored documents in as zeroes would report
+    a file as badly extracted for holding documents nobody has written an answer
+    sheet for.
+    """
+    per = [_extract_cells({"extracted": one, "model": (summary or {}).get("model")})
+           for one in documents if isinstance(one, dict)]
+
+    def total(name):
+        values = [cell[name] for cell in per if not _blank(cell[name])]
+        return sum(values) if values else ""
+
+    whole = _extract_cells({"extracted": {k: v for k, v in extracted.items()
+                                          if k != "documents"},
+                            "model": (summary or {}).get("model")})
+    whole.update({name: total(name) for name in
+                  ("other_fields", "other_distinct", "ungrounded",
+                   "fields_missing") + _TIERS})
+    # Any document that cycled makes the file's extraction a cycled one: the
+    # flag is what `_extract_incomplete` reads, and a loop in document 2 is a
+    # loop this run has to answer for.
+    looped = [cell["extract_looped"] for cell in per if not _blank(cell["extract_looped"])]
+    whole["extract_looped"] = (1 if any(looped) else 0) if looped else ""
+    whole["documents"] = len(documents)
+    return whole
 
 
 def _field_cells(score: dict) -> dict:
@@ -1375,7 +1460,19 @@ def legacy_char_rows(rows: list = None) -> dict:
 # whole set, for the reason `totals` already gives for `best_by_case`: a winning
 # score with nothing attached is not a setting anyone can adopt. Kept as one
 # tuple because three spellings of "what this run ran under" would drift apart.
-SETTING_COLUMNS = ("model", "backend", "detail", "ocr_profile", "extract_mode")
+# What a row RAN UNDER, for the per-document table.
+#
+# **`extract_model` is in here because a run can use two models** (see *Two
+# models, one run*), and without it every cell of `by_case` named the READING
+# model and nothing else -- so a typhoon-reads/qwen-extracts run and a
+# typhoon-does-both run printed an identical line, and the table looked as
+# though typhoon had extracted for a run it never extracted for.
+#
+# It is BLANK on the one-model setup, which is the column's own rule in the CSV,
+# so a reader that draws a second name only where this is non-blank says
+# "one model" by saying nothing -- rather than printing the same name twice.
+SETTING_COLUMNS = ("model", "extract_model", "backend", "detail", "ocr_profile",
+                   "extract_mode")
 
 
 def _setting(row: dict) -> dict:
@@ -1416,6 +1513,14 @@ def by_case(rows: list = None) -> dict:
       document with no `solution/<id>.fields.json`, and blank for one that has a
       truth file no run has been scored against yet, which is not the same as 0%.
     - `fastest`    -- the quickest run that did the whole job.
+    - `pipeline_seconds` -- what that job costs on this page on a TYPICAL run:
+      mean, sample SD and range of the end-to-end clock (read + extract), over
+      exactly the population `fastest` picks its winner from. The two answer
+      different questions and the fast one flatters: llama.cpp caches prompts and
+      Ollama keeps a model resident, so the quickest run of a document is very
+      often a warm repeat nobody gets cold, while the mean is what a run of this
+      document actually tends to take. `runs` is beside it for the reason every
+      figure on this card carries one.
 
     Two rules make the answers comparable, and both narrow the field on purpose:
 
@@ -1456,7 +1561,8 @@ def by_case(rows: list = None) -> dict:
             continue
         entry = out.setdefault(case, {"case": case, "runs": 0, "extracts": 0,
                                       "best_char": None, "best_field": None,
-                                      "fastest": None})
+                                      "fastest": None, "pipeline_seconds": None,
+                                      "_totals": []})
         is_extract = (row.get("run_type") or "ocr") == "extract"
         entry["extracts" if is_extract else "runs"] += 1
         setting, elapsed = _setting(row), _elapsed(row)
@@ -1494,11 +1600,21 @@ def by_case(rows: list = None) -> dict:
                                        "char_accuracy": char}
         if (not is_extract and row.get("status") == "ok" and char
                 and elapsed["total_seconds"] is not None):
+            # The mean is taken over EXACTLY the rows `fastest` is chosen from,
+            # so `pipeline_seconds.min` is `fastest.total_seconds` by
+            # construction. Two populations under one heading -- a typical run
+            # meaned over one set and the quickest picked from another -- is a
+            # table that cannot be read across.
+            entry["_totals"].append(elapsed["total_seconds"])
             best = entry["fastest"]
             if best is None or elapsed["total_seconds"] < best["total_seconds"]:
                 entry["fastest"] = {**setting, **elapsed, "char_accuracy": char,
                                     "field_acc": field,
                                     "field_expected": row.get("field_expected", "")}
+    for entry in out.values():
+        # `_figure` with an identity pick, rather than a second implementation of
+        # mean/sd/range that could drift from the one the analysis tab reads.
+        entry["pipeline_seconds"] = _figure(entry.pop("_totals"), lambda v: v)
     return out
 
 

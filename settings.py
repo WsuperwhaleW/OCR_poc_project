@@ -552,6 +552,46 @@ CLASSIFY_MAX_TOKENS = config.env_int("CLASSIFY_MAX_TOKENS", 160, minimum=32)
 # nothing.
 CLASSIFY_MAX_CHARS = config.env_int("CLASSIFY_MAX_CHARS", 4000, minimum=200)
 
+# --------------------------------------------------------------------------
+# stage 0b: how many DOCUMENTS are in the file (2026-09-08)
+# --------------------------------------------------------------------------
+
+# Split a multi-page read into one document per document and extract each
+# separately. Off reads every page of a file as one document, which is what
+# every measurement in CLAUDE.md was taken under -- so this is the knob that
+# reproduces them, the same role `CLASSIFY_WITH_MODEL=0` plays one stage up.
+#
+# **It cannot change a single-page read at all**, and that is by construction
+# rather than by a guard: `segment.segment` over one page returns one document,
+# and one document takes the path it always took. Eleven of the thirteen
+# fixtures are one page.
+SEGMENT_DOCUMENTS = config.env_bool("SEGMENT_DOCUMENTS", True)
+# Ask the model where the boundaries are, but ONLY where Python could not tell.
+# The rules in `segment.py` are readings of what the page prints -- a page
+# numbering itself, a heading naming another type, a page with no heading at all
+# -- and a request that could only ever disagree with printed text can only make
+# the answer worse. What is left for the model is the one case no rule reaches:
+# two pages of the same type, each with its own heading, neither numbered.
+#
+# Off keeps Python's own guess, which SPLITS. That direction is deliberate --
+# see `segment._boundary`: a continuation page split off wrongly still extracts
+# what it prints and says it was a guess, while two documents merged wrongly
+# answer one form out of two documents' figures with nothing anywhere saying so.
+SEGMENT_WITH_MODEL = config.env_bool("SEGMENT_WITH_MODEL", True)
+# How much of each page that question carries. It is a question about which
+# pages belong together, and what answers it is the top of each page -- the
+# letterhead, the heading, the document number. Sending whole pages would put a
+# multi-page document's every table row into a request that reads none of them.
+SEGMENT_MAX_CHARS = config.env_int("SEGMENT_MAX_CHARS", 700, minimum=100)
+# One short JSON object holding a list of lists of page numbers. Capped small
+# for the reason `CLASSIFY_MAX_TOKENS` is: a reply long enough to overrun it is
+# one that started transcribing the pages instead of grouping them.
+SEGMENT_MAX_TOKENS = config.env_int("SEGMENT_MAX_TOKENS", 200, minimum=32)
+# The most pages this app will try to split. A boundary question over a
+# fifty-page file is a fifty-page prompt, and a file that long is a batch of
+# documents rather than a document -- the queue is the thing for that.
+SEGMENT_MAX_PAGES = config.env_int("SEGMENT_MAX_PAGES", 20, minimum=2)
+
 # Second pass: feed the finished transcript back to the model as text and ask for
 # structured fields. Text-only, so there is no image to prefill and it costs a
 # fraction of the OCR run.

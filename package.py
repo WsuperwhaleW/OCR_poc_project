@@ -44,6 +44,7 @@ FILES = [
     "jobs.py",
     "runlog.py",
     "scoring.py",
+    "segment.py",
     "verify.py",
     "normalise.py",
     "validate.py",

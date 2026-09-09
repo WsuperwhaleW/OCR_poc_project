@@ -739,8 +739,8 @@ def main():
 
     if not args.no_run:
         try:
-            server = compare.select_server(app, args.server,
-                                           args.model or DEFAULT_MODEL)
+            server, extract = compare.select_server(app, args.server,
+                                                    args.model or DEFAULT_MODEL)
             profile = (compare.select_profile(app, args.profile) if args.profile
                        else compare.current_profile(app))
         except Exception as err:
@@ -748,7 +748,13 @@ def main():
             return 2
         say(f"server: {server.get('kind') or 'no server'} at {server.get('url')}"
             + (f"  {server['model']}" if server.get("model") else "")
-            + (f"  profile {profile}" if profile else ""))
+            + (f"  profile {profile}" if profile else "")
+            # Pass 1 only here, so the extraction model does not touch a single
+            # figure in this report -- but the app may have selected one at
+            # startup, and a header that says nothing about it reads as a
+            # one-model run. Named only where the two differ, as in compare.py.
+            + ("" if extract.get("same_as_reading", True)
+               else f"  (extraction on {extract.get('model')}, unused here)"))
         if not server.get("available"):
             say(f"  warning: {server.get('reason') or 'not available'}", sys.stderr)
     elif args.model or args.server or args.profile:

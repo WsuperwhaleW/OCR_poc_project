@@ -78,6 +78,75 @@ RATE_TOLERANCE = 0.15
 
 
 # --------------------------------------------------------------------------
+# what each type-specific rule is, in one line
+# --------------------------------------------------------------------------
+
+# `prompts.TYPE_RULES` says WHICH rules a type's requirement names; this says
+# what each of them checks and whether it can run here at all. The two are
+# separate because they answer to different owners: the mapping is the
+# requirement's, and whether a rule has the data it needs is this process's.
+#
+# **`runs` is the half worth having.** FIVE of these nine need something this
+# process has not got -- the corpus of documents already filed, the document
+# being credited, the document being settled, what was owed before a payment,
+# and a Company Master -- and they report `unchecked` with the reason rather
+# than `ok`, every time, on every document. A reference page listing nine rules
+# without saying that five of them never run would read as nine checks a
+# document passes, which is the confidently-wrong number this module's
+# docstring refuses.
+#
+# `why` is the same sentence the check itself reports, so the reference and the
+# finding cannot describe one rule differently.
+RULE_NOTES = {
+    "duplicate": {
+        "field": "document_number",
+        "what": "this invoice number has not been filed before",
+        "runs": False,
+        "why": "needs the corpus of documents already filed"},
+    "future_date": {
+        "field": "issue_date",
+        "what": "the invoice is not dated in the future",
+        "runs": True,
+        "why": ""},
+    "original_document": {
+        "field": "document_number",
+        "what": "the invoice this credit note corrects can be found",
+        "runs": False,
+        "why": "needs the document this one credits, in the system to match"},
+    "reference_matching": {
+        "field": "inv_rtv_cnr_number",
+        "what": "the document this payment settles can be found",
+        "runs": False,
+        "why": "needs the document this payment settles, in the system to match"},
+    "outstanding_balance": {
+        "field": "remaining_amount",
+        "what": "the balance left agrees with what was owed before the payment",
+        "runs": False,
+        "why": "needs what was owed before this payment"},
+    "vat_balance": {
+        "field": "remaining_vat_amount",
+        "what": "the VAT part of the balance is the standard rate of it",
+        "runs": True,
+        "why": ""},
+    "company_master": {
+        "field": "payer_name",
+        "what": "each party's name matches a company master at 90% or better",
+        "runs": False,
+        "why": "there is no Company Master to match against here"},
+    "sum_reconciliation": {
+        "field": "total_amount_paid",
+        "what": "each total equals the sum of its own column in the income table",
+        "runs": True,
+        "why": ""},
+    "dividend_option": {
+        "field": "dividend_rate_option",
+        "what": "a dividend income row states which rate option is ticked",
+        "runs": True,
+        "why": ""},
+}
+
+
+# --------------------------------------------------------------------------
 # Thai tax identification numbers
 # --------------------------------------------------------------------------
 
@@ -961,3 +1030,29 @@ def validate(fields, keys=None, doc_types=(), mandatory=(), transcript=None,
         "failed": [r for r in checks if r["state"] == FAILED],
         "warnings": [r for r in checks if r["state"] == WARNING],
     }
+
+
+def _selftest():
+    """Every rule a requirement names must be described, and vice versa.
+
+    `RULE_NOTES` is what the Doc types tab prints, and a rule missing from it
+    would be a rule a document is held to that nothing on the page can name --
+    the same failure as a schema key missing from the template's field maps,
+    which is why that one is checked too. The other direction matters as much:
+    a description left behind after a rule is dropped from `prompts.TYPE_RULES`
+    is a check the page claims and nothing runs.
+    """
+    named = {rule for rules in prompts.TYPE_RULES.values() for rule in rules}
+    described = set(RULE_NOTES)
+    assert named == described, (
+        f"prompts.TYPE_RULES names {sorted(named - described)} that RULE_NOTES "
+        f"does not describe, and RULE_NOTES describes "
+        f"{sorted(described - named)} that no requirement names")
+    for rule, note in RULE_NOTES.items():
+        assert note["field"] in prompts._SCALAR_KEYS, f"{rule}: no such field"
+        # A rule that cannot run must say why, and one that can must not pretend
+        # it has a reason not to.
+        assert bool(note["why"]) is not note["runs"], f"{rule}: why/runs disagree"
+
+
+_selftest()

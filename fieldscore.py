@@ -386,7 +386,7 @@ def _readings(where: str, value, warnings) -> list:
     return out
 
 
-def _mandatory_drift(case_id: str, note) -> list:
+def _mandatory_drift(case_id: str, note, codes=None) -> list:
     """Warn where a truth file's `_mandatory` note disagrees with the requirement.
 
     The note is a convenience for whoever is filling the file in by hand -- which
@@ -401,11 +401,17 @@ def _mandatory_drift(case_id: str, note) -> list:
     """
     if not isinstance(note, dict):
         return []
-    import scoring                            # local: nothing else here needs it
-    case = scoring.cases_index().get(case_id)
-    if not case:
-        return []
-    codes = list(case.get("doc_types") or [])
+    # **The types of the DOCUMENT this note is about**, where the caller knows
+    # them: a pack's blocks are of different types, and checking every one of
+    # them against the case's own -- which are document 1's -- reported a
+    # correct note as drift on every other document in the file.
+    if codes is None:
+        import scoring                        # local: nothing else here needs it
+        case = scoring.cases_index().get(case_id)
+        if not case:
+            return []
+        codes = list(case.get("doc_types") or [])
+    codes = list(codes)
     want = list(prompts.mandatory_for_types(codes))
     got = note.get("required")
     if not isinstance(got, list) or sorted(got) == sorted(want):
@@ -415,8 +421,65 @@ def _mandatory_drift(case_id: str, note) -> list:
             " -- the note is out of date, prompts.MANDATORY_FIELDS is the rule"]
 
 
-def load_truth(case_id: str) -> dict:
+# A truth file for a file holding SEVERAL documents lists them here, each with
+# its own pages, its own types and its own values. A file holding one document
+# has no such key and is read exactly as it always was -- which is the thirteen
+# ordinary fixtures, untouched.
+_DOCUMENTS_KEY = "documents"
+
+
+def truth_documents(case_id: str) -> list:
+    """[{pages, doc_types}] for a case whose file holds several documents, else [].
+
+    Read without scoring anything, so a caller can ask what a truth file covers
+    before it has an extraction to score -- which is what the page's pickers and
+    `compare.py`'s header need.
+    """
+    path = truth_path(case_id)
+    if not path.exists():
+        return []
+    try:
+        raw = json.loads(path.read_text("utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return []
+    if not isinstance(raw, dict):
+        return []
+    return [{"pages": list(d.get("pages") or []),
+             "doc_types": list(d.get("doc_types") or [])}
+            for d in (raw.get(_DOCUMENTS_KEY) or []) if isinstance(d, dict)]
+
+
+def _pick_document(raw: dict, pages, warnings) -> dict:
+    """The entry of a pack's truth file that describes the given pages.
+
+    **Matched on the FIRST page**, not on the whole list: the truth file states
+    where a document begins, and a read that split it one page longer or shorter
+    still means that document. Falling back to the first entry is deliberate --
+    a caller with no pages in hand (the CLI, a re-score) means "the document this
+    case is about", which is document 1 and is what `_document` says it is.
+    """
+    documents = raw.get(_DOCUMENTS_KEY) or []
+    if not documents:
+        return raw
+    first = (list(pages) or [None])[0]
+    if first is not None:
+        for entry in documents:
+            if first in (entry.get("pages") or []):
+                return entry
+        # A page no document of the truth file covers. Not an error and not
+        # document 1's truth: scoring one document's values against another's
+        # would mark a correct extraction wrong, which is worse than not scoring.
+        warnings.append("no truth for page %s of this file" % first)
+        return {}
+    return documents[0]
+
+
+def load_truth(case_id: str, pages=None) -> dict:
     """Read one case's field ground truth. Raises ValueError if unusable.
+
+    `pages` selects which document of a PACK -- a file holding several documents
+    -- is wanted. A truth file for one document ignores it, so every existing
+    caller and all thirteen single-document fixtures behave exactly as before.
 
     Returns {"scalars": {...}, "other_fields": [...] or None, "table_columns": {},
              "score_table": bool, "warnings": [...]}.
@@ -441,9 +504,19 @@ def load_truth(case_id: str) -> dict:
         raise ValueError(f"{path.name} must hold a JSON object")
 
     warnings = []
-    warnings.extend(_mandatory_drift(case_id, raw.get("_mandatory")))
+    # For a pack, everything below reads the chosen document's own block --
+    # its values, its `_mandatory` note, its `other_fields` and table settings.
+    # A pack's top level holds only the list and the file-wide notes.
+    whole, raw = raw, _pick_document(raw, pages, warnings)
+    warnings.extend(_mandatory_drift(
+        case_id, raw.get("_mandatory"),
+        # A block of a pack carries its own types; a single-document file has
+        # none of its own and falls back to the manifest's.
+        list(raw.get("doc_types") or []) if whole is not raw else None))
     scalars = {}
     for key, value in raw.items():
+        if key in ("pages", "doc_types") and whole is not raw:
+            continue                      # the document's own address, not a value
         if key.startswith("_") or key in _CONFIG_KEYS:
             continue
         if key in prompts.RETIRED_KEYS:
@@ -1065,7 +1138,7 @@ def score(truth: dict, fields, table: dict = None, keys=None,
 
 
 def evaluate(case_id: str, fields, keys=None, doc_types=(),
-             mandatory=None, items_mandatory=None) -> dict:
+             mandatory=None, items_mandatory=None, pages=None) -> dict:
     """Load the truth for a case and score `fields` against it.
 
     Returns {"error": ...} rather than raising, so a caller on a request path can
@@ -1081,7 +1154,7 @@ def evaluate(case_id: str, fields, keys=None, doc_types=(),
     decide what the headline is taken over -- see `score`.
     """
     try:
-        truth = load_truth(case_id)
+        truth = load_truth(case_id, pages)
     except ValueError as err:
         return {"error": str(err)}
     table = (table_rows(case_id, truth.get("table_columns"))
@@ -1090,7 +1163,139 @@ def evaluate(case_id: str, fields, keys=None, doc_types=(),
                    items_mandatory=items_mandatory)
     result["case"] = case_id
     result["doc_types"] = list(doc_types or [])
+    # Which document of the file this score is of, where the file holds several.
+    # On the score rather than left to the caller: a rate travels further than
+    # the run that produced it, and "56% of 11" says nothing about which of
+    # seven documents was being marked.
+    if pages:
+        result["pages"] = list(pages)
     return result
+
+
+def _rates(counts: dict, expected: int, returned: int) -> dict:
+    """The four rates a scored block carries, from its counts.
+
+    One function so a pooled block and a scored one cannot compute them
+    differently -- the pooled dict is read by everything that reads a score, and
+    a rate that does not follow from the counts beside it is unrecoverable.
+    """
+    correct, partial = counts.get("correct", 0), counts.get("partial", 0)
+    return {
+        "accuracy": round(correct / expected, 4) if expected else None,
+        "accuracy_loose": (round((correct + partial) / expected, 4)
+                           if expected else None),
+        "accuracy_half": (round((correct + 0.5 * partial) / expected, 4)
+                          if expected else None),
+        "precision": round(correct / returned, 4) if returned else None,
+    }
+
+
+def _pool_block(blocks) -> dict:
+    """Several {counts, expected, returned} blocks summed into one."""
+    counts, expected, returned, paths = {}, 0, 0, 0
+    for block in blocks:
+        expected += block.get("expected") or 0
+        returned += block.get("returned") or 0
+        paths += block.get("scored_paths") or 0
+        for verdict, count in (block.get("counts") or {}).items():
+            counts[verdict] = counts.get(verdict, 0) + count
+    out = {"counts": counts, "expected": expected, "returned": returned}
+    out.update(_rates(counts, expected, returned))
+    if paths:
+        out["scored_paths"] = paths
+    return out
+
+
+def pool(scores) -> dict:
+    """Several documents of ONE file, as one score for the file.
+
+    **At the user's request** (2026-09-08): *if the doc got more we still score
+    them as 1 doc but we do more of an average way.* A pack used to be scored on
+    its first document and the rest not at all, which reported a seven-document
+    file on a seventh of itself.
+
+    **Pooled, not the mean of the rates**, and that is the decision not to
+    undo. A run-log row writes `field_acc` beside `p1_correct` and `p1_scored`,
+    and this project's standing rule is that a count of correct values is
+    written as a pair with its denominator or not at all. A mean of seven rates
+    follows from no such pair, so a row carrying one would hold a rate and a
+    pair that disagree. Pooling keeps them one statement: **of every value this
+    FILE was required to state, N of M came back right.**
+
+    `overall.accuracy_macro` is the other reading and rides beside it, never in
+    place of it: the unweighted mean of the documents' own rates, where a
+    three-value document counts as much as a ten-value one. Read the two
+    together the way `accuracy` and `accuracy_loose` are read together -- pooled
+    well above macro means the big documents carried the file.
+
+    **One score is returned untouched.** Every single-document case therefore
+    produces exactly the dict it produced before this existed, which is what
+    keeps the thirteen ordinary fixtures comparable across the change.
+
+    Shared by `app._merge_field_scores` and `compare._pool_scores` rather than
+    written twice: the app scores through its own truth files and the CLI
+    through the working copy's, but the ARITHMETIC over the results is one fact,
+    and two copies of it disagree eventually -- which this project has already
+    paid for once in `case_payload`.
+    """
+    scores = [s for s in scores if s and not s.get("error")]
+    if not scores:
+        return {"error": "no document returned fields"}
+    if len(scores) == 1:
+        return scores[0]
+
+    pooled = {
+        "case": scores[0].get("case"),
+        "overall": _pool_block([s.get("overall") or {} for s in scores]),
+        "optional": _pool_block([s.get("optional") or {} for s in scores]),
+        # Every type in the file, in the order the documents appear. Not
+        # deduplicated: sol015 holds two billing notes and two payment
+        # schedules, and a list that hid that would misdescribe the file.
+        "doc_types": [c for s in scores for c in (s.get("doc_types") or [])],
+        "warnings": [w for s in scores for w in (s.get("warnings") or [])],
+        # True only where NO document of the file is covered by a requirement.
+        # A pack mixing a credit note with a goods-return note is partly a
+        # compliance figure and partly not, and calling the whole of it an
+        # unknown type would be false about the half that is not.
+        "unknown_type": all(s.get("unknown_type") for s in scores),
+        "scored_documents": len(scores),
+    }
+    scalars = _pool_block([s.get("scalars") or {} for s in scores])
+    for tier in ("p1", "p2", "p3"):
+        blocks = [(s.get("scalars") or {}).get(tier) for s in scores]
+        if any(isinstance(b, dict) for b in blocks):
+            scalars[tier] = _pool_block([b for b in blocks if isinstance(b, dict)])
+    # Every document's rows, in document order, so a per-value report still
+    # lists what each document was marked on.
+    scalars["rows"] = [row for s in scores
+                       for row in ((s.get("scalars") or {}).get("rows") or [])]
+    for name in ("checked", "unchecked"):
+        scalars[name] = sum((s.get("scalars") or {}).get(name) or 0 for s in scores)
+    pooled["scalars"] = scalars
+    for name in ("line_items", "other_fields"):
+        blocks = [s.get(name) for s in scores if isinstance(s.get(name), dict)]
+        pooled[name] = _pool_block(blocks) if blocks else None
+    coverage = {}
+    for s in scores:
+        for key, value in (s.get("coverage") or {}).items():
+            if isinstance(value, (int, float)):
+                coverage[key] = coverage.get(key, 0) + value
+    pooled["coverage"] = coverage
+    rates = [(s.get("overall") or {}).get("accuracy") for s in scores]
+    rates = [r for r in rates if r is not None]
+    pooled["overall"]["accuracy_macro"] = (round(sum(rates) / len(rates), 4)
+                                           if rates else None)
+    pooled["per_document"] = [{
+        "pages": list(s.get("pages") or []),
+        "doc_types": list(s.get("doc_types") or []),
+        "accuracy": (s.get("overall") or {}).get("accuracy"),
+        "expected": (s.get("overall") or {}).get("expected") or 0,
+        "unknown_type": bool(s.get("unknown_type")),
+    } for s in scores]
+    pooled["scored_scope"] = (
+        "%d documents in this file, pooled -- every value their requirements "
+        "demand of them" % len(scores))
+    return pooled
 
 
 # --------------------------------------------------------------------------

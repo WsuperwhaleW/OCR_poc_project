@@ -62,7 +62,11 @@ ORDER -- this matters
   bottom, and left to right within the same line or band.
 - Text positioned higher on the page MUST appear earlier in your output. Never move a
   heading, title, total or page number away from where it sits on the page.
-- For multi-column layouts, finish the left column before starting the right one."""
+- For multi-column layouts, finish the left column before starting the right one. Where
+  two blocks of labelled details sit SIDE BY SIDE -- two parties, two addresses, two sets
+  of values -- keep each block whole, and treat a line that runs across both as TWO lines:
+  write its left part with the left block and its right part with the right block, never
+  straight across. Inside a table this does not apply -- a row is one record, read across."""
 
 # dots.ocr's own prompt, quoted exactly. A different model, a different request
 # shape, and a different answer: this one returns a JSON array of layout blocks
@@ -223,6 +227,31 @@ TYPE_NAMES = {
     # because that is what the document is called -- a reader who has seen one
     # knows it as 50 ทวิ long before "withholding tax certificate".
     "WHT_CERTIFICATE": "a withholding tax certificate (50 ทวิ)",
+    # Added 2026-09-08 with sol014 and sol015, which are the first files here
+    # holding several documents apiece. **No requirement covers any of them**,
+    # so they contribute no key and nothing Mandatory -- exactly the standing
+    # of TAX_INVOICE, STATEMENT_OF_ACCOUNT and DEBIT_NOTE, and the reason none
+    # of the numbers in CLAUDE.md moves for their being here.
+    #
+    # What they buy is the SPLIT. `segment._boundary` opens a document where a
+    # page heads itself with types the one before it did not, and until these
+    # were known a returns note, a billing note and a payment schedule all came
+    # back either untyped or -- worse -- typed off a table row that happened to
+    # carry the word ใบกำกับภาษี. They sit above the commercial types because
+    # they share no field with them: a page that is one of these is nothing
+    # else, which is the same argument that puts WHT_CERTIFICATE first.
+    "RTV_SHIP_CREDIT": "a goods-return note (RTV ship credit)",
+    "CHEQUE_DELIVERY": "a cheque delivery acknowledgement",
+    "PAYMENT_ADVICE": "a bank payment advice",
+    "PAYMENT_SCHEDULE": "a payment appointment slip",
+    # Its own code rather than a needle under INVOICE, where ใบวางบิล sat until
+    # now. A billing note is a covering slip that LISTS invoices -- sol015 prints
+    # two of them, each tabling four or five invoice numbers and their totals --
+    # so reading one as an invoice asks the invoice form for a document number,
+    # an issue date and a PO number that belong to the documents it lists, not
+    # to it. No fixture printed ใบวางบิล before sol015, so nothing measured
+    # moves with the needle.
+    "BILLING_NOTE": "a billing note (a covering slip listing invoices)",
     "CREDIT_NOTE": "a credit note",
     "DEBIT_NOTE": "a debit note",
     "STATEMENT_OF_ACCOUNT": "a statement of account",
@@ -434,6 +463,40 @@ Return ONLY this JSON object, with no prose and no code fence:
   "" for the heading. A guess is worse than no answer.
 
 Document text:
+"""
+
+
+# Asked ONLY where `segment.py` could not tell -- two pages of the same kind,
+# each with its own heading, neither of them numbered. Every other boundary is a
+# reading of what the page prints and is settled in Python.
+#
+# It asks for GROUPS OF PAGE NUMBERS and nothing else: no type, no confidence, no
+# reason. The types are resolved per document afterwards by the classifier that
+# already exists, and a number a model volunteered is never taken here -- the
+# check on this answer is `segment.valid_groups`, which is Python's.
+SEGMENT_PROMPT = """Below are the first lines of each page of one scanned file. The file may hold
+one document, or several documents one after another.
+
+Group the pages: pages of the SAME document go in one group.
+
+Return ONLY this JSON object, with no prose and no code fence:
+
+{{ "documents": [[1, 2], [3]] }}
+
+- Every page number from 1 to {count} appears exactly ONCE, in exactly one group.
+- A group is consecutive pages. Document order is page order.
+- The question about any two pages in a row is whether they record the SAME TRANSACTION.
+  A page carrying the same document number, the same parties, the same totals, or a table
+  that carries straight on from the page before -- or numbered 2 of 2 -- is the same
+  transaction and goes in that document's group.
+- A page that starts a new document -- its own heading, its own document number and date,
+  its own parties or totals, numbered 1 of something -- opens a new group.
+- A page with no heading of its own is USUALLY a continuation, but not always: read its
+  numbers. Where they belong to a different transaction it is its own document.
+- Two documents of the same kind, one after another, are still two groups.
+- Where the whole file is one document, return one group holding every page.
+
+The pages:
 """
 
 

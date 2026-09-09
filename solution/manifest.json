@@ -180,6 +180,25 @@
         "RECEIPT",
         "TAX_INVOICE"
       ],
+      "documents": [
+        {
+          "pages": [
+            1
+          ],
+          "doc_types": [
+            "RECEIPT",
+            "TAX_INVOICE"
+          ]
+        },
+        {
+          "pages": [
+            2
+          ],
+          "doc_types": [
+            "PAYMENT_SCHEDULE"
+          ]
+        }
+      ],
       "pages": 2,
       "kind": "handwritten receipt/tax invoice, page 2 is the payer's payment schedule",
       "aliases": [
@@ -196,6 +215,108 @@
       "kind": "printed tax invoice with a withholding-tax band; the only pure tax invoice here",
       "aliases": [
         "23.pdf"
+      ]
+    },
+    {
+      "id": "sol014",
+      "pdf": "pack_credit_note_sol014.pdf",
+      "doc_types": [
+        "CREDIT_NOTE"
+      ],
+      "documents": [
+        {
+          "pages": [
+            1
+          ],
+          "doc_types": [
+            "CREDIT_NOTE"
+          ]
+        },
+        {
+          "pages": [
+            2
+          ],
+          "doc_types": [
+            "RTV_SHIP_CREDIT"
+          ]
+        }
+      ],
+      "pages": 2,
+      "kind": "printed credit note; page 2 is the goods-return note it cites",
+      "aliases": [
+        "24 (1).pdf",
+        "24.pdf"
+      ]
+    },
+    {
+      "id": "sol015",
+      "pdf": "pack_billing_note_sol015.pdf",
+      "doc_types": [
+        "BILLING_NOTE"
+      ],
+      "documents": [
+        {
+          "pages": [
+            1
+          ],
+          "doc_types": [
+            "BILLING_NOTE"
+          ]
+        },
+        {
+          "pages": [
+            2
+          ],
+          "doc_types": [
+            "RECEIPT",
+            "TAX_INVOICE"
+          ]
+        },
+        {
+          "pages": [
+            3
+          ],
+          "doc_types": [
+            "PAYMENT_SCHEDULE"
+          ]
+        },
+        {
+          "pages": [
+            4
+          ],
+          "doc_types": [
+            "BILLING_NOTE"
+          ]
+        },
+        {
+          "pages": [
+            5
+          ],
+          "doc_types": [
+            "PAYMENT_SCHEDULE"
+          ]
+        },
+        {
+          "pages": [
+            6
+          ],
+          "doc_types": [
+            "CHEQUE_DELIVERY"
+          ]
+        },
+        {
+          "pages": [
+            7
+          ],
+          "doc_types": [
+            "PAYMENT_ADVICE"
+          ]
+        }
+      ],
+      "pages": 7,
+      "kind": "one settlement, seven documents: two billing notes, the receipt/tax invoice that settles them, two payment schedules and the bank's cheque advice pair",
+      "aliases": [
+        "25.pdf"
       ]
     }
   ]

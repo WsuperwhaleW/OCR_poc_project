@@ -850,7 +850,7 @@ at a time. Raising the token cap does not help.
 ## Checking accuracy against ground truth
 
 `solution/` holds a hand-transcribed expected transcript for each PDF in `mockOcr/` —
-`sol001.md` … `sol013.md`, in Markdown so the tables render when you open them. Edit these
+`sol001.md` … `sol015.md`, in Markdown so the tables render when you open them. Edit these
 directly; they are the files the scores are computed from. Scoring lives in `scoring.py` and
 is shared by the web page and the CLI, so the browser and the terminal can never report
 different numbers for the same run.
@@ -877,10 +877,34 @@ ls mockOcr/invoice_*.pdf
 |---|---|---|
 | `STATEMENT_OF_ACCOUNT` | sol001 | invoice |
 | `INVOICE` | sol002 | — |
-| `RECEIPT` | sol003, sol004, sol005, sol007, sol011, sol012 | tax invoice |
+| `RECEIPT` | sol003, sol004, sol005, sol007, sol011, sol012 | tax invoice; sol012 is a pack — page 2 is the payer's payment schedule |
 | `CREDIT_NOTE` | sol006, sol008, sol009, sol010 | sol006 is also a tax invoice |
 | `TAX_INVOICE` | sol013 | the only case that is a tax invoice and nothing else. No requirement covers that type on its own, so it is asked the widest form (30 keys) and nothing is Mandatory — it is marked **unknown type** and its headline field score is taken over the 13 values its truth file states |
-| `WHT_CERTIFICATE` | — | the withholding tax certificate (มาตรา 50 ทวิ) is a recognised type with a form and validation rules of its own, and no fixture yet |
+| `WHT_CERTIFICATE` | — | recognised, with a form and validation rules of its own, and no fixture yet |
+| `BILLING_NOTE` | sol015 | **a pack: seven documents in one file.** The billing note on page 1 is what its truth file describes |
+| `CREDIT_NOTE` (pack) | sol014 | **two documents in one file** — the credit note on page 1 and the goods-return note it cites on page 2 |
+
+**Five types were added on 2026-09-08 with those two packs**, and no requirement covers any of
+them, so each contributes no key and nothing Mandatory — the same standing as `TAX_INVOICE`
+above. What they buy is the split: a page the classifier cannot type reads as a *continuation*
+of the page before it, so a returns note or a payment schedule nobody had taught it silently
+merged into the document in front of it.
+
+| code | printed as |
+|---|---|
+| `RTV_SHIP_CREDIT` | ใบส่งคืนสินค้า / RTV Ship Credit |
+| `BILLING_NOTE` | ใบวางบิล / billing note — a covering slip that LISTS invoices, which is why it is no longer a needle under `INVOICE`: reading one as an invoice fills the invoice form from the documents it names |
+| `PAYMENT_SCHEDULE` | ใบนัดจ่าย |
+| `CHEQUE_DELIVERY` | ใบแจ้งนำส่งเช็ค / Delivery Acknowledgement |
+| `PAYMENT_ADVICE` | Pre-Payment Advice / Credit Advice |
+
+**A case holding more than one document carries `documents` in the manifest** — the pages and
+the types of each — and its top-level `doc_types` is document 1's, which is the document its
+`.fields.json` describes. `app.case_doc_types` reads the entry a document's pages fall in, so
+the manifest answers per document rather than putting document 1's types on all seven.
+
+A pack is named `pack_<the first document's type>_<id>.pdf`, so `ls mockOcr/pack_*` is the
+multi-document set. A one-document file keeps the every-type name below.
 
 A file is named for **every** type its heading names, in that order — so
 `receipt_tax_invoice_sol003.pdf`, `credit_note_tax_invoice_sol006.pdf`,
@@ -889,7 +913,7 @@ A file is named for **every** type its heading names, in that order — so
 
 The three case dropdowns on the page (**Benchmark case**, **Lock document**, **Ground-truth
 document**) group their options under the type each case is filed under, and `GET /api/cases`
-reports `doc_types` per case. The PDFs were renamed to this scheme on 2026-08-31 (sol011-sol013 arrived under it on 2026-09-03); the names they
+reports `doc_types` per case. The PDFs were renamed to this scheme on 2026-08-31 (sol011-sol013 arrived under it on 2026-09-03, sol014-sol015 on 2026-09-08); the names they
 shipped under before that are listed as `aliases`, so an upload of an original still matches
 by name, and any copy of one still matches by contents whatever it is called.
 
@@ -1371,6 +1395,7 @@ to run first. The **Fields** cell marks an updated row.
 | `case`, `char_accuracy`, `word_accuracy`, `char_accuracy_no_marks`, `invented_chars` | percentages, blank when the input has no ground truth. **`char_accuracy` is the score** — content only, and order-blind: the transcript's blocks are matched to the ground truth's by content first, so a page read correctly but walked in a different order is not charged for it. Missing and misread content cost; **extra content does not, since 2026-09-04** — `invented_chars` counts it instead, and is blank on every row written before that date, which is every row whose `char_accuracy` was an edit distance — an exact test for which era a row belongs to. **The log was not reset for the change**: every table covers each setting's own most recent runs, so the older rows leave on their own as new ones arrive, and the pass-1 table says how many are left until they are gone. Until then, a mean mixing the two is a mean over two questions. The other two stay for diagnosis and are not shown on the page: `word_accuracy` is order-*sensitive*, so the gap between the two is what a reordering looks like |
 | `thai_accuracy`, `latin_accuracy`, `digit_accuracy`, `thai_chars`, `latin_chars`, `digit_chars` | the same transcript recall taken over one script at a time, and how many characters of each the ground truth holds. `digit_accuracy` is the one to read first: every Mandatory field in the requirement is a figure, a date or an ID, and a page can score 95% overall while losing the digit that makes an amount wrong. `latin` is the Latin **alphabet** — a romanised Thai company name is Latin script and is not English. **The three do not add up to `char_accuracy`**; punctuation and symbols belong to no script and are in the headline only. A rate is blank where the page prints fewer than 20 characters of that script — the count beside it says why — and on every row written before 2026-09-04 |
 | `field_verdicts` | which **field** the extraction got right, as `key=letter` pairs joined by `;`. The letters are the six field-score verdicts: `c` correct, `p` partial, `w` wrong, `m` missed (the page states it, the extractor returned nothing), `s` spurious (the page states nothing, the extractor filled it anyway), `a` absent (both empty — agreement, scored neither way). `m` and `s` are opposite mistakes and neither means "empty". Field names only; no value ever reaches this file. Blank wherever `field_acc` is blank, and on rows written before 2026-09-04. This is what the **Weak spots** panel is compiled from |
+| `documents` | how many documents pass 2 found in this file. `1` is a measurement and is written; blank means pass 2 never ran, and blank is also every row from before 2026-09-08, which were all read as one document whether or not they were. **Where this reads 2 or more, `p1_present`, `p1_absent`, `other_fields` and `ungrounded` on the same row are SUMS over the documents** — so `22 of 26` is two complete thirteen-key forms, and without the count there is no way to tell that from a form nobody has. **`field_acc` and the `p1_correct`/`p1_scored` pair are pooled over every document** — a truth file for such a case holds a block per document, so the rate is over every value the whole file was required to state, and the pair still reconstructs it. `doc_types` holds the union of every document's types |
 | `status`, `error` | `ok` / `partial` / `truncated` / `looped` / `cancelled` / `error` |
 | `run_type` | `ocr` for a document read, `extract` for a re-extraction of a transcript already read. Blank on rows written before the column existed |
 | `extract_updated` | set when a later, better re-extraction replaced this row's pass-2 columns, so `timestamp` no longer says when they were measured. Blank on the normal case |
@@ -1847,6 +1872,27 @@ its hand-written ground truth may be wrong.
 **Each document type has its own field list, straight from its requirement.** A document is
 asked for the union of the lists of the types it names — six of the ten fixtures name two.
 
+**The tables below are on screen as well, under the *Doc types* tab** — the fifth tab on the
+left, beside Workspace, Queue, Fields only and Random test. It draws every type this app can
+classify a page as, a matrix of which fields each one asks for and which of them it demands,
+the printed headings that classify a page as that type, and the validation rules the type
+adds — marking the ones that cannot run here for want of data this process has not got.
+It is reference: it reads nothing from the run log, contacts no model server and logs nothing,
+so opening it is free at any time, including mid-run.
+
+Three states in the matrix:
+
+| | |
+|---|---|
+| `REQUIRED` | the requirement demands it — the page has to state it and the extraction has to return it |
+| ● | asked for, and the requirement does not demand it |
+| – | not asked for on this type; the prompt never mentions the key, so the model cannot answer with it |
+
+The last column, **Unknown type**, is what a document gets when nothing in play has a
+requirement: every key is asked and none of it is demanded. It is also the column that shows
+the one thing not in the tables below — the base field set asks for **no table**, so the
+certificate's four income cells read `–` there.
+
 | field | key | invoice | credit note | receipt |
 |---|---|---|---|---|
 | Document Type | `document_type` | Yes | Yes | — |
@@ -1964,10 +2010,68 @@ A credit note legitimately post-dates the invoice it corrects, which is why the 
 rule does not run on one. `Cheque No.` has no validation rule in the requirement and gets
 none: a field with nothing to check is not a field that passes, it simply is not checked.
 
+### How many documents are in the file
+
+**One upload is not one document.** A multi-page file can hold several documents of several
+types, several of the same type, or one document that runs to several pages — and the three
+want different things from pass 2. The transcript is split into one document per document
+before anything is classified, and **each document is extracted from its own pages only**, with
+its own form, its own grounding, its own validation and its own place in the result.
+
+The boundaries are read off the pages in Python (`segment.py`), most certain first:
+
+| evidence | what it decides |
+|---|---|
+| the page numbers itself — `Page 2 of 2`, `หน้า 1/3` | `2 of 2` continues; `1 of N` opens a new document |
+| the page before promised a page after it | continues |
+| its heading names other types | opens a new document |
+| **the page heads itself with nothing** | **continues, but is not settled** |
+| the same types again, and the same document number printed on both | continues, not settled |
+| the same types again, and a different document number | opens a document, not settled |
+| the same types again, neither numbered nor naming itself | opens a document, not settled |
+
+The last two rows are put to the model, because both ask the same thing and it is not a
+question about layout: **do these two pages record the same transaction?** An unheaded page
+is usually a continuation and sometimes a document whose heading did not survive the read;
+two pages headed alike are two documents or one whose letterhead is reprinted. The model
+answers with groups of page numbers and nothing else, and the grouping is refused unless
+every page appears exactly once and every group is consecutive.
+With the model off, or where it will not answer, Python's own reading stands — and it *splits*,
+because a continuation page split off wrongly still extracts what it prints and says the
+boundary was a guess, while two documents merged wrongly answer one form out of two documents'
+figures with nothing anywhere saying so.
+
+A case whose file holds several documents says so **before anything runs**: the three case
+pickers mark it `· N documents`, and the note under them names the kinds it holds. Everything
+else in that note — the type, the field count, the required count — describes document 1,
+which is what the truth file describes and what the extractor is scored on.
+
+Every result carries `segments` (which pages each document is, and why it starts there),
+`documents_found`, and `split_from` — `rules`, `model`, `guess` or `whole`. A file read as more
+than one document carries `documents`, a list of complete extraction results; the Fields tab
+draws a button per document above the values, with the reason for the boundary in its tooltip.
+The run log writes `documents`, and its `p1_present`, `p1_absent`, `other_fields` and
+`ungrounded` cells are **sums over the documents** on such a row.
+
+**`SEGMENT_DOCUMENTS=0` reads every page of a file as one document**, which is what every
+measurement recorded before 2026-09-08 was taken under. A single-page file is unaffected either
+way.
+
+**Every document is scored, and the file gets one figure.** A truth file for a multi-document
+case holds one block per document — its pages, its types, and the value each key of *that*
+document's form should come back with — and the case's headline is the **pooled** total: of
+every value the file was required to state, how many came back right. `accuracy_macro` rides
+beside it as the other reading, each document counting once whatever its size. A file holding
+one document has no such blocks and is read exactly as it always was.
+
+On the Fields tab each button of the document strip carries that document's own rate, and the
+file's figure is stated once under the strip. `compare.py` prints one figure per case, over
+every document, and says how many it pooled.
+
 ### How the type is decided
 
-In order of confidence, and the answer is reported on every result as `doc_types` (a list)
-with `doc_type_from` saying which rule produced it:
+Per document, once the file has been split. In order of confidence, and the answer is reported
+on every result as `doc_types` (a list) with `doc_type_from` saying which rule produced it:
 
 | order | rule | `doc_type_from` |
 |---|---|---|
@@ -2211,6 +2315,15 @@ Two things follow from `derived` sitting outside `fields`, and both are delibera
 
 ## API
 
+`GET /api/schema` — every document type this app knows and the form each asks for. What the
+**Doc types** tab draws, and reference data rather than a run: no model server is touched and
+nothing is logged. `types` is every code, most specific first, each with `name`, `headings`
+(the printed wordings that classify a page as it), `fields`, `mandatory`, `items`,
+`mandatory_items`, `rules` and `has_requirement`. A type no requirement covers has an empty
+`fields` — it is classifiable and contributes no key. `unknown` is what is asked when no type
+in play has a requirement, `rule_notes` says what each validation rule checks and whether it
+can run here, and `keys` is every key in the schema in the order the prompt lists them.
+
 `GET /api/ocr/profile` — the pass-1 profile in force and the ones on offer:
 `{"profile":"typhoon","profiles":[{"id","label","note","system","reply"}, ...]}`.
 
@@ -2362,6 +2475,7 @@ still never parses `.env` itself.
 | `verify.py` | Reads document amounts, and decides whether the extracted figures already carry VAT |
 | `normalise.py` | Derives the normalised values from what pass 2 copied — standard document type, branch codes, tax-ID digits, the reference list |
 | `scoring.py` | Ground-truth lookup and accuracy scoring, shared by page and CLI |
+| `segment.py` | How many documents are in one file, and which pages are which |
 | `runlog.py` | The CSV run log |
 | `jobs.py` | The in-process queue and its worker pool |
 | `compare.py` | CLI benchmark runner |

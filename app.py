@@ -36,6 +36,7 @@ import prompts
 import randomtest
 import runlog
 import scoring
+import segment
 import validate
 import verify
 
@@ -89,6 +90,11 @@ from settings import (
     CLASSIFY_MAX_TOKENS,
     CLASSIFY_MIN_CONFIDENCE,
     CLASSIFY_WITH_MODEL,
+    SEGMENT_DOCUMENTS,
+    SEGMENT_MAX_CHARS,
+    SEGMENT_MAX_PAGES,
+    SEGMENT_MAX_TOKENS,
+    SEGMENT_WITH_MODEL,
     TYPE_FRAMING_AGENTIC,
     TYPE_FRAMING_BULLETS,
     TYPE_FRAMING_SINGLE,
@@ -855,7 +861,7 @@ def _needs_second_opinion(codes, confidence):
 
 
 def resolve_doc_types(text: str, case_id: str = None, doc_type=None,
-                      status: dict = None):
+                      status: dict = None, pages=None):
     """(codes, how, heading) -- what this document is, and on whose authority.
 
     In order of confidence, the same shape as `scoring.case_for_upload`'s rules
@@ -949,9 +955,12 @@ def resolve_doc_types(text: str, case_id: str = None, doc_type=None,
             return (codes, "model", quoted,
                     normalise.heading_confidence(quoted)[0], why)
     if case_id:
-        case = scoring.cases_index().get(case_id) or {}
-        if case.get("doc_types"):
-            return list(case["doc_types"]), "case", "", None, why
+        # The manifest's answer for THIS document, where the case holds more
+        # than one -- see `case_doc_types`. A pack's entry for the pages in
+        # hand, or the file's own list where it holds one document.
+        named = case_doc_types(case_id, pages)
+        if named:
+            return named, "case", "", None, why
     if read:
         # Under the bar and used anyway, because the alternative is the default
         # form -- the union of every requirement, the widest here and the most
@@ -961,7 +970,36 @@ def resolve_doc_types(text: str, case_id: str = None, doc_type=None,
     return [], "unclassified", "", None, why
 
 
-def manifest_types(case_id: str) -> list:
+def case_doc_types(case_id: str, pages=None) -> list:
+    """What a person says this case is -- for the whole file, or for one document.
+
+    **A benchmark case is not always one document** (2026-09-08). sol015 is
+    seven, of five different kinds, and one `doc_types` for the file would be
+    seven wrong answers or one right one and six wrong. A case that holds more
+    than one carries `documents` in the manifest -- pages and types per document
+    -- and this reads the entry the given pages fall in.
+
+    `pages` empty asks about the FILE, which is what a caller with no segment in
+    hand means, and it gets the top-level list: document 1's types on a pack,
+    because that is the document the truth file describes.
+
+    An entry that covers none of the given pages returns [] rather than falling
+    back to the file's answer. A pack whose manifest was edited to cover four of
+    its five documents is a manifest that has nothing to say about the fifth,
+    and saying so lets the classifier answer instead of putting document 1's
+    types on it.
+    """
+    case = scoring.cases_index().get(case_id) or {}
+    documents = case.get("documents") or []
+    if pages and documents:
+        for entry in documents:
+            if pages[0] in (entry.get("pages") or []):
+                return list(entry.get("doc_types") or [])
+        return []
+    return list(case.get("doc_types") or [])
+
+
+def manifest_types(case_id: str, pages=None) -> list:
     """What a person says this benchmark case is, or []. Never the classifier.
 
     Read separately from `resolve_doc_types` so the manifest can be a CHECK on an
@@ -969,11 +1007,150 @@ def manifest_types(case_id: str) -> list:
     thing that can say a fixture was built on a different form from the one its
     truth file was written against is the manifest, held beside the answer rather
     than in front of it.
+
+    `pages` names the document being classified, on a case that holds more than
+    one -- without it the check would hold document 1's types against every
+    document of a pack and report six disagreements that are not.
     """
-    return list((scoring.cases_index().get(case_id) or {}).get("doc_types") or [])
+    return case_doc_types(case_id, pages)
 
 
-def _field_set(text: str, case_id: str = None, doc_type=None, status=None):
+# --------------------------------------------------------------------------
+# stage 0a: how many DOCUMENTS are in the file (2026-09-08)
+# --------------------------------------------------------------------------
+#
+# Ahead of the type classifier, because it decides what that classifier is
+# given: a three-page file holding three documents is three classifications and
+# three forms, and asking one form of all three pages puts three issue dates and
+# three totals in front of eleven keys. `segment.py` holds the rules and the
+# reasoning; what is here is the model escalation and the reporting, which is
+# the same shape `resolve_doc_types` already has one stage down.
+
+
+def _page_digest(pages) -> str:
+    """The head of each page, numbered, for the boundary question.
+
+    The top of a page is what answers it -- the letterhead, the heading, the
+    document number, a `Page 2 of 2`. Sending whole pages would put a multi-page
+    document's every table row into a request that reads none of them, and the
+    cap is small for the same reason `CLASSIFY_MAX_CHARS` is.
+    """
+    return "\n\n".join(
+        "--- page %d ---\n%s" % (number, (page or "").strip()[:SEGMENT_MAX_CHARS])
+        for number, page in enumerate(pages, 1))
+
+
+def _segment_with_model(pages, status: dict):
+    """The page groups the model reads in this file, or None.
+
+    **Asked only where Python could not tell** -- two pages of the same kind,
+    each with its own heading, neither numbered. Every other boundary in
+    `segment.py` is a reading of what the page prints, and a request that could
+    only ever disagree with printed text can only make the answer worse.
+
+    The answer is checked before it is believed, by `segment.valid_groups`, and
+    the check is the whole of why this is safe to run at all: every page appears
+    exactly once, every group is consecutive, nothing is out of range. A
+    grouping that loses a page would drop it from the run silently, and one that
+    repeats a page would extract it twice under two documents' names.
+
+    Nothing else in the reply is read -- no type, no confidence, no reason. The
+    types are resolved per document afterwards by the classifier that already
+    exists, and a number the model volunteered is never taken here any more than
+    it is there.
+
+    Returns None on anything unusable, which leaves Python's own answer standing
+    -- so a refusal costs the run the request and nothing else. Never raises.
+    """
+    if not SEGMENT_WITH_MODEL or len(pages) < 2:
+        return None
+    message = prompts.SEGMENT_PROMPT.format(count=len(pages)) + _page_digest(pages)
+    try:
+        url, payload = backends.structured_request(
+            backends.system_prefix(status)
+            + [{"role": "user", "content": message}],
+            None, SEGMENT_MAX_TOKENS, status)
+        res = requests.post(url, json=payload, timeout=GEN_TIMEOUT)
+        if res.status_code != 200:
+            return None
+        raw, _, _ = backends.structured_reply(res.json(), status)
+        answer = json.loads(_first_json_object(strip_fence(raw)) or raw)
+        if not isinstance(answer, dict):
+            return None
+        return segment.valid_groups(answer.get("documents"), len(pages))
+    except Exception:
+        return None
+
+
+def resolve_segments(text: str, pages=None, status: dict = None):
+    """`(segments, how)` -- the documents in this file, and on whose authority.
+
+    `how` is reported for the reason `doc_type_from` is: a run that came back as
+    three documents has to be able to say what split it, and a split nobody can
+    check is one nobody should take on trust.
+
+      * `rules` -- `segment.py` read it off the pages, and was sure
+      * `model` -- a boundary was a guess and the model was asked
+      * `guess` -- a boundary was a guess, the model was not asked or would not
+        answer, and Python's own reading stands
+      * `whole` -- not split at all: one page, the setting off, or too many pages
+
+    `pages` is the read's own page list where the caller still has it. Falling
+    back to `segment.split_pages` is not a lesser path -- it is the only one a
+    truth-fed run has -- but the list is exact and the parse is a re-derivation,
+    so the list wins where there is one.
+
+    **A one-page file returns one segment and never asks anything**, which is
+    eleven of the thirteen fixtures and very nearly every real upload.
+    """
+    pages = [p for p in (list(pages) if pages is not None
+                         else segment.split_pages(text))]
+    if len(pages) < 2:
+        return segment.one(pages or [text], classify_transcript, text,
+                           "the file is one page"), "whole"
+    if not SEGMENT_DOCUMENTS:
+        return segment.one(pages, classify_transcript, text,
+                           "splitting is off (SEGMENT_DOCUMENTS=0)"), "whole"
+    if len(pages) > SEGMENT_MAX_PAGES:
+        # A file this long is a batch of documents rather than a document, and
+        # the queue is the thing for a batch. Read as one rather than split
+        # badly, and it says so.
+        return segment.one(pages, classify_transcript, text,
+                           "the file has %d pages, over SEGMENT_MAX_PAGES=%d"
+                           % (len(pages), SEGMENT_MAX_PAGES)), "whole"
+    segments = segment.segment(pages, classify_transcript, whole=text)
+    if not segment.uncertain(segments):
+        return segments, "rules"
+    if status:
+        groups = _segment_with_model(pages, status)
+        if groups:
+            return segment.apply_groups(pages, groups, classify_transcript), "model"
+    return segments, "guess"
+
+
+def _segment_record(seg: dict, index: int, total: int) -> dict:
+    """One document's place in the file, in the shape the page draws it.
+
+    Without the page texts: this travels to the browser on an event and rides on
+    the result, and the transcript is already there once. The same rule that
+    keeps the transcript out of the run log.
+    """
+    return {"document": index, "documents": total,
+            "pages": list(seg["pages"]),
+            "page_range": segment.page_range(seg),
+            "doc_types": list(seg["codes"]),
+            "heading": seg.get("heading") or "",
+            "start_reason": seg.get("start_reason") or "",
+            # Whether the boundary that opened this document is a reading of the
+            # page or a guess. A guess that the model was then asked about is
+            # not one any more -- `apply_groups` opens its segments certain --
+            # so this reads false only where nobody could settle it.
+            "certain": bool(seg.get("certain", True)),
+            "joins": list(seg.get("joins") or [])}
+
+
+def _field_set(text: str, case_id: str = None, doc_type=None, status=None,
+               pages=None):
     """Everything downstream needs about one document's form, in one dict.
 
     **Resolved once per extraction and handed to everything**: the prompt's
@@ -987,13 +1164,13 @@ def _field_set(text: str, case_id: str = None, doc_type=None, status=None):
     `doc_type` is the primary one, for a label and nothing else.
     """
     codes, how, heading, confidence, escalated = resolve_doc_types(
-        text, case_id, doc_type, status)
+        text, case_id, doc_type, status, pages)
     # What the manifest says, where it says anything and the answer above came
     # from somewhere else. Present ONLY on a disagreement, so the field is a
     # finding rather than a row of metadata: a fixture whose form was chosen by
     # the model against a person's reading is the one case where a moved field
     # score has an explanation that is not the extractor's.
-    expected = manifest_types(case_id) if case_id and how != "case" else []
+    expected = manifest_types(case_id, pages) if case_id and how != "case" else []
     if sorted(expected) == sorted(codes):
         expected = []
     return {"doc_types": codes,
@@ -2011,10 +2188,17 @@ def apply_read_floor(payload: dict, floor: float = None) -> str:
     if not isinstance(extracted, dict):
         return ""
     why = _unscorable_read(payload, floor)
-    if why:
-        extracted["fields_unscored"] = why
-    else:
-        extracted.pop("fields_unscored", None)
+    # Set on the file AND on every document in it. A split file's score is one
+    # document's (see `_extract_documents`), and the page marks each document's
+    # values from that document's own result -- so a flag that stopped at the
+    # top level would leave the rate off the file and on the document, which is
+    # the same figure said two ways and one of them wrong.
+    for target in [extracted] + [d for d in (extracted.get("documents") or [])
+                                 if isinstance(d, dict)]:
+        if why:
+            target["fields_unscored"] = why
+        else:
+            target.pop("fields_unscored", None)
     return why
 
 
@@ -2033,15 +2217,31 @@ def set_extract_mode(mode: str) -> str:
 
 
 def extract_fields_stream(text: str, mode: str = None, case_id: str = None,
-                          steps=None, doc_type: str = None):
+                          steps=None, doc_type: str = None, pages=None):
     """Turn a finished transcript into structured JSON, yielding progress.
 
     A separate text-only pass rather than part of the OCR prompt: mixing
     transcription and interpretation in one request measurably degrades the
     transcript, and this way extraction can be re-run without re-reading the page.
 
-    Single mode has no progress to report and yields nothing. Both shapes return
-    the same result dict, plus `mode` saying which one ran.
+    **A file is not a document** (2026-09-08). The transcript is split into one
+    document per document first, and each is extracted on its own text with its
+    own form, its own grounding and its own validation -- so three documents in
+    one file answer three forms rather than one form three times over. `pages` is
+    the read's own page list where the caller has it; without it the split is
+    read back out of the `--- page N ---` markers, which is the only thing a
+    truth-fed run has.
+
+    **One document is the path it always was, byte for byte.** `segment.segment`
+    over a file it reads as one hands back the transcript it was given rather
+    than a rebuild of it, and `_extract_document` below is the whole of the old
+    body -- so eleven of the thirteen fixtures, and every single-page upload,
+    take exactly the requests they took before. Only the shape of the RESULT
+    grows, and only additively: `segments`, `documents_found` and `split_from`.
+
+    Single mode has no progress to report beyond the two stage events and yields
+    nothing else. Both shapes return the same result dict, plus `mode` saying
+    which one ran.
 
     `case_id` is a benchmark document this transcript came from, and it is scored
     here rather than at each of the four call sites: the two modes build their
@@ -2062,17 +2262,60 @@ def extract_fields_stream(text: str, mode: str = None, case_id: str = None,
     # with a complaint about images.
     if not status["text_available"]:
         return {"error": status["text_reason"]}
+    mode = mode or extract_mode()
+    segments, split_from = resolve_segments(text, pages, status)
+    records = [_segment_record(seg, index, len(segments))
+               for index, seg in enumerate(segments, 1)]
+    # Emitted on every run, one document or several. A page that only heard
+    # about the split when there was one would have nothing to say for the
+    # ordinary case, and "one document" is a finding about a two-page file quite
+    # as much as "two documents" is.
+    yield {"event": "segmented", "documents": len(segments),
+           "split_from": split_from, "segments": records}
+    if len(segments) > 1:
+        result = yield from _extract_documents(segments, records, mode, case_id,
+                                               steps, doc_type, status)
+    else:
+        result = yield from _extract_document(segments[0]["text"], mode, case_id,
+                                              steps, doc_type, status)
+    if isinstance(result, dict):
+        # On every result, however many documents: what the file was read as is
+        # a fact about the run, and a reader looking at one document's fields
+        # needs to know whether that was the whole file.
+        result["segments"] = records
+        result.setdefault("documents_found", 1)
+        result["split_from"] = split_from
+    return result
+
+
+def _extract_document(text: str, mode: str, case_id: str, steps, doc_type,
+                      status: dict, record: dict = None):
+    """One document: classify it, ask for its form, ground it, validate it, score it.
+
+    The whole of what `extract_fields_stream` used to be, lifted out unchanged so
+    that a file holding one document takes the same requests it always took, and
+    so that a file holding three takes that same path three times rather than a
+    second implementation of it.
+
+    `record` is this document's place in the file, where there is more than one.
+    It rides on the `classified` event only: without it a page receiving seven
+    step events and three classifications cannot tell which document any of them
+    belongs to.
+    """
     # Which form to ask for. Resolved ONCE, here, and handed to whichever shape
     # runs -- the prompt, the JSON grammar, the step table, what grounding calls
     # missing, what validate checks and what fieldscore scores all come off this
     # one dict, so the two modes cannot disagree about which document this is.
-    form = _field_set(text, case_id, doc_type, status)
+    form = _field_set(text, case_id, doc_type, status,
+                      (record or {}).get("pages"))
     # Stage 0, announced before either shape starts. It is the one part of a
     # pass-2 run that is finished before the first request goes out, so a page
     # that shows it immediately is showing something true rather than a
     # placeholder -- and in single mode it is the ONLY progress event there is.
-    mode = mode or extract_mode()
-    yield {"event": "classified", "mode": mode, **_classified(form, mode)}
+    yield {"event": "classified", "mode": mode, **_classified(form, mode),
+           **({"document": record["document"], "documents": record["documents"],
+               "pages": list(record["pages"]),
+               "page_range": record["page_range"]} if record else {})}
     if mode == "agentic":
         result = yield from _extract_agentic(text, status, form, steps)
     else:
@@ -2084,7 +2327,180 @@ def extract_fields_stream(text: str, mode: str = None, case_id: str = None,
             return {"error": "steps only apply to agentic extraction."}
         result = _extract_single(text, status, form)
     result = _validate_fields(result, form, text, mode)
-    return _score_fields(result, case_id, form)
+    return _score_fields(result, case_id, form,
+                         (record or {}).get("pages"))
+
+
+def _extract_documents(segments, records, mode: str, case_id: str, steps,
+                       doc_type, status: dict):
+    """Every document in the file, one at a time, merged into one result.
+
+    **The fields are independent and are kept that way.** Each document is
+    extracted from its own pages only, so a value on page 3 cannot fill a key of
+    the document on page 1 -- which is the whole of what splitting buys, and is
+    exactly the failure that made a three-document file worth splitting: one
+    form asked of three documents' text fills each key from whichever page the
+    model saw first, and every check downstream then endorses it, because the
+    value really is on the page.
+
+    **Only document 1 is scored against a benchmark case's truth file**, and it
+    says so on the others rather than leaving them looking unscored for some
+    other reason. `solution/<id>.fields.json` is a person's record of ONE
+    document; scoring the second document of a split file against it would mark
+    a correct extraction wrong for not being the first document.
+    """
+    documents, failed = [], 0
+    for seg, record in zip(segments, records):
+        yield {"event": "document", "document": record["document"],
+               "documents": len(records), "pages": list(record["pages"]),
+               "page_range": record["page_range"]}
+        result = yield from _extract_document(seg["text"], mode, case_id,
+                                              steps, doc_type, status, record)
+        if not isinstance(result, dict):
+            result = {"error": "extraction returned nothing"}
+        result["document"] = record["document"]
+        result["pages"] = list(record["pages"])
+        result["page_range"] = record["page_range"]
+        if case_id and not result.get("field_score"):
+            # Scored where the truth file has a block for these pages, and
+            # silent about it where it has none. **Not an error**: a pack's
+            # truth file is filled in a document at a time, and a document
+            # nobody has written answers for yet is unscored rather than wrong.
+            result["field_truth_scope"] = (
+                "the ground truth for %s states nothing for page%s %s"
+                % (case_id, "" if len(record["pages"]) == 1 else "s",
+                   record["page_range"]))
+        if result.get("error"):
+            failed += 1
+        documents.append(result)
+        yield {"event": "document_done", "document": record["document"],
+               "documents": len(records),
+               "filled": len(result.get("fields") or {}),
+               "error": result.get("error") or ""}
+    return _merge_documents(documents, records, mode, failed)
+
+
+def _merge_documents(documents, records, mode: str, failed: int) -> dict:
+    """One result for a file holding several documents.
+
+    **`fields` is deliberately absent.** Two documents both state a
+    `document_number`, and a merged dict would have to drop one of them or
+    rename both -- either way producing a form nobody asked for and nobody can
+    check. The documents are the answer and they are in `documents`; anything
+    reading a multi-document result reads that list.
+
+    What IS merged is the run-wide arithmetic, because those really are
+    file-level facts: the clock, the tokens, the grounding ratio over every value
+    the file produced. `grounding` carries document-prefixed paths so a flagged
+    value can still be traced to the document it came from -- a bare
+    `buyer_name` would name three different fields in a three-document file.
+
+    `field_score` is not merged and is not summed: at most one document is
+    scored (see `_extract_documents`), so the file's score is that document's
+    and the scope says which. Summing the others in as zeroes would report a
+    file as badly extracted for holding documents nobody has written an answer
+    sheet for.
+    """
+    codes, asked, items = [], [], []
+    for result in documents:
+        for code in result.get("doc_types") or []:
+            if code not in codes:
+                codes.append(code)
+        for key in result.get("fields_asked") or []:
+            if key not in asked:
+                asked.append(key)
+        for key in result.get("items_asked") or []:
+            if key not in items:
+                items.append(key)
+    scored = [result for result in documents if result.get("field_score")]
+    merged = {
+        "mode": mode,
+        # The answer. Every reader of a multi-document result reads this.
+        "documents": documents,
+        "documents_found": len(documents),
+        # How many of them came back with nothing. Counted rather than folded
+        # into an error, because a file whose second document failed still
+        # extracted its first and that is a result, not a failed run.
+        "documents_failed": failed,
+        "segments": records,
+        "doc_types": codes,
+        "doc_type": normalise.primary_type(codes),
+        "doc_type_from": (documents[0].get("doc_type_from") or "") if documents else "",
+        "fields_asked": asked,
+        "items_asked": items,
+        "seconds": round(sum(result.get("seconds") or 0 for result in documents), 2),
+        "tokens": sum(result.get("tokens") or 0 for result in documents),
+        "model": next((result.get("model") for result in documents
+                       if result.get("model")), ""),
+        "partial": any(result.get("partial") for result in documents),
+        "grounding": _merge_grounding(documents),
+        # Stage 0 of the FIRST document, so a page rendering the strip has
+        # something true to draw before the reader picks a document. The
+        # per-document classification is on each entry of `documents`.
+        "classified": documents[0].get("classified") if documents else None,
+    }
+    if scored:
+        merged["field_score"] = _merge_field_scores(scored, len(documents))
+    if failed and failed == len(documents):
+        # Every document failed, so the run failed. Reported as an error rather
+        # than as a result with nothing in it, which is the same rule the
+        # all-steps-failed bail-out follows one level down.
+        merged["error"] = documents[0].get("error") or "every document failed"
+    return merged
+
+
+def _merge_field_scores(scored, documents: int) -> dict:
+    """Every scored document of one file, as ONE score for the file.
+
+    **At the user's request** (2026-09-08): *if the doc got more we still score
+    them as 1 doc but we do more of an average way.* A pack used to be scored on
+    its first document alone, which reported a seven-document file on a seventh
+    of itself and made a pack look like a small easy case.
+
+    The arithmetic is `fieldscore.pool`, shared with `compare.py` -- pooled
+    counts for the headline, with the unweighted mean of the documents' own
+    rates beside it as `accuracy_macro`. Its docstring is where the reasoning
+    lives; what is added here is only the file's own shape.
+    """
+    merged = fieldscore.pool([one["field_score"] for one in scored])
+    merged["documents"] = documents
+    # Which document each rate belongs to. `fieldscore.pool` knows the pages a
+    # score was taken over and not the position of that document in the file,
+    # which is what the page's strip is keyed on.
+    for entry, one in zip(merged.get("per_document") or [], scored):
+        entry["document"] = one.get("document")
+    return merged
+
+
+def _merge_grounding(documents) -> dict:
+    """Every document's grounding, as one file-level audit.
+
+    Paths are prefixed with the document they belong to, because `buyer_name`
+    names a different field in each of them and a flagged value nobody can trace
+    back to a document is a finding nobody can act on. The ratio is recomputed
+    from the summed counts rather than averaged over the documents -- a
+    one-field document and a thirty-field one are not two equal opinions about
+    how much of this file was invented.
+    """
+    statuses, missing, flagged, counts, checked = {}, [], [], {}, 0
+    for result in documents:
+        found = result.get("grounding") or {}
+        prefix = "doc%d." % (result.get("document") or 1)
+        for path, status in (found.get("statuses") or {}).items():
+            statuses[prefix + path] = status
+        missing.extend(prefix + path for path in (found.get("missing") or []))
+        for entry in found.get("flagged") or []:
+            entry = dict(entry)
+            if entry.get("field"):
+                entry["field"] = prefix + entry["field"]
+            flagged.append(entry)
+        for name, count in (found.get("counts") or {}).items():
+            counts[name] = counts.get(name, 0) + count
+        checked += found.get("checked") or 0
+    return {"statuses": statuses, "missing": missing, "flagged": flagged,
+            "counts": counts, "checked": checked,
+            "grounded_ratio": (round(counts.get("grounded", 0) / checked, 4)
+                               if checked else None)}
 
 
 def _validate_fields(result: dict, form: dict, text: str, mode: str) -> dict:
@@ -2145,7 +2561,8 @@ def _validate_fields(result: dict, form: dict, text: str, mode: str) -> dict:
     return result
 
 
-def _score_fields(result: dict, case_id: str, form: dict = None) -> dict:
+def _score_fields(result: dict, case_id: str, form: dict = None,
+                  pages=None) -> dict:
     """Attach the field score, when this document has field ground truth.
 
     Absent rather than an error when there is none: most documents are not
@@ -2185,7 +2602,11 @@ def _score_fields(result: dict, case_id: str, form: dict = None) -> dict:
                 keys=(form or {}).get("keys"),
                 doc_types=(form or {}).get("doc_types") or [],
                 mandatory=(form or {}).get("mandatory"),
-                items_mandatory=(form or {}).get("mandatory_items"))
+                items_mandatory=(form or {}).get("mandatory_items"),
+                # Which document of the file this is. A pack's truth file holds
+                # one block per document, so without this every document would
+                # be marked against the first one's answers.
+                pages=pages)
     except Exception as err:  # pragma: no cover - a score is never worth a 500
         result["field_score"] = {"error": f"field scoring failed: {err}"}
     return result
@@ -2201,9 +2622,10 @@ def _drain(generator):
 
 
 def extract_fields(text: str, mode: str = None, case_id: str = None,
-                   steps=None, doc_type: str = None) -> dict:
+                   steps=None, doc_type: str = None, pages=None) -> dict:
     """`extract_fields_stream` for callers with nowhere to show progress."""
-    return _drain(extract_fields_stream(text, mode, case_id, steps, doc_type))
+    return _drain(extract_fields_stream(text, mode, case_id, steps, doc_type,
+                                        pages))
 
 
 def strip_fence(text: str) -> str:
@@ -2778,7 +3200,7 @@ def run_job(job):
             # step in the queue row and can be cancelled between steps. Single
             # mode yields nothing, so this is the plain call it used to be.
             stream = extract_fields_stream(
-                text, case_id=case["id"] if case else None)
+                text, case_id=case["id"] if case else None, pages=collected)
             while True:
                 try:
                     event = next(stream)
@@ -2840,22 +3262,7 @@ def index():
         # doc_type groups the three case pickers into <optgroup>s, so "test the
         # invoices" is one glance rather than a reading of ten prose `kind`
         # lines. Blank sorts into its own group rather than being guessed at.
-        cases=[{"id": c["id"], "pdf": c["pdf"], "kind": c.get("kind", ""),
-                "doc_types": list(c.get("doc_types") or []),
-                "doc_type": normalise.primary_type(c.get("doc_types") or []),
-                "fields": list(fields_for_types(c.get("doc_types") or [])),
-                # Of that form, what the requirement DEMANDS. Beside `fields`
-                # rather than derived from it on the page: which keys are
-                # Mandatory is a property of the requirement, and a copy of that
-                # in JavaScript is how the template's field maps went stale.
-                "mandatory": list(mandatory_for_types(c.get("doc_types") or [])),
-                # No requirement covers this case's types, so its field score
-                # will be taken over the base field set and nothing on it is
-                # Mandatory. Sent rather than inferred from an empty
-                # `mandatory`, for the reason `mandatory` itself is sent.
-                "unknown_type": not mandatory_for_types(c.get("doc_types") or []),
-                "field_truth": fieldscore.has_truth(c["id"])}
-               for c in scoring.cases_index().values()],
+        cases=[case_payload(c) for c in scoring.cases_index().values()],
         mock_files=mock_files(),
         endpoints=backends.endpoints(),
         # What pass 2 will run on, seeded at render so both extraction pickers
@@ -3007,35 +3414,134 @@ def servers_select():
                     "ocr_profile": ocr_profile()})
 
 
+def case_payload(case: dict) -> dict:
+    """One benchmark case, in the shape both the page and `/api/cases` read.
+
+    **One function, because there were two copies of this and they had already
+    drifted** (2026-09-08): the route grew a `documents` list for a file holding
+    several documents and the template's copy did not, so the pickers went on
+    describing a seven-document pack as one billing note. That is the same
+    failure the template's field maps had on 2026-08-19, one layer out -- a fact
+    stated twice is a fact that will disagree with itself.
+    """
+    codes = list(case.get("doc_types") or [])
+    documents = case.get("documents") or []
+    return {
+        "id": case["id"], "pdf": case["pdf"], "kind": case.get("kind", ""),
+        # The types the page names, and the one it is filed under. A document is
+        # regularly two of them, so the list is the answer and `doc_type` is a
+        # label taken off the front of it. **On a pack these are document 1's**
+        # -- what the truth file describes and what the extractor is scored on.
+        "doc_types": codes,
+        "doc_type": normalise.primary_type(codes),
+        # The form those types ask for. Sent per case so a caller -- and the
+        # page -- can say what WILL be asked before anything runs, rather than
+        # having to re-derive the union of the requirements client-side.
+        "fields": list(fields_for_types(codes)),
+        # Of that form, what the requirement DEMANDS. Beside `fields` rather
+        # than derived from it on the page: which keys are Mandatory is a
+        # property of the requirement, and a copy of that in JavaScript is how
+        # the template's field maps went stale.
+        "mandatory": list(mandatory_for_types(codes)),
+        # No requirement covers this case's types, so its field score will be
+        # taken over the base field set and nothing on it is Mandatory. Sent
+        # rather than inferred from an empty `mandatory`, for the reason
+        # `mandatory` itself is sent.
+        "unknown_type": not mandatory_for_types(codes),
+        # **What else is in the file.** Every field above describes the FIRST
+        # document; a pack holds several, of several kinds. Without this a
+        # picker offering `pack_billing_note_sol015.pdf` says "billing note, 30
+        # fields" about a seven-page file holding seven documents of five kinds,
+        # and the reader finds the other six only after paying for the run.
+        #
+        # Per document rather than a union of the types: the union of seven
+        # documents' types is a list nothing on the page is, and the pages are
+        # what make it readable as a file. EMPTY on an ordinary case, so the
+        # front end draws nothing extra for one -- a "1 document" note over a
+        # receipt is a control that says nothing.
+        "documents": [{"pages": list(d.get("pages") or []),
+                       "doc_types": list(d.get("doc_types") or []),
+                       "doc_type": normalise.primary_type(d.get("doc_types") or [])}
+                      for d in documents] if len(documents) > 1 else [],
+        "pages": case.get("pages", 1),
+        "available": case["pdf_path"].exists(),
+        "field_truth": fieldscore.has_truth(case["id"]),
+    }
+
+
 @app.get("/api/cases")
 def cases():
     """Benchmark documents that have a ground-truth transcript."""
-    return jsonify(cases=[
-        # doc_type is the manifest's standard code for the heading the page
-        # prints -- INVOICE / RECEIPT_TAX_INVOICE / CREDIT_NOTE, the same
-        # vocabulary normalise.document_type_code returns. It is here so a
-        # caller can select a set to test by kind of document without parsing
-        # `kind`, which is prose. Blank for a case the manifest does not
-        # classify, which is a real answer and not a default.
-        {"id": c["id"], "pdf": c["pdf"], "kind": c.get("kind", ""),
-         # The types the page names, and the one it is filed under. A document
-         # is regularly two of them, so the list is the answer and `doc_type` is
-         # a label taken off the front of it.
-         "doc_types": list(c.get("doc_types") or []),
-         "doc_type": normalise.primary_type(c.get("doc_types") or []),
-         # The form those types ask for. Sent per case so a caller -- and the
-         # page -- can say what WILL be asked before anything runs, rather than
-         # having to re-derive the union of the requirements client-side.
-         "fields": list(fields_for_types(c.get("doc_types") or [])),
-         # What of that form the requirement demands -- the same reason as above.
-         "mandatory": list(mandatory_for_types(c.get("doc_types") or [])),
-         # Whether any requirement covers those types at all -- see the template
-         # copy of this payload.
-         "unknown_type": not mandatory_for_types(c.get("doc_types") or []),
-         "pages": c.get("pages", 1), "available": c["pdf_path"].exists(),
-         "field_truth": fieldscore.has_truth(c["id"])}
-        for c in scoring.cases_index().values()
-    ])
+    return jsonify(cases=[case_payload(c)
+                      for c in scoring.cases_index().values()])
+
+
+@app.get("/api/schema")
+def schema():
+    """Every document type this app knows, and the form each one asks for.
+
+    Reference data, not a run: no model server is touched, nothing is logged, and
+    the answer is the same on every call. It is what the **Doc types** tab draws.
+
+    **It is assembled here rather than in the template, and that is the whole
+    point of it being a route.** Which keys a requirement asks for, which of them
+    it makes Mandatory, and which validation rules a type adds are facts stated
+    once -- in `prompts.DOC_TYPE_FIELDS`, `prompts.MANDATORY_FIELDS`,
+    `prompts.TYPE_RULES` and `validate.RULE_NOTES` -- and a second copy in
+    JavaScript is exactly how fifteen keys silently vanished from the Fields tab
+    on 2026-08-19. The page owns the wording of a label and nothing else.
+
+    Three groups, and the split IS the answer to "what do we know":
+
+    * a type with a requirement -- four of them -- carries its own field list.
+    * a type the classifier recognises but no requirement covers contributes NO
+      key (`fields` is empty), which is `DOC_TYPE_FIELDS`' standing rule. It is
+      still listed, because being classifiable and being scoreable are different
+      things and a reader looking for TAX_INVOICE should find it rather than
+      conclude the page is broken.
+    * `unknown` is what a document reduces to when no type in play has a
+      requirement -- the base field set, `prompts.DEFAULT_FIELDS`, which is the
+      union of every requirement and is Mandatory in none of it.
+    """
+    def form(code):
+        own = tuple(prompts.DOC_TYPE_FIELDS.get(code, ()))
+        return {
+            "code": code,
+            # The article form, as a prompt says it -- "an invoice", "a
+            # withholding tax certificate (50 thawi)". The page trims the article.
+            "name": TYPE_NAMES[code],
+            # The printed wordings that classify a page as this. Raw, not the
+            # squashed needles that do the matching -- see normalise.TYPE_HEADINGS.
+            "headings": list(normalise.TYPE_HEADINGS.get(code, ())),
+            # This type's OWN contribution to a form, which is empty for a type
+            # no requirement covers. Not `fields_for_types([code])`: that falls
+            # back to the base set for such a type, which is a true answer to a
+            # different question and would read here as a requirement.
+            "fields": list(own),
+            "mandatory": list(prompts.MANDATORY_FIELDS.get(code, ())),
+            "items": list(prompts.DOC_TYPE_ITEMS.get(code, ())),
+            "mandatory_items": list(prompts.MANDATORY_ITEMS.get(code, ())),
+            "rules": list(prompts.TYPE_RULES.get(code, ())),
+            "has_requirement": bool(own),
+        }
+
+    return jsonify(
+        # Most specific first, the order everything else ranks these in.
+        types=[form(code) for code in prompts.TYPE_SPECIFICITY],
+        # What is asked when no type in play has a requirement. `mandatory` is
+        # empty on purpose and is not an oversight: nothing is demanded of a
+        # document no table covers, and `fieldscore` scores the whole base set
+        # instead, marking the rate `unknown_type`.
+        unknown={"fields": list(prompts.DEFAULT_FIELDS), "mandatory": [],
+                 "items": [], "rules": []},
+        # One line per validation rule, and whether it can run here at all --
+        # four of the nine need data this process has not got.
+        rule_notes=validate.RULE_NOTES,
+        # Every key in the schema, in the order the prompt lists them, so the
+        # page can draw a matrix in reading order without sorting it itself.
+        keys=list(prompts._SCALAR_KEYS),
+        item_keys=list(prompts.INCOME_ITEM_KEYS),
+        items_key=INCOME_ITEMS_KEY)
 
 
 @app.get("/api/truth/<case_id>")
@@ -3887,7 +4393,8 @@ def _read_case(case_id: str, detail: str, extract: bool = True) -> dict:
     payload = summarise(all_stats, detail, started, job_id)
     payload["truth"] = evaluate_if_known(case, text)
     if extract and EXTRACT and text.strip():
-        payload["extracted"] = extract_fields(text, case_id=case["id"] if case else None)
+        payload["extracted"] = extract_fields(
+            text, case_id=case["id"] if case else None, pages=page_texts)
     # The read floor is applied inside `log_run`, for every path rather than only
     # this one -- see `apply_read_floor`. Nothing is done here beyond letting it
     # happen, and the flag it may set is on `payload["extracted"]` by the time
@@ -3934,7 +4441,7 @@ def ocr():
     payload["truth"] = evaluate_if_known(case, text)
     if EXTRACT and request.form.get("extract", "1") != "0" and text.strip():
         payload["extracted"] = extract_fields(
-            text, case_id=case["id"] if case else None)
+            text, case_id=case["id"] if case else None, pages=page_texts)
     log_run(payload, source)
     return jsonify(text=text, pages=page_texts, **payload)
 
@@ -3998,7 +4505,7 @@ def ocr_stream():
                 # mode yields nothing and the loop runs once. Either way the
                 # result arrives as the same "fields" event.
                 stream = extract_fields_stream(
-                    text, case_id=case["id"] if case else None)
+                    text, case_id=case["id"] if case else None, pages=collected)
                 while True:
                     try:
                         yield json.dumps(next(stream)) + "\n"

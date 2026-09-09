@@ -54,6 +54,19 @@ say = config.say
 DEFAULT_APP = os.environ.get("OCR_APP_URL") or f"http://127.0.0.1:{config.PORT}"
 
 
+def _pool_scores(scored):
+    """Several documents of one file, as one score for the case.
+
+    `fieldscore.pool`, which the app uses for the same job -- the arithmetic
+    over a set of scores is one fact and must not be written twice. What is not
+    shared is WHERE the scores come from: this file scores against the truth in
+    the current working copy rather than reading the app's own answer, which is
+    the rule pass 1 already follows and the only way `--app` can measure a
+    deployed instance honestly.
+    """
+    return fieldscore.pool(scored)
+
+
 def run_ocr(app, pdf, detail):
     data = {} if detail is None else {"detail": detail}
     with pdf.open("rb") as fh:
@@ -345,6 +358,18 @@ def main():
             if extracted:
                 fields_path.write_text(
                     json.dumps(extracted, ensure_ascii=False, indent=2), "utf-8")
+                # **A file can hold more than one document** (2026-09-08).
+                # Every one of them is scored, against its own block of the
+                # truth file, and the case's figure is the pooled total -- the
+                # same arithmetic `app._merge_field_scores` does, done here
+                # because this scores against the truth files in THIS working
+                # copy rather than reading the app's own answer.
+                documents = extracted.get("documents") or []
+                found = extracted.get("documents_found") or 1
+                if found > 1:
+                    note += f"  [{found} documents in this file, scored together]"
+                # The whole file's timings and shape stay on the outer result;
+                # only the per-document scoring below walks the list.
                 r["extract_mode"] = extracted.get("mode", "")
                 r["extract_seconds"] = extracted.get("seconds", "")
                 if extracted.get("partial"):
@@ -371,18 +396,29 @@ def main():
                 # reports back as `doc_type`. Scoring every key the truth file
                 # states would mark an invoice wrong for not returning the keys
                 # its own type does not ask for.
-                codes = extracted.get("doc_types") or []
-                r["fields"] = fieldscore.evaluate(
-                    cid, extracted.get("fields"),
-                    keys=prompts.fields_for_types(codes), doc_types=codes,
-                    # Scored over the requirement's Mandatory set, as the app
-                    # scores it -- the two must not disagree about what the
-                    # headline covers. Empty where no requirement covers the
-                    # type, which `fieldscore` reads as "score the base field
-                    # set and say it is an unknown type"; the scope line under
-                    # the report says which of the two happened.
-                    mandatory=prompts.mandatory_for_types(codes),
-                    items_mandatory=prompts.mandatory_items_for_types(codes))
+                def score_one(one, pages=None):
+                    codes = one.get("doc_types") or []
+                    return fieldscore.evaluate(
+                        cid, one.get("fields"),
+                        keys=prompts.fields_for_types(codes), doc_types=codes,
+                        # Scored over the requirement's Mandatory set, as the
+                        # app scores it -- the two must not disagree about what
+                        # the headline covers. Empty where no requirement covers
+                        # the type, which `fieldscore` reads as "score the base
+                        # field set and say it is an unknown type"; the scope
+                        # line under the report says which of the two happened.
+                        mandatory=prompts.mandatory_for_types(codes),
+                        items_mandatory=prompts.mandatory_items_for_types(codes),
+                        pages=pages)
+
+                if documents:
+                    scored = [score_one(one, one.get("pages"))
+                              for one in documents if one.get("fields")]
+                    scored = [x for x in scored if not x.get("error")]
+                    r["fields"] = (_pool_scores(scored) if scored else
+                                   {"error": "no document returned fields"})
+                else:
+                    r["fields"] = score_one(extracted)
             r["fields_note"] = note
 
         # ---- report -------------------------------------------------------

@@ -8,9 +8,11 @@
     "The file's headline score pools every block -- see app._merge_field_scores."
   ],
   "_note": [
-    "Two documents: the handwritten receipt/tax invoice on page 1 and the",
-    "payer's payment appointment slip on page 2. No requirement covers a",
-    "payment schedule, so nothing in that block is Mandatory."
+    "Two documents: the credit note on page 1 and the goods-return note",
+    "(RTV Ship Credit) it cites on page 2. No requirement covers a returns",
+    "note, so nothing in that block is Mandatory.",
+    "The two pages print DIFFERENT tax IDs for the same vendor; each block",
+    "records what its own page prints."
   ],
   "documents": [
     {
@@ -18,76 +20,57 @@
         1
       ],
       "doc_types": [
-        "RECEIPT",
-        "TAX_INVOICE"
+        "CREDIT_NOTE"
       ],
       "_mandatory": {
         "types": [
-          "RECEIPT",
-          "TAX_INVOICE"
+          "CREDIT_NOTE"
         ],
         "required": [
-          "inv_rtv_cnr_number",
+          "document_type",
+          "document_number",
+          "issue_date",
           "seller_tax_id",
           "seller_branch",
           "buyer_tax_id",
           "buyer_branch",
           "subtotal",
-          "vat_total"
+          "vat_total",
+          "amount_incl_vat"
         ],
         "found_only": [
-          "remaining_amount",
-          "remaining_vat_amount",
-          "payment_date",
-          "cheque_number"
+          "po_gr_rtv_number"
         ]
       },
-      "inv_rtv_cnr_number": [
-        "190060",
-        "Inv. 190060"
-      ],
-      "seller_tax_id": "0105511005151",
-      "seller_branch": "สำนักงานใหญ่",
-      "buyer_tax_id": "0105539131288",
-      "buyer_branch": [
-        "สาขาที่ 00012",
-        "00012"
-      ],
-      "subtotal": "25,757 01",
-      "vat_total": "1,802 99",
-      "remaining_amount": "",
-      "remaining_vat_amount": "",
-      "payment_date": "",
-      "cheque_number": "",
       "document_type": [
-        "ใบเสร็จรับเงิน/ใบกำกับภาษี",
-        "RECEIPT/TAX INVOICE"
+        "Credit Note ใบลดหนี้",
+        "Credit Note",
+        "ใบลดหนี้"
       ],
-      "document_number": "1488",
-      "issue_date": "29-9-68",
-      "reference_document": [
-        "190060",
-        "Inv. 190060"
+      "document_number": "CNGW027",
+      "issue_date": "24/10/2568",
+      "po_gr_rtv_number": "008032509200035",
+      "seller_tax_id": "0-9027-50271-57-0",
+      "seller_branch": "สำนักงานใหญ่",
+      "buyer_tax_id": "0-1255-65055-66-55",
+      "buyer_branch": [
+        "สาขาที่ 00001",
+        "00001"
       ],
-      "po_gr_rtv_number": "",
-      "seller_name": [
-        "บริษัท เอ็กซ์เพรส จำกัด",
-        "EXPRESS CO,. LTD."
-      ],
-      "buyer_name": "บริษัท อีสปอร์ต จำกัด",
-      "amount_incl_vat": "27,560 00",
-      "currency": ""
+      "subtotal": "732.32",
+      "vat_total": "0.00",
+      "amount_incl_vat": "732.32"
     },
     {
       "pages": [
         2
       ],
       "doc_types": [
-        "PAYMENT_SCHEDULE"
+        "RTV_SHIP_CREDIT"
       ],
       "_mandatory": {
         "types": [
-          "PAYMENT_SCHEDULE"
+          "RTV_SHIP_CREDIT"
         ],
         "required": [],
         "found_only": [
@@ -123,21 +106,27 @@
           "total_wht_amount"
         ]
       },
-      "document_type": "ใบนัดจ่าย",
-      "document_number": "SPS2509000092",
-      "issue_date": "",
+      "document_type": "ใบส่งคืนสินค้า/RTV Ship Credit",
+      "document_number": "008032509200035",
+      "issue_date": "09/09/2025",
       "po_gr_rtv_number": "",
       "inv_rtv_cnr_number": "",
-      "seller_tax_id": "",
-      "seller_branch": "",
-      "buyer_tax_id": "",
-      "buyer_branch": "",
-      "subtotal": "",
-      "vat_total": "",
-      "amount_incl_vat": "",
+      "seller_tax_id": "0905550001570",
+      "seller_branch": [
+        "ลำดับที่ 00000",
+        "00000"
+      ],
+      "buyer_tax_id": "0-1255-65055-66-55",
+      "buyer_branch": [
+        "สาขาที่ 00001",
+        "00001"
+      ],
+      "subtotal": "731.86",
+      "vat_total": "0.00",
+      "amount_incl_vat": "731.86",
       "remaining_amount": "",
       "remaining_vat_amount": "",
-      "payment_date": "29-Sep-25",
+      "payment_date": "",
       "cheque_number": "",
       "book_no": "",
       "certificate_no": "",

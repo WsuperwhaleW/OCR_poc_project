@@ -657,7 +657,16 @@ def summarise_round(result: dict) -> dict:
     # is a different proposition from one that is evenly mediocre.
     optional = score.get("optional") or {}
     opt_counts = optional.get("counts") or {}
-    entries = (extracted.get("fields") or {}).get("other_fields") or []
+    # Over every document in the file, not only the one at the top level: a
+    # split file has no `fields` of its own -- two documents both state a
+    # document number and a merged dict would have to drop one -- so counting
+    # there alone would report a two-document round as having found no extra
+    # fields at all.
+    documents = extracted.get("documents")
+    holders = ([d for d in documents if isinstance(d, dict)]
+               if isinstance(documents, list) and documents else [extracted])
+    entries = [entry for holder in holders
+               for entry in ((holder.get("fields") or {}).get("other_fields") or [])]
     return {
         "read_by": result.get("model") or "",
         "extract_by": extracted.get("model") or "",
@@ -682,6 +691,12 @@ def summarise_round(result: dict) -> dict:
         "optional_correct": opt_counts.get("correct", 0),
         "optional_expected": optional.get("expected") or 0,
         "other": len(entries),
+        # How many documents the file was read as. 1 on every round until a
+        # multi-document file turns up, and it is worth carrying because every
+        # other figure on this line is about ONE of them: the field score is
+        # document 1's (a truth file describes one document) and `other` is the
+        # whole file's.
+        "documents": extracted.get("documents_found") or 1,
         "partial_reply": bool(extracted.get("partial")),
         "error": extracted.get("error") or "",
         # Set where the read was too poor for its fields to be scored -- the
