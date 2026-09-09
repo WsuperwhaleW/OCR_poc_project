@@ -70,7 +70,13 @@ TREES = [
 # Optional at runtime (the page hides the controls when they are absent), and
 # optional here via --no-fixtures.
 FIXTURES = [
+    # The source documents, in every format the app reads. `prepare_input` sniffs
+    # the %PDF- magic and hands anything else to Pillow, so sol016-sol020 ship as
+    # page images -- a glob of *.pdf alone would have dropped five fixtures from
+    # the zip with nothing to say so.
     ("mockOcr", "*.pdf"),
+    ("mockOcr", "*.png"),
+    ("mockOcr", "*.jpg"),
     ("solution", "*.md"),
     # Field ground truth: which value belongs in which extracted key. Hand-written
     # like the .md beside it, and the only thing that scores pass 2 -- a zip with

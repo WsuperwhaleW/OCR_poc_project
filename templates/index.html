@@ -2841,18 +2841,30 @@ function defList(pairs, truth, val, req) {
    the extraction never returned, which is a finding in its own right and is
    drawn under the table rather than dropped. */
 function truthIndex(fs) {
-  const out = { scalars: {}, items: {}, missedRows: [], keys: new Set() };
+  const out = { scalars: {}, items: {}, missedRows: [], keys: new Set(),
+                income: {}, missedIncome: [], incomeKeys: new Set() };
   if (!fs || fs.error) return out;
   for (const r of ((fs.scalars || {}).rows) || []) out.scalars[r.path] = r;
-  for (const r of ((fs.line_items || {}).rows) || []) {
-    const m = /^line_items\[(\d+)\]\.(.+)$/.exec(r.path || '');
-    if (!m) continue;
-    if (r.expected !== '' && r.expected !== null && r.expected !== undefined) out.keys.add(m[2]);
-    const bucket = (r.row === null || r.row === undefined)
-      ? (out.missedRows[+m[1]] = out.missedRows[+m[1]] || {})
-      : (out.items[r.row] = out.items[r.row] || {});
-    bucket[m[2]] = r;
-  }
+  /* Both tables index the same way and differ only in which buckets they fill,
+     so one reader serves both -- `line_items` is the charges table of a
+     commercial document and `income_items` the income table of a WHT
+     certificate, and they are never the same document's. */
+  const table = (block, prefix, byRow, missed, keys) => {
+    for (const r of ((block || {}).rows) || []) {
+      // A regex LITERAL, not one built from a string: `\d` inside a JS string
+      // literal is just `d`, so `new RegExp('...\d...')` silently matches the
+      // wrong thing. The field name is captured and compared instead.
+      const m = /^([a-z_]+)\[(\d+)\]\.(.+)$/.exec(r.path || '');
+      if (!m || m[1] !== prefix) continue;
+      if (r.expected !== '' && r.expected !== null && r.expected !== undefined) keys.add(m[3]);
+      const bucket = (r.row === null || r.row === undefined)
+        ? (missed[+m[2]] = missed[+m[2]] || {})
+        : (byRow[r.row] = byRow[r.row] || {});
+      bucket[m[3]] = r;
+    }
+  };
+  table(fs.line_items, 'line_items', out.items, out.missedRows, out.keys);
+  table(fs.income_items, 'income_items', out.income, out.missedIncome, out.incomeKeys);
   return out;
 }
 
@@ -3955,18 +3967,25 @@ function paintFieldBody() {
      did not come back" and "this document has no table" are different failures
      and only the first is worth acting on.
 
-     There is no truth marking here, unlike the line-items table above: no
-     fixture in solution/ is a withholding certificate, so nothing rules on
-     these rows yet. What they do carry is the grounding verdict per cell and
-     the derived rate. */
+     Cells are marked against the truth exactly as the line-items table above
+     is, and for the same reason -- the requirement makes all four Mandatory of
+     every row, so they are in the headline and a reader has to be able to see
+     which one went wrong. Each also carries its grounding verdict and the
+     derived rate. */
   const incomeCols = (extracted.items_asked || [])
     .map(k => INCOME_COLS.find(([c]) => c === k)).filter(Boolean);
   if (incomeCols.length) {
     const rows = (Array.isArray(f.income_items) ? f.income_items : [])
       .filter(r => r && typeof r === 'object' && !Array.isArray(r));
     const rates = ((extracted.derived || {}).wht_rates) || [];
-    html += '<div class="fld-sec">Income rows (' + rows.length + ')</div>';
-    if (!rows.length) {
+    // Truth rows the extraction never returned. A certificate's table is the
+    // reconciliation the two totals below are checked against, so a dropped row
+    // is a finding rather than a smaller answer.
+    const missedIncome = truth.missedIncome.filter(Boolean);
+    html += '<div class="fld-sec">Income rows (' + rows.length
+      + (missedIncome.length ? ', ' + missedIncome.length + ' not returned' : '')
+      + ')</div>';
+    if (!rows.length && !missedIncome.length) {
       html += '<p class="ground-note">No income rows came back. The certificate'
         + ' rules a table of income and this run returned none of it, so the two'
         + ' totals below have nothing to be reconciled against.</p>';
@@ -3986,26 +4005,49 @@ function paintFieldBody() {
         + ' amount paid is zero.">Rate %</th></tr>'
         + rows.map((r, i) => {
             const rate = (rates[i] || {}).rate;
+            // Which truth row this returned row was paired with -- by content,
+            // so a dropped row does not shift the marks along by one.
+            const scored = truth.income[i] || {};
             return '<tr>' + incomeCols.map(([k]) => {
               const v = r && r[k] ? String(r[k]) : '';
               const num = /^[\d.,\- ]+$/.test(v) && v.trim() !== '';
               const st2 = st['income_items[' + i + '].' + k];
               const bad = st2 === 'ungrounded' || st2 === 'computed';
-              // Empty in a column the requirement demands. Marked in the CELL as
-              // well as on the heading: the heading says the column is required
-              // of every row, and only the cell can say which row failed it.
-              const gap = !v && reqItems.has(k);
+              const sc = scored[k];
+              const off = sc && !SCORE_OK.has(sc.status);
+              // Empty in a column the requirement demands, where nothing scores
+              // it. Marked in the CELL as well as on the heading: the heading
+              // says the column is required of every row, and only the cell can
+              // say which row failed it. Where there IS a truth file the score
+              // says it better -- `missed`, with the expected value under it --
+              // so this stands down rather than saying it twice.
+              const gap = !v && reqItems.has(k) && !sc;
+              const tip = bad ? GROUND_TAG[st2][1]
+                        : off ? SCORE_TAG[sc.status][1]
+                        : gap ? 'Mandatory on every row of this table, and this'
+                                + ' row left it empty' : '';
               return '<td class="' + (num ? 'num ' : '')
-                + (bad ? 'ungrounded' : gap ? 'sc-missed' : '') + '"'
-                + (bad ? ' title="' + esc(GROUND_TAG[st2][1]) + '"'
-                   : gap ? ' title="Mandatory on every row of this table, and'
-                           + ' this row left it empty"' : '')
-                + '>' + (v ? esc(v) : gap ? 'required' : '') + '</td>';
+                + (bad ? 'ungrounded' : gap ? 'sc-missed' : '')
+                + (off ? ' sc-' + sc.status : '') + '"'
+                + (tip ? ' title="' + esc(tip) + '"' : '')
+                + '>' + (v ? esc(v) : gap ? 'required' : '')
+                + (off && sc.status !== 'spurious'
+                    ? '<div class="truth">' + esc(String(sc.expected)) + '</div>' : '')
+                + '</td>';
             }).join('')
             + '<td class="num derived">'
             + (rate === null || rate === undefined ? '—' : esc(String(rate)))
             + '</td></tr>';
           }).join('')
+        // Drawn from the truth file, dashed, so nothing in them reads as model
+        // output -- the same treatment a dropped charges row gets above.
+        + missedIncome.map(row => '<tr class="row-missed">'
+            + incomeCols.map(([k], ci) =>
+                '<td>' + esc(String((row[k] || {}).expected || ''))
+                + (ci === 0 ? '<span class="fld-tag missing" title="the ground '
+                    + 'truth prints this row and the extraction did not return '
+                    + 'it">not returned</span>' : '') + '</td>').join('')
+            + '<td class="num derived">—</td></tr>').join('')
         + '</table></div>';
     }
   }

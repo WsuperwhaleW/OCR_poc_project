@@ -115,7 +115,8 @@ STATUS_MEANING = {
 
 
 # Keys of the truth file that are configuration rather than a value to score.
-_CONFIG_KEYS = ("other_fields", "table_columns", "score_table", "line_items")
+_CONFIG_KEYS = ("other_fields", "table_columns", "score_table", "line_items",
+                "income_items")
 
 # Column heading -> schema key, tried in this order and each key taken by the
 # LEFTMOST column that claims it. The order is the whole of the mapping's
@@ -461,7 +462,12 @@ def _pick_document(raw: dict, pages, warnings) -> dict:
     documents = raw.get(_DOCUMENTS_KEY) or []
     if not documents:
         return raw
-    first = (list(pages) or [None])[0]
+    # `pages or ()` because None is a documented input, not a mistake -- see the
+    # docstring: a caller with no pages in hand means "the document this case is
+    # about". `list(None)` raised a TypeError, which `evaluate` does not catch
+    # (it catches ValueError), so `load_truth('sol015')` crashed rather than
+    # falling back to document 1 the way this says it does.
+    first = (list(pages or ()) or [None])[0]
     if first is not None:
         for entry in documents:
             if first in (entry.get("pages") or []):
@@ -541,6 +547,49 @@ def load_truth(case_id: str, pages=None) -> dict:
         warnings.append("line_items: the table is read from the .md now and this "
                         "key is ignored -- delete it")
 
+    # The income table of a WHT certificate, and the one table this module reads
+    # from the truth file rather than deriving from the .md.
+    #
+    # **That is not an exception to the derive-it rule, it is that rule's own
+    # reasoning.** The charges table is derived because "what the derivation
+    # adds is the one thing the .md cannot carry: which printed column is which
+    # schema key" -- a per-document question `HEADER_MAP` exists to answer. A
+    # 50 tavi is a government form: its four columns are fixed by the form, in
+    # a fixed order, so there is no mapping to derive. What DOES vary across the
+    # fixtures is the heading wording (ประเภทเงินได้พึงประเมินที่จ่าย against
+    # ประเภทเงินได้ที่จ่ายและเงินคง against ประเภทเงินได้ที่จ่าย), so a heading map
+    # here would need a needle per fixture to answer a question the form has
+    # already answered -- all cost, no information.
+    income = raw.get("income_items")
+    if income is not None:
+        if not isinstance(income, list):
+            warnings.append("income_items: expected a list -- ignored")
+            income = None
+        else:
+            rows = []
+            for index, entry in enumerate(income):
+                if not isinstance(entry, dict):
+                    warnings.append(f"income_items[{index}]: expected an object")
+                    continue
+                row = {}
+                for key, value in entry.items():
+                    if key.startswith("_"):
+                        continue
+                    if key not in prompts.INCOME_ITEM_KEYS:
+                        warnings.append(f"income_items[{index}]: unknown cell "
+                                        f"{key!r} -- ignored")
+                        continue
+                    if value is None:
+                        continue          # not checked, as a scalar's null is
+                    readings = _readings(f"income_items[{index}].{key}", value,
+                                         warnings)
+                    if readings is None:
+                        continue
+                    row[key] = readings[0] if len(readings) == 1 else readings
+                if row:
+                    rows.append(row)
+            income = rows
+
     # Only needed where a column heading beats the header map below. Written as
     # the heading exactly as the .md prints it -> the schema key it fills.
     columns = raw.get("table_columns") or {}
@@ -581,6 +630,10 @@ def load_truth(case_id: str, pages=None) -> dict:
             others = entries
 
     return {"scalars": scalars, "other_fields": others,
+            # None where the file states none, so "this document rules no income
+            # table" and "nobody has transcribed it yet" stay distinguishable --
+            # the same reason `other_fields` is None rather than [].
+            "income_items": income,
             "table_columns": columns,
             # The truth file may switch the table off, and so may the schema:
             # pass 2 does not ask for line items at all while
@@ -852,7 +905,19 @@ def _pair_rows(truth_rows, actual_rows):
     return matched
 
 
-def _score_items(truth_rows, actual_rows, required_cells=None) -> dict:
+def _score_items(truth_rows, actual_rows, required_cells=None,
+                 field="line_items", shape=None) -> dict:
+    """One table's cells, scored row by row.
+
+    `field` is the key the extraction returns this table under and the prefix of
+    every path here, because there are two tables and they are not
+    interchangeable: `line_items` is the charges table of a commercial document
+    and `income_items` the income table of a WHT certificate. `shape` is the
+    keys that table rules, used to count cells in rows the truth has no
+    counterpart for. Both default to the charges table, so the caller that had
+    no choice before this still gets exactly what it got.
+    """
+    shape = tuple(shape) if shape else ITEM_KEYS
     actual_rows = [r for r in (actual_rows or []) if isinstance(r, dict)]
     matched = _pair_rows(truth_rows, actual_rows)
     rows = []
@@ -861,9 +926,15 @@ def _score_items(truth_rows, actual_rows, required_cells=None) -> dict:
         j = matched.get(i)
         source = actual_rows[j] if j is not None else {}
         for key, value in truth_row.items():
+            status, reading = judge_best(
+                value, None if j is None else source.get(key))
             rows.append({
-                "path": f"line_items[{i}].{key}",
-                "expected": value,
+                "path": f"{field}[{i}].{key}",
+                # The reading that produced the outcome, for the reason a
+                # scalar's `expected` is: a cell may carry accepted readings
+                # too, and printing an arbitrary one beside the answer reports
+                # the model wrong against a value it was never judged against.
+                "expected": reading,
                 "actual": "" if j is None else str(source.get(key) or ""),
                 # Which RETURNED row this truth row was paired with, or None if
                 # none was. The path above carries the truth row's index, and
@@ -875,7 +946,7 @@ def _score_items(truth_rows, actual_rows, required_cells=None) -> dict:
                 # return: every cell the document prints in it was missed, and
                 # saying so cell by cell keeps one dropped row costing what it
                 # actually cost rather than one point.
-                "status": judge(value, None if j is None else source.get(key)),
+                "status": status,
                 # Mandatory of every ROW, where the requirement says so. Same
                 # flag as a scalar's so one rule can take the headline over both.
                 "required": (True if required_cells is None
@@ -886,7 +957,7 @@ def _score_items(truth_rows, actual_rows, required_cells=None) -> dict:
     for j, actual_row in enumerate(actual_rows):
         if j in matched.values():
             continue
-        spurious_cells += sum(1 for k in ITEM_KEYS
+        spurious_cells += sum(1 for k in shape
                               if not grounding.is_blank(actual_row.get(k)))
 
     order = [matched[i] for i in sorted(matched)]
@@ -948,7 +1019,7 @@ def _score_others(truth_entries, actual_entries) -> dict:
 # --------------------------------------------------------------------------
 
 def score(truth: dict, fields, table: dict = None, keys=None,
-          mandatory=None, items_mandatory=None) -> dict:
+          mandatory=None, items_mandatory=None, item_keys=None) -> dict:
     """Score one extraction against one loaded truth file.
 
     `fields` is the `fields` object of an extraction result -- what the model
@@ -1054,11 +1125,19 @@ def score(truth: dict, fields, table: dict = None, keys=None,
 
     warnings = list(truth.get("warnings") or [])
     items = None
-    if not truth.get("score_table", True):
+    # A form that rules a table of its OWN rules no charges table, so the
+    # charges table's absence is not a finding about it -- and saying "table not
+    # scored" beside a certificate whose income table WAS scored is worse than
+    # saying nothing, because the reader has one table on screen and no way to
+    # tell which one the sentence is about.
+    charges_asked = not item_keys or tuple(item_keys) == ITEM_KEYS
+    if not charges_asked:
+        pass
+    elif not truth.get("score_table", True):
         warnings.append(
-            "table not scored: pass 2 does not extract line items"
+            "charges table not scored: pass 2 does not extract line items"
             if not prompts.EXTRACT_LINE_ITEMS
-            else "table not scored: score_table is false in the truth file")
+            else "charges table not scored: score_table is false in the truth file")
     elif table and table.get("error"):
         warnings.append(f"table not scored: {table['error']}")
     elif table:
@@ -1071,6 +1150,21 @@ def score(truth: dict, fields, table: dict = None, keys=None,
         items["derived"] = {key: table.get(key) for key in
                             ("source", "columns", "unmapped", "dropped")}
 
+    # The income table of a WHT certificate. Two conditions, and both are
+    # deliberate: the FORM has to ask for this shape (`prompts.items_for_types`
+    # of the document's types), and the truth file has to state the rows.
+    #
+    # **`score_table` does not gate it, and must not.** That flag is the charges
+    # table's veto and is ANDed with `prompts.EXTRACT_LINE_ITEMS`, which is
+    # false while pass 2 asks for no charges table -- so it reads false for
+    # every case in the corpus. Gating this on it would mean the income table
+    # could never be scored at all, which is the state this replaces.
+    income = None
+    if item_keys and truth.get("income_items"):
+        income = _score_items(truth["income_items"],
+                              fields.get("income_items"), required_cells,
+                              field="income_items", shape=item_keys)
+
     others = (_score_others(truth["other_fields"], fields.get("other_fields"))
               if truth["other_fields"] is not None else None)
 
@@ -1079,7 +1173,11 @@ def score(truth: dict, fields, table: dict = None, keys=None,
     # see the module docstring -- and an Optional field is excluded for a
     # different reason with the same shape: nobody is held to it, so a document
     # that leaves it out is compliant and must not read as incomplete.
-    judged = scalar_rows + (items["rows"] if items else [])
+    # The requirement marks all four income cells Mandatory OF EVERY ROW, so
+    # they belong in the headline exactly as a Mandatory scalar does -- which is
+    # what `required_cells` already marked them.
+    judged = (scalar_rows + (items["rows"] if items else [])
+              + (income["rows"] if income else []))
     wanted = [r for r in judged if r["required"]]
     spare = [r for r in judged if not r["required"]]
     overall = _tally(wanted)
@@ -1109,6 +1207,11 @@ def score(truth: dict, fields, table: dict = None, keys=None,
         "unknown_type": unknown_type,
         "scalars": scalars,
         "line_items": items,
+        # Kept apart from `line_items` for the reason the two keys exist at all:
+        # they are different tables with different cells, and one key holding
+        # both would score a certificate's income rows against an invoice's
+        # charge rows the day a document rules both.
+        "income_items": income,
         "other_fields": others,
         "warnings": warnings,
         # What the truth file actually rules on. A score taken over 6 of 29 keys
@@ -1132,6 +1235,7 @@ def score(truth: dict, fields, table: dict = None, keys=None,
                                else len([k for k in asked if k in required])),
             "required_checked": sum(1 for r in scalar_rows if r["required"]),
             "line_items_checked": items is not None,
+            "income_items_checked": income is not None,
             "other_fields_checked": truth["other_fields"] is not None,
         },
     }
@@ -1159,8 +1263,12 @@ def evaluate(case_id: str, fields, keys=None, doc_types=(),
         return {"error": str(err)}
     table = (table_rows(case_id, truth.get("table_columns"))
              if truth.get("score_table", True) else None)
+    # Which table shape this document's form asks for, derived here from the
+    # types the caller already passes rather than added to every call site --
+    # `items_mandatory` is the same answer's other half and arrives that way.
     result = score(truth, fields, table, keys=keys, mandatory=mandatory,
-                   items_mandatory=items_mandatory)
+                   items_mandatory=items_mandatory,
+                   item_keys=prompts.items_for_types(doc_types))
     result["case"] = case_id
     result["doc_types"] = list(doc_types or [])
     # Which document of the file this score is of, where the file holds several.
@@ -1272,7 +1380,7 @@ def pool(scores) -> dict:
     for name in ("checked", "unchecked"):
         scalars[name] = sum((s.get("scalars") or {}).get(name) or 0 for s in scores)
     pooled["scalars"] = scalars
-    for name in ("line_items", "other_fields"):
+    for name in ("line_items", "income_items", "other_fields"):
         blocks = [s.get(name) for s in scores if isinstance(s.get(name), dict)]
         pooled[name] = _pool_block(blocks) if blocks else None
     coverage = {}
@@ -1376,6 +1484,18 @@ def format_report(result: dict, show: int = 40) -> list:
                 lines.append("    columns not scored, no key matches their heading: "
                              + ", ".join(got["unmapped"])
                              + " — name them in table_columns if one belongs to a key")
+
+    income = result.get("income_items")
+    if income is not None:
+        order = "" if income["in_order"] else ", OUT OF ORDER"
+        lines.append(f"  income items: {income['rows_matched']}"
+                     f"/{income['rows_expected']} rows matched, "
+                     f"{income['rows_returned']} returned, "
+                     f"{income['rows_spurious']} spurious{order}"
+                     f" -- cells {pct(income['accuracy']).strip()}")
+        # No `derived` line: unlike the charges table these rows are stated in
+        # the truth file rather than read out of the .md, so there is no column
+        # mapping that could silently be wrong.
 
     others = result["other_fields"]
     if others is not None:

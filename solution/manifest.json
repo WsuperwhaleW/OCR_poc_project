@@ -15,7 +15,7 @@
     "best-effort and should be verified before relying on its score.",
     "",
     "doc_types is a LIST because a document is regularly more than one type at",
-    "once: six of these ten head themselves with a slash -- a receipt AND a tax",
+    "once: eight of these twenty carry more than one -- a receipt AND a tax",
     "invoice, a credit note AND a tax invoice. The extraction form is the UNION",
     "of the forms for the types listed here, so a page that is both answers for",
     "both. The codes are normalise.document_types' vocabulary, and the first is",
@@ -27,7 +27,15 @@
     "English, so the classifier reports both, and it is filed as a statement of",
     "account. Drop \"INVOICE\" from its list to make that reading exclusive.",
     "",
-    "aliases are the filenames these PDFs shipped under before 2026-08-31, kept",
+    "The `pdf` field is just the filename in mockOcr/, whatever the format --",
+    "sol016-sol020 are PNG and JPG page images rather than PDFs, which the app",
+    "reads identically (it sniffs the %PDF- magic and hands anything else to",
+    "Pillow). package.py's FIXTURES allow-list had to learn those extensions or",
+    "they would not have shipped in the zip.",
+    "",
+    "aliases are the filenames these files shipped under before they were",
+    "renamed to <doc_type>_<id> -- 2026-08-31 for the PDFs, 2026-09-09 for the",
+    "five tawi*.png/jpg certificates -- kept",
     "so an upload of an original still resolves by name (rule 3). Contents are",
     "unchanged, so the sha256 rule matches them either way."
   ],
@@ -317,6 +325,66 @@
       "kind": "one settlement, seven documents: two billing notes, the receipt/tax invoice that settles them, two payment schedules and the bank's cheque advice pair",
       "aliases": [
         "25.pdf"
+      ]
+    },
+    {
+      "id": "sol016",
+      "pdf": "wht_certificate_sol016.jpg",
+      "doc_types": [
+        "WHT_CERTIFICATE"
+      ],
+      "pages": 1,
+      "kind": "scanned WHT certificate (50 tavi), form P.N.D.53, section-5 income, CE dates",
+      "aliases": [
+        "tawi1.jpg"
+      ]
+    },
+    {
+      "id": "sol017",
+      "pdf": "wht_certificate_sol017.png",
+      "doc_types": [
+        "WHT_CERTIFICATE"
+      ],
+      "pages": 1,
+      "kind": "WHT certificate (50 tavi), form P.N.D.3; the payee is an INDIVIDUAL with a citizen ID, and the dates are two-digit BE (02/09/63)",
+      "aliases": [
+        "tawi2.png"
+      ]
+    },
+    {
+      "id": "sol018",
+      "pdf": "wht_certificate_sol018.png",
+      "doc_types": [
+        "WHT_CERTIFICATE"
+      ],
+      "pages": 1,
+      "kind": "WHT certificate (50 tavi), form P.N.D.53; tax IDs printed one digit per box, a Latin payer name, income under section 6",
+      "aliases": [
+        "tawi3.png"
+      ]
+    },
+    {
+      "id": "sol019",
+      "pdf": "wht_certificate_sol019.png",
+      "doc_types": [
+        "WHT_CERTIFICATE"
+      ],
+      "pages": 1,
+      "kind": "WHT certificate (50 tavi), form P.N.D.3, the smallest page here at 0.57 MP; tax IDs written with dashes and the date abbreviated in Thai (6 มี.ค. 2561)",
+      "aliases": [
+        "tawi4.png"
+      ]
+    },
+    {
+      "id": "sol020",
+      "pdf": "wht_certificate_sol020.png",
+      "doc_types": [
+        "WHT_CERTIFICATE"
+      ],
+      "pages": 1,
+      "kind": "WHT certificate (50 tavi), form P.N.D.53; tax IDs one digit per box and the satang printed in its own column",
+      "aliases": [
+        "tawi5.png"
       ]
     }
   ]
