@@ -27,18 +27,19 @@ class Cancelled(Exception):
 
 
 class Job:
-    __slots__ = ("id", "name", "kind", "detail", "status", "created", "started",
+    __slots__ = ("id", "name", "kind", "detail", "reader", "status", "created", "started",
                  "finished", "pages_total", "pages_done", "stage", "result",
                  "error", "_cancel", "payload", "seq")
 
     _seq = itertools.count(1)
 
-    def __init__(self, name, kind, detail, payload):
+    def __init__(self, name, kind, detail, payload, reader="server"):
         self.id = uuid.uuid4().hex[:10]
         self.seq = next(Job._seq)
         self.name = name
         self.kind = kind              # "upload" | "case"
         self.detail = detail
+        self.reader = reader            # server | paddle | easyocr; captured here
         self.payload = payload        # bytes for upload, case id for case
         self.status = "queued"        # queued|running|done|failed|cancelled
         self.created = time.time()
@@ -69,7 +70,8 @@ class Job:
             elapsed = round((self.finished or now) - self.started, 1)
         data = {
             "id": self.id, "seq": self.seq, "name": self.name, "kind": self.kind,
-            "detail": self.detail, "status": self.status, "stage": self.stage,
+            "detail": self.detail, "reader": self.reader,
+            "status": self.status, "stage": self.stage,
             "pages_total": self.pages_total, "pages_done": self.pages_done,
             "queued_for": round((self.started or now) - self.created, 1),
             "elapsed": elapsed, "error": self.error,
@@ -81,7 +83,8 @@ class Job:
             data["summary"] = {
                 k: self.result.get(k)
                 for k in ("tokens", "seconds", "page_count", "detail",
-                          "truncated", "looped")
+                          "truncated", "looped", "ocr_lines",
+                          "ocr_confidence", "backend")
             }
             truth = self.result.get("truth")
             if truth and not truth.get("error"):
@@ -207,8 +210,8 @@ class JobQueue:
                         self._go = False
 
     # -- api -------------------------------------------------------------
-    def submit(self, name, kind, detail, payload):
-        return self.submit_many([(name, kind, detail, payload)])[0]
+    def submit(self, name, kind, detail, payload, reader="server"):
+        return self.submit_many([(name, kind, detail, payload, reader)])[0]
 
     def submit_many(self, specs):
         """Queue a batch so that none of it starts until all of it is queued.
@@ -223,7 +226,10 @@ class JobQueue:
         admitted, so the threads are already parked on the condition when the
         work lands and every document leaves for the model server together.
         """
-        batch = [Job(name, kind, detail, payload) for name, kind, detail, payload in specs]
+        # Four-item tuples are retained for callers written before reader choice
+        # existed; they mean the original model-server path.
+        batch = [Job(*spec) if len(spec) == 5 else Job(*spec, reader="server")
+                 for spec in specs]
 
         with self._lock:
             auto = self._auto

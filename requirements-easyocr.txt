@@ -1,0 +1,6 @@
+# Optional isolated OCR reader. Install this file into .venv-easyocr, not the
+# web application's .venv. CPU wheels are the tested portable default; for CUDA
+# install the matching official PyTorch build first, then install this file.
+easyocr==1.7.2
+torch==2.14.0
+torchvision==0.29.0
