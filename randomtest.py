@@ -68,6 +68,16 @@ import urllib.request
 
 import backends
 
+# Stable plan identifiers for readers that do not live on the model server.
+# They cannot be raw recognizer names: those names are provenance in runs.csv,
+# while a plan needs to know which isolated worker to invoke.
+LOCAL_READERS = {"local:paddle": "paddle", "local:easyocr": "easyocr"}
+
+
+def local_reader(name: str) -> str:
+    """Return the app reader id for a local plan entry, or an empty string."""
+    return LOCAL_READERS.get(name or "", "")
+
 # How many rounds one request may ask for. The ceiling is not arithmetic: a
 # round is a real read plus a real extraction, tens of seconds each, and a page
 # that asks for 500 of them has asked for a job it cannot watch and will not
@@ -102,10 +112,11 @@ def profile_for(model: str) -> str:
     picked profiles at random would spend most of its rounds re-measuring
     something this project already documents.
     """
-    return backends.profile_for_model(model)
+    local = local_reader(model)
+    return local or backends.profile_for_model(model)
 
 
-def pools(models: list, cases: list) -> dict:
+def pools(models: list, cases: list, local_readers: list = None) -> dict:
     """What a plan may choose from, given what the endpoint actually serves.
 
     `models` is `status()["models"]` -- dicts with `name` and `vision`. `cases`
@@ -119,7 +130,10 @@ def pools(models: list, cases: list) -> dict:
         # is worth attempting, which is the same call `backends.status` makes.
         # Every vision model is a candidate -- see the module docstring on why
         # this is not narrowed to OCR fine-tunes.
-        "readers": [m["name"] for m in named if m.get("vision") is not False],
+        "readers": ([m["name"] for m in named
+                     if m.get("vision") is not False]
+                    + [name for name in (local_readers or [])
+                       if name in LOCAL_READERS]),
         # "" is "same as the reading model", and it is in the pool rather than
         # special-cased so that the one-model setup -- the one every measurement
         # in this project was taken under -- is part of what gets tested.
@@ -216,7 +230,7 @@ def apply_exclusions(pools: dict, exclude: dict = None,
         out["readers"] = [m for m in pools.get("readers") or []
                           if m not in exclude["readers"]]
         if not out["readers"] and scope != "fields":
-            raise ValueError("Every model that can read a page is excluded. "
+            raise ValueError("Every reader that can read a page is excluded. "
                              "Put one back, or run a fields-only test.")
     if exclude["extractors"]:
         # "" stays: see the docstring.
@@ -289,8 +303,8 @@ def plan(rounds: int, cases: list, readers: list, extractors: list,
         raise ValueError("Nothing to test: no document here has both a "
                          "transcript truth and a field truth.")
     if scope != "fields" and not (readers and details):
-        raise ValueError("Nothing to read a page with: no model at this "
-                         "endpoint reports vision.")
+        raise ValueError("Nothing can read a page: no model-server vision "
+                         "reader or enabled local OCR reader is available.")
     if scope != "ocr" and not modes:
         raise ValueError("No extraction shape to run.")
     if scope == "fields" and not text_models:
@@ -307,8 +321,8 @@ def plan(rounds: int, cases: list, readers: list, extractors: list,
         raise ValueError(f"{pinned_case} is not a document that can be scored "
                          "on both passes here, so it cannot be locked.")
     if pinned_reader and scope != "fields" and pinned_reader not in readers:
-        raise ValueError(f"{pinned_reader} is not served here, or does not "
-                         "report vision, so it cannot be locked as the reader.")
+        raise ValueError(f"{pinned_reader} is not an available model-server "
+                         "or local OCR reader, so it cannot be locked.")
     # A fields round has no reader, so its locked model is the extraction one --
     # which is drawn from every served model there, and from the non-OCR ones
     # elsewhere. Checking against the pool the round will actually draw from is
@@ -727,9 +741,13 @@ def _describe(round_: dict) -> str:
     if scope == "fields":
         return f"{rank}fields only - {extractor} - {round_.get('mode')}"
     if scope == "ocr":
-        return (f"{rank}read only - {reader} ({round_.get('profile')}) - "
+        profile = ("" if local_reader(round_.get("reader"))
+                   else f" ({round_.get('profile')})")
+        return (f"{rank}read only - {reader}{profile} - "
                 f"{round_.get('detail')}")
-    return (f"{rank}{reader} ({round_.get('profile')}) -> {extractor or 'same'} - "
+    profile = ("" if local_reader(round_.get("reader"))
+               else f" ({round_.get('profile')})")
+    return (f"{rank}{reader}{profile} -> {extractor or 'same'} - "
             f"{round_.get('detail')} - {round_.get('mode')}")
 
 

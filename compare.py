@@ -6,6 +6,8 @@
     python compare.py --no-run         # re-score saved output, no OCR
     python compare.py --app http://ocr.internal:5000    # score a deployed app
     python compare.py --model dots.ocr --profile dots     # a different model entirely
+    python compare.py --reader paddle sol001              # local PaddleOCR
+    python compare.py --reader easyocr sol001             # local EasyOCR
 
 `--model` takes any unique substring of a served model's name and switches the
 running app to it before the sweep, the same way the page's picker does (add
@@ -54,8 +56,10 @@ say = config.say
 DEFAULT_APP = os.environ.get("OCR_APP_URL") or f"http://127.0.0.1:{config.PORT}"
 
 
-def run_ocr(app, pdf, detail):
-    data = {} if detail is None else {"detail": detail}
+def run_ocr(app, pdf, detail, reader="server"):
+    data = {"reader": reader}
+    if detail is not None:
+        data["detail"] = detail
     with pdf.open("rb") as fh:
         res = requests.post(
             f"{app}/api/ocr", files={"image": (pdf.name, fh)}, data=data, timeout=3600
@@ -82,6 +86,21 @@ def run_extract(app, text, mode=None, job=None):
     if not res.ok or body.get("error"):
         raise RuntimeError(body.get("error", f"HTTP {res.status_code}"))
     return body
+
+
+def select_reader(app, reader, probe=False):
+    """Select and validate the same reader the browser uses."""
+    res = requests.post(
+        f"{app}/api/ocr/reader", json={"reader": reader, "probe": probe}, timeout=120
+    )
+    body = res.json()
+    if not res.ok or body.get("error"):
+        raise RuntimeError(body.get("error", f"HTTP {res.status_code}"))
+    selected = next((item for item in body.get("readers", [])
+                     if item.get("id") == reader), {})
+    if not selected.get("available"):
+        raise RuntimeError(selected.get("reason") or f"{reader} reader unavailable")
+    return selected
 
 
 def resolve_model(server, wanted):
@@ -201,6 +220,9 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("ids", nargs="*", help="case ids, e.g. sol001 (default: all)")
     ap.add_argument("--detail", default=None, help="original|medium|low")
+    ap.add_argument("--reader", default="server",
+                    choices=["server", "paddle", "easyocr"],
+                    help="OCR reader (default: server)")
     ap.add_argument("--no-run", action="store_true", help="score saved output only")
     ap.add_argument("--keep-tables", action="store_true",
                     help="compare table markup literally")
@@ -245,15 +267,27 @@ def main():
     # Nothing below calls the model when both passes are read from disk, and a
     # switch made for such a run would silently outlive it -- the app keeps the
     # selection.
-    calls_model = (not (args.no_run or args.from_truth or args.no_extract)
+    calls_reader = not (args.no_run or args.from_truth or args.no_extract)
+    calls_model = ((args.reader == "server" and calls_reader)
                    or (fields and not args.no_extract))
+    if calls_reader:
+        try:
+            reader_info = select_reader(app, args.reader,
+                                        probe=args.reader != "server")
+        except Exception as err:
+            say(f"reader: {err}", sys.stderr)
+            return 2
+        say("reader: " + (reader_info.get("label") or args.reader)
+            + (f"  {reader_info.get('recognizer')}" if reader_info.get("recognizer") else "")
+            + (f"  {reader_info.get('device')}" if reader_info.get("device") else ""))
     if calls_model:
         try:
             server, extract = select_server(app, args.server, args.model)
-            profile = (select_profile(app, args.profile) if args.profile
-                       else current_profile(app))
-            guard = (select_loop_guard(app, args.loop_guard == "on")
-                     if args.loop_guard else current_loop_guard(app))
+            profile = ((select_profile(app, args.profile) if args.profile
+                        else current_profile(app)) if args.reader == "server" else None)
+            guard = ((select_loop_guard(app, args.loop_guard == "on")
+                      if args.loop_guard else current_loop_guard(app))
+                     if args.reader == "server" else None)
         except Exception as err:
             say(f"server: {err}", sys.stderr)
             return 2
@@ -308,7 +342,7 @@ def main():
                 continue
             say(f"{cid}: running OCR on {case['pdf']} ...")
             try:
-                body = run_ocr(app, case["pdf_path"], args.detail)
+                body = run_ocr(app, case["pdf_path"], args.detail, args.reader)
             except Exception as err:
                 say(f"{cid}: FAILED - {err}", sys.stderr)
                 continue
@@ -316,8 +350,13 @@ def main():
             out_path.write_text(actual, "utf-8")
             flags = [f for f, on in (("LOOPED", body.get("looped")),
                                      ("TRUNCATED", body.get("truncated"))) if on]
-            meta = (f"  [{body['seconds']}s, {body['tokens']} tok, {body['detail']}"
-                    + (", " + " ".join(flags) if flags else "") + "]")
+            if body.get("backend") in ("paddleocr", "easyocr"):
+                meta = (f"  [{body['seconds']}s, {body.get('ocr_lines', 0)} lines, "
+                        f"{float(body.get('ocr_confidence') or 0) * 100:.1f}% confidence, "
+                        f"{body['detail']}]")
+            else:
+                meta = (f"  [{body['seconds']}s, {body['tokens']} tok, {body['detail']}"
+                        + (", " + " ".join(flags) if flags else "") + "]")
 
         r = (scoring.evaluate(case, actual, ignore_tables=not args.keep_tables)
              if score_text else {"case": cid, "pdf": case["pdf"], "diff": []})

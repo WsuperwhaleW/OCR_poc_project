@@ -13,5 +13,5 @@ pillow>=10.0,<12.0
 pymupdf>=1.24,<2.0        # optional: PDF input   (without it, PDFs are refused)
 pillow-heif>=0.16,<1.0    # optional: HEIC/HEIF input
 
-# No torch / transformers / accelerate / numpy.
-# All inference happens in llama-server or Ollama; this app only decodes images.
+# No torch / transformers / accelerate / numpy. Model-server inference stays
+# external, and optional Paddle/EasyOCR inference runs in its own isolated venv.
