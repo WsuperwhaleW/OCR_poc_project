@@ -1,0 +1,38 @@
+{
+  "_mandatory": {
+    "types": ["WHT_CERTIFICATE"],
+    "required": [
+      "payer_tax_id", "payer_name", "payee_tax_id", "payee_name",
+      "total_amount_paid", "total_wht_amount"
+    ],
+    "found_only": [
+      "book_no", "certificate_no", "sequence_no", "payer_branch",
+      "payer_address", "payee_branch", "payee_address",
+      "dividend_rate_option"
+    ]
+  },
+  "book_no": "",
+  "certificate_no": "WT20180109001",
+  "sequence_no": "",
+  "payer_tax_id": "1234567890133",
+  "payer_name": "Green Veggie",
+  "payer_branch": "สำนักงานใหญ่",
+  "payer_address": "เลขที่ 141/12 ชั้น 11 ยูนิต 12B อาคารชุด ลลิล เพลส",
+  "payee_tax_id": "0105558096348",
+  "payee_name": "บริษัท โก้ ฟู้ด แอนด์เดลิเวอรี่ จำกัด",
+  "payee_branch": "สำนักงานใหญ่",
+  "payee_address": "141/12 ชั้น 11 ยูนิต 12B อาคารวอ ลลิลไทย สยามสแควร์ ถนนพระราม 1 แขวงปทุมวัน เขตปทุมวัน กรุงเทพมหานคร 10500",
+  "dividend_rate_option": "",
+  "total_amount_paid": "50,000.00",
+  "total_wht_amount": "1,000.00",
+  "income_items": [
+    {
+      "income_type": "ค่าโฆษณา",
+      "payment_date": "06/01/2018",
+      "amount_paid": "50,000.00",
+      "wht_amount": "1,000.00"
+    }
+  ],
+  "other_fields": null,
+  "score_table": false
+}

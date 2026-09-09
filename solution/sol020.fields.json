@@ -1,0 +1,38 @@
+{
+  "_mandatory": {
+    "types": ["WHT_CERTIFICATE"],
+    "required": [
+      "payer_tax_id", "payer_name", "payee_tax_id", "payee_name",
+      "total_amount_paid", "total_wht_amount"
+    ],
+    "found_only": [
+      "book_no", "certificate_no", "sequence_no", "payer_branch",
+      "payer_address", "payee_branch", "payee_address",
+      "dividend_rate_option"
+    ]
+  },
+  "book_no": "12/1",
+  "certificate_no": "20251231/1",
+  "sequence_no": "",
+  "payer_tax_id": "0105555555555",
+  "payer_name": "บริษัท เซเว่นเอก จำกัด",
+  "payer_branch": "สำนักงานใหญ่",
+  "payer_address": "590 ถ.ประดิษฐ์ มนูธรรม เขตพญาไท กรุงเทพฯ 10400",
+  "payee_tax_id": "0105556090377",
+  "payee_name": "บริษัท แกร็บแท็กซี่ (ประเทศไทย) จำกัด",
+  "payee_branch": "",
+  "payee_address": "อาคาร เอสซีบี ชั้นที่ 10 เลขที่ 252 ถนนพหลโยธิน แขวงสามเสนใน เขตพญาไท จังหวัดกรุงเทพมหานคร 10400",
+  "dividend_rate_option": "",
+  "total_amount_paid": "10,319.45",
+  "total_wht_amount": "309.58",
+  "income_items": [
+    {
+      "income_type": "ค่าบริการ",
+      "payment_date": "01/12/2568",
+      "amount_paid": "10,319.45",
+      "wht_amount": "309.58"
+    }
+  ],
+  "other_fields": null,
+  "score_table": false
+}
