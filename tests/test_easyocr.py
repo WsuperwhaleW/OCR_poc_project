@@ -1,5 +1,7 @@
 import csv
 import json
+import os
+import sys
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -240,6 +242,52 @@ class EasyPersistenceTests(unittest.TestCase):
             self.assertEqual(saved["easyocr_version"], "1.7.2")
             self.assertEqual(saved["torch_version"], "2.14.0+cpu")
             self.assertEqual(saved["ocr_languages"], "th,en")
+
+
+class EasyAvailabilityTests(unittest.TestCase):
+    """Availability is *the library is importable*, not *a directory exists*.
+
+    Sharing one environment makes the interpreter always present, so the old
+    file test would report every machine as ready and fail at the first read --
+    the silent-success failure this project is organised against.
+    """
+
+    def test_installed_here_is_available_on_this_interpreter(self):
+        with patch.dict(os.environ, {"EASYOCR_PYTHON": ""}),              patch.object(easy_runtime, "installed", return_value=True):
+            state = easy_runtime.configured_status()
+        self.assertTrue(state["available"])
+        self.assertEqual(state["reason"], "")
+        self.assertEqual(state["python"], str(Path(sys.executable).resolve()))
+
+    def test_not_installed_is_unavailable_and_says_how_to_install(self):
+        with patch.dict(os.environ, {"EASYOCR_PYTHON": ""}),              patch.object(easy_runtime, "installed", return_value=False):
+            state = easy_runtime.configured_status()
+        self.assertFalse(state["available"])
+        self.assertIn("requirements-easyocr.txt", state["reason"])
+
+    def test_named_interpreter_is_trusted_rather_than_import_tested(self):
+        # It is another environment, so `find_spec` here cannot answer for it and
+        # a subprocess on a status call would be too dear. A wrong one surfaces
+        # on Re-check, which really starts the worker.
+        with patch.dict(os.environ, {"EASYOCR_PYTHON": sys.executable}),              patch.object(easy_runtime, "installed", return_value=False):
+            state = easy_runtime.configured_status()
+        self.assertTrue(state["available"])
+        self.assertEqual(state["python"], str(Path(sys.executable).resolve()))
+
+    def test_named_interpreter_that_is_not_a_file_names_itself(self):
+        with patch.dict(os.environ, {"EASYOCR_PYTHON": "/nope/python"}),              patch.object(easy_runtime, "installed", return_value=True):
+            state = easy_runtime.configured_status()
+        self.assertFalse(state["available"])
+        self.assertIn("EASYOCR_PYTHON", state["reason"])
+        self.assertIsNone(state["python"])
+
+    def test_worker_refuses_to_start_with_the_status_reason(self):
+        worker = easy_runtime.EasyWorker()
+        with patch.object(easy_runtime, "configured_status",
+                          return_value={"available": False, "reason": "not installed"}),              self.assertRaises(easy_runtime.EasyError) as caught:
+            with worker._process_lock:
+                worker._start_locked()
+        self.assertIn("not installed", str(caught.exception))
 
 
 if __name__ == "__main__":

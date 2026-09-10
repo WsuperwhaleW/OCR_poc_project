@@ -1,11 +1,22 @@
-"""Optional persistent EasyOCR subprocess management."""
+"""Optional persistent EasyOCR subprocess management.
+
+EasyOCR and Torch are installed into this application's own virtual environment,
+so the worker runs on ``sys.executable`` and there is no second environment to
+create.  **The worker subprocess is not an artefact of that separation and does
+not go with it**: one venv is where the packages live, not permission for the
+Flask process to import Torch.  It is what keeps this process free of ML
+dependencies, what makes Stop able to cancel a read at all (a `readtext()` call
+cannot be interrupted in-process), and what confines a native crash to a worker.
+"""
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import os
 import queue
 import subprocess
+import sys
 import threading
 import time
 import uuid
@@ -23,32 +34,76 @@ class EasyCancelled(EasyError):
     pass
 
 
+def override() -> str:
+    """An interpreter named explicitly, or "" for this app's own."""
+    return (os.environ.get("EASYOCR_PYTHON") or "").strip()
+
+
 def interpreter() -> Path | None:
-    configured = (os.environ.get("EASYOCR_PYTHON") or "").strip()
+    """The interpreter the worker runs on: this app's own, or an override.
+
+    `EASYOCR_PYTHON` is the escape hatch for an environment this one cannot be
+    -- a CUDA Torch build, most obviously. It is no longer how the ordinary
+    setup is found.
+    """
+    configured = override()
     if configured:
         path = Path(configured).expanduser()
         return path.resolve() if path.is_file() else None
-    candidates = (
-        config.BASE_DIR / ".venv-easyocr" / "Scripts" / "python.exe",
-        config.BASE_DIR / ".venv-easyocr" / "bin" / "python",
-    )
-    return next((path.resolve() for path in candidates if path.is_file()), None)
+    return Path(sys.executable).resolve() if sys.executable else None
+
+
+def installed() -> bool:
+    """Is EasyOCR importable HERE?
+
+    `find_spec` searches the path without executing the package, so this does
+    not pull Torch into the Flask process -- which is the whole reason the
+    worker exists. It answers for this interpreter only; see `configured_status`.
+    """
+    try:
+        return importlib.util.find_spec("easyocr") is not None
+    except Exception:
+        return False
 
 
 def configured_status() -> dict:
+    """What this reader is, and whether it can run, without starting anything.
+
+    Availability is *the library is importable*, not *a directory exists*: with
+    one shared environment the interpreter is always there, so the old test
+    would call every machine ready and fail at the first read instead.
+    """
     path = interpreter()
+    external = bool(override())
+    # An overridden interpreter is taken at its word rather than import-tested,
+    # which would cost a subprocess on a status call; a broken one surfaces on
+    # Re-check, which does start the worker.
+    available = path is not None and (external or installed())
     languages = [value.strip() for value in
                  (os.environ.get("EASYOCR_LANGUAGES") or "th,en").split(",")
                  if value.strip()]
+    if path is None and not external:
+        # No interpreter and nothing named one: an embedded build with no
+        # sys.executable. Nothing here can run at all.
+        reason = "No Python interpreter to run the EasyOCR worker with."
+    elif path is None:
+        reason = (f"EASYOCR_PYTHON={override()} is not a file. Point it at a "
+                  "python executable, or unset it to use this application's "
+                  "own environment.")
+    elif available:
+        reason = ""
+    else:
+        reason = ("EasyOCR is optional and is not installed. "
+                  "python -m pip install -r requirements-easyocr.txt into this "
+                  "application's environment, or set EASYOCR_PYTHON to an "
+                  "interpreter that has it.")
     return {
         "id": "easyocr", "label": "Local EasyOCR",
-        "available": path is not None, "python": str(path) if path else None,
+        "available": available, "python": str(path) if path else None,
         "device": os.environ.get("EASYOCR_DEVICE") or "cpu",
         "detector": "CRAFT", "recognizer": "+".join(languages),
         "languages": languages,
-        "reason": "" if path else (
-            "EasyOCR is optional. Create .venv-easyocr and install "
-            "requirements-easyocr.txt, or set EASYOCR_PYTHON."),
+        "reason": reason,
     }
 
 
@@ -75,13 +130,14 @@ class EasyWorker:
     def _start_locked(self):
         if self._process is not None and self._process.poll() is None:
             return
-        path = interpreter()
-        if path is None:
-            raise EasyError(configured_status()["reason"])
+        state = configured_status()
+        if not state["available"]:
+            raise EasyError(state["reason"])
+        path = state["python"]
         flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
         try:
             process = subprocess.Popen(
-                [str(path), "-u", str(config.BASE_DIR / "easy_worker.py")],
+                [path, "-u", str(config.BASE_DIR / "easy_worker.py")],
                 cwd=str(config.BASE_DIR), stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                 text=True, encoding="utf-8", errors="replace", bufsize=1,

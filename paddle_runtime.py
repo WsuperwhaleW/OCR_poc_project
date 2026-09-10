@@ -1,13 +1,22 @@
 """Optional, persistent PaddleOCR subprocess management.
 
-PaddleOCR lives in a separate virtual environment so its large dependency tree
-cannot destabilise the small Flask application's environment.  Calls are
-serialized through one long-lived worker: the models load once, and concurrent
-queue threads wait visibly rather than loading duplicate copies.
+PaddleOCR is installed into this application's own virtual environment, so the
+worker runs on ``sys.executable`` and there is no second environment to create.
+
+**The worker subprocess survives that consolidation, and is not an accident of
+it.** One venv is where the packages live; it is not permission for the Flask
+process to import them.  Three things depend on the read happening elsewhere:
+the standing rule that nothing is inferred in this process (no torch, no
+numpy), Stop -- which cancels a read by killing the worker, and has no
+in-process equivalent because ``predict()`` cannot be interrupted -- and crash
+isolation, since a native fault in Paddle should cost a worker and not the
+server.  Calls are serialized through one long-lived worker: the models load
+once, and concurrent callers wait visibly rather than loading duplicate copies.
 """
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import os
 import queue
@@ -37,33 +46,78 @@ def _bool(name: str, default=False) -> bool:
     return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
+def override() -> str:
+    """An interpreter named explicitly, or "" for this app's own."""
+    return (os.environ.get("PADDLE_PYTHON") or "").strip()
+
+
 def interpreter() -> Path | None:
-    configured = (os.environ.get("PADDLE_PYTHON") or "").strip()
+    """The interpreter the worker runs on: this app's own, or an override.
+
+    `PADDLE_PYTHON` is the escape hatch for an environment this one cannot be --
+    a CUDA build, or a Python version Paddle supports and this app is not on.
+    It is no longer how the ordinary setup is found.
+    """
+    configured = override()
     if configured:
         path = Path(configured).expanduser()
         return path.resolve() if path.is_file() else None
-    candidates = (
-        config.BASE_DIR / ".venv-paddle" / "Scripts" / "python.exe",
-        config.BASE_DIR / ".venv-paddle" / "bin" / "python",
-    )
-    return next((path.resolve() for path in candidates if path.is_file()), None)
+    return Path(sys.executable).resolve() if sys.executable else None
+
+
+def installed() -> bool:
+    """Is PaddleOCR importable HERE?
+
+    `find_spec` searches the path and does not execute the package, so asking
+    this question does not drag Paddle into the Flask process -- which is the
+    whole reason the worker exists. It answers for this interpreter only, so an
+    overridden one is not tested by it; see `configured_status`.
+    """
+    try:
+        return importlib.util.find_spec("paddleocr") is not None
+    except Exception:
+        return False
 
 
 def configured_status() -> dict:
+    """What this reader is, and whether it can run, without starting anything.
+
+    Availability is now *the library is importable*, not *a directory exists*.
+    Under the separate-venv layout those were nearly the same claim; sharing one
+    environment makes the interpreter always present, so testing for it would
+    report every machine as ready and fail at the first read instead.
+    """
     path = interpreter()
+    external = bool(override())
+    # An overridden interpreter cannot be import-tested from here without paying
+    # for a subprocess on a status call, so it is taken at its word and a broken
+    # one surfaces on Re-check, which does start the worker.
+    available = path is not None and (external or installed())
+    if path is None and not external:
+        # No interpreter and nothing named one: an embedded build with no
+        # sys.executable. Nothing here can run at all.
+        reason = "No Python interpreter to run the Paddle worker with."
+    elif path is None:
+        reason = (f"PADDLE_PYTHON={override()} is not a file. "
+                  "Point it at a python executable, or unset it to use this "
+                  "application's own environment.")
+    elif available:
+        reason = ""
+    else:
+        reason = ("PaddleOCR is optional and is not installed. "
+                  "python -m pip install -r requirements-paddle.txt "
+                  "into this application's environment, or set PADDLE_PYTHON "
+                  "to an interpreter that has it.")
     return {
         "id": "paddle",
         "label": "Local PaddleOCR",
-        "available": path is not None,
+        "available": available,
         "python": str(path) if path else None,
         "device": os.environ.get("PADDLE_DEVICE") or "cpu",
         "detector": os.environ.get("PADDLE_DETECTOR") or "PP-OCRv5_mobile_det",
         "recognizer": os.environ.get("PADDLE_RECOGNIZER") or "th_PP-OCRv5_mobile_rec",
         "mkldnn": _bool("PADDLE_MKLDNN", False),
-        "reason": "" if path else (
-            "PaddleOCR is optional. Create .venv-paddle and install "
-            "requirements-paddle.txt, or set PADDLE_PYTHON."
-        ),
+        "reason": reason,
     }
 
 
@@ -90,14 +144,15 @@ class PaddleWorker:
     def _start_locked(self):
         if self._process is not None and self._process.poll() is None:
             return
-        path = interpreter()
-        if path is None:
-            raise PaddleError(configured_status()["reason"])
+        state = configured_status()
+        if not state["available"]:
+            raise PaddleError(state["reason"])
+        path = state["python"]
         worker = config.BASE_DIR / "paddle_worker.py"
         flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
         try:
             process = subprocess.Popen(
-                [str(path), "-u", str(worker)],
+                [path, "-u", str(worker)],
                 cwd=str(config.BASE_DIR), stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                 text=True, encoding="utf-8", errors="replace", bufsize=1,

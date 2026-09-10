@@ -2,7 +2,9 @@ __pycache__/
 *.py[cod]
 *.egg-info/
 
-# Virtual environments
+# Virtual environments. Paddle and EasyOCR install into .venv with everything
+# else now; the two old per-library names stay listed so a leftover directory
+# from that layout can never be committed by accident.
 .venv/
 .venv-paddle/
 .venv-easyocr/

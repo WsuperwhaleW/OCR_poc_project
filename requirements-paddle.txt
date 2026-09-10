@@ -1,4 +1,10 @@
-# Optional isolated OCR reader. Install this file into .venv-paddle, not the
-# web application's .venv. These are the versions validated by this project.
+# Optional local OCR reader. Install into the SAME environment as
+# requirements.txt -- there is no separate .venv-paddle any more.
+#
+#   python -m pip install -r requirements-paddle.txt
+#
+# The app process still never imports Paddle: paddle_worker.py runs in a
+# subprocess, which is what keeps this dependency tree out of the server and
+# lets Stop cancel a read. These are the versions validated by this project.
 paddlepaddle==3.3.1
 paddleocr==3.7.0

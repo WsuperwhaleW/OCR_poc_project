@@ -1,15 +1,17 @@
 """Long-lived PaddleOCR subprocess used by :mod:`paddle_runtime`.
 
-The main Flask process deliberately does not import Paddle, NumPy, PaddleX or
-their transitive dependencies.  It starts this module with the interpreter from
-the optional ``.venv-paddle`` environment and exchanges one JSON object per
-line.  Paddle's own console output is redirected to stderr so stdout remains a
-machine-readable protocol.
+Paddle is installed alongside the web application now, and the main Flask
+process still deliberately does not import Paddle, NumPy, PaddleX or their
+transitive dependencies -- **sharing an environment is not sharing a process.**
+It starts this module with its own interpreter (or the one `PADDLE_PYTHON`
+names) and exchanges one JSON object per line.  Paddle's own console output is
+redirected to stderr so stdout remains a machine-readable protocol.
 """
 
 from __future__ import annotations
 
 import contextlib
+import importlib.util
 import json
 import math
 import os
@@ -34,11 +36,34 @@ def emit(event: dict) -> None:
     print(json.dumps(event, ensure_ascii=False), flush=True)
 
 
+def _torch_first():
+    """Import Torch BEFORE Paddle, when both are installed. Order is load-bearing.
+
+    Sharing one environment put them in one process for the first time, and on
+    Windows `import paddle` then `import torch` dies with WinError 127 loading
+    torch's `shm.dll` -- Paddle has already claimed the native runtime torch is
+    reaching for. The reverse order is clean. It is not avoidable by not wanting
+    torch here: `paddleocr` imports `paddlex`, which imports `modelscope`
+    unconditionally, whose logger imports torch. So torch is loaded either way
+    and this only decides when, which is why it costs nothing.
+
+    A torch that will not import at all is left to fail where it is actually
+    used -- reporting it from here would blame Paddle for someone else's break.
+    """
+    if importlib.util.find_spec("torch") is None:
+        return
+    try:
+        import torch  # noqa: F401
+    except Exception:
+        pass
+
+
 def _imports():
     """Import the optional runtime once, keeping its banners off stdout."""
     global _runtime
     if _runtime is None:
         with contextlib.redirect_stdout(sys.stderr):
+            _torch_first()
             import paddle
             import paddleocr
             from PIL import Image

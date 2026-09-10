@@ -62,11 +62,7 @@ ORDER -- this matters
   bottom, and left to right within the same line or band.
 - Text positioned higher on the page MUST appear earlier in your output. Never move a
   heading, title, total or page number away from where it sits on the page.
-- For multi-column layouts, finish the left column before starting the right one. Where
-  two blocks of labelled details sit SIDE BY SIDE -- two parties, two addresses, two sets
-  of values -- keep each block whole, and treat a line that runs across both as TWO lines:
-  write its left part with the left block and its right part with the right block, never
-  straight across. Inside a table this does not apply -- a row is one record, read across."""
+- For multi-column layouts, finish the left column before starting the right one."""
 
 # dots.ocr's own prompt, quoted exactly. A different model, a different request
 # shape, and a different answer: this one returns a JSON array of layout blocks

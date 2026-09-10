@@ -1,8 +1,9 @@
 """Long-lived EasyOCR subprocess used by :mod:`easy_runtime`.
 
-The Flask process does not import Torch, NumPy or EasyOCR. Commands and results
-are newline-delimited JSON; library output is kept on stderr so stdout remains a
-machine-readable protocol.
+EasyOCR is installed alongside the web application now, and the Flask process
+still does not import Torch, NumPy or EasyOCR -- **sharing an environment is not
+sharing a process.** Commands and results are newline-delimited JSON; library
+output is kept on stderr so stdout remains a machine-readable protocol.
 """
 
 from __future__ import annotations

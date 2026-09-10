@@ -4083,8 +4083,8 @@ def select_engine(engine, reader=None) -> str:
     **An unavailable default is stepped over, not selected.** `library` prefers
     Paddle, and on a machine with only EasyOCR installed selecting Paddle would
     hand the user a pane whose Run button refuses. Availability is read from
-    `configured_status()`, which is a file test rather than a probe, so this
-    costs no import and no subprocess.
+    `configured_status()`, which asks whether the library is importable rather
+    than importing it, so this costs no import and no subprocess.
     """
     if engine not in ENGINES:
         raise ValueError("engine must be 'llm' or 'library'.")

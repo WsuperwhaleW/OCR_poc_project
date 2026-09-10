@@ -90,32 +90,23 @@ are actually running, so it cannot silently install somewhere else.
 
 ### Optional local PaddleOCR reader
 
-Keep Paddle's large native dependency tree isolated from the web app. From the project
-directory, create the conventional `.venv-paddle` environment:
-
-**Windows (PowerShell)**
-
-```powershell
-py -3.11 -m venv .venv-paddle
-.venv-paddle\Scripts\python.exe -m pip install -r requirements-paddle.txt
-```
-
-**Linux**
+Install it into the same environment as the app, with that environment activated:
 
 ```bash
-python3.11 -m venv .venv-paddle
-.venv-paddle/bin/python -m pip install -r requirements-paddle.txt
+python -m pip install -r requirements-paddle.txt
 ```
 
-The app discovers those paths automatically. `PADDLE_PYTHON` can point to a different
-isolated interpreter. The default is CPU with MKL-DNN disabled, using
+The app process still never imports Paddle -- reads run in a worker subprocess -- so this
+adds a dependency tree to the environment and nothing to the server. `PADDLE_PYTHON` runs
+the worker on a different interpreter instead, for a CUDA build or a Python version Paddle
+supports and this app is not on. The default is CPU with MKL-DNN disabled, using
 `PP-OCRv5_mobile_det` and `th_PP-OCRv5_mobile_rec`. The first run downloads models to
 Paddle's normal user cache. For an offline machine, copy the two inference model folders
 under one parent as `PP-OCRv5_mobile_det/` and `th_PP-OCRv5_mobile_rec/`, then set
 `PADDLE_MODEL_DIR` to that parent directory.
 
 For GPU use, install the PaddlePaddle GPU wheel that matches the target CUDA toolkit in
-`.venv-paddle` (in place of `paddlepaddle`) and set `PADDLE_DEVICE=gpu`. Paddle publishes
+place of `paddlepaddle` and set `PADDLE_DEVICE=gpu`. Paddle publishes
 platform-specific GPU install commands, so `requirements-paddle.txt` intentionally keeps
 the portable CPU package. `PADDLE_MKLDNN=1` opts into MKL-DNN after it has been validated
 on the target machine; it is off by default for compatibility.
@@ -134,36 +125,27 @@ python compare.py --reader paddle                 # all benchmark cases
 python compare.py --reader paddle --fields        # then use the selected LLM for fields
 ```
 
-If Paddle is shown unavailable, verify `.venv-paddle` uses a Paddle-supported Python,
-run `.venv-paddle\Scripts\python.exe -c "import paddle, paddleocr; print(paddle.__version__)"`
-on Windows (use `.venv-paddle/bin/python` on Linux), and press **Re-check**. Increase
+If Paddle is shown unavailable it is not importable here: check the environment is the
+one the app runs in and that its Python version is one Paddle supports, run
+`python -c "import paddle, paddleocr; print(paddle.__version__)"`, and press **Re-check**.
+An interpreter named by `PADDLE_PYTHON` is taken at its word rather than tested, so a wrong
+one shows as available and fails on Re-check, which really starts the worker. Increase
 `PADDLE_TIMEOUT` for slow CPU runs. A failed or cancelled worker is restarted automatically.
 
 ### Optional local EasyOCR reader
 
 EasyOCR uses the same prepared page images, evaluator, Layout viewer, run log,
-and optional LLM field-extraction pass as PaddleOCR. Its PyTorch dependency stays out
-of the web environment in a conventional `.venv-easyocr`:
-
-**Windows (PowerShell)**
-
-```powershell
-py -3.13 -m venv .venv-easyocr
-.venv-easyocr\Scripts\python.exe -m pip install --upgrade pip
-.venv-easyocr\Scripts\python.exe -m pip install torch==2.14.0 torchvision==0.29.0 --index-url https://download.pytorch.org/whl/cpu
-.venv-easyocr\Scripts\python.exe -m pip install -r requirements-easyocr.txt
-```
-
-**Linux**
+and optional LLM field-extraction pass as PaddleOCR. Install it into the app's own
+environment, with that environment activated. The CPU Torch wheels come from PyTorch's
+own index, so they are installed first:
 
 ```bash
-python3 -m venv .venv-easyocr
-.venv-easyocr/bin/python -m pip install --upgrade pip
-.venv-easyocr/bin/python -m pip install torch==2.14.0 torchvision==0.29.0 --index-url https://download.pytorch.org/whl/cpu
-.venv-easyocr/bin/python -m pip install -r requirements-easyocr.txt
+python -m pip install torch==2.14.0 torchvision==0.29.0 --index-url https://download.pytorch.org/whl/cpu
+python -m pip install -r requirements-easyocr.txt
 ```
 
-The app discovers this environment automatically; `EASYOCR_PYTHON` overrides it.
+Torch is imported only by the worker subprocess, never by the app. `EASYOCR_PYTHON` runs
+that worker on a different interpreter instead.
 The default reader loads Thai and English on CPU with `verbose=False`, uses CRAFT
 detection, preserves line polygons and confidence, and stays alive between jobs. The
 first use downloads `craft_mlt_25k.pth` and `thai.pth` to EasyOCR's normal cache.
@@ -183,8 +165,8 @@ python compare.py --reader easyocr                 # all benchmark cases
 python compare.py --reader easyocr --fields        # selected LLM extracts fields
 ```
 
-If it is unavailable, verify with
-`.venv-easyocr\Scripts\python.exe -c "import easyocr,torch; print(easyocr.__version__, torch.__version__)"`
+If it is unavailable it is not importable here; verify with
+`python -c "import easyocr, torch; print(easyocr.__version__, torch.__version__)"`
 and press **Re-check**. Increase `EASYOCR_TIMEOUT` on a slow CPU. Stop/cancel kills
 only the active EasyOCR subprocess; the following request starts a clean worker.
 
