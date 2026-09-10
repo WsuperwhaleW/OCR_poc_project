@@ -739,15 +739,26 @@ _EP_PAYMENT = """payment_date and cheque_number:
 # the reason the head of this file gives at length.
 
 _EP_WHT_IDENTITY = """How this certificate is numbered -- three separate numbers, and most
-pages print all three:
-- book_no is the book or volume the certificate was torn from, printed under a label
-  meaning book. certificate_no is the certificate's own number, under a label meaning
-  number. They are usually printed side by side at the top right and are short -- two to
-  six digits each.
-- sequence_no is which line of the tax filing this certificate is, printed under a label
-  naming the filing form and a running number within it.
-- Each of these is short. A run of ten or more digits is a tax identification number and
-  belongs to a party, not here. Where the page prints no such label, that key is "".
+pages print only one or two of them:
+- book_no is what is printed against a label meaning book or volume. certificate_no is
+  what is printed against a label meaning number. They usually sit together at the top
+  right.
+- MOST PAGES PRINT THE BOOK LABEL WITH NOTHING AGAINST IT, or print no book label at all.
+  Where that is so, book_no is "" -- and the number beside it is still certificate_no.
+  Never move the certificate's own number into book_no because the book is empty.
+- A number here is whatever is printed there: digits, or letters and digits together, and
+  it may carry dashes or slashes. Do not judge it by its length or its shape, and copy the
+  whole of what is printed rather than the part of it that looks like a number.
+- sequence_no is a running number printed against a label meaning which line or item of
+  the filing this is. **On most certificates that label is printed with nothing written
+  against it, so "" is the usual and correct answer here.**
+- The list of filing-form names with one of them ticked says WHICH form this certificate is
+  filed on, not which line of it. **Neither the ticked form's name, nor the number in
+  brackets beside it, nor any digit out of that name is ever sequence_no** -- a tick there
+  is not a value for this key at all.
+- Where a label is printed with nothing written against it, that key is "" -- answer with
+  the value printed against a label, never with the words of the label itself. None of
+  these three is a party's tax identification number.
 
 """
 
@@ -763,14 +774,28 @@ _EP_WHT_PARTIES = """The two parties -- four keys each, and each holds one thing
   to write contains a street, a postcode, a telephone number, a tax ID or a line break, you
   have taken too much of the block. A value that is mostly digits, or that reads as a code,
   is not a name.
-- The tax ID key takes what is printed as that party's tax or registration number, copied
-  as printed -- normally ten or more digits, sometimes with dashes. The book, certificate
-  and sequence numbers above are two to six digits and are not tax IDs.
+- **The name ENDS at the word that says what kind of body it is** -- the word for a limited
+  company, a public company, a partnership, an association -- or, for a person, at the end
+  of their name. Anything printed after that which names an OFFICE -- a word meaning head
+  office or main office, or the word for branch with a number -- is the BRANCH. It belongs
+  to the branch key, it is not part of the name, and **this is so whether or not it is in
+  brackets**: brackets do not decide it, the meaning of the words does. Bracketed words
+  that name a place or a country are part of the name and stay in it.
+- The tax ID key takes what is printed as that party's identifying number, copied exactly
+  as printed and with any dashes kept. Where the block prints the same label twice, or a
+  taxpayer number beside a national identity number, answer with the one that has something
+  written against it.
+- A national identity number IS that party's identifying number where no taxpayer number is
+  filled in beside it. An individual is normally identified that way, so answering "" because
+  the taxpayer line is the blank one loses a value the page does print.
 - The branch key takes what names which office or branch of that party -- a word meaning
-  head office, or the word for branch followed by a number -- copied as printed, not
-  translated and not turned into a number. It is normally printed with no label of its own,
-  standing on the tax ID line or just under it. A town, a street or a postcode is not a
-  branch.
+  head office, or a word meaning branch with a number after it -- copied as printed, not
+  translated and not turned into a number. It carries no label of its own and is printed
+  wherever that block has room: most often ON THE END OF THE NAME LINE, in brackets or
+  not, and sometimes on the end of the address line. The same words then belong
+  to this key and to nothing else: taking them out of the name is what makes
+  them available here, so answer with them rather than leaving this empty.
+- A town, a district, a street or a postcode is part of an address and is not a branch.
 - The address key takes that party's printed address, and only that: the whole of it as
   printed, joined into one value where the page runs it over several lines. It stops at the
   address -- a telephone number, a tax ID or a branch is not part of it.
@@ -805,11 +830,20 @@ _EP_WHT_TOTALS = """total_amount_paid and total_wht_amount:
 """
 
 _EP_WHT_DIVIDEND = """dividend_rate_option:
-- Only where the page rules a list of rate options against a dividend line and ONE of them
-  is ticked, crossed or otherwise marked. Copy the wording of the option that is marked.
-- Where no option is marked, or the page rules no such list at all, this is "". A list of
-  options with none of them ticked is a form offering a choice, not an answer -- and most
-  certificates leave the whole list blank.
+- Only where the page rules a list of RATE options against a dividend line -- rates given
+  as a percentage of profit -- and ONE of them is ticked, crossed or otherwise marked. Copy
+  the wording of the option that is marked.
+- A TICK IS WHAT MAKES AN ANSWER. An option nobody ticked is not this key's value however
+  well it fits, and a list printed with none of them ticked is a form offering a choice
+  rather than a choice that was made.
+- **Start from "" and only leave it if you can point at the mark itself** -- the tick, the
+  cross, the filled box against ONE of those rate options. A rate that is merely printed on
+  the form is the form offering a choice.
+- This page carries other ticked lists that are NOT this one: which filing form the
+  certificate goes on, and what the payer undertook to do about the tax. A tick in either
+  of those is never this key's value.
+- Where no rate option is marked, or the page rules no such list at all, this is "". Most
+  certificates leave the whole list blank, so "" is the common and correct answer here.
 
 """
 
@@ -1882,15 +1916,25 @@ ordered from, or delivered to. It is not the party that issued the document.
         "skeleton": '{ "book_no": "", "certificate_no": "", "sequence_no": "" }',
         "max_tokens": 160,
         "rules": """What to look for:
-- book_no is the book or volume this certificate was torn from, under a label meaning book.
-- certificate_no is the certificate's own number, under a label meaning number. These two
-  are usually printed together at the top right of the page.
-- sequence_no is which line of the tax filing this certificate is: a running number printed
-  under a label naming the filing form.
-- All three are SHORT -- two to six digits each. A run of ten or more digits is a party's
-  tax identification number and is never one of these.
+- book_no is what is printed against a label meaning book or volume; certificate_no is
+  what is printed against a label meaning number. These two are usually printed together
+  at the top right of the page.
+- MOST PAGES PRINT THE BOOK LABEL WITH NOTHING AGAINST IT, or print no book label at all.
+  Where that is so, book_no is "" and the number beside it is still certificate_no. Never
+  move the certificate's own number into book_no because the book is empty.
+- A number here is whatever is printed there: digits, or letters and digits together, and
+  it may carry dashes or slashes. Do not judge it by its length or its shape, and copy the
+  whole of what is printed rather than the part of it that looks like a number.
+- sequence_no is a running number printed against a label meaning which line or item of
+  the filing this is. **On most certificates that label is printed with nothing written
+  against it, so "" is the usual and correct answer here.**
+- The list of filing-form names with one of them ticked says WHICH form this certificate is
+  filed on, not which line of it. **Neither the ticked form's name, nor the number in
+  brackets beside it, nor any digit out of that name is ever sequence_no** -- a tick there
+  is not a value for this key at all.
 - Where the page prints no such label, or prints the label with nothing written against it,
-  that key is "".""",
+  that key is "" -- answer with the value printed against a label, never with the words of
+  the label itself. None of these three is a party's tax identification number.""",
     },
     {
         "id": "wht_payer",
@@ -1906,17 +1950,34 @@ the block labelled as the one with the duty to withhold and remit.
   which, leave all three "" rather than choosing.
 - A value printed in the block labelled as the party the tax was withheld FROM belongs to
   the other party and not here.
-- payer_tax_id is the digits printed as that party's tax identification number, copied with
-  whatever separators are printed. It is normally ten or more digits. A short number of two
-  to six digits is the book, certificate or sequence number and does not belong here.
+- payer_tax_id is what is printed as that party's identifying number, copied with whatever
+  separators are printed. Where the block prints the same label twice, or a taxpayer number
+  beside a national identity number, answer with the one that has something written against
+  it. The book, certificate and sequence numbers are printed at the top of the page and do
+  not belong here.
+- **Never answer "" here because the label that fits best is the blank one.** A block often
+  prints two identifying labels -- one for a taxpayer number, one for a national identity
+  number -- and fills only ONE of them. Answer with whichever is filled in, whatever its
+  label says; an individual is normally identified by the national identity number.
 - payer_name is that party's name and nothing else, on ONE line. If what you are about to
   write contains a street, a postcode, a telephone number or a tax ID, you have taken too
   much of the block.
+- **Look at the END of the name line before you answer.** If the last thing on it is a word
+  or a bracketed phrase that names an OFFICE -- one meaning head office or main office, or
+  the word for branch with a number after it -- then that is the BRANCH: take it out of the
+  name and answer payer_branch with it. **Brackets around it change nothing.**
+  A name followed by a bracketed office word, and the same name followed by a bare office
+  word, are the same case, and the brackets come away with it.
+- Brackets around anything ELSE stay in the name. A place, a country or a note in brackets
+  is part of what the party is called: it must be neither moved to the branch nor dropped.
 - payer_branch is what says which office or branch of that party this is -- a word meaning
-  head office, or the word for branch followed by a number -- copied as printed, not
-  translated and not turned into a number. It is normally printed with no label of its own,
-  on or just under that party's tax ID line. A town, a street or a postcode is an address
-  and is not a branch.
+  head office, or a word meaning branch with a number after it -- copied as printed, not
+  translated and not turned into a number. It carries no label of its own and is printed
+  wherever that block has room: most often ON THE END OF THE NAME LINE, in brackets or
+  not, and sometimes on the end of the address line. The same words then belong
+  to this key and to nothing else: taking them out of the name is what makes
+  them available here, so answer with them rather than leaving this empty.
+- A town, a district, a street or a postcode is part of an address and is not a branch.
 - The address is NOT asked for here.""",
     },
     {
@@ -1949,14 +2010,34 @@ the block labelled as the one whose tax was deducted at source.
   rather than choosing.
 - A value printed in the block labelled as the party with the duty to withhold belongs to
   the other party and not here. None of these three may repeat that party's values.
-- payee_tax_id is the digits printed as that party's tax identification number, copied with
-  whatever separators are printed. It is normally ten or more digits; a short number of two
-  to six digits is a book, certificate or sequence number and does not belong here.
+- payee_tax_id is what is printed as that party's identifying number, copied with whatever
+  separators are printed. Where the block prints the same label twice, or a taxpayer number
+  beside a national identity number, answer with the one that has something written against
+  it. The book, certificate and sequence numbers are printed at the top of the page and do
+  not belong here.
+- **Never answer "" here because the label that fits best is the blank one.** A block often
+  prints two identifying labels -- one for a taxpayer number, one for a national identity
+  number -- and fills only ONE of them. Answer with whichever is filled in, whatever its
+  label says; an individual is normally identified by the national identity number.
 - payee_name is that party's name and nothing else, on ONE line. A street, a postcode, a
   telephone number or a tax ID means you have taken too much of the block.
+- **Look at the END of the name line before you answer.** If the last thing on it is a word
+  or a bracketed phrase that names an OFFICE -- one meaning head office or main office, or
+  the word for branch with a number after it -- then that is the BRANCH: take it out of the
+  name and answer payee_branch with it. **Brackets around it change nothing.**
+  A name followed by a bracketed office word, and the same name followed by a bare office
+  word, are the same case, and the brackets come away with it.
+- Brackets around anything ELSE stay in the name. A place, a country or a note in brackets
+  is part of what the party is called: it must be neither moved to the branch nor dropped.
 - payee_branch is what says which office or branch of that party this is -- a word meaning
-  head office, or the word for branch followed by a number -- copied as printed. It is
-  normally printed with no label of its own, on or just under that party's tax ID line.
+  head office, or a word meaning branch with a number after it -- copied as printed. It
+  carries no label of its own and is printed wherever that block has room: most often ON
+  THE END OF THE NAME LINE, in brackets or not, and sometimes on the end of the address
+  line. The same words then belong
+  to this key and to nothing else: taking them out of the name is what makes
+  them available here, so answer with them rather than leaving this empty.
+- A town, a district, a street or a postcode is part of an address and is
+  not a branch.
 - The address is NOT asked for here.""",
     },
     {
@@ -2021,10 +2102,18 @@ its own column.
         "skeleton": '{ "dividend_rate_option": "" }',
         "max_tokens": 160,
         "rules": """What to look for:
-- Only where the page rules a list of rate options against a dividend line and ONE of them
-  is ticked, crossed or otherwise marked. The answer is the wording of the option that is
-  marked, copied as printed.
-- Where no option is marked, the answer is "". A list of options with none of them ticked is
+- Only where the page rules a list of RATE options against a dividend line -- rates given
+  as a percentage of profit -- and ONE of them is ticked, crossed or otherwise marked. The
+  answer is the wording of the option that is marked, copied as printed.
+- A TICK IS WHAT MAKES AN ANSWER. An option nobody ticked is not this key's value however
+  well it fits.
+- **Start from "" and only leave it if you can point at the mark itself** -- the tick, the
+  cross, the filled box against ONE of those rate options. A rate that is merely printed on
+  the form is the form offering a choice.
+- This page carries other ticked lists that are NOT this one: which filing form the
+  certificate goes on, and what the payer undertook to do about the tax. A tick in either
+  of those is never this key's value.
+- Where no rate option is marked, the answer is "". A list of options with none of them ticked is
   a form offering a choice, not a choice that was made -- and most certificates leave the
   whole list blank, so "" is the common and correct answer here.
 - Where the page rules no such list at all, the answer is "".""",

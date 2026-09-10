@@ -27,7 +27,10 @@
   "total_wht_amount": "500.00",
   "income_items": [
     {
-      "income_type": "อื่น ๆ (ระบุ) 5% RI-20180338",
+      "income_type": [
+        "อื่น ๆ (ระบุ) 5% RI-20180338",
+        "6. อื่น ๆ (ระบุ) 5% RI-20180338"
+      ],
       "payment_date": "6 มี.ค. 2561",
       "amount_paid": "10,000.00",
       "wht_amount": "500.00"

@@ -989,7 +989,7 @@ ls mockOcr/invoice_*.pdf
 | `RECEIPT` | sol003, sol004, sol005, sol007, sol011, sol012 | tax invoice; sol012 is a pack — page 2 is the payer's payment schedule |
 | `CREDIT_NOTE` | sol006, sol008, sol009, sol010 | sol006 is also a tax invoice |
 | `TAX_INVOICE` | sol013 | the only case that is a tax invoice and nothing else. No requirement covers that type on its own, so it is asked the widest form (30 keys) and nothing is Mandatory — it is marked **unknown type** and its headline field score is taken over the 13 values its truth file states |
-| `WHT_CERTIFICATE` | — | recognised, with a form and validation rules of its own, and no fixture yet |
+| `WHT_CERTIFICATE` | sol016, sol017, sol018, sol019, sol020 | sol017 and sol019 pay an individual, so the payee's number is a citizen ID; sol019 writes both tax IDs with dashes |
 | `BILLING_NOTE` | sol015 | **a pack: seven documents in one file.** The billing note on page 1 is what its truth file describes |
 | `CREDIT_NOTE` (pack) | sol014 | **two documents in one file** — the credit note on page 1 and the goods-return note it cites on page 2 |
 
@@ -2080,9 +2080,9 @@ so it is worked out in Python from the two figures on the row and arrives under
 Fields tab draws it as a muted last column so it cannot be mistaken for something the page
 printed.
 
-No fixture in `solution/` is a withholding certificate, so nothing here has been scored
-against ground truth — the rows are extracted, grounded against the transcript and validated,
-but not field-scored.
+`solution/` holds five withholding certificates (sol016–sol020), so the income rows are
+field-scored like any other value: the four cells are Mandatory of every row and count
+towards the headline, which is 10 values on a certificate — six scalars and four cells.
 
 **A receipt is not asked for its own number, date or heading.** Its requirement asks which
 document is being *settled*, not what the receipt itself is — so `document_type`,
