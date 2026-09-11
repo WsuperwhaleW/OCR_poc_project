@@ -4407,8 +4407,13 @@ def _random_plan(body: dict) -> dict:
     - `contest` -- the standouts ranking re-run, every axis pinned except the
       model, to find out whether that ranking was real.
 
-    The run log goes in as `history` (which spreads the rounds over the documents
-    -- see `randomtest.case_order`) and, for a contest, as the ranking itself.
+    `strategy` says how the documents are chosen -- see `randomtest.STRATEGIES`.
+    It reaches the random test only: a contest pins every axis but the model on
+    purpose, so a sampling rule has nothing to decide there.
+
+    The run log goes in as `history` (which the `balanced` strategy spreads the
+    rounds against, and which every round reports whichever strategy chose it --
+    see `randomtest.case_order`) and, for a contest, as the ranking itself.
     Both are read here rather than inside the planner so that it stays a pure
     function of its arguments: a plan that read a file could not be reproduced
     from a seed by anyone who did not have that file.
@@ -4461,7 +4466,8 @@ def _random_plan(body: dict) -> dict:
     return randomtest.plan(
         rounds=body.get("rounds"), seed=body.get("seed"), scope=scope,
         details=list(DETAIL_PRESETS), modes=["single", "agentic"],
-        lock=body.get("lock"), history=runlog.case_counts(), **pools)
+        lock=body.get("lock"), strategy=body.get("strategy"),
+        history=runlog.case_counts(), **pools)
 
 
 @app.get("/api/randomtest")
@@ -4497,6 +4503,7 @@ def random_test_plan():
                     "engine": (body.get("engine") or "").strip().lower() or "both",
                     "history": runlog.case_counts(),
                     "scopes": list(randomtest.SCOPES),
+                    "strategies": list(randomtest.STRATEGIES),
                     "max_rounds": randomtest.MAX_ROUNDS})
 
 

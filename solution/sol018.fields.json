@@ -27,7 +27,11 @@
   "total_wht_amount": "1,000.00",
   "income_items": [
     {
-      "income_type": "ค่าโฆษณา",
+      "income_type": [
+        "ค่าโฆษณา",
+        "6. อื่น ๆ (ระบุ) ค่าโฆษณา",
+        "อื่น ๆ (ระบุ) ค่าโฆษณา"
+      ],
       "payment_date": "06/01/2018",
       "amount_paid": "50,000.00",
       "wht_amount": "1,000.00"
