@@ -1540,7 +1540,8 @@ to run first. The **Fields** cell marks an updated row.
 | `case`, `char_accuracy`, `word_accuracy`, `char_accuracy_no_marks`, `invented_chars` | percentages, blank when the input has no ground truth. **`char_accuracy` is the score** — content only, and order-blind: the transcript's blocks are matched to the ground truth's by content first, so a page read correctly but walked in a different order is not charged for it. Missing and misread content cost; **extra content does not, since 2026-09-04** — `invented_chars` counts it instead, and is blank on every row written before that date, which is every row whose `char_accuracy` was an edit distance — an exact test for which era a row belongs to. **The log was not reset for the change**: every table covers each setting's own most recent runs, so the older rows leave on their own as new ones arrive, and the pass-1 table says how many are left until they are gone. Until then, a mean mixing the two is a mean over two questions. The other two stay for diagnosis and are not shown on the page: `word_accuracy` is order-*sensitive*, so the gap between the two is what a reordering looks like |
 | `thai_accuracy`, `latin_accuracy`, `digit_accuracy`, `thai_chars`, `latin_chars`, `digit_chars` | the same transcript recall taken over one script at a time, and how many characters of each the ground truth holds. `digit_accuracy` is the one to read first: every Mandatory field in the requirement is a figure, a date or an ID, and a page can score 95% overall while losing the digit that makes an amount wrong. `latin` is the Latin **alphabet** — a romanised Thai company name is Latin script and is not English. **The three do not add up to `char_accuracy`**; punctuation and symbols belong to no script and are in the headline only. A rate is blank where the page prints fewer than 20 characters of that script — the count beside it says why — and on every row written before 2026-09-04 |
 | `field_verdicts` | which **field** the extraction got right, as `key=letter` pairs joined by `;`. The letters are the six field-score verdicts: `c` correct, `p` partial, `w` wrong, `m` missed (the page states it, the extractor returned nothing), `s` spurious (the page states nothing, the extractor filled it anyway), `a` absent (both empty — agreement, scored neither way). `m` and `s` are opposite mistakes and neither means "empty". Field names only; no value ever reaches this file. Blank wherever `field_acc` is blank, and on rows written before 2026-09-04. This is what the **Weak spots** panel is compiled from |
-| `documents` | how many documents pass 2 found in this file. `1` is a measurement and is written; blank means pass 2 never ran, and blank is also every row from before 2026-09-08, which were all read as one document whether or not they were. **Where this reads 2 or more, `p1_present`, `p1_absent`, `other_fields` and `ungrounded` on the same row are SUMS over the documents** — so `22 of 26` is two complete thirteen-key forms, and without the count there is no way to tell that from a form nobody has. **`field_acc` and the `p1_correct`/`p1_scored` pair are pooled over every document** — a truth file for such a case holds a block per document, so the rate is over every value the whole file was required to state, and the pair still reconstructs it. `doc_types` holds the union of every document's types |
+| `documents` | how many documents pass 2 found in this file. `1` is a measurement and is written; blank means pass 2 never ran, and blank is also every row from before 2026-09-08, which were all read as one document whether or not they were. **Where this reads 2 or more, `p1_present`, `p1_absent`, `other_fields` and `ungrounded` on the same row are SUMS over the documents** — so `22 of 26` is two complete thirteen-key forms, and without the count there is no way to tell that from a form nobody has. **`field_acc` and `char_accuracy` are the MEAN of the documents while the counts beside them are sums**, so on these rows the rate does not follow from the pair next to it — see `doc_scores`, which carries each document's own figures. `doc_types` holds the union of every document's types |
+| `doc_scores` | each document's OWN scores, for a file holding more than one: `types:char:field` per document, joined by `;`, in file order. Written because the row's own rates are the mean of these and its counts are their sum, so without it neither can be taken apart again. Blank on a file holding one document — where the row's own columns already are that document's — and blank on every row written before 2026-09-11, which is the same instruction either way: use the row. This is what the **Model × type** panel splits a pack on |
 | `status`, `error` | `ok` / `partial` / `truncated` / `looped` / `cancelled` / `error` |
 | `run_type` | `ocr` for a document read, `extract` for a re-extraction of a transcript already read. Blank on rows written before the column existed |
 | `extract_updated` | set when a later, better re-extraction replaced this row's pass-2 columns, so `timestamp` no longer says when they were measured. Blank on the normal case |
@@ -1565,9 +1566,9 @@ Pick **Light** for projecting or screenshotting — it is what the Summary panel
 shown in. Light is a soft grey ground with an off-white card rather than white-on-white, so it
 does not glare on a projector.
 
-### Reading the card: nine panels, sortable, filterable
+### Reading the card: ten panels, sortable, filterable
 
-The card is nine panels, and only the last of them is the log:
+The card is ten panels, and only the last of them is the log:
 
 | Panel | |
 |---|---|
@@ -1577,6 +1578,7 @@ The card is nine panels, and only the last of them is the log:
 | **Best extraction** | pass 2 per setting — which model and shape to extract fields with |
 | **Per document** | one row per ground-truth document: the best transcript, the best fields, the quickest complete run |
 | **Weak spots** | not how good, but at **what**: the transcript score split into Thai, English and numerals per model and per document, and the field score split into the individual keys — a model × field grid and a document × field grid. Every other panel ranks on a mean and therefore averages exactly this away |
+| **Model × type** | the same runs grouped by the **kind** of page — which document type is read and extracted well, which model is best at each, and where a model that looks middling overall is strong on one kind of document and weak on another. A type table and a model × type grid, per pass |
 | **Time × Doc × Accuracy** | pass 1 only: read time against the document against the transcript score, with the Detail tables and the outlier list |
 | **Errors** | what is failing, ranked on the failures rather than folded into an accuracy |
 | **Raw data** | the rows of `logs/runs.csv` themselves — unfiltered, and the only place a run can be deleted |
@@ -1979,6 +1981,56 @@ good enough to judge the extraction by — a field score taken over a broken tra
 read's mistake wearing the extractor's name, and the read floor above the card is what decides
 that.
 
+#### Model × type — which model for which kind of document
+
+Every other panel groups on the setting, the model or the document, and all of them average
+over the **kind** of page. This one does not. Two tables per pass:
+
+**The type table** — one row per document type, ranked by the same score **Full rank** uses
+(accuracy × (1 − failure rate), so a failure counts as zero and outweighs a few points). Each
+row carries the type's own accuracy, its failure rate, how many documents and settings fed it,
+and the **best** and **weakest** setting on it. The accuracy is meaned over the settings, each
+meaned over the documents of that type first, so a type is not described by whichever setting
+was run at it most. The two sentences above the table name the best
+and worst kind of page outright.
+
+**The model × type grid** — one row per setting, one column per type, in the same ranked order.
+The cell is that setting's accuracy on that kind of page, with its run count under it. **The best
+setting for each type is ringed**, and the ring is the ranking's own choice rather than the
+highest number in the column, so one lucky run does not take it off a better-evidenced one.
+Under the grid, each setting's strongest and weakest types in a sentence. The last column is its
+mean **over its types** — not over its runs, so one measured on six types and one measured on two
+are compared on what they did rather than on which types happened to be busy. It is therefore not
+the figure **Best reading** or **Full rank** prints for that model.
+
+**On pass 2 a row is a model AND an extraction shape**, single and agentic ranked apart and never
+averaged into one pair — the same key **Best extraction** groups on, because the two are two
+settings with different failure modes rather than two samples of one, and a model that is strong
+in one shape and weak in the other would otherwise be reported as neither. Pass 1 has no shape:
+`extract_mode` decides pass 2 and is irrelevant to reading a page, so its rows are the model
+alone. A pass-2 row marked **no shape** is a run that failed before pass 2 chose one — a real
+state, which counts as a failure and can carry no score.
+
+**The type is the document's, not the run's.** It comes from `solution/manifest.json`, where a
+person states what each fixture is, and from the run's own classification only for a file the
+manifest does not describe. A run that read a page and never extracted records no type of its
+own, so reading the log column alone would drop most reads from the pass-1 half.
+
+**A page is often more than one type at once** — several fixtures are a receipt *and* a tax
+invoice — and each run is filed under the most specific one it carries, so the columns do not
+overlap and a run is counted once. The others are named under the type in the table.
+
+**A file holding several documents contributes one measurement per document**, each under its
+own type with its own transcript and field score, read out of `doc_scores`. That is what puts
+a type printed only inside packs — a payment appointment slip, a cheque delivery advice — on
+this tab at all: the file's own row is the average of its documents and belongs to no single
+kind of page.
+
+Three kinds of run are left out and counted under the tables: a pack read **before per-document
+scores were recorded** (the log holds no transcript to take its one figure apart again, so
+those wait until the file is read once more — a count that empties itself), a page **nothing
+says the type of**, and a run with **no model recorded**, which failed before one was resolved.
+
 ### Standouts
 
 The top of the run-log card answers four questions the tables under it cannot put
@@ -2202,16 +2254,30 @@ The run log writes `documents`, and its `p1_present`, `p1_absent`, `other_fields
 measurement recorded before 2026-09-08 was taken under. A single-page file is unaffected either
 way.
 
-**Every document is scored, and the file gets one figure.** A truth file for a multi-document
-case holds one block per document — its pages, its types, and the value each key of *that*
-document's form should come back with — and the case's headline is the **pooled** total: of
-every value the file was required to state, how many came back right. `accuracy_macro` rides
-beside it as the other reading, each document counting once whatever its size. A file holding
-one document has no such blocks and is read exactly as it always was.
+**Every document is scored on its own, and the file's figure is their average.** A truth file
+for a multi-document case holds one block per document — its pages, its types, and the value
+each key of *that* document's form should come back with. The same holds for the transcript:
+the truth file and the transcript are both cut on their `--- page N ---` markers, each
+document is scored against its own pages, and the file's `char_accuracy` is the mean of those.
+
+**Rates are averaged and counts are summed**, on both passes. Every document counts once
+whatever its size, so a seven-document file is the average of seven readings rather than a
+figure its two biggest documents decide. The pooled reading is kept beside it —
+`accuracy_pooled` on the field score, `char_accuracy_whole` on the transcript — so the older
+figure stays reachable.
+
+One consequence to know when reading `logs/runs.csv`: on a row where `documents` is 2 or more,
+`field_acc` no longer equals `p1_correct / p1_scored`, and `char_accuracy` no longer equals
+`matched_chars / expected_chars`. The rate is the mean of the documents and the counts are
+their sum. `documents` is what tells those rows apart, and `doc_scores` carries each
+document's own figures so both readings can be recovered.
+
+A file holding one document has no blocks, no split and no `doc_scores`, and is scored exactly
+as it always was.
 
 On the Fields tab each button of the document strip carries that document's own rate, and the
 file's figure is stated once under the strip. `compare.py` prints one figure per case, over
-every document, and says how many it pooled.
+every document.
 
 ### How the type is decided
 

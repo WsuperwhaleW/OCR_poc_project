@@ -13,6 +13,7 @@ from functools import lru_cache
 from pathlib import Path
 
 import config
+import segment
 
 ROOT = config.BASE_DIR
 # Both are optional and relocatable; see config.py. Every read below checks
@@ -717,11 +718,121 @@ def diff_lines(expected: str, actual: str, context: int = 1):
     )
 
 
+# Rates that are meaned over the documents of a multi-document file, where the
+# COUNTS beside them stay sums. The same split `fieldscore.pool` makes one pass
+# down: a rate says how well something was read and every document deserves one
+# vote, a count says what happened and averaging one would be arithmetic about
+# nothing.
+DOCUMENT_RATES = ("char_accuracy", "word_accuracy", "char_accuracy_no_marks",
+                  *(f"{name}_accuracy" for name in SCRIPTS))
+
+
+def score_documents(case, actual_text: str, ignore_tables: bool = True) -> list:
+    """One score per document, for a file that holds more than one.
+
+    **At the user's request** (2026-09-11): *if a file has multiple type the
+    score will be calculated in total, each page then average, but on this page
+    it will score separately.* Three fixtures here are packs -- sol012 (a receipt
+    and a payment slip), sol014 (a credit note and the goods-return note it
+    cites) and sol015 (seven documents by three issuers) -- and until now each
+    was one transcript score over every page of it. That figure belongs to no
+    kind of document, which is why the Model x type tab had to leave packs out.
+
+    **The pages come from the manifest, not from the read.** A person states
+    which pages are which document there; `segment` works the same thing out
+    from the transcript, and asking it here would make a document's score depend
+    on whether that run's segmentation agreed -- two different things to be
+    wrong at once. A case with no `documents` entry returns `[]`, which is what
+    every ordinary fixture does and is why none of their numbers moves.
+
+    Scoring a document on its own is not merely the whole-file score cut up:
+    `align_blocks` runs inside each one, so a block can only be matched against
+    the truth of the document it is in. That is stricter and is right -- text
+    the model emitted under document 3 has not been read correctly just because
+    document 5 prints something like it.
+
+    Returns `[]` where the split cannot be trusted rather than guessing: no
+    manifest entry, one document, or a truth file with no page markers to cut on
+    while the manifest claims several.
+    """
+    documents = case.get("documents") or []
+    if len(documents) < 2:
+        return []
+    truth = case["ground_truth"].read_text("utf-8")
+    exp_pages = segment.split_pages(truth)
+    if len(exp_pages) < 2:
+        # The manifest says several documents and the truth file never breaks a
+        # page, so there is nothing to cut on. Reported by returning nothing --
+        # a split taken on a guess would score every document against the whole
+        # file and call the agreement real.
+        return []
+    act_pages = segment.split_pages(actual_text)
+
+    def pages_of(source, numbers):
+        return "\n".join(source[n - 1] for n in numbers
+                         if 1 <= n <= len(source))
+
+    out = []
+    for index, entry in enumerate(documents, start=1):
+        numbers = [int(n) for n in (entry.get("pages") or [])]
+        if not numbers:
+            continue
+        expected = normalise(pages_of(exp_pages, numbers), ignore_tables)
+        actual = normalise(pages_of(act_pages, numbers), ignore_tables)
+        if not expected:
+            continue
+        out.append({
+            "document": index,
+            "pages": numbers,
+            "doc_types": list(entry.get("doc_types") or []),
+            **score(expected, actual),
+        })
+    return out
+
+
+def _mean_of(documents: list, name: str):
+    """One rate meaned over the documents that carry it.
+
+    A document reports no rate for a script it prints too little of
+    (`SCRIPT_MIN_CHARS`), so those are skipped rather than counted as zero --
+    the same blank-is-not-zero rule the column itself follows. None where no
+    document had one.
+    """
+    values = [d[name] for d in documents
+              if d.get(name) is not None]
+    return round(sum(values) / len(values), 4) if values else None
+
+
 def evaluate(case, actual_text: str, ignore_tables: bool = True) -> dict:
-    """Score one OCR result against its case's ground truth."""
+    """Score one OCR result against its case's ground truth.
+
+    **A file holding several documents is scored per document and the RATES are
+    meaned** (2026-09-11, at the user's request). The counts underneath --
+    `expected_chars`, `matched_chars`, `invented_chars` and the per-script
+    character totals -- stay sums over the whole file, because a count is what
+    happened. So on a pack `matched_chars / expected_chars` no longer equals
+    `char_accuracy`, exactly as `p1_correct / p1_scored` no longer equals
+    `field_acc` there; `documents` on the result is what says which rows those
+    are, and each document's own score is carried with it.
+
+    Every single-document case is untouched -- `score_documents` returns nothing
+    for one, so the result is the dict this produced before any of it existed.
+    That is what keeps the seventeen ordinary fixtures comparable across the
+    change.
+    """
     expected = normalise(case["ground_truth"].read_text("utf-8"), ignore_tables)
     actual = normalise(actual_text, ignore_tables)
     result = score(expected, actual)
+    documents = score_documents(case, actual_text, ignore_tables)
+    if documents:
+        # The whole-file rate is kept rather than dropped: it is what every
+        # pass-1 figure quoted before this date was, and a number this project
+        # has published must stay reachable. Read off the score already taken
+        # above, not re-taken -- one scoring of a seven-page file is enough.
+        result["char_accuracy_whole"] = result["char_accuracy"]
+        for name in DOCUMENT_RATES:
+            result[name] = _mean_of(documents, name)
+        result["documents"] = documents
     result.update(
         case=case["id"],
         pdf=case["pdf"],

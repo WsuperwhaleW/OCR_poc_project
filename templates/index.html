@@ -431,7 +431,7 @@
      it best and quickest side by side. A block of its own rather than more chips
      on `.run-best`, because every figure here carries the setting that produced
      it and a setting does not fit on a chip. */
-  #caseSum, #ocrSum, #extractSum, #weakSum { overflow-x: auto; margin-top: 16px; }
+  #caseSum, #ocrSum, #extractSum, #weakSum, #typeSum { overflow-x: auto; margin-top: 16px; }
   /* ---- the log view: what the tables below are compiled under ----
      Two numbers and a set of filters, none of which write anything. The raw
      rows are the log and are never filtered -- a row hidden there is a row
@@ -776,6 +776,38 @@
   #weakSum table.an-heat td.an-rowh .an-t,
   #weakSum table.an-heat td.an-empty .an-t {
     display: block; font-weight: 400; font-size: .68rem; color: var(--muted); }
+  /* ---- model x document type ---- */
+  #typeSum table.queue { min-width: 860px; margin-top: 6px; }
+  #typeSum .cs-title { font-size: .78rem; text-transform: uppercase;
+    letter-spacing: .07em; color: var(--muted); display: block; margin-top: 26px; }
+  #typeSum .cs-title:first-child { margin-top: 0; }
+  #typeSum table.an-heat td.an-rowh .an-t,
+  #typeSum table.an-heat td.an-empty .an-t {
+    display: block; font-weight: 400; font-size: .68rem; color: var(--muted); }
+  /* The best model for a column, ringed rather than tinted: the cell already
+     carries an accuracy tint and a second background would fight it. Inset, so
+     the ring does not change the grid's geometry. */
+  #typeSum table.an-heat td.tm-best {
+    outline: 2px solid var(--accent); outline-offset: -2px; }
+  /* The extraction shape beside a model name. A pill rather than another line,
+     because it is half of what identifies the row and has to read as part of
+     the name -- the pass-2 grid holds two rows per model and they are otherwise
+     identical at a glance. `tm-shape-none` is the run that failed before pass 2
+     chose one: a real state, drawn back so it cannot be mistaken for a shape. */
+  .tm-shape { display: inline-block; margin-left: 5px; padding: 1px 6px;
+    border-radius: 6px; font-size: .64rem; font-weight: 600;
+    text-transform: uppercase; letter-spacing: .04em; vertical-align: 1px;
+    background: var(--accent-soft); color: var(--accent); }
+  .tm-shape-none { background: var(--tint); color: var(--muted);
+    font-weight: 400; text-transform: none; letter-spacing: 0; }
+  #typeSum table.an-heat td.an-rowh .tm-shape { margin-left: 4px; }
+  /* What each model is strong and weak at, under the grid. A list rather than a
+     paragraph: it is one independent claim per model, and they are read by
+     looking up a name rather than by reading through. */
+  .tm-list { margin: 10px 0 0; padding-left: 18px; font-size: .8rem;
+    line-height: 1.7; color: var(--fg); }
+  .tm-list li { margin-bottom: 6px; }
+  .tm-list .cs-set { margin-top: 1px; }
   .cs-val { font-weight: 700; font-variant-numeric: tabular-nums; }
   .cs-of { color: var(--muted); font-weight: 400; font-size: .74rem; }
   .cs-set { display: block; color: var(--muted); font-size: .72rem;
@@ -1803,6 +1835,7 @@ highlighted. Dominated by a pairing, not itself hard.">
       <button data-panel="extract">Best extraction</button>
       <button data-panel="case">Per document</button>
       <button data-panel="weak" title="what each model and each document is WEAK at, rather than how good it is: the transcript score split into Thai, English and numerals, and the field score split into the individual keys. Every other tab averages over both.">Weak spots</button>
+      <button data-panel="types" title="every run grouped by the KIND of page rather than by the document or the setting: which document type is read and extracted well, and which model is best at each. Every other tab on this card averages that axis away.">Model × type</button>
       <button data-panel="analysis">Time × Doc × Accuracy</button>
       <button data-panel="error">Errors</button>
       <button data-panel="raw">Raw data</button>
@@ -1856,6 +1889,12 @@ matched.">
          the digits are every Mandatory field in the requirement. From
          `runlog.script_accuracy` and `runlog.field_weakness`. -->
     <div class="lv-panel" id="panelWeak" hidden><div id="weakSum"></div></div>
+    <!-- The same runs on the one axis every other tab averages over: the KIND of
+         page. Which document type is read and extracted well, which model is
+         best at each, and where a model that looks middling overall is in fact
+         strong on one kind of document and weak on another. From
+         `runlog.type_models`. -->
+    <div class="lv-panel" id="panelTypes" hidden><div id="typeSum"></div></div>
     <div class="lv-panel" id="panelAnalysis" hidden><div id="analysisSum"></div></div>
     <!-- What is FAILING, ranked on the failures rather than folded into an
          accuracy score: the most-error model, the most-error document, and the
@@ -3359,12 +3398,19 @@ function fileScoreNote() {
   const score = (extractedFile || {}).field_score || {};
   const o = score.overall || {};
   if (!o.expected || !score.scored_documents) return '';
-  const macro = o.accuracy_macro;
-  return ' Over the whole file, <b>' + (o.accuracy * 100).toFixed(0) + '% of '
-    + o.expected + ' values</b> across ' + score.scored_documents
+  /* **The headline is the mean of the documents since 2026-09-11**, so it is
+     NOT a share of `expected` and must not be printed as one -- that count is
+     the sum of the documents' denominators and belongs to the pooled figure
+     beside it. Printing the mean "of N values" was true of the pooled rate and
+     is false of this one, which is the kind of small lie that gets a number
+     quoted wrongly. */
+  const pooled = o.accuracy_pooled;
+  return ' Over the whole file, <b>' + (o.accuracy * 100).toFixed(0)
+    + '% counting each document once</b>, across ' + score.scored_documents
     + ' scored document' + (score.scored_documents > 1 ? 's' : '')
-    + (macro === null || macro === undefined ? ''
-       : ' (' + (macro * 100).toFixed(0) + '% counting each document once)')
+    + (pooled === null || pooled === undefined ? ''
+       : ' (' + (pooled * 100).toFixed(0) + '% of all ' + o.expected
+         + ' values pooled, where a document with more of them counts for more)')
     + '.';
 }
 function stepPrefixText() {
@@ -7705,6 +7751,330 @@ function paintWeak(t) {
   weakSum.innerHTML = html;
 }
 
+/* ---------- model x document type ----------
+   From `runlog.type_models`, added 2026-09-11 at the user's request -- *a tab
+   summary model vs doc type, and a summary of what doc type performs best and
+   what model is best for what type, in both OCR and extraction*.
+
+   Every figure here is one the card already holds. What is new is the AXIS:
+   **Best reading**, **Best extraction** and **Full rank** all average over the
+   KIND of page, so a model that reads printed invoices well and handwritten
+   receipts badly reports one middling number and nothing on this card said why.
+
+   The winning cell of each column is ringed, and it is the SERVER&rsquo;s `best`
+   rather than the highest number in the column -- so a model with one lucky run
+   does not take the ring off a better-evidenced one. Same rule as the `ms-top`
+   highlight: a ranking is a claim the reader&rsquo;s sort must not be able to
+   rewrite by accident. */
+
+/* A type named for a heading: the noun, without the article a prompt uses.
+   `scTypeName` is the same trim the Doc types tab applies, so one string from
+   `prompts.TYPE_NAMES` reads the same on both tabs. */
+function tmType(code, labels) {
+  return scTypeName((labels || {})[code] || code) || code;
+}
+
+/* A grid row named. **`key` is the model AND the extraction shape on pass 2**,
+   joined by a separator the server owns, so it is never printed -- `model` is
+   the half a reader wants and `csModel` trims it as everywhere else. */
+function tmName(e) {
+  return csModel((e && e.model) || (e && e.key) || '');
+}
+
+/* The whole of what a row is, for a `title`. `csModel` trims a repack prefix
+   that is the only thing separating two builds of one model, so the tooltip has
+   to carry the untrimmed name -- and the shape with it, or two rows of one model
+   have the same tooltip. */
+function tmTitle(e) {
+  const name = (e && e.model) || (e && e.key) || '';
+  return e && e.shape ? name + ' · ' + e.shape : name;
+}
+
+/* The extraction shape beside a name, where the pass has one.
+
+   **Single and agentic are separate rows, not one averaged pair** -- the same
+   rule `by_extract` follows, and the reason is that the two are two shapes with
+   different failure modes rather than two samples of one setting. Pass 1 has no
+   shape at all, so `shaped` is false there and this draws nothing; on pass 2 a
+   blank shape is a run that died before pass 2 chose one, which is a real state
+   and is named rather than left as an empty gap. */
+function tmShape(e, shaped) {
+  if (!shaped) return '';
+  const s = e && e.shape;
+  if (!s) return '<span class="tm-shape tm-shape-none" title="this run failed '
+    + 'before pass 2 chose a shape, so the log records none. It counts as a '
+    + 'failure and can carry no score">no shape</span>';
+  return '<span class="tm-shape" title="the extraction shape: ' + esc(s)
+    + '. Single asks for the whole form in one request, agentic asks two or '
+    + 'three keys at a time. They are ranked apart because they are two '
+    + 'settings, not two samples of one">' + esc(s) + '</span>';
+}
+
+/* The best or worst KIND of page, as a sentence. Not `stSentence`: that one
+   names a model and this names a type, and the two carry different denominators
+   -- a type is described by how many documents and how many models fed it, which
+   is the only thing that says whether its rank is evidence or an accident of
+   what has been run. */
+function tmSentence(e, tag, cls, unit, noun, labels, shaped) {
+  if (!e) return '';
+  const best = e.best
+    ? ' &middot; best on it: <b>' + esc(tmName(e.best)) + '</b>'
+      + tmShape(e.best, shaped) + ' ' + stFig(e.best, unit)
+    : '';
+  return '<p class="st-line"><span class="st-tag ' + cls + '">' + tag + '</span>'
+    + '<b title="' + esc(e.key) + '">' + esc(tmType(e.key, labels)) + '</b> &mdash; '
+    + stFig(e, unit)
+    + (e.accuracy === null || e.accuracy === undefined ? '' : ' ' + noun)
+    + ', ' + stFails(e) + ' failed, over ' + e.documents + ' document(s) and '
+    + tmCovers(e, shaped) + best
+    + (e.thin ? ' <span class="st-thin">(only ' + e.runs + ' run)</span>' : '')
+    + '</p>';
+}
+
+/* How many things fed a type. **On pass 2 that is settings AND models**, and
+   both are worth saying: seven models in fourteen settings is a different
+   claim from fourteen models, and the figure above is meaned over the
+   settings. Pass 1 has one of each, so it prints one. */
+function tmCovers(e, shaped) {
+  const settings = (e.settings === undefined ? e.models : e.settings);
+  return shaped && settings !== e.models
+    ? settings + ' setting(s) across ' + e.models + ' model(s)'
+    : e.models + ' model(s)';
+}
+
+/* One type per row: how it is read or extracted, and which model does it best.
+   This is the half that answers *what should I run on a credit note* -- the grid
+   below answers *what is this model good at*, which is the same data read the
+   other way and rarely the same shape of answer. */
+function tmTypeTable(id, entries, labels, unit, noun, shaped) {
+  const cols = [
+    {key: 'type', label: 'Document type', value: e => tmType(e.key, labels),
+     cell: e => '<b title="' + esc(e.key) + '">' + esc(tmType(e.key, labels))
+       + '</b>'
+       // The other types these pages carry. A run is filed under ONE type -- the
+       // most specific it has -- so without this a receipt column reads as a
+       // claim that those pages are not also tax invoices.
+       + (e.also.length ? '<span class="cs-set">also '
+           + e.also.map(c => esc(tmType(c, labels))).join(', ') + '</span>' : '')
+       + '<span class="cs-set">' + e.runs + ' run(s) &middot; ' + e.documents
+       + ' document(s) &middot; ' + tmCovers(e, shaped) + '</span>'},
+    {key: 'score', label: 'Score', n: true, value: e => e.score,
+     title: 'accuracy x (1 - failure rate) — what one attempt at this kind of '
+          + 'page is worth, the same arithmetic Full rank uses',
+     cell: e => e.score === null || e.score === undefined
+       ? '<span class="cs-none">&mdash;</span>'
+       : '<span class="cs-val">' + Number(e.score).toFixed(1) + '</span>'},
+    {key: 'accuracy', label: noun === 'fields' ? 'Fields' : 'Transcript',
+     n: true, value: e => e.accuracy,
+     title: 'meaned over the SETTINGS that have been pointed at this type — '
+          + 'each meaned over the documents of it first, so a type is not '
+          + 'described by whichever setting was run at it most. On pass 2 a '
+          + 'setting is a model AND a shape, so a model that is strong single '
+          + 'and weak agentic counts as both rather than as their average',
+     cell: e => stFig(e, unit)
+       + (e.spread === null || e.spread === undefined ? ''
+          : '<span class="cs-set">&plusmn;' + Number(e.spread).toFixed(1)
+            + (shaped ? ' across settings' : ' across models') + '</span>')},
+    {key: 'failed', label: 'Failed', n: true, value: e => e.failure_rate,
+     title: 'runs on this type that did not finish, out of the runs this row '
+          + 'covers. A failure is counted and never scored, which is why the '
+          + 'accuracy beside it is over the runs that finished',
+     cell: e => stFails(e)},
+    {key: 'best', label: shaped ? 'Best setting' : 'Best model',
+     value: e => e.best ? e.best.accuracy : null,
+     title: 'the model — and on pass 2 the shape — this type is read or '
+          + 'extracted best by. Picked the way Full rank picks one, so a single '
+          + 'lucky run does not win it while a better-evidenced setting exists',
+     cell: e => e.best
+       ? '<b title="' + esc(tmTitle(e.best)) + '">' + esc(tmName(e.best)) + '</b>'
+         + tmShape(e.best, shaped) + engineTag(e.best.ocr_engine)
+         + '<span class="cs-set">' + stFig(e.best, unit) + ' &middot; '
+         + e.best.runs + ' run(s)'
+         + (e.best.thin ? ' &middot; thin' : '') + '</span>'
+       : '<span class="cs-none">&mdash;</span>'},
+    {key: 'worst', label: shaped ? 'Weakest setting' : 'Weakest model',
+     value: e => e.worst ? e.worst.accuracy : null,
+     title: 'the other end of the same ranking. Blank where only one setting '
+          + 'has been run on this type — worst over one thing is a slur rather '
+          + 'than a ranking',
+     cell: e => e.worst
+       ? '<b title="' + esc(tmTitle(e.worst)) + '">' + esc(tmName(e.worst))
+         + '</b>' + tmShape(e.worst, shaped) + engineTag(e.worst.ocr_engine)
+         + '<span class="cs-set">' + stFig(e.worst, unit) + ' &middot; '
+         + e.worst.runs + ' run(s)</span>'
+       : '<span class="cs-none">&mdash;</span>'}
+  ];
+  return lvTable(id, entries, cols, {sort: {key: 'score', dir: 'desc'}});
+}
+
+/* The model x type grid. Columns are in the server&rsquo;s ranked type order --
+   best-performing kind of page first -- and that order is the same in both
+   passes&rsquo; grids only by coincidence, so each is drawn from its own. */
+function tmGrid(pass, labels, unit) {
+  const order = pass.order || [];
+  const rows = pass.models || [];
+  const shaped = !!pass.shaped;
+  if (!order.length || !rows.length) return '';
+  const ring = {};
+  (pass.types || []).forEach(e => { if (e.best) ring[e.key] = e.best.key; });
+  const head = '<tr><th class="an-corner">'
+    + (shaped ? 'Model &amp; shape' : 'Model') + ' \\ Document type</th>'
+    + order.map(code => '<th title="' + esc(tmType(code, labels)) + ' — '
+        + esc(code) + '">' + esc(tmType(code, labels)) + '</th>').join('')
+    + '<th title="the unweighted mean of this row&rsquo;s own cells — one per '
+      + 'type, so a model measured on six types and one measured on two are '
+      + 'compared on what they did rather than on which types happened to be '
+      + 'busy. NOT the figure Best reading or Full rank prints for this model">'
+      + 'Mean of its types</th></tr>';
+  const body = rows.map(e => {
+    const cells = order.map(code => {
+      const c = e.cells[code];
+      if (!c) return '<td class="an-empty" title="this model has not been run '
+        + 'on a ' + esc(tmType(code, labels)) + '">&mdash;</td>';
+      const tip = tmTitle(e) + ' on ' + tmType(code, labels) + ' — '
+        + c.runs + ' reading(s) of ' + c.groups + ' document(s)'
+        + (c.failed ? ', ' + c.failed + ' failed' : '')
+        + (ring[code] === e.key
+           ? ' — best ' + (shaped ? 'setting' : 'model') + ' for this type' : '');
+      // A cell with no rate is not the same absence twice: every run failing is
+      // a result, and nothing having a ground truth is not. The run count is
+      // printed either way and the failures are added to it rather than
+      // replacing it -- "1 failed" with no denominator is not a figure anyone
+      // can read, which is the rule the whole card follows.
+      const sub = (c.accuracy === null || c.accuracy === undefined
+                   ? (c.failed ? 'none survived, ' : 'not scored, ') : '')
+        + c.runs + ' run(s)' + (c.failed ? ' · ' + c.failed + ' failed' : '');
+      const td = wkCell(c.accuracy, tip, sub);
+      return ring[code] === e.key
+        ? td.replace('<td class="', '<td class="tm-best ') : td;
+    }).join('');
+    return '<tr><td class="an-rowh" title="' + esc(tmTitle(e)) + '">'
+      + esc(tmName(e)) + tmShape(e, shaped) + engineTag(e.ocr_engine)
+      + '<span class="an-t">' + e.types + ' type(s) &middot; ' + e.runs
+      + ' run(s)</span></td>'
+      + cells
+      + (e.mean === null || e.mean === undefined
+         ? '<td class="an-mean-col an-empty">&mdash;</td>'
+         : '<td class="an-mean-col"><b style="color:'
+           + accColour(e.mean / 100) + '">' + e.mean.toFixed(0) + '%</b></td>')
+      + '</tr>';
+  }).join('');
+  return '<div class="an-grid"><table class="an-heat">' + head + body
+    + '</table></div>';
+}
+
+/* What a model is best and worst at, said out loud under the grid. A reader can
+   find the highest of six numbers; what six numbers do not say is whether the
+   spread between them is worth acting on. */
+function tmStrengths(pass, labels) {
+  const rows = (pass.models || []).filter(e => e.best_types.length);
+  if (!rows.length) return '';
+  const shaped = !!pass.shaped;
+  return '<ul class="tm-list">' + rows.map(e =>
+    '<li><b title="' + esc(tmTitle(e)) + '">' + esc(tmName(e)) + '</b>'
+    + tmShape(e, shaped) + ' '
+    + 'is strongest on ' + e.best_types.map(c => '<b>' + esc(tmType(c, labels))
+        + '</b>').join(' and ')
+    + (e.worst_types.length
+       ? ', weakest on ' + e.worst_types.map(c => esc(tmType(c, labels))).join(' and ')
+       : '')
+    + '<span class="cs-set">' + e.types + ' type(s) &middot; ' + e.runs
+    + ' run(s)' + (e.failed ? ' &middot; ' + e.failed + ' failed' : '') + '</span>'
+    + '</li>').join('') + '</ul>';
+}
+
+/* How many runs this half of the tab could not place, and why. Three different
+   absences, and only the first is a property of the document -- so they are
+   counted apart rather than summed into one "excluded" number. */
+function tmExcluded(pass) {
+  const x = pass.excluded || {};
+  const bits = [];
+  if (x.pack) bits.push('<b>' + x.pack + '</b> run(s) on a file holding several '
+    + 'documents, read before per-document scores were recorded. Its row has one '
+    + 'transcript score over every page and one field score across all of them, '
+    + 'and the log holds no transcript to take them apart again &mdash; so those '
+    + 'runs wait until the file is read once more. <b>Every pack read since is '
+    + 'split into its documents</b>, so this count empties itself');
+  if (x.untyped) bits.push('<b>' + x.untyped + '</b> run(s) on a page nothing '
+    + 'says the type of &mdash; an upload with no benchmark entry whose run '
+    + 'never extracted, so the classifier&rsquo;s answer was never written down');
+  if (x.unattributed) bits.push('<b>' + x.unattributed + '</b> run(s) with no '
+    + 'model recorded, which is a run that failed before one was resolved');
+  if (!bits.length) return '';
+  return '<p class="note">Left out of the figures above: ' + bits.join('; ')
+    + '. Counted here rather than dropped silently, and still in the log.</p>';
+}
+
+function tmPass(key, pass, labels, unit, noun, title, hint) {
+  const shaped = !!(pass && pass.shaped);
+  // The window is per grid CELL, and on pass 2 a cell is a type, a model and a
+  // shape -- so the note has to name what it is actually per rather than
+  // repeating pass 1's wording.
+  const per = shaped ? 'setting and type' : 'model and type';
+  let html = '<span class="cs-title" title="' + esc(hint) + '">' + title
+    + windowNote(per) + '</span>' + pipeNote(key);
+  if (!pass || !(pass.types || []).length) {
+    html += '<p class="note">No run in view could be placed against a document '
+      + 'type. The type comes from the benchmark manifest for a fixture and from '
+      + 'the run&rsquo;s own classification otherwise, so an upload that never '
+      + 'extracted and is in no manifest has none. Read a benchmark document and '
+      + 'it will appear here.</p>' + tmExcluded(pass || {});
+    return html;
+  }
+  html += tmSentence(pass.best, 'best', 'st-good', unit, noun, labels, shaped)
+    + tmSentence(pass.worst, 'worst', 'st-bad', unit, noun, labels, shaped)
+    + tmTypeTable('tm-types-' + key, pass.types, labels, unit, noun, shaped)
+    + '<span class="cs-title">&hellip; and every '
+    + (shaped ? 'model and shape' : 'model') + ' across the types'
+    + windowNote(per) + '</span>'
+    + tmGrid(pass, labels, unit)
+    + tmStrengths(pass, labels)
+    + tmExcluded(pass);
+  return html;
+}
+
+function paintTypes(t) {
+  const tm = t.type_models;
+  if (!tm) { typeSum.innerHTML = ''; return; }
+  const labels = tm.labels || {};
+  typeSum.innerHTML =
+      tmPass('ocr', tm.ocr, labels, '%', 'transcript',
+             'Pass 1 &mdash; which kind of page is read well, and by what',
+             'Every read grouped by the KIND of document rather than by the '
+             + 'document or the setting')
+    + tmPass('extract', tm.extract, labels, '%', 'fields',
+             'Pass 2 &mdash; which kind of page is extracted well, and by what',
+             'Every extraction grouped by the KIND of document it was mapping')
+    + '<p class="note"><b>The type is the document&rsquo;s, not the '
+    + 'run&rsquo;s.</b> It comes from the benchmark manifest &mdash; where a '
+    + 'person states what each fixture is &mdash; and from the run&rsquo;s own '
+    + 'classification only for a file the manifest does not describe. A run that '
+    + 'read a page and never extracted records no type of its own, so going off '
+    + 'the log column alone would throw nine reads in ten out of the pass-1 half '
+    + 'of this tab. <b>A page is often more than one type at once</b> &mdash; '
+    + 'four fixtures here are a receipt <i>and</i> a tax invoice &mdash; and each '
+    + 'document is filed under the most specific one it carries, so the columns '
+    + 'do not overlap and a document is counted once. The others are named under '
+    + 'the type in the table. <b>Single and agentic are separate rows on the '
+    + 'pass-2 half</b>, never one averaged pair &mdash; they are two settings '
+    + 'with different failure modes rather than two samples of one, which is why '
+    + '<b>Best extraction</b> keys on the shape too, and a model that is strong '
+    + 'in one shape and weak in the other would otherwise be reported as neither. '
+    + 'Pass 1 has no shape, so its rows are the model alone. <b>A file holding '
+    + 'several documents contributes one '
+    + 'measurement per document</b>, each with its own transcript and field score '
+    + 'under its own type: the row&rsquo;s own figures are the average of those '
+    + 'and describe no single kind of page, which is why the split is needed '
+    + 'rather than convenient. <b>Score is accuracy &times; (1 &minus; failure rate)</b>, '
+    + 'the same arithmetic as <b>Full rank</b>, and a failure is counted and '
+    + 'never scored &mdash; so a model&rsquo;s place here is its place there '
+    + 'restricted to one kind of page, and where the two disagree that difference '
+    + 'is the finding. <b>This is not a second model ranking</b>: '
+    + '<b>Full rank</b>, <b>Best reading</b> and <b>Best extraction</b> answer '
+    + 'that over the same runs, and a model&rsquo;s mean here is over its types '
+    + 'rather than over its runs.</p>';
+}
+
 function paintLog() {
   if (!logData) return;
   const t = logData.totals || {};
@@ -7716,6 +8086,7 @@ function paintLog() {
   paintOcrSummary(t);
   paintExtractSummary(t);
   paintWeak(t);
+  paintTypes(t);
   paintPresent(t);
   paintRunRows();
   paintFilters();

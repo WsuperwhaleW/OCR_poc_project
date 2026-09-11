@@ -370,6 +370,12 @@ COLUMNS = [
     # folding it in `_for_summary` puts 1700 older rows in the right column
     # instead of in a third bucket nobody asked for.
     "ocr_engine",
+    # Per-document scores for a file that holds more than one, as
+    # `types:char:field` joined by `;`. See `doc_scores_cell`. Blank on a file
+    # holding ONE document -- which is what the row's own columns already
+    # describe -- and blank on every row written before 2026-09-11, which is the
+    # same instruction to a reader either way: use the row.
+    "doc_scores",
 ]
 
 # The value the run was actually made with, taken from `settings` rather than
@@ -711,6 +717,130 @@ def parse_verdicts(cell: str) -> dict:
     return out
 
 
+# One entry per document of a multi-document file: its types, its own transcript
+# score and its own field score, as `types:char:field` joined by `;`. The types
+# are `+`-joined exactly as `doc_types` spells them.
+#
+# **Written only where a file really holds more than one document**, so blank
+# means "one document, read the row's own columns" on every row this build
+# writes and "written before 2026-09-11" on every row before it. Those two are
+# the same instruction to a reader -- use the row -- which is what makes the
+# blank safe here where it usually is not.
+#
+# It exists because a pack's own columns describe no single kind of page: the
+# rates on the row are the mean of these, and the counts are their sum. Without
+# it a file holding a receipt and a payment slip can be averaged into neither of
+# them, which is what kept packs out of `type_models` entirely.
+_DOC_SCORE_SEP = ";"
+_DOC_SCORE_FIELD = ":"
+
+
+def doc_scores_cell(truth: dict, score: dict) -> str:
+    """`types:char:field` per document, for a file that holds more than one.
+
+    The two halves arrive from different places and neither implies the other --
+    a pack can be read and not extracted, or extracted from a transcript too
+    poor to judge the extraction by -- so they are matched on the PAGES each was
+    taken over rather than on position. A document with neither figure is still
+    written, with both blank: it is a document of this file, and a list that
+    skipped it would misreport how many there were.
+    """
+    documents = (truth or {}).get("documents") or []
+    if len(documents) < 2:
+        # A fields-only run read no page, so there is no per-document transcript
+        # score to build the list from -- but the extraction knows its own
+        # documents and their types. Falling back to it is what stops a pack's
+        # pass-2 half being invisible on exactly the runs taken to measure pass 2.
+        documents = [{"pages": e.get("pages") or [],
+                      "doc_types": e.get("doc_types") or [],
+                      "char_accuracy": None}
+                     for e in ((score or {}).get("per_document") or [])]
+    if len(documents) < 2:
+        return ""
+    fields = {}
+    for entry in ((score or {}).get("per_document") or []):
+        key = tuple(int(n) for n in (entry.get("pages") or []))
+        if key:
+            # `accuracy_half` rather than `accuracy`, because that is what
+            # `_p1_rate` means by a run's field score: a partial is the model
+            # finding the right thing and taking too much or too little of it,
+            # which is neither a hit nor a miss.
+            fields[key] = entry.get("accuracy_half")
+            if fields[key] is None:
+                fields[key] = entry.get("accuracy")
+    cells = []
+    for entry in documents:
+        pages = tuple(int(n) for n in (entry.get("pages") or []))
+        # `_pct` writes a number or "" -- the same blank the columns beside it
+        # use for "not scored", which is what keeps the cell readable by eye.
+        cells.append(_DOC_SCORE_FIELD.join(
+            str(part) for part in (
+                "+".join(entry.get("doc_types") or []),
+                _pct(entry.get("char_accuracy")),
+                _pct(fields.get(pages)),
+            )))
+    return _DOC_SCORE_SEP.join(cells)
+
+
+def merge_doc_scores(cell, score: dict) -> str:
+    """An existing `doc_scores` cell with only its FIELD third replaced.
+
+    `update_extract` rewrites a read row's pass-2 columns when a later
+    extraction of the same transcript scored better, and this cell is the one
+    place the two passes share a column: its transcript scores belong to the
+    READ and the re-extraction never touched a page, so rebuilding it from that
+    summary would throw them away.
+
+    Matched by POSITION, which is safe here and nowhere else: both lists are the
+    documents of one file in file order, and a re-extraction that found a
+    different number of them is a different segmentation of the same pages --
+    so the cell is left exactly as it was rather than half-updated.
+    """
+    existing = parse_doc_scores(cell)
+    if not existing:
+        return cell or ""
+    rates = [e.get("accuracy_half") if e.get("accuracy_half") is not None
+             else e.get("accuracy")
+             for e in ((score or {}).get("per_document") or [])]
+    if len(rates) != len(existing):
+        return cell or ""
+    return _DOC_SCORE_SEP.join(_DOC_SCORE_FIELD.join(
+        str(part) for part in ("+".join(entry["doc_types"]),
+                               _blank_pct(entry["char_accuracy"]),
+                               _pct(rate))
+    ) for entry, rate in zip(existing, rates))
+
+
+def _blank_pct(value):
+    """A percentage already in percent units, or blank. The inverse of `_pct`'s
+    fraction input, for a value read back out of a cell this module wrote."""
+    return "" if value is None else round(float(value), 2)
+
+
+def parse_doc_scores(cell) -> list:
+    """`doc_scores` back into a list of {doc_types, char_accuracy, field_acc}.
+
+    Tolerant by design, like `parse_verdicts`: a malformed entry is skipped and
+    the rest are kept, because this cell is read to COMPILE a table and losing a
+    whole file's documents to one bad separator would silently narrow it.
+    Percentages, the unit the columns beside it use.
+    """
+    out = []
+    for chunk in str(cell or "").split(_DOC_SCORE_SEP):
+        if not chunk.strip():
+            continue
+        parts = chunk.split(_DOC_SCORE_FIELD)
+        if len(parts) != 3:
+            continue
+        codes = [c for c in parts[0].split("+") if c]
+        out.append({
+            "doc_types": codes,
+            "char_accuracy": _num(parts[1], None),
+            "field_acc": _num(parts[2], None),
+        })
+    return out
+
+
 def _num(value, default=-1.0) -> float:
     """A cell as a number; blank and unparsable both sort below any real value."""
     try:
@@ -836,6 +966,13 @@ def record(summary: dict, source: dict = None, extras: dict = None) -> dict:
         # Blank rather than 0 where nothing scored the page: no read, or no
         # ground truth to be extra to. The standing rule -- blank is not zero.
         "invented_chars": truth.get("invented_chars", ""),
+        # What the rates on this row are the mean OF, where the file holds more
+        # than one document. The row's own rates are their average and its
+        # counts are their sum, so without this neither can be taken apart
+        # again -- and a pack averaged into one figure belongs to no kind of
+        # page, which is what `type_models` needs it for.
+        "doc_scores": doc_scores_cell(
+            truth, (summary.get("extracted") or {}).get("field_score") or {}),
         "error": str(error)[:300],
         "run_type": extras.get("run_type") or "ocr",
         "ocr_profile": summary.get("ocr_profile", ""),
@@ -927,6 +1064,14 @@ def update_extract(key: dict, summary: dict) -> dict:
                 return {"updated": False, "before": before, "after": after}
 
             target.update(cells)
+            # The one column the two passes share. Its transcript scores are
+            # the READ's and this summary never touched a page, so only the
+            # field third is replaced -- see `merge_doc_scores`.
+            merged = merge_doc_scores(target.get("doc_scores"),
+                                      (summary.get("extracted") or {})
+                                      .get("field_score") or {})
+            if merged:
+                target["doc_scores"] = merged
             target["extract_updated"] = datetime.now().isoformat(timespec="seconds")
 
             temp = LOG_PATH.with_suffix(".csv.tmp")
@@ -2356,6 +2501,26 @@ def _headline(ranked: list) -> dict:
     return {"best": best, "worst": worst if worst is not best else None}
 
 
+# What "scored" means for each pass, and what one run's accuracy is. Module
+# level rather than nested inside `standouts` because the model x type table
+# (`type_models`) asks the identical three questions of the identical columns:
+# two copies would eventually disagree about whether a run was measured at all,
+# and nothing on the card would say which of the two tabs was right.
+def _char_of(row):
+    return _num(row.get("char_accuracy"), None)
+
+
+def _has_char(row):
+    return not _blank(row.get("char_accuracy"))
+
+
+def _has_field(row):
+    # The same test `_p1_rate` uses, or a group reads "1 scored" beside an
+    # accuracy of None -- the count and the mean disagreeing about whether
+    # anything was measured.
+    return not _blank(row.get("p1_correct")) and _field_trusted(row)
+
+
 def standouts(rows: list = None) -> dict:
     """Best and worst, four ways: model and document, for each pass.
 
@@ -2399,18 +2564,6 @@ def standouts(rows: list = None) -> dict:
                      or not (_blank(r.get("p1_present"))
                              and _blank(r.get("other_fields"))))]
 
-    def char(row):
-        return _num(row.get("char_accuracy"), None)
-
-    def has_char(row):
-        return not _blank(row.get("char_accuracy"))
-
-    def has_field(row):
-        # The same test the rate uses, or a group reads "1 scored" beside an
-        # accuracy of None -- the count and the mean disagreeing about whether
-        # anything was measured.
-        return not _blank(row.get("p1_correct")) and _field_trusted(row)
-
     # **Each list windows by the thing it ranks**, which is the whole of what
     # "20 of that model / that doc name" means: a model's row is its own last
     # twenty reads, a document's row is that document's last twenty, and neither
@@ -2422,19 +2575,19 @@ def standouts(rows: list = None) -> dict:
         "ocr": {
             "models": _standouts(
                 _bucket(recent_by(reads, by_model), by_model, _document_key),
-                _incomplete, char, has_char),
+                _incomplete, _char_of, _has_char),
             "cases": _standouts(
                 _bucket(recent_by(reads, by_case), by_case, by_model),
-                _incomplete, char, has_char),
+                _incomplete, _char_of, _has_char),
         },
         "extract": {
             "models": _standouts(
                 _bucket(recent_by(extracts, by_extract_on), by_extract_on,
                         _document_key),
-                _extract_incomplete, _p1_rate, has_field),
+                _extract_incomplete, _p1_rate, _has_field),
             "cases": _standouts(
                 _bucket(recent_by(extracts, by_case), by_case, by_extract_on),
-                _extract_incomplete, _p1_rate, has_field),
+                _extract_incomplete, _p1_rate, _has_field),
         },
     }
     return {pass_: {kind: {"ranked": ranked, **_headline(ranked)}
@@ -2762,6 +2915,464 @@ def field_weakness(rows: list = None) -> dict:
         "by_case": cases,
         "runs": len(pairs),
         "verdicts": dict(VERDICT_LETTERS),
+    }
+
+
+# --------------------------------------------------------------------------
+# Which model suits which KIND of document
+#
+# Added 2026-09-11 at the user's request -- *a tab summary model vs doc type,
+# and a summary of what doc type performs best and what model is best for what
+# type, in both OCR and extraction*.
+#
+# Not a new measurement: every figure below comes from cells `record` already
+# writes, and the score is `_standout_score`, the same arithmetic the Full rank
+# tab uses. What is new is the AXIS. `by_ocr` and `by_extract` group on the
+# setting, `standouts` on the model, and every one of them averages over the kind
+# of page -- so a model that reads printed invoices well and handwritten receipts
+# badly reports one middling number and nothing on this card says why.
+# --------------------------------------------------------------------------
+
+
+def _manifest_types() -> dict:
+    """{case id: (codes, is_pack)} -- the human's reading of what each fixture is.
+
+    **The manifest answers, not the row, wherever there is an entry**, and that
+    is the decision this whole table turns on. `doc_types` is written by
+    `_extract_cells`, so a run that read a page and never extracted carries none
+    -- 105 of 1024 reads in the log the day this was built -- and going off the
+    column alone would throw nine reads in ten out of the half of the table that
+    is about READING.
+
+    That is not a workaround. The type of a document is a property of the
+    DOCUMENT, not of the run that read it, and the manifest is where a person
+    states it -- the same order `app.resolve_doc_types` follows, minus the
+    classifier, which has no business deciding retrospectively what a page was.
+
+    `is_pack` is a file holding several documents. Its transcript score is over
+    every page of it and its field score is pooled across all of them, so neither
+    figure belongs to any one type -- see `_doc_codes`.
+    """
+    out = {}
+    for case in scoring.load_manifest():
+        cid = case.get("id")
+        if cid:
+            out[cid] = (tuple(case.get("doc_types") or ()),
+                        len(case.get("documents") or ()) > 1)
+    return out
+
+
+def _primary_type(codes) -> str:
+    """The one type a document is filed under, most specific first.
+
+    A page is regularly more than one type at once -- four fixtures here are a
+    receipt AND a tax invoice -- and `prompts.TYPE_SPECIFICITY` is the order that
+    settles which of them names it: being a tax invoice is the least
+    distinguishing thing a document here can be, so a receipt/tax invoice files
+    as a receipt and a credit note/tax invoice as a credit note.
+
+    **One bucket per run, not one per type it carries.** Counting a run under
+    every type it names would make the columns overlap -- one read appearing in
+    three of them, the counts down a column adding to more than the runs, and
+    each per-type mean partly a restatement of its neighbour's. The other types
+    are reported on the type's own row instead (`also`), so the grouping stays
+    legible rather than quietly narrowing what a column covers.
+    """
+    codes = set(codes or ())
+    for code in prompts.TYPE_SPECIFICITY:
+        if code in codes:
+            return code
+    return ""
+
+
+def _doc_codes(row: dict, manifest: dict) -> tuple:
+    """(codes, is_pack) for the document this row read."""
+    codes, pack = manifest.get(row.get("case") or "", ((), False))
+    if not codes:
+        codes = tuple(c for c in str(row.get("doc_types") or "").split("+") if c)
+        # `documents` is blank on a row that never extracted and on every row
+        # written before the column, so only an explicit 2 or more is a pack --
+        # blank is not 1, the standing rule, and reading it as 1 here would file
+        # an unknown number of documents under one type.
+        pack = pack or _num(row.get("documents"), 1.0) > 1.0
+    return codes, pack
+
+
+def _typed_rows(rows: list, manifest: dict, model_of) -> tuple:
+    """Rows as one entry per DOCUMENT, each annotated with its type and model.
+
+    **A file holding several documents contributes one entry per document**
+    (2026-09-11, at the user's request: *if a file has multiple type the score
+    will be calculated in total, each page then average, but on this page it
+    will score separately*). Its row's own rates are the mean of its documents
+    and its counts are their sum, so the row describes no single kind of page --
+    which is why packs were excluded outright when this table was first built.
+    `doc_scores` is what makes the split possible: each document's own
+    transcript score and its own field score, written by `record`.
+
+    A synthetic entry carries `_doc_char` and `_doc_field` -- that document's
+    own figures, which `_typed_char` / `_typed_field` prefer over the row's --
+    and a key of `case#N`, so two documents of one file are two documents in the
+    per-document-first mean rather than one counted twice.
+
+    Three ways an entry is still left out, counted apart because they are three
+    different absences and only the first is a property of the row:
+
+    - `pack` -- a file holding several documents whose row predates
+      `doc_scores`, so the per-document figures were never written and the log
+      holds no transcript to re-derive them from. **That count empties itself**:
+      every pack read from 2026-09-11 splits, and the number says how many old
+      ones are still waiting to be re-run.
+    - `untyped` -- nothing says what the page is. An upload with no manifest
+      entry whose run never extracted, so the classifier's answer was never
+      written down either.
+    - `unattributed` -- no model on the row, which is a run that failed before
+      one was resolved. `standouts` drops these silently; they are counted here
+      because a type's run count would otherwise exceed the sum of its own rows.
+    """
+    out, skipped = [], {"pack": 0, "untyped": 0, "unattributed": 0}
+    for row in rows:
+        model, shape = model_of(row)
+        model = model or ""
+        codes, pack = _doc_codes(row, manifest)
+        parts = parse_doc_scores(row.get("doc_scores")) if pack else []
+        if pack and not parts:
+            skipped["pack"] += 1
+            continue
+        if not model:
+            skipped["unattributed"] += 1
+            continue
+        if not parts:
+            code = _primary_type(codes)
+            if not code:
+                skipped["untyped"] += 1
+                continue
+            out.append({**row, "_type": code, "_codes": codes,
+                        "_model_key": model, "_shape": shape,
+                        "_group": _group_key(model, shape),
+                        "_doc_char": None,
+                        "_doc_field": None, "_key": _document_key(row)})
+            continue
+        base = _document_key(row)
+        for index, part in enumerate(parts, start=1):
+            code = _primary_type(part["doc_types"])
+            if not code:
+                skipped["untyped"] += 1
+                continue
+            out.append({**row, "_type": code,
+                        "_codes": tuple(part["doc_types"]),
+                        "_model_key": model, "_shape": shape,
+                        "_group": _group_key(model, shape),
+                        "_doc_char": part["char_accuracy"],
+                        "_doc_field": part["field_acc"],
+                        "_key": "%s#%d" % (base, index)})
+    return out, skipped
+
+
+# What separates two rows of the model x type grid. Pass 1 is the model alone;
+# pass 2 is the model AND the extraction shape, because **single and agentic are
+# not two samples of one setting** -- the measured gap between them on typhoon
+# was 2.5x, `qwen3.5:2b` is the one model that prefers the shape the others do
+# not, and `by_extract` has keyed on `extract_mode` since 2026-08-20 for exactly
+# that reason. Averaging a model's strong shape with its weak one names neither.
+_GROUP_SEP = "\u001f"
+
+
+def _group_key(model: str, shape: str) -> str:
+    """One string identifying a row of the grid, model and shape together.
+
+    A string rather than a tuple because it survives JSON unchanged and is what
+    the page compares to mark the best cell of a column -- an identity test
+    across that boundary is always false (2026-08-24), so the mark is keyed on
+    this. The separator is a unit separator: it cannot occur in a model name or
+    in a mode, so the two halves are recoverable, and `_group_parts` is the only
+    thing that splits it.
+    """
+    return model + _GROUP_SEP + shape if shape else model
+
+
+def _group_parts(key: str) -> tuple:
+    """`_group_key` back into (model, shape). Shape is "" where none applies."""
+    model, _, shape = str(key or "").partition(_GROUP_SEP)
+    return model, shape
+
+
+def _typed_key(row) -> str:
+    """The document a typed entry is about -- `case#N` inside a pack."""
+    return row.get("_key") or _document_key(row)
+
+
+def _typed_char(row):
+    """That document's transcript score, falling back to the file's.
+
+    A single-document row has no `_doc_char` and its own column IS that
+    document's, so the two are one figure and the fallback is not a compromise.
+    """
+    value = row.get("_doc_char")
+    return value if value is not None else _char_of(row)
+
+
+def _typed_has_char(row) -> bool:
+    return _typed_char(row) is not None
+
+
+def _typed_trusted(row) -> bool:
+    """`_field_trusted`, judged on THIS DOCUMENT's read rather than the file's.
+
+    Strictly better than the row-wide test it falls back to: on a pack, a field
+    score taken over the one document pass 1 mangled is suppressed while its six
+    siblings are kept, where the row-wide rule would have judged all seven by an
+    average none of them scored.
+    """
+    floor = read_floor()
+    if not floor:
+        return True
+    char = _typed_char(row)
+    # The cell is a percentage; the setting is a fraction.
+    return char is None or char >= floor * 100.0
+
+
+def _typed_field(row):
+    """That document's field score, falling back to the file's.
+
+    `doc_scores` carries the half-credit rate, which is what `_p1_rate` means by
+    a run's field score -- so a document's cell here and a whole file's cell in
+    `by_extract` follow the same arithmetic rather than two that look alike.
+    """
+    value = row.get("_doc_field")
+    if value is None:
+        return _p1_rate(row)
+    return value if _typed_trusted(row) else None
+
+
+def _typed_has_field(row) -> bool:
+    return _typed_field(row) is not None
+
+
+def _type_model_key(row) -> str:
+    """The grid row a typed entry belongs to -- model, and shape on pass 2."""
+    return row.get("_group") or row.get("_model_key")
+
+
+def _type_entry(code: str, rows: list, failed, pick, scored_test) -> dict:
+    """One document type: the models ranked on it, and the type's own figure.
+
+    The models are ranked by `_standouts` and the ends picked by `_headline` --
+    the same two functions the Full rank tab uses, so *best model for a receipt*
+    and *best model overall* are two readings of one arithmetic rather than two
+    opinions that can drift apart. Thin evidence therefore behaves here exactly
+    as it does there: one run at 99% is listed and ranked but does not become the
+    headline while a better-evidenced model exists.
+
+    **The type's own figure is meaned over the MODELS that read it**, where each
+    model's cell is meaned over the documents of that type. The same asymmetry
+    `standouts` keeps between its model list and its document list, for the same
+    reason: a type described by whichever model was pointed at it most is a
+    description of that model.
+    """
+    windowed = recent_by(rows, _type_model_key)
+    # Bucketed on the GRID ROW, not on the model -- so on pass 2 a model's two
+    # shapes are two votes rather than one averaged pair. Keying this on the
+    # model would pool single with agentic before the type's own mean, which is
+    # exactly what splitting them is meant to stop.
+    inner = {}
+    for row in windowed:
+        inner.setdefault(_type_model_key(row), []).append(row)
+    ranked = _standouts(_bucket(windowed, _type_model_key, _typed_key),
+                        failed, pick, scored_test)
+    # `key` stays the composite, because it is what marks the winning cell and
+    # what must stay unique down a column; `model` and `shape` are the halves,
+    # so the page renders a name and a shape rather than parsing an id.
+    for entry in ranked:
+        entry["model"], entry["shape"] = _group_parts(entry["key"])
+    bad = [row for row in windowed if failed(row)]
+    rate = round(100.0 * len(bad) / len(windowed), 1) if windowed else None
+    figure = _per_case(_complete_only(inner, failed), pick)
+    # Every other type the documents in this bucket also carry. A receipt here is
+    # usually a tax invoice as well, and without this the column reads as a claim
+    # that those pages are not -- which is the cost of filing each run under one
+    # type, paid back where it is incurred.
+    also = sorted({c for row in windowed for c in row["_codes"] if c != code})
+    return {
+        "key": code,
+        "runs": len(windowed),
+        "documents": len({_typed_key(row) for row in windowed}),
+        # Two counts, because on pass 2 they differ and both are worth saying:
+        # `settings` is the rows of the grid (model x shape) and is what the
+        # type's own figure is meaned over; `models` is how many distinct models
+        # those rows are. On pass 1 they are equal and the page prints one.
+        "settings": len(inner),
+        "models": len({row["_model_key"] for row in windowed}),
+        "failed": len(bad),
+        "failure_rate": rate,
+        "accuracy": figure["mean"],
+        "spread": figure["sd_case"],
+        "score": _standout_score(figure["mean"], rate),
+        "thin": len(windowed) < STANDOUT_MIN_RUNS,
+        "also": also,
+        "ranked": ranked,
+        **_headline(ranked),
+    }
+
+
+def _type_models_grid(types: list) -> list:
+    """The same per-type rankings read the other way: one row per model.
+
+    Derived from the type entries rather than recompiled beside them, so a cell
+    in the grid and that model's place in its type's ranking are the same object.
+    Two passes over the rows would eventually disagree about one of them, and the
+    disagreement would be invisible.
+
+    **A model's `mean` is the unweighted mean of its own type cells**, not of its
+    runs -- so a model measured on six types and one measured on two are compared
+    on what they did rather than on which types happened to be busy. It is
+    therefore NOT the figure `by_ocr` or `standouts` prints for that model, and
+    the page says so.
+
+    The cells are on the wire twice, since each is also in its type's `ranked`
+    list -- about 16 KB of `totals`' 390. Kept rather than replaced by a lookup
+    key, because the alternative is a second way to find a cell in the page and
+    the saving is 4% of a payload that is fetched only when the log moves.
+    """
+    models = {}
+    for entry in types:
+        for cell in entry["ranked"]:
+            model = models.setdefault(cell["key"],
+                                      {"key": cell["key"], "model": cell["model"],
+                                       "shape": cell["shape"],
+                                       "engines": set(), "cells": {}})
+            model["engines"].add(cell["ocr_engine"])
+            model["cells"][entry["key"]] = cell
+    out = []
+    for model in models.values():
+        cells = model["cells"]
+        rated = [(code, cell["accuracy"]) for code, cell in cells.items()
+                 if cell["accuracy"] is not None]
+        rated.sort(key=lambda pair: pair[1], reverse=True)
+        runs = sum(cell["runs"] for cell in cells.values())
+        bad = sum(cell["failed"] for cell in cells.values())
+        mean = round(sum(v for _, v in rated) / len(rated), 2) if rated else None
+        rate = round(100.0 * bad / runs, 1) if runs else None
+        engines = model["engines"] - {""}
+        out.append({
+            "key": model["key"],
+            "model": model["model"],
+            "shape": model["shape"],
+            # Blank where a name has run under both, the same rule `_standouts`
+            # follows: the badge is a fact about the runs, and a model that has
+            # been both is not one of them.
+            "ocr_engine": engines.pop() if len(engines) == 1 else "",
+            "cells": cells,
+            "types": len(cells),
+            "runs": runs,
+            "failed": bad,
+            "failure_rate": rate,
+            "mean": mean,
+            "score": _standout_score(mean, rate),
+            # Named on the row so the answer is not read off a grid of twelve
+            # numbers. **The two ends never overlap**: with four types or more
+            # they are two each, with two or three one each, and with one there
+            # is a best and no worst -- "worst" over one thing is the same cell
+            # wearing the other label, which is `_headline`'s rule one level
+            # down.
+            "best_types": [code for code, _ in rated[:2 if len(rated) > 3 else 1]],
+            "worst_types": ([code for code, _ in rated[-(2 if len(rated) > 3 else 1):]][::-1]
+                            if len(rated) > 1 else []),
+        })
+    out.sort(key=lambda e: (e["mean"] is not None,
+                            e["mean"] if e["mean"] is not None else 0.0),
+             reverse=True)
+    return out
+
+
+def _type_pass(rows: list, failed, pick, scored_test, manifest: dict,
+               model_of, shaped: bool = False) -> dict:
+    """One pass of the model x type table: the types ranked, and the grid.
+
+    `shaped` says whether a row of this pass carries an extraction shape as well
+    as a model. It is reported rather than re-derived in the page, so "pass 2 has
+    two shapes and pass 1 has none" is stated once -- and a blank shape then
+    means two different things the page can tell apart: *no shape applies* on
+    pass 1, and *the run died before pass 2 chose one* on pass 2.
+    """
+    typed, skipped = _typed_rows(rows, manifest, model_of)
+    buckets = {}
+    for row in typed:
+        buckets.setdefault(row["_type"], []).append(row)
+    # **Windowed per (type, model) CELL, not per type**, which is what
+    # `_type_entry` does with the rows of one type it is handed. The grid is the
+    # centrepiece here and a cell is its unit, the same rule the analysis tab's
+    # model x document heatmap follows. Windowing by type instead would cut one
+    # type to fifty rows and then split those across its models, leaving a model
+    # with forty runs on a page described by whichever three of them fell inside
+    # the type's window. A type's own run count is therefore the sum of its
+    # cells' windows and is printed on its row.
+    types = [_type_entry(code, rows_, failed, pick, scored_test)
+             for code, rows_ in buckets.items()]
+    types.sort(key=lambda e: (e["score"] is not None,
+                              e["score"] if e["score"] is not None else 0.0,
+                              e["runs"]), reverse=True)
+    return {
+        "types": types,
+        "models": _type_models_grid(types),
+        "order": [e["key"] for e in types],
+        **_headline(types),
+        "excluded": skipped,
+        "runs": len(typed),
+        "shaped": bool(shaped),
+    }
+
+
+def type_models(rows: list = None) -> dict:
+    """Which model suits which KIND of document, for each pass.
+
+    Two questions the rest of this card averages away, asked of the same runs:
+
+    | | says |
+    |---|---|
+    | `types` | every document type, best first -- *which kind of page is read (or extracted) well, and which model is best at it* |
+    | `models` | a model x type grid -- *what is THIS model good at, and where does it fall over* |
+
+    **The type is the document's, never the run's** -- see `_manifest_types`.
+    **One run is filed under one type**, the most specific it carries -- see
+    `_primary_type`. **A file holding several documents is excluded**, because
+    its two scores are over all of them.
+
+    Deliberately NOT a second ranking of models: the score is `_standout_score`,
+    the figures are `_per_case`-shaped, and a failure is counted and never
+    scored, so a model's place here is its place on Full rank restricted to one
+    kind of page. Where the two disagree, that difference is the finding.
+    """
+    rows = _for_summary(read(limit=10 ** 6) if rows is None else rows)
+    manifest = _manifest_types()
+    reads = [r for r in rows if (r.get("run_type") or "ocr") != "extract"]
+    # The same rows `by_extract` and `standouts` count, for the same reasons: a
+    # restricted step run answered part of the form on purpose, and a run that
+    # died before pass 2 is an extraction that never got started.
+    extracts = [{**r, "extract_on": (r.get("extract_model") or r.get("model") or "")}
+                for r in rows
+                if not r.get("extract_steps")
+                and ((r.get("status") or "") in _INCOMPLETE
+                     or not (_blank(r.get("p1_present"))
+                             and _blank(r.get("other_fields"))))]
+    return {
+        # Pass 1 has no shape: `extract_mode` decides pass 2 and is irrelevant to
+        # reading a page, so its rows are the model alone -- the same key
+        # `standouts` uses. Pass 2 splits the two shapes, which is what
+        # `by_extract` does and for the reason recorded at `_group_key`.
+        "ocr": _type_pass(reads, _incomplete, _typed_char, _typed_has_char,
+                          manifest, lambda r: (r.get("model"), "")),
+        "extract": _type_pass(extracts, _extract_incomplete, _typed_field,
+                              _typed_has_field, manifest,
+                              lambda r: (r.get("extract_on"),
+                                         r.get("extract_mode") or ""),
+                              shaped=True),
+        # The article form a prompt uses -- "an invoice", "a withholding tax
+        # certificate (50 thawi)". One string, two presentations: the page trims
+        # the article for a heading, exactly as the Doc types tab already does.
+        "labels": {code: prompts.TYPE_NAMES[code]
+                   for code in prompts.TYPE_SPECIFICITY},
+        "specificity": list(prompts.TYPE_SPECIFICITY),
     }
 
 
@@ -4157,6 +4768,11 @@ def totals(rows: list = None, logged: int = None) -> dict:
         # into the individual keys. See `script_accuracy` and `field_weakness`.
         "script_accuracy": script_accuracy(everything),
         "field_weakness": field_weakness(everything),
+        # And the same runs grouped by the KIND of page rather than by the
+        # document or the setting: which document type is read and extracted
+        # well, and which model is best at each. Every table above averages over
+        # that axis by construction. See `type_models`.
+        "type_models": type_models(everything),
         "seconds": round(seconds, 1),
         "tokens": tokens,
         # What this is a summary OF. `logged` is the file; `window` is how many

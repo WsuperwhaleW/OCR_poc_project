@@ -1322,19 +1322,25 @@ def pool(scores) -> dict:
     its first document and the rest not at all, which reported a seven-document
     file on a seventh of itself.
 
-    **Pooled, not the mean of the rates**, and that is the decision not to
-    undo. A run-log row writes `field_acc` beside `p1_correct` and `p1_scored`,
-    and this project's standing rule is that a count of correct values is
-    written as a pair with its denominator or not at all. A mean of seven rates
-    follows from no such pair, so a row carrying one would hold a rate and a
-    pair that disagree. Pooling keeps them one statement: **of every value this
-    FILE was required to state, N of M came back right.**
+    **The rates are the MEAN OF THE DOCUMENTS and the counts are pooled**
+    (2026-09-11, at the user's request: *if a file has multiple type the score
+    will be calculated in total, each page then average*). Every document counts
+    once whatever its size, so a seven-document file is the average of seven
+    readings rather than a figure the two biggest documents decide.
 
-    `overall.accuracy_macro` is the other reading and rides beside it, never in
-    place of it: the unweighted mean of the documents' own rates, where a
-    three-value document counts as much as a ten-value one. Read the two
-    together the way `accuracy` and `accuracy_loose` are read together -- pooled
-    well above macro means the big documents carried the file.
+    This reverses the 2026-09-08 rule, whose objection was real and is answered
+    rather than dismissed: `field_acc` sits beside `p1_correct` and `p1_scored`
+    in the run log, those two are COUNTS and stay pooled, so on a pack row the
+    rate no longer follows from the pair beside it. What makes that recoverable
+    is that the row says so -- `documents` is 2 or more on exactly those rows
+    and on no others, and `doc_scores` carries each document's own rate, so both
+    readings are re-derivable from the row. The pooled rates are kept as
+    `accuracy_pooled` / `accuracy_half_pooled` / `accuracy_loose_pooled` for the
+    same reason: a figure this project has quoted before must stay reachable.
+
+    Read the two together the way `accuracy` and `accuracy_loose` are read
+    together -- pooled well above the mean means the big documents carried the
+    file.
 
     **One score is returned untouched.** Every single-document case therefore
     produces exactly the dict it produced before this existed, which is what
@@ -1389,20 +1395,35 @@ def pool(scores) -> dict:
             if isinstance(value, (int, float)):
                 coverage[key] = coverage.get(key, 0) + value
     pooled["coverage"] = coverage
-    rates = [(s.get("overall") or {}).get("accuracy") for s in scores]
-    rates = [r for r in rates if r is not None]
-    pooled["overall"]["accuracy_macro"] = (round(sum(rates) / len(rates), 4)
-                                           if rates else None)
+    # The headline swaps: each document's own rate, meaned, with the pooled
+    # figure kept beside it under a name that says what it is. `accuracy_macro`
+    # stays as an alias of the new headline -- it is what the page and
+    # `compare.py` already print as "macro", and renaming it would move a label
+    # without moving a number.
+    for name in ("accuracy", "accuracy_half", "accuracy_loose"):
+        rates = [(s.get("overall") or {}).get(name) for s in scores]
+        rates = [r for r in rates if r is not None]
+        pooled["overall"][name + "_pooled"] = pooled["overall"].get(name)
+        pooled["overall"][name] = (round(sum(rates) / len(rates), 4)
+                                   if rates else None)
+    pooled["overall"]["accuracy_macro"] = pooled["overall"]["accuracy"]
     pooled["per_document"] = [{
         "pages": list(s.get("pages") or []),
         "doc_types": list(s.get("doc_types") or []),
         "accuracy": (s.get("overall") or {}).get("accuracy"),
+        # The half-credit rate as well as the strict one, because that is what
+        # the run log means by a run's field score (`runlog._p1_rate`) and what
+        # the per-document cell carries. Two spellings of "how did this document
+        # do" that followed different arithmetic would be the one disagreement a
+        # reader cannot recover from.
+        "accuracy_half": (s.get("overall") or {}).get("accuracy_half"),
         "expected": (s.get("overall") or {}).get("expected") or 0,
         "unknown_type": bool(s.get("unknown_type")),
     } for s in scores]
     pooled["scored_scope"] = (
-        "%d documents in this file, pooled -- every value their requirements "
-        "demand of them" % len(scores))
+        "%d documents in this file, each scored on its own and the rates "
+        "averaged -- every value their requirements demand of them, with each "
+        "document counting once whatever its size" % len(scores))
     return pooled
 
 
