@@ -1380,6 +1380,18 @@ follows your desktop; Light is the one to pick for projecting or screenshotting.
               <option value="fields">Fields only &mdash; pass 2 from the ground truth</option>
             </select>
           </label>
+          <!-- How the documents are chosen. Two answers to two questions,
+               not a better shuffle and a worse one: "keep the corpus level" and
+               "what does this do on a fair sample". The caveat under the pane
+               says which is which, and the tooltip on each round's read count
+               says whether that number is the REASON the document was chosen. -->
+          <label class="field" style="flex:1;min-width:210px">
+            How rounds are drawn
+            <select id="rtStrategy">
+              <option value="balanced">Balanced &mdash; the least-read document each time</option>
+              <option value="uniform">Random &mdash; any document, no scenario twice</option>
+            </select>
+          </label>
           <label class="field" style="flex:0 0 110px">
             Runs
             <input id="rtRounds" type="number" min="1" max="50" value="5">
@@ -6729,6 +6741,22 @@ function rtScopeText(scope) {
        + ' still extracts and still logs, and its fields are left '
        + '<b>unscored</b>.';
 }
+/* What the chosen draw will and will not do, beside the choice rather than
+   inferred from a plan afterwards. Both are legitimate and they answer opposite
+   questions, so neither is described here as the correct one. */
+function rtStrategyText(strategy) {
+  if (strategy === 'uniform') {
+    return ' Every document is equally likely, and no two rounds of one plan are '
+         + 'the same document, reader, Detail and shape, so a repeat happens only '
+         + 'once every combination has been used. That is a fair sample, which '
+         + 'also means a document the log is already full of can be drawn again '
+         + 'while one that has never run is missed.';
+  }
+  return ' Each round goes to whichever document the run log has read fewest '
+       + 'times, so the corpus stays level and a fixture nobody has run is picked '
+       + 'up by the next test. Not a fair sample: a document that is ahead is not '
+       + 'drawn at all until the others catch up.';
+}
 function rtPaintScope() {
   /* What may read, said before the run rather than inferred from its rounds
      afterwards. A fields-only sweep reads no page, so no engine is involved and
@@ -6736,7 +6764,8 @@ function rtPaintScope() {
   const eng = rtScope.value === 'fields' ? ''
     : 'Vision models and installed OCR libraries are drawn from the same pool — '
       + 'narrow it with the chips below. ';
-  rtScopeNote.innerHTML = eng + (rtScopeText(rtScope.value) || '');
+  rtScopeNote.innerHTML = eng + (rtScopeText(rtScope.value) || '')
+    + rtStrategyText(rtStrategy.value);
 }
 
 /* The Result card and the random test take turns in the same place. Both belong
@@ -6762,7 +6791,15 @@ function rtPaint() {
         // twice and another not at all looks like a bad shuffle.
         + (p.seen === undefined ? ''
            : '<span class="rt-seen" title="reads of this document in the run log '
-             + 'before this round — the least-read case is chosen every time">'
+             + 'before this round'
+             // Under `balanced` this number is WHY the document is here. Under
+             // `uniform` it is not -- the draw ignores it -- and a tooltip that
+             // went on claiming otherwise would describe a rule the run was not
+             // planned by.
+             + (p.strategy === 'uniform'
+                ? ' — drawn at random, so this is what the round adds to, '
+                  + 'not why it was chosen'
+                : ' — the least-read case is chosen every time') + '">'
              + p.seen + '</span>')
         + rtPlanLines(p) + '</td>'
       + (r.pending
@@ -6868,6 +6905,9 @@ async function rtStart() {
         // instead, which is the finer control and the one already here.
         engine: 'both',
         rounds, seed: rtSeed.value.trim() || null, scope: rtScope.value,
+        // The same seed under the other draw is a different plan, so this goes
+        // with the seed rather than being remembered anywhere.
+        strategy: rtStrategy.value,
         lock: { case: rtLockCase.value, reader: rtLockReader.value,
                 extractor: rtLockExtract.value, mode: rtLockMode.value }
       })
@@ -6895,9 +6935,19 @@ async function rtStart() {
           const locked = Object.entries(ev.lock || {})
             .map(([k, v]) => k + '=' + csModel(v)).join(', ');
           rtNote.textContent = 'Seed ' + ev.seed + ' — ' + ev.rounds.length
-            + ' round(s). ' + (false ? ''
-                                          : 'Re-run with this seed for the same plan.')
-            + (locked ? ' Locked: ' + locked + '.' : '');
+            + ' round(s). Re-run with this seed and the same draw for the same '
+            + 'plan.'
+            + (locked ? ' Locked: ' + locked + '.' : '')
+            // How many different rounds there were to choose from, and how many
+            // of this plan could not be different because there were not enough.
+            // A plan that repeats a scenario should say why on its own face
+            // rather than looking like a bad shuffle.
+            + (ev.scenarios
+               ? ' Drawn from ' + ev.scenarios.toLocaleString()
+                 + ' distinct scenario(s).' : '')
+            + (ev.repeats
+               ? ' ' + ev.repeats + ' round(s) repeat one: there are not that '
+                 + 'many different rounds to run.' : '');
           // Only the round actually in flight is `pending`; the rest are
           // planned-but-not-started, which is a different thing to show. Every
           // row read "running…" when this said `pending: true` for all of them.
@@ -6951,6 +7001,7 @@ if (rtRun) {
   // Painted on change and once at load: the caveat belongs beside the choice,
   // not in the results of a run that already made it.
   rtScope.addEventListener('change', () => { rtPaintScope(); rtPaintLocks(); });
+  rtStrategy.addEventListener('change', rtPaintScope);
   rtPaintScope();
   rtPaintLocks();
 }
@@ -8359,9 +8410,9 @@ function paintReader() {
       ? 'No prompt, no sampler and no token budget — so no prompt echo, no '
         + 'repetition loop and no empty transcript at HTTP 200. What it cannot '
         + 'do is read a layout it was not trained for.'
-      : 'It is optional, and it lives in its own virtual environment so its '
-        + 'dependency tree cannot destabilise this app. Install it, or pick the '
-        + 'model server above.';
+      : 'It is optional. It installs into the same environment as this app and '
+        + 'is imported only by its worker subprocess, so this server still '
+        + 'loads no ML dependency. Install it, or pick the model server above.';
   } else {
     readerReason.classList.remove('err');
     readerReason.textContent = 'The model server reads each prepared page image.';

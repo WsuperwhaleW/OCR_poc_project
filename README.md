@@ -1319,8 +1319,27 @@ extraction-from-a-real-transcript untested by anything automatic.
 | | |
 |---|---|
 | **What each round runs** | how much of the pipeline to exercise &mdash; the three scopes below |
+| **How rounds are drawn** | **Balanced** or **Random** &mdash; the two draws below |
 | **Runs** | 1 to 50. A round is a real read plus a real extraction, so tens of seconds each |
-| **Seed** | leave blank for a new one; the seed used is put in the box when the run starts. It fixes the models, Details and shapes, and their order; the documents are chosen from the run log as it stands, so a seed replays the same plan exactly only while the log has not moved |
+| **Seed** | leave blank for a new one; the seed used is put in the box when the run starts. It fixes the models, Details and shapes, and their order. Under **Balanced** the documents are chosen from the run log as it stands, so a seed replays that plan exactly only while the log has not moved; under **Random** the log is not consulted and a seed replays the plan whatever the log does. A seed under the other draw is a different plan |
+
+**Two ways to draw the rounds.** One picker, and the two answer opposite questions
+rather than one being a better shuffle:
+
+| | |
+|---|---|
+| **Balanced** (default) | each round goes to whichever document the run log has read fewest times, counting the log plus the rounds planned above it. The corpus stays level and a fixture nobody has run is picked up by the next test. **Not a fair sample:** a document that is ahead is not drawn at all until the others catch up |
+| **Random** | every document is equally likely, drawn from the whole set &mdash; and **no two rounds of one run are the same scenario**: the same document, reader, extraction model, Detail and shape never come up twice until every combination has been used. A fair sample, which also means a document the log is already full of can be drawn again while one that has never run is missed |
+
+Under **Random** the note beside the seed says how many distinct scenarios there were to
+choose from, and &mdash; when more runs were asked for than there are different runs to
+make &mdash; how many rounds must repeat one. Locks shrink that pool: lock the document,
+the reader and the shape and only the Detail is left to vary. The read count beside each
+round means different things under the two draws, and its tooltip says which: under
+**Balanced** it is *why* that document was chosen, under **Random** it is only what the
+round adds to.
+
+On the CLI: `--strategy balanced` (default) or `--strategy uniform`.
 
 **Exclusions.** Every served vision model plus each available local Paddle/EasyOCR reader
 appears as a chip under **Readers that may read**; every eligible server model appears under
@@ -1450,6 +1469,10 @@ python randomtest.py http://localhost:5000 --scope fields --rounds 10
 
 ```bash
 python randomtest.py http://localhost:5000 --contest --documents 2
+```
+
+```bash
+python randomtest.py http://localhost:5000 --strategy uniform --rounds 10
 ```
 
 ```bash

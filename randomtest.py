@@ -33,11 +33,16 @@ Two rules about what may be planned:
   request, after a random round measured `qwen3.5:4b` reading sol002 at 98.5% --
   the highest character accuracy this project has recorded. A pool that cannot
   contain that result cannot find it again.
-- **A case is NOT drawn at random.** Every other axis is; documents are handed
-  to whichever has been read fewest times, counting the run log plus the plan so
-  far. Uniform draws are only fair in the limit, and nobody watches the limit:
-  over the 24 rows the log held when this was written, sol005 had seven reads
-  and sol006 none. See `case_order`.
+- **How the documents are chosen is a CHOICE**, and it is the caller's --
+  `strategy`, added 2026-09-10. `balanced` (the default, and what this module
+  did from the start) hands each round to whichever document has been read
+  fewest times, counting the run log plus the plan so far; `uniform` draws from
+  the whole corpus with equal odds and never plans one scenario twice until
+  every scenario has been used. Both exist because a plain uniform draw is only
+  fair in the limit and nobody watches the limit -- over the 24 rows the log held
+  when `case_order` was written, sol005 had seven reads and sol006 none -- while
+  a rule that always feeds the hungriest document is not a fair sample of
+  anything. See `STRATEGIES`, `case_order` and `_scenarios`.
 - **An extractor is the reading model itself, or a model that is NOT an OCR
   fine-tune.** That is `backends.select_extract`'s rule, mirrored here so a plan
   never contains a round the server would refuse. It is mirrored rather than
@@ -55,9 +60,11 @@ Run it from the command line against a running app:
     python randomtest.py http://localhost:5000 --rounds 10
     python randomtest.py http://localhost:5000 --seed 1787218747
     python randomtest.py http://localhost:5000 --scope fields --rounds 10
+    python randomtest.py http://localhost:5000 --strategy uniform --rounds 10
 """
 
 import argparse
+import itertools
 import json
 import random
 import sys
@@ -96,6 +103,41 @@ MIN_ROUNDS, MAX_ROUNDS, DEFAULT_ROUNDS = 1, 50, 5
 #           and no model needs vision -- pass 2 sends text and gets text.
 SCOPES = ("full", "ocr", "fields")
 DEFAULT_SCOPE = "full"
+
+# How the rounds are drawn. Added 2026-09-10 at the user's request, and the two
+# answer different questions rather than one being a better shuffle than the
+# other:
+#
+#   balanced  every round goes to the least-read document -- what this module has
+#             always done. It keeps the corpus level, which is what makes a
+#             per-document table (`by_case`, the analysis heatmap) comparable at
+#             all: a fixture nobody has read has no row.
+#   uniform   every scenario is equally likely, drawn from the whole corpus --
+#             but no two rounds of one plan are the SAME scenario until every
+#             one of them has been used. That is the half that makes it usable:
+#             a plain uniform draw over five rounds gives one fixture three of
+#             them and four fixtures none, which is the observation `case_order`
+#             was written for and is still true.
+#
+# **`uniform` deduplicates the whole round, not the document.** Two rounds on
+# sol003 with different readers are two measurements; two rounds on sol003 with
+# the same reader, Detail and shape are one measurement paid for twice -- greedy
+# decoding on a warm model reproduces a page byte for byte, so the second tells
+# you nothing the first did not. See `_scenarios`.
+STRATEGIES = ("balanced", "uniform")
+DEFAULT_STRATEGY = "balanced"
+
+# What makes two rounds "the same scenario". `profile` is derived from `reader`
+# and `scope` is one choice for the whole plan, so neither can separate two
+# rounds that agree on these -- listing them would claim a distinction that does
+# not exist.
+SCENARIO_KEYS = ("case", "reader", "extractor", "detail", "mode")
+
+# Above this many combinations `uniform` stops enumerating them and draws with
+# rejection instead. It cannot be reached by anything this app serves (20 cases
+# x a dozen readers x 3 Details x a dozen extractors x 2 shapes is ~17k), so it
+# exists for a caller that passes its own lists rather than `pools()`.
+SCENARIO_CAP = 50_000
 
 
 def profile_for(model: str) -> str:
@@ -152,6 +194,12 @@ def pools(models: list, cases: list, local_readers: list = None) -> dict:
 
 def case_order(rounds: int, cases: list, history: dict, rng) -> list:
     """Which document each round reads: the least-read one, every time.
+
+    **This is the `balanced` strategy** and it is the default. The alternative is
+    `uniform`, which draws from the whole corpus instead -- see `STRATEGIES` for
+    what each is for. A contest uses this one whatever the caller asked for,
+    because a contest is not a sample: every contender runs the same documents,
+    and which those are is exactly the question this answers.
 
     **Cases are the one axis that is NOT drawn uniformly**, and the reason is
     that uniform is not fair over the handful of rounds anyone actually watches.
@@ -249,10 +297,118 @@ def apply_exclusions(pools: dict, exclude: dict = None,
     return out
 
 
+def _axes(scope: str, readers: list, extractors: list, details: list,
+          modes: list, text_models: list, lock: dict) -> list:
+    """The axes a round of this scope draws, in the order it draws them.
+
+    Returns `(name, values, pinned)` triples. **One statement of what varies,
+    read by both strategies**: `balanced` draws each axis on its own per round,
+    `uniform` takes the product of them and samples it without replacement. Two
+    lists would eventually disagree about what a scenario IS, and never
+    repeating a scenario is the whole of what the second strategy offers.
+
+    Two things about it are load-bearing:
+
+    - **The ORDER is the order the rng was consumed in** before this was factored
+      out, so a `balanced` plan from a given seed is the plan it always was. Do
+      not reorder without accepting that every recorded seed now means something
+      else.
+    - **A pinned axis is marked rather than reduced to a one-value pool**, and
+      the draw skips the rng for it. `rng.choice` on a single-element list still
+      consumes state, so a locked run would otherwise draw different models for
+      the axes that are still free -- a seed's meaning moving because of a lock
+      that has nothing to do with those axes.
+    """
+    axes = []
+    if scope == "fields":
+        # No reader at all. The one model in force does the extracting, which is
+        # the one-model setup `backends.select_extract` never refuses -- and the
+        # only way an OCR fine-tune can be measured on the form.
+        axes.append(("extractor", [lock["extractor"]] if lock.get("extractor")
+                     else list(text_models or []), bool(lock.get("extractor"))))
+    else:
+        axes.append(("reader", [lock["reader"]] if lock.get("reader")
+                     else list(readers or []), bool(lock.get("reader"))))
+        axes.append(("detail", list(details or []), False))
+        if scope == "full":
+            axes.append(("extractor", [lock["extractor"]] if "extractor" in lock
+                         else list(extractors or [""]), "extractor" in lock))
+    if scope != "ocr":
+        axes.append(("mode", [lock["mode"]] if lock.get("mode")
+                     else list(modes or []), bool(lock.get("mode"))))
+    return axes
+
+
+def _round(case: str, values, axes: list, scope: str,
+           strategy: str = DEFAULT_STRATEGY) -> dict:
+    """One round, from a document and one value per axis.
+
+    The dict has the same keys on all three scopes and `""` for the settings the
+    scope does not use, so the page and the CLI can read one round without asking
+    which kind it is -- a Detail printed under a fields-only round would name a
+    setting that had no part in the result.
+
+    The extraction model is corrected HERE rather than after the scenario key is
+    formed, and that matters to `uniform`: two draws that both collapse to "same
+    as the reading model" are one scenario, and keying them before the collapse
+    would let a plan call them distinct.
+    """
+    # `strategy` rides on the round for the same reason `scope` does: a reader
+    # of one round should not have to ask the plan which kind of run it came
+    # from. It is what lets the page say whether the read count beside a
+    # document is the REASON that document is here or merely what the round adds
+    # to -- two different claims that look identical as a number.
+    round_ = {"case": case, "scope": scope, "strategy": strategy, "reader": "",
+              "profile": "", "extractor": "", "detail": "", "mode": ""}
+    round_.update({name: value
+                   for (name, _, _), value in zip(axes, values)})
+    # Never plan the one combination the server refuses. It cannot arise from
+    # `pools` above, but a caller may pass its own lists.
+    if (scope == "full" and round_["extractor"]
+            and round_["extractor"] != round_["reader"]
+            and backends.is_ocr_model(round_["extractor"])):
+        round_["extractor"] = ""
+    if round_["reader"]:
+        round_["profile"] = profile_for(round_["reader"])
+    return round_
+
+
+def _scenarios(cases: list, axes: list, scope: str) -> list:
+    """Every distinct round a `uniform` plan could contain, in a stable order.
+
+    `uniform` samples this without replacement, which is what "never the same
+    scenario twice" means exactly rather than approximately. Rejection sampling
+    would have been shorter and is wrong at the tail: with a space barely larger
+    than the round count, the last few rounds are a coupon-collector problem and
+    a bounded retry budget quietly gives up and emits a duplicate it did not
+    have to.
+
+    Deduplicated on `SCENARIO_KEYS` AFTER `_round` has corrected the extraction
+    model, and built by walking the product in its own order so the list -- and
+    therefore what a seed selects from it -- is the same on every machine.
+
+    Returns `[]` above `SCENARIO_CAP`, which is the caller's signal to draw
+    instead of sampling.
+    """
+    size = len(cases)
+    for _, values, _ in axes:
+        size *= len(values)
+    if size > SCENARIO_CAP:
+        return []
+    out, seen = [], set()
+    for combo in itertools.product(cases, *[values for _, values, _ in axes]):
+        round_ = _round(combo[0], combo[1:], axes, scope, "uniform")
+        key = tuple(round_[k] for k in SCENARIO_KEYS)
+        if key not in seen:
+            seen.add(key)
+            out.append(round_)
+    return out
+
+
 def plan(rounds: int, cases: list, readers: list, extractors: list,
          details: list, modes: list, seed=None, history: dict = None,
          scope: str = DEFAULT_SCOPE, text_models: list = None,
-         lock: dict = None) -> dict:
+         lock: dict = None, strategy: str = DEFAULT_STRATEGY) -> dict:
     """Build the list of rounds. Pure: same seed and same history, same plan.
 
     Returns {"seed": int, "rounds": [ ... ]}. The seed is returned whether or
@@ -286,6 +442,15 @@ def plan(rounds: int, cases: list, readers: list, extractors: list,
     drawing at random after being told to pin would produce a plan that answers a
     different question than the one asked, and nothing in the result would say so.
 
+    **`strategy` is how the rounds are spread** -- see `STRATEGIES`. `balanced`
+    sends every round to the least-read document, which is what this module has
+    always done and is what keeps a per-document table comparable. `uniform`
+    draws from the whole corpus with equal odds and refuses to plan the same
+    scenario twice until every one has been used, which is what makes an
+    unbiased sample watchable over the handful of rounds anyone sits through.
+    Neither is a better shuffle than the other: the first answers *keep the
+    corpus level*, the second *what does this do on a fair sample*.
+
     **A round only draws the settings its scope actually uses**, and the ones it
     does not are `""` rather than absent. A `fields` round has no Detail because
     no image is made, an `ocr` round has no extraction shape because pass 2 does
@@ -296,6 +461,9 @@ def plan(rounds: int, cases: list, readers: list, extractors: list,
     scope = (scope or DEFAULT_SCOPE).strip().lower()
     if scope not in SCOPES:
         raise ValueError(f"scope must be one of {', '.join(SCOPES)}.")
+    strategy = (strategy or DEFAULT_STRATEGY).strip().lower()
+    if strategy not in STRATEGIES:
+        raise ValueError(f"strategy must be one of {', '.join(STRATEGIES)}.")
     # What "nothing to test" means depends on the scope, and saying so precisely
     # is the difference between a message someone can act on and one that sends
     # them looking for a vision model they do not need.
@@ -347,44 +515,81 @@ def plan(rounds: int, cases: list, readers: list, extractors: list,
     seed = int(time.time()) if seed in (None, "") else int(seed)
     rng = random.Random(seed)
 
-    if pinned_case:
-        # The fairness rule is about spreading rounds over documents, and a
-        # locked document is the user saying not to. `seen` still counts up from
-        # the log, so the round still says how much history it is adding to.
-        base = int((history or {}).get(pinned_case, 0) or 0)
-        order = [{"case": pinned_case, "seen": base + i} for i in range(rounds)]
-    else:
-        order = case_order(rounds, cases, history, rng)
+    axes = _axes(scope, readers, extractors, details, modes, text_models, lock)
+    # A locked document is one document, under either strategy: the lock is the
+    # user saying not to spread the rounds, and `uniform` then varies the axes
+    # over that one case rather than over the corpus.
+    case_pool = [pinned_case] if pinned_case else list(cases)
+    # How many reads the log already holds per document, counted up as the plan
+    # is built. Every round carries it whichever strategy chose the round --
+    # under `balanced` it is also WHY that document is here, and under `uniform`
+    # it is the only thing on the round that says whether a fair draw happened
+    # to land on a document that is already ahead.
+    tally = {case: int((history or {}).get(case, 0) or 0) for case in case_pool}
 
-    planned = []
-    for chosen in order:
-        round_ = {**chosen, "scope": scope, "reader": "", "profile": "",
-                  "extractor": "", "detail": "", "mode": ""}
-        if scope == "fields":
-            # No reader at all. The one model in force does the extracting, which
-            # is the one-model setup `backends.select_extract` never refuses --
-            # and the only way an OCR fine-tune can be measured on the form.
-            round_["extractor"] = pinned_extractor or rng.choice(text_models)
+    def draw():
+        """One value per axis. A PINNED axis is taken, never drawn -- see `_axes`
+        on why consuming the rng for it would move every axis after it."""
+        return [values[0] if pinned else rng.choice(values)
+                for _, values, pinned in axes]
+
+    planned, scenarios, repeats = [], None, 0
+    if strategy == "uniform":
+        pool = _scenarios(case_pool, axes, scope)
+        scenarios = len(pool) or None
+        drawn = []
+        if pool:
+            # A fresh shuffled pass over every scenario, as many passes as the
+            # round count needs. Distinct within a pass, and a repeat only once
+            # every scenario has been spent -- which is the honest reading of
+            # "never the same one twice" when more rounds are asked for than
+            # there are different rounds to run.
+            while len(drawn) < rounds:
+                batch = list(pool)
+                rng.shuffle(batch)
+                drawn.extend(batch[:rounds - len(drawn)])
+            repeats = max(0, rounds - len(pool))
         else:
-            reader = pinned_reader or rng.choice(readers)
-            round_["reader"] = reader
-            round_["profile"] = profile_for(reader)
-            round_["detail"] = rng.choice(details)
-            if scope == "full":
-                extractor = (pinned_extractor if "extractor" in lock
-                             else rng.choice(extractors or [""]))
-                # Never plan the one combination the server refuses. It cannot
-                # arise from `pools` above, but a caller may pass its own lists.
-                if (extractor and extractor != reader
-                        and backends.is_ocr_model(extractor)):
-                    extractor = ""
-                round_["extractor"] = extractor
-        if scope != "ocr":
-            round_["mode"] = pinned_mode or rng.choice(modes)
-        planned.append(round_)
-    # Returned so the page and the CLI can say what was pinned. A plan that looks
-    # unusually repetitive should say why on its own face.
-    return {"seed": seed, "scope": scope, "rounds": planned, "lock": lock}
+            # Above `SCENARIO_CAP` the space is so much larger than any round
+            # count this module allows that a collision is a curiosity rather
+            # than a problem, so it is drawn and re-drawn instead of enumerated.
+            seen = set()
+            while len(drawn) < rounds:
+                round_ = _round(rng.choice(case_pool), draw(), axes, scope,
+                                strategy)
+                key = tuple(round_[k] for k in SCENARIO_KEYS)
+                if key in seen:
+                    continue
+                seen.add(key)
+                drawn.append(round_)
+        for chosen in drawn:
+            # Copied, because a scenario drawn twice out of an exhausted pool is
+            # the same dict twice and the two carry different `seen` counts.
+            round_ = dict(chosen)
+            round_["seen"] = tally.get(round_["case"], 0)
+            tally[round_["case"]] = round_["seen"] + 1
+            planned.append(round_)
+    else:
+        if pinned_case:
+            base = tally[pinned_case]
+            order = [{"case": pinned_case, "seen": base + i}
+                     for i in range(rounds)]
+        else:
+            order = case_order(rounds, cases, history, rng)
+        for chosen in order:
+            round_ = _round(chosen["case"], draw(), axes, scope, strategy)
+            round_["seen"] = chosen["seen"]
+            planned.append(round_)
+
+    # Returned so the page and the CLI can say what was pinned and how it drew.
+    # A plan that looks unusually repetitive should say why on its own face --
+    # `repeats` is how many rounds could NOT be distinct because the pool ran
+    # out, which is the only way a `uniform` plan holds one scenario twice, and
+    # `scenarios` is how many there were to choose from. Both are `0`/`None`
+    # under `balanced`, which does not deduplicate and must not look as if it
+    # does.
+    return {"seed": seed, "scope": scope, "rounds": planned, "lock": lock,
+            "strategy": strategy, "scenarios": scenarios, "repeats": repeats}
 
 
 # What a contest can be about, and where each one gets its ranking. Added
@@ -782,6 +987,14 @@ def main(argv=None):
     parser.add_argument("--scope", choices=SCOPES, default=DEFAULT_SCOPE,
                         help="full: read and extract. ocr: read only. "
                              "fields: extract from solution/<id>.md only.")
+    # A contest ignores this: it pins every axis but the model on purpose, and
+    # its documents come from the fairness rule whatever a sample would want.
+    parser.add_argument("--strategy", choices=STRATEGIES, default=DEFAULT_STRATEGY,
+                        help="balanced: every round goes to the least-read "
+                             "document, keeping the corpus level (default). "
+                             "uniform: draw from the whole corpus with equal "
+                             "odds, never planning the same scenario twice "
+                             "until every one has been used.")
     parser.add_argument("--contest", action="store_true",
                         help=f"re-run the top {CONTEST_TOP} and bottom "
                              f"{CONTEST_BOTTOM} models from the run log's "
@@ -829,15 +1042,30 @@ def main(argv=None):
                      "bottom": 0 if args.no_bottom else args.top} if args.contest
                     else {"rounds": args.rounds, "seed": args.seed,
                           "scope": args.scope, "lock": lock,
+                          "strategy": args.strategy,
                           "engine": args.engine, "exclude": exclude})
     body, code = _call(args.app, "/api/randomtest", request_body, timeout=120)
     if code:
         print(f"could not plan: {body.get('error', code)}")
         return 1
+    # Everything the plan depended on, so the line can be pasted back. The
+    # strategy is part of that: the same seed under the other one is a different
+    # plan, and a repeat command that dropped it would quietly produce one.
     repeat = (f"--contest --subject {args.subject}" if args.contest
-              else f"--scope {args.scope}")
+              else f"--scope {args.scope} --strategy {args.strategy}")
     print(f"seed {body['seed']} - repeat with --seed {body['seed']} "
           f"{repeat}" + chr(10))
+    if not args.contest and body.get("strategy") == "uniform":
+        # How many different rounds there were to choose from, and how many of
+        # this plan could not be different because there were not enough. A plan
+        # that repeats a scenario should say why on its own face.
+        total = body.get("scenarios")
+        print(f"drawing {args.rounds} of "
+              + (f"{total} distinct scenario(s)" if total
+                 else "an enumerated pool too large to count")
+              + (f" - {body['repeats']} round(s) must repeat one"
+                 if body.get("repeats") else "")
+              + chr(10))
     if args.contest and body.get("contest"):
         # What the contest assembled, before it starts: which models it found at
         # each end of the ranking and which it could not run here. A contest that
