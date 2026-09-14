@@ -1479,6 +1479,23 @@ python randomtest.py http://localhost:5000 --strategy uniform --rounds 10
 python randomtest.py http://localhost:5000 --engine library --scope ocr
 ```
 
+### Stopping a run
+
+**Stop** drops every round that has not started and ends the one in flight. It is a request
+to the server, not a hang-up on the browser: the page waits for the run to wind down and puts
+**Run** back only once it has, so a second test is never offered while the first is still
+reading. `Ctrl-C` does the same from the CLI.
+
+What it cannot cut short is a read still waiting for its first token — the model server sends
+nothing during a model load or prefill, so there is nothing to interrupt. Expect the stop to
+land in seconds on a read that is producing text, and to wait out the load on one that has
+not started. A lower **Detail** shortens that wait; at `original` on a large page it is
+minutes.
+
+The round that was cut short is logged with status `cancelled` and no accuracy score — half a
+transcript is a record of what happened, not a measurement — and rounds that finished before
+the stop keep their rows and their scores.
+
 `--engine llm|library|both` chooses which engine's readers may be drawn, and **`both` is
 the default** — a sweep across the two is exactly the comparison the shared run log exists
 for. **The pane draws from both too**: vision models and installed OCR libraries share one
@@ -1685,10 +1702,18 @@ the banner will say so.
 
 #### Filtering
 
-Under the controls is a row of chips per **document**, **reading model**, **extraction model**
-and **extraction shape**. Click one to keep **only** that value, again to **drop** it, again
-to clear. So *how does my best model do on sol001* is: keep `sol001`, drop the models you are
-not asking about.
+Under the controls is a row of chips per **document**, **reading engine**, **reading model**,
+**extraction model**, **extraction shape**, **Detail**, the two inferred marks, and
+**outcome**. Click one to keep **only** that value, again to **drop** it, again to clear. So
+*how does my best model do on sol001* is: keep `sol001`, drop the models you are not asking
+about; *how do they do when nothing goes wrong* is: drop `looped`, `error`, `cancelled` and
+`truncated` under Outcome.
+
+**Outcome is the one narrowing that changes what the figures mean**, and it is worth knowing
+before using it. A failure is already counted and never scored, so dropping the failures does
+not take a bad number out of a mean — it takes away the **failure rate printed beside** every
+mean, and leaves each accuracy reading as though nothing had gone wrong. The means do not
+move; the column that qualified them does.
 
 **A dropped row is absent, not hidden.** It is out of the run counts, the failure rates, the
 means and the window, exactly as if it had not been run — which is the only reading under
@@ -1698,6 +1723,11 @@ rather than over what survived, so a value you have just dropped is still there 
 **The Raw data panel is never filtered.** It is the log, and a row nobody can see is a row
 nobody can delete. If a filter matches nothing, a banner says so and names what is in force —
 the tables go empty, the log does not.
+
+**Every panel obeys all of it**, including **Model × type**: the chips, the window, the read
+floor, **Pipeline** and the single-source toggle are applied once, to the rows every table is
+then compiled from. A panel that comes back empty names the narrowing in force rather than
+blaming its own subject.
 
 #### Half a pipeline
 

@@ -26,6 +26,18 @@
     color-scheme: dark;
     --bg: #0f1115;
     --panel: #171a21;
+    /* The card's own ground, for anything that has to HIDE what scrolls under
+       it -- every sticky table header and row header on this page. It is an
+       alias rather than a colour: `var(--panel)` is resolved against whatever
+       :root holds, and both light blocks below redefine `--panel` on :root, so
+       one definition follows the theme.
+
+       **It was used in five places and defined in none until 2026-09-14**, so
+       it resolved to nothing and every sticky header in this app was
+       TRANSPARENT -- scroll a wide grid sideways and the cells slid visibly
+       under the first column. A background that must be opaque may not be a
+       token that might not exist; if this is ever renamed, grep for `--card`. */
+    --card: var(--panel);
     --border: #272b35;
     --text: #e8eaed;
     --muted: #949bab;
@@ -565,6 +577,15 @@
   table.an-heat td.an-empty { color: var(--muted); font-weight: 400; }
   table.an-heat tr.an-mean-row td, table.an-heat td.an-mean-col {
     background: var(--accent-soft); font-style: italic; }
+  /* Those two rules are a TRANSLUCENT wash and they land on sticky cells as
+     well -- the mean row's own row header, and the mean column where a row
+     header is sticky beside it. A translucent background on a sticky cell is a
+     transparent one, so the wash is composited over the card here rather than
+     replacing it. Same specificity as the rule above, and later, so it wins. */
+  table.an-heat tr.an-mean-row td.an-rowh,
+  table.an-heat tr.an-mean-row th.an-corner {
+    background: linear-gradient(var(--accent-soft), var(--accent-soft)),
+                var(--card); }
   /* The composition strip at the top of the tab: how many reads survived the
      outlier fence, and how they split across the two inferred marks. It
      qualifies every figure below, so it sits before them. */
@@ -2742,19 +2763,80 @@ const SCORE_TAG = {
   absent: ['not stated', 'the document does not print this, and nothing was filled in — agreed']
 };
 const SCORE_OK = new Set(['correct', 'absent']);
-/* `scored` is false on a value the requirement does not demand. The verdict is
-   still shown -- the truth file judged it and it is still worth correcting --
-   and it is muted and says so, because since 2026-09-02 the headline is taken
-   over the Mandatory fields alone, and a red mark that moved nothing would
-   otherwise read as a mark that did. */
-function scoreMark(row, scored) {
+/* WHAT THE RATE IS TAKEN OVER, in printing order, with the word the note under
+   the fields uses for each. `fieldscore._tally` makes `expected` correct +
+   partial + wrong + missed, so `spurious` and `absent` are outside the
+   denominator entirely -- a value invented where the page prints nothing has no
+   printed value to be judged against, and a key both sides leave blank is not a
+   value at all.
+
+   ONE statement of that list, read by the note that itemises the denominator and
+   by the tooltip that tells a single value which side of it it fell on. Two
+   copies would eventually disagree, and the disagreement would be a tab whose
+   marks do not add up to the total printed underneath them -- which is the bug
+   this whole block exists to stop. */
+const SCORE_COUNTED = [['correct', 'correct'], ['partial', 'partly'],
+                       ['wrong', 'wrong'], ['missed', 'not returned']];
+const scoreCounts = status => SCORE_COUNTED.some(([s]) => s === status);
+/* Why a verdict sits where it does, where the bare in-or-out needs a reason.
+   The in-or-out itself is NOT written here: it is derived from the list above,
+   so a verdict cannot be described as counted by one line and uncounted by the
+   next. */
+const SCORE_WHY = {
+  partial: ' The strict rate counts it as a miss; the loose rate beside it is where it counts for something.',
+  spurious: ' The denominator is what the PAGE prints, so a value invented where the page prints nothing cannot lower this rate — it lowers precision instead.',
+  absent: ' There is no value here for either side to be judged on.'
+};
+function rateClause(status) {
+  return (scoreCounts(status) ? ' In the field score.' : ' NOT in the field score.')
+    + (SCORE_WHY[status] || '');
+}
+/* One formatter for every rate on this tab and the Accuracy tab's field bar, so
+   the two cannot round one number two ways. */
+const scPct = v => (v === null || v === undefined) ? '—' : (v * 100).toFixed(1) + '%';
+/* One value's verdict, and whether it moved the headline.
+
+   **Whether it counted is the SERVER's answer, read off the row.**
+   `fieldscore.score` puts `required` on every judged row for exactly this
+   reason -- its own comment says so: "the page marks it, the CLI prints it and
+   the headline is taken over it, and three answers to one question drift". This
+   page was the reader that gave its own, re-deriving the answer from the
+   Mandatory set, and the two disagree in the one case that matters: a document
+   NO requirement covers is scored over every key it asked for (`unknown_type`,
+   2026-09-04) while its Mandatory set is empty -- so every value on screen said
+   "not scored" underneath a headline that had just scored all of them.
+
+   An absent `required` means counted, which is what the server means by
+   `mandatory=None`: a caller that did not classify scores everything asked.
+
+   Muting is for a value OUTSIDE the requirement, and the word is `optional`
+   rather than `not scored` because the value was scored -- judged, and reported
+   in the optional tally under the fields. A verdict the denominator excludes
+   (`extra`, `not stated`) is said in the tooltip instead of muted: a value
+   invented on a Mandatory key is a finding worth drawing loudly whatever it
+   does to the arithmetic. */
+function scoreMark(row) {
   const tag = row && SCORE_TAG[row.status];
   if (!tag) return '';
-  const off = scored === false;
-  return '<span class="sc ' + row.status + (off ? ' unscored' : '') + '" title="'
-    + esc(tag[1] + (off ? ' — found only: the requirement does not demand '
-                          + 'this field, so it is outside the field score' : ''))
-    + '">' + esc(tag[0]) + (off ? ' · not scored' : '') + '</span>';
+  const optional = row.required === false;
+  return '<span class="sc ' + row.status + (optional ? ' unscored' : '') + '" title="'
+    + esc(tag[1] + '.' + (optional
+        ? ' Optional on this document type: the requirement does not demand this '
+          + 'field, so it is judged and reported beside the field score rather '
+          + 'than inside it.'
+        : rateClause(row.status)))
+    + '">' + esc(tag[0]) + (optional ? ' · optional' : '') + '</span>';
+}
+/* A table cell's half of what `scoreMark` says on a scalar: whether the cell is
+   in the rate. There is no muted class for it because no shipped form makes a
+   table cell Optional -- the one type that rules a table demands every cell of
+   it -- so this states the truth in the tooltip and adds no CSS for a state
+   nothing can currently produce. */
+function cellScope(row) {
+  return !row ? ''
+    : row.required === false
+      ? '. Optional on this document type, so it is outside the field score.'
+      : '.' + rateClause(row.status);
 }
 /* The readings of the truth file this row was NOT judged against, quoted.
    `expected` is the one the answer came closest to, so these are the rest. */
@@ -2874,7 +2956,7 @@ function defList(pairs, truth, val, req) {
                    : 'advanced extraction') + '">' + tier.toUpperCase()
                 + '</span>' : '')
       + '</dt><dd class="' + cls.trim() + '">' + body
-      + scoreMark(sc, !req || !key ? undefined : must) + truthLine(sc)
+      + scoreMark(sc) + truthLine(sc)
       + valMark(val && key ? val[key] : null)
       + '</dd>';
   }).join('') + '</dl>';
@@ -2985,15 +3067,33 @@ function fieldScoreNote(fs) {
   if (!pick) return '';
   const o = pick.t;
   const c = o.counts || {};
-  const pct = v => (v === null || v === undefined) ? '—' : (v * 100).toFixed(1) + '%';
+  const pct = scPct;
   const cov = fs.coverage || {};
   let html = '<p class="ground-note' + (c.correct === o.expected ? '' : ' bad') + '">'
     + '<strong>Field score ' + pct(o.accuracy) + '</strong> — ' + c.correct + ' of '
     + o.expected + ' value(s) the ground truth says this page prints came back '
     + 'correct'
     + (c.partial ? ', ' + c.partial + ' partly (' + pct(o.accuracy_loose) + ' counting those)' : '')
-    + '. ' + c.wrong + ' wrong, ' + c.missed + ' missed, ' + c.spurious
-    + ' filled where the page states nothing.';
+    /* The denominator, itemised, so it adds up on screen. `expected` is these
+       four and NOTHING else -- printing the invented count in the same breath is
+       what made the arithmetic look wrong, because a reader adding correct,
+       wrong and invented together never reached the total beside them. */
+    + '. The ' + o.expected + ' it is taken over: '
+    + SCORE_COUNTED.map(([k, word]) => (c[k] || 0) + ' ' + word).join(', ') + '.'
+    /* And what sits outside it, said as outside it. Both are real findings and
+       neither can move this rate: an invention lowers precision, which is
+       printed here because a rate quoted alone is the one place that difference
+       cannot show. */
+    + ((c.spurious || c.absent)
+        ? ' <span class="how">Outside that count: '
+          + (c.spurious ? c.spurious + ' filled where the page states nothing, '
+              + 'which lowers precision (' + pct(o.precision) + ') and cannot '
+              + 'lower this rate' : '')
+          + (c.spurious && c.absent ? '; ' : '')
+          + (c.absent ? c.absent + ' the page and the extraction agree is blank, '
+              + 'which is no value for either side to be judged on' : '')
+          + '.</span>'
+        : '');
   /* What the rate is over. Since 2026-09-02 it is the requirement's Mandatory
      set, so a document can score 100% with an Optional field wrong -- which is
      correct, and unreadable unless the scope is printed beside the number. */
@@ -3020,10 +3120,19 @@ function fieldScoreNote(fs) {
      `other_fields` is -- a model good at the eleven that matter and poor at the
      rest is a different proposition from one that is evenly mediocre. */
   const op = fs.optional || {};
-  if (pick.required && op.expected) {
+  /* `scored_paths` is how many values carry the muted `optional` mark above, and
+     it is the number a reader is actually looking for: `op.expected` is smaller,
+     because it drops the invented and the agreed-blank exactly as the headline
+     does. Saying only the second left the marks on screen unaccounted for. */
+  const opRows = op.scored_paths || 0;
+  if (pick.required && opRows) {
     const oc = op.counts || {};
-    html += ' <span class="how">Optional fields, not in that rate: '
-      + oc.correct + ' of ' + op.expected + ' correct (' + pct(op.accuracy) + ').</span>';
+    html += ' <span class="how">' + opRows + ' value(s) below are marked '
+      + '<b>optional</b> — judged, and outside the rate above because the '
+      + 'requirement does not demand them of this document type'
+      + (op.expected ? ': ' + oc.correct + ' of ' + op.expected + ' correct ('
+                       + pct(op.accuracy) + ')' : '')
+      + '.</span>';
   }
   if (cov.scalars_checked < cov.scalars_total) {
     html += ' <span class="how">Scored over the ' + cov.scalars_checked + ' of '
@@ -3997,7 +4106,7 @@ function paintFieldBody() {
             const sc = scored[k];
             const off = sc && !SCORE_OK.has(sc.status);
             const tip = bad ? GROUND_TAG[s][1]
-                      : off ? SCORE_TAG[sc.status][1] : '';
+                      : off ? SCORE_TAG[sc.status][1] + cellScope(sc) : '';
             return '<td class="' + (num ? 'num ' : '') + (bad ? 'ungrounded' : '')
               + (off ? ' sc-' + sc.status : '') + '"'
               + (tip ? ' title="' + esc(tip) + '"' : '') + '>' + esc(v)
@@ -4081,7 +4190,7 @@ function paintFieldBody() {
               // so this stands down rather than saying it twice.
               const gap = !v && reqItems.has(k) && !sc;
               const tip = bad ? GROUND_TAG[st2][1]
-                        : off ? SCORE_TAG[sc.status][1]
+                        : off ? SCORE_TAG[sc.status][1] + cellScope(sc)
                         : gap ? 'Mandatory on every row of this table, and this'
                                 + ' row left it empty' : '';
               return '<td class="' + (num ? 'num ' : '')
@@ -6649,6 +6758,12 @@ function paintPresent(t) {
    unreadable during exactly the run it exists to explain. */
 let rtRows = [];
 let rtAbort = null;
+/* True between pressing Stop and the stream ending. Stop is a REQUEST to the
+   server now, not a hang-up on our own fetch: an abandoned stream is not
+   stopped on that server, so the old Stop left every remaining round reading
+   and the next Run was refused by a 409 that was telling the truth. `rtAbort`
+   stays as the fallback for a Stop the server could not be told about. */
+let rtStopping = false;
 /* From the server, never repeated here: the bar the Python classifier has
    to clear before the model is asked. */
 const MIN_CLASSIFY_CONFIDENCE = {{ min_classify_confidence }};
@@ -6913,9 +7028,13 @@ function rtPaint() {
    that looks live in the pane while the card's is greyed out is a control that
    lies about what it will do. */
 function rtBusy(on) {
+  if (on) rtStopping = false;
   rtRun.disabled = on;
-  rtStop.disabled = !on;
-  rtStop2.disabled = !on;
+  // A Stop already asked for is not a Stop that can be asked for again: the
+  // request is in, and a live-looking button would invite a second one that
+  // does nothing.
+  rtStop.disabled = !on || rtStopping;
+  rtStop2.disabled = !on || rtStopping;
   // The two share one card, so they cannot share the screen: a read started
   // mid-test would stream into a Result card the next round event hides again.
   // `paintServer` owns this button otherwise and puts it back on its own terms.
@@ -7007,21 +7126,35 @@ async function rtStart() {
           // The run log is where these rows land, so it is repainted as they
           // arrive rather than only at the end.
           refreshRuns();
+        } else if (ev.event === 'stopped') {
+          // The server says where it stopped. Nothing to paint: `done` follows
+          // immediately and writes the one summary line a run gets.
+          rtStopping = true;
         } else if (ev.event === 'done') {
           rtNote.textContent = 'Seed ' + ev.seed + ' — ' + ev.completed + '/'
-            + ev.total + ' round(s) completed'
+            + ev.total + ' round(s) '
+            + (ev.stopped ? 'run before stopping' : 'completed')
             + (ev.failed ? ', ' + ev.failed + ' failed' : '')
-            + ' in ' + Math.round(ev.seconds) + 's.';
+            + ' in ' + Math.round(ev.seconds) + 's.'
+            // The guard is released by the time this arrives, so this is also
+            // the page saying another test may be started now.
+            + (ev.stopped ? ' Stopped — the rounds above are in the run log, '
+                          + 'and the one cut short is logged as cancelled. You '
+                          + 'can start another test.' : '');
           rtNote.classList.toggle('err', ev.failed > 0);
         }
       }
     }
   } catch (err) {
     if (err.name === 'AbortError') {
-      // A stop leaves the rounds already finished on screen: they ran, they are
-      // in the run log, and clearing them would throw away the results.
-      rtNote.textContent = 'Stopped. Rounds already finished are above and in '
-        + 'the run log; the one in flight was left to end on its own.';
+      // Only reached when the server could not be told to stop -- an ordinary
+      // Stop now ends with the stream's own `done`. Hanging up frees the page
+      // and nothing else, so this says what is still true of the server rather
+      // than claiming the test is over.
+      rtNote.textContent = 'Hung up on the test, but the server was not told '
+        + 'to stop, so it is still running. Rounds already finished are above '
+        + 'and in the run log; another test will be refused until it ends.';
+      rtNote.classList.add('err');
     } else {
       rtNote.textContent = err.message;
       rtNote.classList.add('err');
@@ -7039,7 +7172,33 @@ async function rtStart() {
 
 if (rtRun) {
   rtRun.addEventListener('click', () => rtStart());
-  const stop = () => { if (rtAbort) rtAbort.abort(); };
+  /* Stop asks the SERVER to stop and then waits for it. The stream is left
+     open on purpose: it is what reports the round that was cut short and
+     releases the sweep guard, and hanging up early is exactly what used to make
+     a stopped test look over while it was still reading. */
+  const stop = async () => {
+    if (!rtAbort || rtStopping) return;
+    rtStopping = true;
+    rtStop.disabled = rtStop2.disabled = true;
+    rtNote.classList.remove('err');
+    // The bound, measured rather than guessed: a read notices between tokens,
+    // so one still in PREFILL finishes its prefill -- Ollama sends no response
+    // headers until generation starts, so there is nothing to hang up on. That
+    // was 178s and 134s on uncapped pages here. Saying "stopping" with no idea
+    // how long is what makes a slow stop read as a broken one.
+    rtNote.textContent = 'Stopping — the rest of the plan is dropped now, and '
+      + 'the round in flight ends at its next token. One still waiting on the '
+      + 'model for its first token has to finish that wait first, which is '
+      + 'slowest at high Detail; an extraction already running finishes.';
+    try {
+      const res = await fetch('/api/randomtest/stop', { method: 'POST' });
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+    } catch (err) {
+      // The server could not be told. Hang up so the page is usable, and let
+      // the AbortError branch say the sweep is still going -- because it is.
+      if (rtAbort) rtAbort.abort();
+    }
+  };
   rtStop.addEventListener('click', stop);
   rtStop2.addEventListener('click', stop);
   rtClear.addEventListener('click', () => { rtRows = []; rtPaint(); });
@@ -7111,7 +7270,17 @@ const LV_FIELDS = [
        + 'report it, so this is a proxy and not a probe'},
   {field: 'start', label: 'Start (inferred)',
    hint: 'cold or warm, inferred from prefill: a warm read reuses a cached '
-       + 'prefix or an already-resident model and pays almost none'}
+       + 'prefix or an already-resident model and pays almost none'},
+  // **`status` has been a filter field with facets since the view controls
+  // landed and had no chip**, so "show me this without the loops" was
+  // expressible through the API and not from the page. It is last because it is
+  // the one group that changes what a figure MEANS rather than which runs it is
+  // over -- see the caveat under the chips.
+  {field: 'status', label: 'Outcome',
+   hint: 'how the run ended. Dropping the failures does not clean the data: a '
+       + 'failure is already counted and never scored, so what a failure chip '
+       + 'removes is the failure RATE beside every mean, not a bad number '
+       + 'inside it'}
 ];
 
 /* A chip's visible text. Model names get shortened; the two inferred marks get
@@ -7120,8 +7289,18 @@ const LV_FIELDS = [
 function lvChipLabel(field, value) {
   if (field === 'hardware' || field === 'start') return anMarkLabel(field, value);
   if (field === 'ocr_engine') return engineLabel(value);
+  if (field === 'status') return LV_STATUS[value] || value || 'not recorded';
   return csModel(value);
 }
+
+/* How a run ended, in the words the rest of the card uses. `ok` is the only one
+   a reader would not recognise from a table, and "finished" is what every other
+   panel means by it -- a run that came back, whatever it scored, because a 0%
+   read is a measurement and not a failure (2026-08-24). */
+const LV_STATUS = {
+  ok: 'finished', error: 'error', looped: 'looped', cancelled: 'cancelled',
+  truncated: 'truncated', partial: 'partial (salvaged)'
+};
 
 function lvState(field, value) {
   if ((logFilters.include[field] || []).indexOf(value) >= 0) return 'inc';
@@ -7182,7 +7361,11 @@ function paintFilters() {
     + 'no page</b> — a fields-only run carries the model that extracted, not one '
     + 'that read — so those runs are not in that picker at all. To see one half '
     + 'of the pipeline, use <b>Pipeline</b> above rather than turning off every '
-    + 'model.'
+    + 'model. <b>Dropping an outcome is the one narrowing that changes what the '
+    + 'figures mean</b> — a failed run is already counted and never scored, so '
+    + 'dropping the failures does not remove a bad number from a mean, it '
+    + 'removes the failure rate printed beside it and leaves every accuracy '
+    + 'reading as though nothing had gone wrong.'
     + (lvActive() ? ' <b>A filter is in force.</b>' : '') + '</p>';
 }
 
@@ -7282,10 +7465,13 @@ function lvInForce() {
   LV_FIELDS.forEach(f => {
     const inc = logFilters.include[f.field] || [];
     const exc = logFilters.exclude[f.field] || [];
+    // Named the way its own chip is, not through `csModel` -- that is a model
+    // name trim, and it printed a raw `ok` where the chip beside it reads
+    // "finished". One vocabulary for the control and for the sentence about it.
     if (inc.length) out.push('only ' + f.label.toLowerCase() + ' <b>'
-      + inc.map(v => esc(csModel(v))).join(', ') + '</b>');
+      + inc.map(v => esc(lvChipLabel(f.field, v))).join(', ') + '</b>');
     if (exc.length) out.push('no ' + f.label.toLowerCase() + ' <b>'
-      + exc.map(v => esc(csModel(v))).join(', ') + '</b>');
+      + exc.map(v => esc(lvChipLabel(f.field, v))).join(', ') + '</b>');
   });
   return out;
 }
@@ -7842,6 +8028,28 @@ function tmCovers(e, shaped) {
     : e.models + ' model(s)';
 }
 
+/* The types folded into one column, named with their own document counts.
+
+   **A column is a requirement form, not a document type** -- the four types a
+   requirement covers are four columns and every other type is one catch-all,
+   because those all get the same 30-key base form and are all scored the same
+   way. That grouping loses the ranking BETWEEN the folded types and must not
+   also lose which they are, so the catch-all says so wherever it is named.
+
+   Empty on a column holding one type: its own name is directly above it, and
+   repeating it is the second-copy-of-the-page shape this card deletes on
+   sight. */
+function tmMembers(e, labels) {
+  const m = (e && e.members) || [];
+  if (m.length < 2) return '';
+  // A trailing parenthetical is the label explaining itself -- "a billing note
+  // (a covering slip listing invoices)" -- and in a list that is already
+  // parenthesising a count it reads as two brackets fighting. The gloss is on
+  // the Doc types tab, where there is room for it.
+  return m.map(x => tmType(x.key, labels).replace(/\s*\([^)]*\)\s*$/, '')
+                    + ' (' + x.documents + ')').join(', ');
+}
+
 /* One type per row: how it is read or extracted, and which model does it best.
    This is the half that answers *what should I run on a credit note* -- the grid
    below answers *what is this model good at*, which is the same data read the
@@ -7851,9 +8059,16 @@ function tmTypeTable(id, entries, labels, unit, noun, shaped) {
     {key: 'type', label: 'Document type', value: e => tmType(e.key, labels),
      cell: e => '<b title="' + esc(e.key) + '">' + esc(tmType(e.key, labels))
        + '</b>'
-       // The other types these pages carry. A run is filed under ONE type -- the
-       // most specific it has -- so without this a receipt column reads as a
-       // claim that those pages are not also tax invoices.
+       // What the column holds, where it holds more than one type -- the
+       // catch-all, and nothing else. Above `also`, because "this column is
+       // eight kinds of page" has to be read before "and some of them are
+       // also tax invoices".
+       + (tmMembers(e, labels)
+          ? '<span class="cs-set">holds ' + esc(tmMembers(e, labels)) + '</span>'
+          : '')
+       // The other types these pages carry. A document is filed under ONE type
+       // -- the most specific it has -- so without this a receipt column reads
+       // as a claim that those pages are not also tax invoices.
        + (e.also.length ? '<span class="cs-set">also '
            + e.also.map(c => esc(tmType(c, labels))).join(', ') + '</span>' : '')
        + '<span class="cs-set">' + e.runs + ' run(s) &middot; ' + e.documents
@@ -7919,8 +8134,13 @@ function tmGrid(pass, labels, unit) {
   (pass.types || []).forEach(e => { if (e.best) ring[e.key] = e.best.key; });
   const head = '<tr><th class="an-corner">'
     + (shaped ? 'Model &amp; shape' : 'Model') + ' \\ Document type</th>'
-    + order.map(code => '<th title="' + esc(tmType(code, labels)) + ' — '
-        + esc(code) + '">' + esc(tmType(code, labels)) + '</th>').join('')
+    + order.map(code => {
+        const e = (pass.types || []).find(x => x.key === code);
+        const held = tmMembers(e, labels);
+        return '<th title="' + esc(tmType(code, labels)) + ' — ' + esc(code)
+          + (held ? '. Holds ' + esc(held) : '')
+          + '">' + esc(tmType(code, labels)) + '</th>';
+      }).join('')
     + '<th title="the unweighted mean of this row&rsquo;s own cells — one per '
       + 'type, so a model measured on six types and one measured on two are '
       + 'compared on what they did rather than on which types happened to be '
@@ -8005,20 +8225,43 @@ function tmExcluded(pass) {
     + '. Counted here rather than dropped silently, and still in the log.</p>';
 }
 
-function tmPass(key, pass, labels, unit, noun, title, hint) {
+function tmPass(key, pass, labels, unit, noun, title, hint, t) {
   const shaped = !!(pass && pass.shaped);
   // The window is per grid CELL, and on pass 2 a cell is a type, a model and a
   // shape -- so the note has to name what it is actually per rather than
   // repeating pass 1's wording.
   const per = shaped ? 'setting and type' : 'model and type';
+  // Taken once and reused: `emptyPassNote` opens with this same paragraph, so
+  // computing it in both places printed it twice on a half that is BOTH narrowed
+  // by the pipeline picker and empty -- the second-copy-of-the-page shape the
+  // Warnings block was deleted for. It still belongs above a half that is
+  // narrowed and NOT empty, which is why it is not simply moved inside.
+  const piped = pipeNote(key);
   let html = '<span class="cs-title" title="' + esc(hint) + '">' + title
-    + windowNote(per) + '</span>' + pipeNote(key);
+    + windowNote(per) + '</span>' + piped;
   if (!pass || !(pass.types || []).length) {
-    html += '<p class="note">No run in view could be placed against a document '
-      + 'type. The type comes from the benchmark manifest for a fixture and from '
-      + 'the run&rsquo;s own classification otherwise, so an upload that never '
-      + 'extracted and is in no manifest has none. Read a benchmark document and '
-      + 'it will appear here.</p>' + tmExcluded(pass || {});
+    /* **Three reasons this half can be empty and only one of them is about
+       document types**, so the filter is named first: a reader who has just
+       dropped a model or an outcome must not be told the corpus has no types.
+       `emptyPassNote` covers the pipeline picker and the "every run here read no
+       page" case card-wide; `lvInForce` names every narrowing; the type
+       resolution is the fallback. */
+    const shared = piped ? '' : emptyPassNote(key, t);
+    const forced = lvInForce();
+    html += shared
+      || (piped ? ''
+          : forced.length
+          ? '<p class="note"><b>Nothing left to place against a document type.</b> '
+            + 'In force: ' + forced.join(' &middot; ')
+            + '. Clear a chip above, or press <b>Reset</b>.</p>'
+          : '<p class="note">No run in view could be placed against a document '
+            + 'type. The type comes from the benchmark manifest for a fixture and '
+            + 'from the run&rsquo;s own classification otherwise, so an upload '
+            + 'that never extracted and is in no manifest has none. Read a '
+            + 'benchmark document and it will appear here.</p>')
+      + tmExcluded(pass || {});
+    // `tmExcluded` still prints: a pack backlog is a fact about the log, not
+    // about the filter, and it is worth saying even where nothing else survived.
     return html;
   }
   html += tmSentence(pass.best, 'best', 'st-good', unit, noun, labels, shaped)
@@ -8037,14 +8280,19 @@ function paintTypes(t) {
   const tm = t.type_models;
   if (!tm) { typeSum.innerHTML = ''; return; }
   const labels = tm.labels || {};
+  // Read off the server's own test rather than listed here: a requirement
+  // arriving for a fifth type splits it into its own column, and a hand-written
+  // list in the page would go on naming four.
+  const reqList = (tm.requirement_types || [])
+    .map(c => '<b>' + esc(tmType(c, labels)) + '</b>').join(', ');
   typeSum.innerHTML =
       tmPass('ocr', tm.ocr, labels, '%', 'transcript',
              'Pass 1 &mdash; which kind of page is read well, and by what',
              'Every read grouped by the KIND of document rather than by the '
-             + 'document or the setting')
+             + 'document or the setting', t)
     + tmPass('extract', tm.extract, labels, '%', 'fields',
              'Pass 2 &mdash; which kind of page is extracted well, and by what',
-             'Every extraction grouped by the KIND of document it was mapping')
+             'Every extraction grouped by the KIND of document it was mapping', t)
     + '<p class="note"><b>The type is the document&rsquo;s, not the '
     + 'run&rsquo;s.</b> It comes from the benchmark manifest &mdash; where a '
     + 'person states what each fixture is &mdash; and from the run&rsquo;s own '
@@ -8055,7 +8303,13 @@ function paintTypes(t) {
     + 'four fixtures here are a receipt <i>and</i> a tax invoice &mdash; and each '
     + 'document is filed under the most specific one it carries, so the columns '
     + 'do not overlap and a document is counted once. The others are named under '
-    + 'the type in the table. <b>Single and agentic are separate rows on the '
+    + 'the type in the table. <b>The columns are the requirement forms, not the '
+    + 'fourteen types</b>: a type a requirement covers &mdash; ' + reqList
+    + ' &mdash; gets its own column, and every other type shares one, because '
+    + 'those are all asked the same 30-key base form and all scored as an '
+    + 'unknown type. That column names what it holds and how many documents of '
+    + 'each, so the grouping loses the ranking between those types and nothing '
+    + 'about which they are. <b>Single and agentic are separate rows on the '
     + 'pass-2 half</b>, never one averaged pair &mdash; they are two settings '
     + 'with different failure modes rather than two samples of one, which is why '
     + '<b>Best extraction</b> keys on the shape too, and a model that is strong '
@@ -8389,11 +8643,17 @@ function fieldAccNote(fs) {
     // elsewhere is a rate that will be read as covering everything.
     + (pick.required ? ' required' : ' stated') + ' value(s) correct'
     + (c.partial ? ', ' + c.partial + ' partly' : '')
-    + ' — ' + c.wrong + ' wrong, ' + c.missed + ' missed, ' + c.spurious
-    + ' filled where the page states nothing'
+    // The bar's own denominator first, then what the bar does not count -- in
+    // that order and with that wording, because the three used to be one list
+    // and read as one denominator. An invented value cannot lower a rate whose
+    // denominator is what the page prints; it lowers precision.
+    + ' — ' + c.wrong + ' wrong, ' + c.missed + ' not returned'
+    + (c.spurious ? '. Outside the bar: ' + c.spurious + ' filled where the page '
+        + 'states nothing, which lowers precision (' + scPct(o.precision)
+        + ') rather than this rate' : '')
     + (pick.required && op.expected
         ? '. ' + (op.counts || {}).correct + ' of ' + op.expected
-          + ' found-only value(s) correct, outside this bar' : '')
+          + ' optional value(s) correct, also outside this bar' : '')
     + (pick.unknown
         ? '. <b>No requirement covers this document type yet</b>, so this bar is '
           + 'over the base field set: nothing here is Mandatory, and it is what '

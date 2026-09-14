@@ -215,22 +215,133 @@ def job_context(job_id: str) -> dict:
 # threaded server handles one request per thread and does not pool them, so a
 # request that ended, however it ended, is a thread that is no longer alive.
 _sweep_thread = None
+_sweep_cancel = None
 _sweep_lock = threading.Lock()
 
 
+class SweepCancelled(Exception):
+    """Raised inside a round when the sweep has been asked to stop.
+
+    Caught by the round loop, which reports a STOP rather than a failure. A
+    round nobody let finish says nothing about the settings it ran, and the
+    failure count on that summary line is read as if it did.
+    """
+
+
+class Cancel:
+    """A stop flag that also hangs up whatever the round is blocked on.
+
+    Duck-types `threading.Event` for `is_set`/`set`, which is all the OCR
+    workers ask of the cancel they are handed.
+
+    **What the hang-up buys, and what it measurably does NOT.** Between tokens
+    the flag is enough -- `read_page` checks it every chunk. The close is for
+    the case the flag cannot reach: a thread blocked in `res.iter_lines()` with
+    no token coming, which is a stalled stream, and which this path has no read
+    timeout to rescue (deliberately -- a slow first token is normal, see
+    `stream_page`).
+
+    **It cannot shorten an Ollama prefill, measured rather than assumed**: on a
+    2550x3300 page `requests.post()` itself returned after 221.76s and the first
+    SSE line arrived in the same instant, so Ollama withholds the response
+    headers until generation begins. During prefill there is no response object
+    in existence to hang up on -- the thread is inside `post()`. Two stops
+    measured through the app landed 178s and 134s after the button with ZERO
+    tokens decoded, which is that, not a flag anyone missed.
+
+    So the honest bound on a Stop is **one prefill**, and the fix for a long one
+    is the standing fix for prefill: a lower Detail. What Stop removes is the
+    rest of the plan, which was the whole complaint.
+    """
+
+    def __init__(self):
+        self._event = threading.Event()
+        self._lock = threading.Lock()
+        self._current = None
+
+    def is_set(self) -> bool:
+        return self._event.is_set()
+
+    def attach(self, closeable):
+        """Hang the stop on this request instead of the one before it.
+
+        **One slot, because a sweep has one read in flight at a time** -- the
+        round loop is sequential and a page is read before the next is asked
+        for. A list would grow a stale entry per page across a 50-round run for
+        no gain, and there is no second live request for it to hold.
+
+        Closing at once when the flag is ALREADY set is the case worth having:
+        on a multi-page document the stop can land between the check at the top
+        of the page loop and this request going out, and a response attached
+        after the stop would otherwise be the one thing nobody hangs up on.
+        """
+        with self._lock:
+            if not self._event.is_set():
+                self._current = closeable
+                return
+        _close_quietly(closeable)
+
+    def set(self):
+        with self._lock:
+            self._event.set()
+            current, self._current = self._current, None
+        if current is not None:
+            _close_quietly(current)
+
+
+def _close_quietly(closeable):
+    """Hang up, and never let the hang-up itself be the error anyone sees."""
+    try:
+        closeable.close()
+    except Exception:                               # noqa: BLE001
+        pass
+
+
 def begin_sweep():
-    """Mark this thread as running a sweep."""
-    global _sweep_thread
+    """Mark this thread as running a sweep, and hand back its cancel flag."""
+    global _sweep_thread, _sweep_cancel
     with _sweep_lock:
         _sweep_thread = threading.current_thread()
+        _sweep_cancel = Cancel()
+        return _sweep_cancel
 
 
 def end_sweep():
     """Release it. Idempotent, and only the thread that took it may release."""
-    global _sweep_thread
+    global _sweep_thread, _sweep_cancel
     with _sweep_lock:
         if _sweep_thread is threading.current_thread():
             _sweep_thread = None
+            _sweep_cancel = None
+
+
+def cancel_sweep() -> bool:
+    """Ask the running sweep to stop. True if there was one to ask.
+
+    **Stop has to be a REQUEST, and that is the whole reason this exists.** The
+    page used to stop a sweep by aborting its own `fetch`, which tells the
+    server nothing -- and an abandoned streaming response is not stopped here:
+    it runs every remaining chunk and only then reaches the generator's
+    `finally` (measured; see `sweeps_running`). So every round nobody wanted
+    went on reading at 20-80s each, and the next Run was refused with a 409 that
+    was perfectly accurate and read as a bug.
+
+    **Setting the flag does not release the guard**, deliberately. The sweep is
+    still running until it notices, cuts its round short and writes that row, so
+    a 409 in that window is still the truth. What changed is that the window is
+    one round rather than the rest of the plan.
+    """
+    with _sweep_lock:
+        cancel, thread = _sweep_cancel, _sweep_thread
+    if cancel is not None and thread is not None and thread.is_alive():
+        cancel.set()
+        return True
+    return False
+
+
+def stop_requested(cancel) -> bool:
+    """Has this round been asked to stop? Tolerates `None` for a plain call."""
+    return cancel is not None and cancel.is_set()
 
 
 def sweeps_running() -> bool:
@@ -519,13 +630,19 @@ def image_data_uri(image: Image.Image) -> str:
 
 
 def stream_page(image: Image.Image, stats: dict | None = None,
-                profile: str = None):
+                profile: str = None, cancel=None):
     """Stream tokens for one page from llama-server.
 
     `profile` names the pass-1 shape (`prompts.OCR_PROFILES`); omitted, the one
     the process is currently set to. Resolved once here and reported on `stats`,
     so a page reads and logs under the profile it actually ran with even if the
     setting is flipped mid-batch -- the same rule `extract_mode` follows.
+
+    `cancel` is a `Cancel` a random test hands down so its Stop can reach the
+    read. It is registered against the response rather than polled, because the
+    wait that matters is prefill -- a blocking `iter_lines` with no tokens yet
+    to check a flag between. Hanging up raises out of this generator, and the
+    caller that asked for the stop is the one that decides that is not an error.
     """
     status = llama_status()
     if not status["available"]:
@@ -590,6 +707,8 @@ def stream_page(image: Image.Image, stats: dict | None = None,
         # token is normal. The client disconnecting is what ends it.
         timeout=(GEN_CONNECT_TIMEOUT, None),
     ) as res:
+        if cancel is not None:
+            cancel.attach(res)
         if res.status_code != 200:
             detail = res.text[:300].strip()
             if res.status_code == 500 and status["kind"] == "llama.cpp":
@@ -2959,13 +3078,25 @@ def read_reply(raw: str, profile: str = None) -> str:
 
 
 def read_page(image: Image.Image, stats: dict | None = None,
-              profile: str = None) -> str:
+              profile: str = None, cancel=None) -> str:
     """Blocking full-page read.
 
     Deliberately drains the streaming generator rather than issuing its own
     request, so both endpoints report timings measured exactly the same way.
+
+    `cancel` is a `Cancel` that stops the drain between tokens, and hangs up the
+    request underneath for a stream that has stalled with no token to check
+    between. It is how a random test's Stop reaches the page in flight; the
+    caller is expected to throw the partial away, because half a page is not a
+    measurement. A page still in prefill finishes its prefill first -- see
+    `Cancel`. Without one this drains to the end exactly as it always has.
     """
-    return finish_page("".join(stream_page(image, stats, profile)), stats, profile)
+    parts = []
+    for chunk in stream_page(image, stats, profile, cancel):
+        parts.append(chunk)
+        if cancel is not None and cancel.is_set():
+            break
+    return finish_page("".join(parts), stats, profile)
 
 
 # --------------------------------------------------------------------------
@@ -4543,28 +4674,45 @@ def random_test_stream():
         return jsonify(error="A random test is already running. Wait for it or "
                              "stop it before starting another."), 409
 
-    begin_sweep()
+    cancel = begin_sweep()
 
     def generate():
         try:
             yield from rounds()
         finally:
-            # The ordinary path: the rounds ran out, or one raised. An abandoned
-            # stream never reaches this, and does not need to -- see
-            # `sweeps_running`, which asks whether the thread is still alive.
+            # The ordinary path: the rounds ran out, one raised, or Stop cut it
+            # short. An abandoned stream never reaches this, and does not need
+            # to -- see `sweeps_running`, which asks whether the thread is still
+            # alive.
             end_sweep()
 
     def rounds():
         started = time.perf_counter()
         yield json.dumps({"event": "plan", **planned}) + "\n"
         completed = failed = 0
+        stopped = ""
         for index, round_ in enumerate(planned["rounds"], 1):
+            # Checked before the round as well as inside it, so a stop during a
+            # `fields` round -- which has no page to interrupt -- still costs one
+            # round rather than the rest of the plan.
+            if cancel.is_set():
+                stopped = f"before round {index}"
+                break
             began = time.perf_counter()
             event = {"event": "round", "index": index,
                      "total": len(planned["rounds"]), "plan": round_}
             try:
-                event["result"] = randomtest.summarise_round(_run_round(round_))
+                event["result"] = randomtest.summarise_round(
+                    _run_round(round_, cancel))
                 completed += 1
+            except SweepCancelled:
+                # NOT a failed round, and the order of these two clauses is what
+                # keeps it from becoming one. A round nobody let finish says
+                # nothing about the settings it ran, and `failed` on the summary
+                # line is read as if it did. Its partial row is already logged
+                # `cancelled` by `_read_case`.
+                stopped = f"during round {index}"
+                break
             except Exception as err:                # noqa: BLE001
                 # Reported as a failed round and the run continues. A random
                 # test that stopped at the first failure would find one problem
@@ -4573,15 +4721,45 @@ def random_test_stream():
                 failed += 1
             event["seconds"] = round(time.perf_counter() - began, 1)
             yield json.dumps(event, ensure_ascii=False) + "\n"
+        if stopped:
+            yield json.dumps({"event": "stopped", "where": stopped,
+                              "completed": completed,
+                              "total": len(planned["rounds"])}) + "\n"
+        # `done` is emitted on a stop too, so the page has one event that ends a
+        # run however it ended and writes its summary line once.
         yield json.dumps({"event": "done", "completed": completed,
                           "failed": failed, "total": len(planned["rounds"]),
+                          "stopped": bool(stopped),
                           "seconds": round(time.perf_counter() - started, 1),
                           "seed": planned["seed"]}) + "\n"
 
     return Response(generate(), mimetype="application/x-ndjson")
 
 
-def _run_round(round_: dict) -> dict:
+@app.post("/api/randomtest/stop")
+def random_test_stop():
+    """Ask the running sweep to stop.
+
+    **Hanging up is not stopping**, which is what this route exists to fix: an
+    abandoned stream runs every remaining round on this server, so the page's
+    old Stop left the sweep reading and the next Run was refused by a 409 that
+    was telling the truth. See `cancel_sweep`.
+
+    It answers at once and the sweep ends slightly later -- it has to notice the
+    flag, cut its read short and write that row. `stopping` says the request was
+    delivered, not that the sweep is over; `running` is what says whether it is.
+    Poll that, or wait for the stream's own `stopped` event, which is what the
+    page does.
+
+    Idempotent, and a stop with nothing running is a 200 saying so rather than
+    an error -- a second click, or a Stop that lost a race with the last round,
+    is not a problem anyone needs telling about.
+    """
+    stopping = cancel_sweep()
+    return jsonify(stopping=stopping, running=sweeps_running())
+
+
+def _run_round(round_: dict, cancel=None) -> dict:
     """One random-test round: put the settings in force, then run its scope.
 
     Three shapes, and the split is the reason the scopes exist at all:
@@ -4605,6 +4783,13 @@ def _run_round(round_: dict) -> dict:
     The pass-1 profile is set only where a page is read. Setting it on a
     fields-only round would leave the process on a profile chosen for a model
     that never looked at anything.
+
+    **`cancel` reaches pass 1 and deliberately not pass 2.** A read is a loop
+    over pages and over tokens, so it can be cut short at a known point and the
+    partial thrown away. An extraction is one request, or seven in agentic mode,
+    and unpicking it would mean a half-filled form that scores as a bad one --
+    so a round already extracting runs that out. The bound is one round either
+    way, which is the whole of what Stop was asked to buy.
     """
     scope = round_.get("scope", randomtest.DEFAULT_SCOPE)
     if scope == "fields":
@@ -4628,10 +4813,10 @@ def _run_round(round_: dict) -> dict:
         set_ocr_profile(round_["profile"])
     if scope == "ocr":
         return _read_case(round_["case"], round_["detail"], extract=False,
-                          reader=local_reader or "server")
+                          reader=local_reader or "server", cancel=cancel)
     set_extract_mode(round_["mode"])
     return _read_case(round_["case"], round_["detail"],
-                      reader=local_reader or "server")
+                      reader=local_reader or "server", cancel=cancel)
 
 
 def _extract_case(case_id: str, mode: str) -> dict:
@@ -4656,7 +4841,7 @@ def _extract_case(case_id: str, mode: str) -> dict:
 
 
 def _read_case(case_id: str, detail: str, extract: bool = True,
-               reader: str = "server") -> dict:
+               reader: str = "server", cancel=None) -> dict:
     """One benchmark document, read and extracted, exactly as `/api/ocr` does it.
 
     Shares `prepare_input`, `summarise`, `evaluate_if_known`, `extract_fields`
@@ -4666,6 +4851,14 @@ def _read_case(case_id: str, detail: str, extract: bool = True,
     `extract=False` is the read-only scope: pass 2 does not run and the row's
     pass-2 columns stay blank, which is the honest record of a run that was
     testing the read.
+
+    **`cancel` raises `SweepCancelled` rather than returning what it had**, and
+    that is the decision worth keeping: a transcript cut off part-way scores as
+    a terrible read, so returning one would put a made-up number in the mean and
+    on the round table. The partial is thrown away and the row is written
+    `cancelled` -- the same standing as the streaming route's Stop, and for the
+    same reason: a read that died four minutes in is exactly what you want a
+    record of, just not one that is averaged.
     """
     data, case = case_bytes(case_id)
     source = describe_source(case["pdf"], data, "case")
@@ -4674,16 +4867,47 @@ def _read_case(case_id: str, detail: str, extract: bool = True,
     reader = resolve_reader(reader)
     started = time.perf_counter()
     page_texts, all_stats = [], []
-    if reader in ("paddle", "easyocr"):
-        consume = (consume_paddle_pages if reader == "paddle"
-                   else consume_easy_pages)
-        page_texts, all_stats, model_info = consume(pages)
-    else:
-        model_info = None
-        for page in pages:
-            stats = {}
-            page_texts.append(read_page(page, stats))
-            all_stats.append(stats)
+    model_info = None
+    cancelled = False
+    try:
+        if reader in ("paddle", "easyocr"):
+            consume = (consume_paddle_pages if reader == "paddle"
+                       else consume_easy_pages)
+            # The worker takes the flag itself: it kills the subprocess and
+            # raises, which is the only way to stop a `predict()` already
+            # running. That is what `local_stream_generate` does for the page's
+            # own Stop, reached here through the argument instead.
+            page_texts, all_stats, model_info = consume(pages, cancel)
+        else:
+            for page in pages:
+                if stop_requested(cancel):
+                    break
+                stats = {}
+                page_texts.append(read_page(page, stats, cancel=cancel))
+                all_stats.append(stats)
+    except (paddle_runtime.PaddleCancelled, easy_runtime.EasyCancelled):
+        cancelled = True
+    except Exception:                               # noqa: BLE001
+        # A hung-up request raises wherever it was blocked -- mid-prefill, most
+        # of the time. If WE are the ones who hung up, that is the stop landing
+        # and not a failure; anything else is a real error and is re-raised for
+        # the round loop to report as one.
+        if not stop_requested(cancel):
+            raise
+        cancelled = True
+
+    if cancelled or stop_requested(cancel):
+        # Summarised so the row carries the pages that did finish and the clock,
+        # then logged and dropped. `evaluate_if_known` is deliberately not run:
+        # scoring half a document against the whole ground truth would report a
+        # stop as a bad read.
+        partial = (local_summary(reader, all_stats, detail, started, job_id,
+                                 model_info)
+                   if reader != "server"
+                   else summarise(all_stats, detail, started, job_id))
+        partial["reader"] = reader
+        log_run(partial, source, status="cancelled")
+        raise SweepCancelled(f"{case_id} was stopped part-way through")
 
     if len(page_texts) > 1:
         text = "\n\n".join(f"--- page {i} ---\n{t}"

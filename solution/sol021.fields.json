@@ -1,0 +1,278 @@
+{
+  "_readme": [
+    "This file holds one block per DOCUMENT, because the PDF holds more than one.",
+    "Each block states the pages it covers, the types those pages name, and the",
+    "value every key of that document's own form should come back with.",
+    "\"\" means the document does not print this; null means not checked; a list",
+    "means the page prints the value in more than one way and any of them counts.",
+    "The file's headline score pools every block -- see app._merge_field_scores."
+  ],
+  "_note": [
+    "Three documents: a tax invoice / delivery order across pages 1-2, the",
+    "purchase order it was raised against on page 3, and an internal stock",
+    "transfer request on page 4. No requirement covers any of the three types,",
+    "so nothing in this file is Mandatory and every key is scored as found-only.",
+    "Pages 1 and 2 are ONE document -- same number, same date, same PO and SO,",
+    "and page 1's amounts sum exactly to page 2's Gross Total -- but they print",
+    "the seller's tax ID differently (0105240027132 against 0105540047132).",
+    "Both are accepted; page 3 prints 0105540047132, which is the likelier read.",
+    "The left edge of pages 1 and 2 is cut off in the scan, so the letterhead",
+    "and the party labels are transcribed as the fragments they are."
+  ],
+  "documents": [
+    {
+      "pages": [
+        1,
+        2
+      ],
+      "doc_types": [
+        "TAX_INVOICE"
+      ],
+      "_mandatory": {
+        "types": [
+          "TAX_INVOICE"
+        ],
+        "required": [],
+        "found_only": [
+          "document_type",
+          "document_number",
+          "issue_date",
+          "po_gr_rtv_number",
+          "inv_rtv_cnr_number",
+          "seller_tax_id",
+          "seller_branch",
+          "buyer_tax_id",
+          "buyer_branch",
+          "subtotal",
+          "vat_total",
+          "amount_incl_vat",
+          "remaining_amount",
+          "remaining_vat_amount",
+          "payment_date",
+          "cheque_number",
+          "book_no",
+          "certificate_no",
+          "sequence_no",
+          "payer_tax_id",
+          "payer_name",
+          "payer_branch",
+          "payer_address",
+          "payee_tax_id",
+          "payee_name",
+          "payee_branch",
+          "payee_address",
+          "dividend_rate_option",
+          "total_amount_paid",
+          "total_wht_amount"
+        ]
+      },
+      "document_type": [
+        "ใบกำกับภาษี/ใบส่งของ",
+        "TAX INVOICE/DELIVERY ORDER",
+        "ใบกำกับภาษี/ใบส่งของ\nTAX INVOICE/DELIVERY ORDER"
+      ],
+      "document_number": "IN26050066",
+      "issue_date": "13/05/2026",
+      "po_gr_rtv_number": "R250001589",
+      "inv_rtv_cnr_number": "",
+      "seller_tax_id": [
+        "0105540047132",
+        "0105240027132"
+      ],
+      "seller_branch": "HEAD OFFICE",
+      "buyer_tax_id": "0105536046868",
+      "buyer_branch": "สำนักงานใหญ่",
+      "subtotal": "863,425.00",
+      "vat_total": "60,439.75",
+      "amount_incl_vat": "923,864.75",
+      "remaining_amount": "",
+      "remaining_vat_amount": "",
+      "payment_date": "",
+      "cheque_number": "",
+      "book_no": "",
+      "certificate_no": "",
+      "sequence_no": "",
+      "payer_tax_id": "",
+      "payer_name": "",
+      "payer_branch": "",
+      "payer_address": "",
+      "payee_tax_id": "",
+      "payee_name": "",
+      "payee_branch": "",
+      "payee_address": "",
+      "dividend_rate_option": "",
+      "total_amount_paid": "",
+      "total_wht_amount": ""
+    },
+    {
+      "pages": [
+        3
+      ],
+      "doc_types": [
+        "PURCHASE_ORDER"
+      ],
+      "_mandatory": {
+        "types": [
+          "PURCHASE_ORDER"
+        ],
+        "required": [],
+        "found_only": [
+          "document_type",
+          "document_number",
+          "issue_date",
+          "po_gr_rtv_number",
+          "inv_rtv_cnr_number",
+          "seller_tax_id",
+          "seller_branch",
+          "buyer_tax_id",
+          "buyer_branch",
+          "subtotal",
+          "vat_total",
+          "amount_incl_vat",
+          "remaining_amount",
+          "remaining_vat_amount",
+          "payment_date",
+          "cheque_number",
+          "book_no",
+          "certificate_no",
+          "sequence_no",
+          "payer_tax_id",
+          "payer_name",
+          "payer_branch",
+          "payer_address",
+          "payee_tax_id",
+          "payee_name",
+          "payee_branch",
+          "payee_address",
+          "dividend_rate_option",
+          "total_amount_paid",
+          "total_wht_amount"
+        ]
+      },
+      "_note": [
+        "po_gr_rtv_number repeats document_number, and that is deliberate: this",
+        "document IS the purchase order, and R250001589 is printed under",
+        "เลขที่ใบสั่งซื้อ -- the label the key is defined by. The tax invoice on",
+        "pages 1-2 cites the same number under PO No. The duplicate-value",
+        "self-check reports it; it is not a mistake.",
+        "issue_date is วันที่สั่งสินค้า, the order date. วันที่อนุมัติ prints the",
+        "same day and is the approval date."
+      ],
+      "document_type": "ใบสั่งซื้อ",
+      "document_number": "R250001589",
+      "issue_date": "18-Dec-2025",
+      "po_gr_rtv_number": "R250001589",
+      "inv_rtv_cnr_number": "",
+      "seller_tax_id": "0105540047132",
+      "seller_branch": "สำนักงานใหญ่",
+      "buyer_tax_id": "0105536046868",
+      "buyer_branch": "สำนักงานใหญ่",
+      "subtotal": "7,641,311.25",
+      "vat_total": "534,891.79",
+      "amount_incl_vat": "8,176,203.04",
+      "remaining_amount": "",
+      "remaining_vat_amount": "",
+      "payment_date": "",
+      "cheque_number": "",
+      "book_no": "",
+      "certificate_no": "",
+      "sequence_no": "",
+      "payer_tax_id": "",
+      "payer_name": "",
+      "payer_branch": "",
+      "payer_address": "",
+      "payee_tax_id": "",
+      "payee_name": "",
+      "payee_branch": "",
+      "payee_address": "",
+      "dividend_rate_option": "",
+      "total_amount_paid": "",
+      "total_wht_amount": ""
+    },
+    {
+      "pages": [
+        4
+      ],
+      "doc_types": [
+        "STOCK_TRANSFER"
+      ],
+      "_mandatory": {
+        "types": [
+          "STOCK_TRANSFER"
+        ],
+        "required": [],
+        "found_only": [
+          "document_type",
+          "document_number",
+          "issue_date",
+          "po_gr_rtv_number",
+          "inv_rtv_cnr_number",
+          "seller_tax_id",
+          "seller_branch",
+          "buyer_tax_id",
+          "buyer_branch",
+          "subtotal",
+          "vat_total",
+          "amount_incl_vat",
+          "remaining_amount",
+          "remaining_vat_amount",
+          "payment_date",
+          "cheque_number",
+          "book_no",
+          "certificate_no",
+          "sequence_no",
+          "payer_tax_id",
+          "payer_name",
+          "payer_branch",
+          "payer_address",
+          "payee_tax_id",
+          "payee_name",
+          "payee_branch",
+          "payee_address",
+          "dividend_rate_option",
+          "total_amount_paid",
+          "total_wht_amount"
+        ]
+      },
+      "_note": [
+        "An internal stock movement: it prices nothing, so all three totals are",
+        "empty, and it names the customer by code without a tax ID or a branch.",
+        "Inventroy is the form's own typo and is transcribed as printed."
+      ],
+      "document_type": [
+        "ส่งเสริมการขาย/Demo/ตัวอย่าง",
+        "Inventroy Transfer Request",
+        "ส่งเสริมการขาย/Demo/ตัวอย่าง\nInventroy Transfer Request"
+      ],
+      "document_number": "TRR261000593",
+      "issue_date": "02/04/2569",
+      "po_gr_rtv_number": "",
+      "inv_rtv_cnr_number": "",
+      "seller_tax_id": "0105540027132",
+      "seller_branch": "สำนักงานใหญ่",
+      "buyer_tax_id": "",
+      "buyer_branch": "",
+      "subtotal": "",
+      "vat_total": "",
+      "amount_incl_vat": "",
+      "remaining_amount": "",
+      "remaining_vat_amount": "",
+      "payment_date": "",
+      "cheque_number": "",
+      "book_no": "",
+      "certificate_no": "",
+      "sequence_no": "",
+      "payer_tax_id": "",
+      "payer_name": "",
+      "payer_branch": "",
+      "payer_address": "",
+      "payee_tax_id": "",
+      "payee_name": "",
+      "payee_branch": "",
+      "payee_address": "",
+      "dividend_rate_option": "",
+      "total_amount_paid": "",
+      "total_wht_amount": ""
+    }
+  ]
+}

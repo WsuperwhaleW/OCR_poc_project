@@ -15,7 +15,7 @@
     "best-effort and should be verified before relying on its score.",
     "",
     "doc_types is a LIST because a document is regularly more than one type at",
-    "once: eight of these twenty carry more than one -- a receipt AND a tax",
+    "once: eight of these twenty-three carry more than one -- a receipt AND a tax",
     "invoice, a credit note AND a tax invoice. The extraction form is the UNION",
     "of the forms for the types listed here, so a page that is both answers for",
     "both. The codes are normalise.document_types' vocabulary, and the first is",
@@ -33,6 +33,32 @@
     "Pillow). package.py's FIXTURES allow-list had to learn those extensions or",
     "they would not have shipped in the zip.",
     "",
+    "",
+    "A file that holds MORE THAN ONE DOCUMENT is named multiple_<id>, whatever",
+    "its documents are: naming such a file after one of them says something",
+    "false about the rest of it. On 2026-09-14 the three older ones were",
+    "renamed to match -- receipt_tax_invoice_sol012, pack_credit_note_sol014",
+    "and pack_billing_note_sol015 -- so the rule now has no exceptions and the",
+    "pack_ spelling is gone. Their former names are aliases, so an upload of",
+    "either still resolves by name.",
+    "",
+    "It is the DOCUMENT count that decides the name, not the type count.",
+    "sol023 is thirteen pages of four credit notes and is multiple_; sol004 is",
+    "two pages of ONE receipt/tax invoice and keeps its type name, because a",
+    "document that runs over a page break is still one document.",
+    "",
+    "doc_types at the TOP level is document 1's, not the union: it is what the",
+    "case pickers show and what a caller with no pages in hand means by \"what is",
+    "this case\". `documents` is the per-document answer and is what scoring uses.",
+    "",
+    "sol021 pages 1 and 2 are ONE document -- same number, same date, same PO and",
+    "SO, and page 1's amounts sum exactly to page 2's Gross Total -- but the two",
+    "scans print the seller's tax ID differently (0105240027132 against",
+    "0105540047132) and its street differently (ซอยนนเดือน against ซอยนนทบุรี).",
+    "Each page is transcribed as it prints, and the field truth accepts both tax",
+    "IDs. Page 3 prints 0105540047132, which is the likelier read.",
+    "The left edge of sol021 pages 1-2 is cut off in the scan, so the letterhead",
+    "and the party labels there are transcribed as the fragments they are.",
     "aliases are the filenames these files shipped under before they were",
     "renamed to <doc_type>_<id> -- 2026-08-31 for the PDFs, 2026-09-09 for the",
     "five tawi*.png/jpg certificates -- kept",
@@ -183,7 +209,7 @@
     },
     {
       "id": "sol012",
-      "pdf": "receipt_tax_invoice_sol012.pdf",
+      "pdf": "multiple_sol012.pdf",
       "doc_types": [
         "RECEIPT",
         "TAX_INVOICE"
@@ -210,6 +236,7 @@
       "pages": 2,
       "kind": "handwritten receipt/tax invoice, page 2 is the payer's payment schedule",
       "aliases": [
+        "receipt_tax_invoice_sol012.pdf",
         "22.pdf"
       ]
     },
@@ -227,7 +254,7 @@
     },
     {
       "id": "sol014",
-      "pdf": "pack_credit_note_sol014.pdf",
+      "pdf": "multiple_sol014.pdf",
       "doc_types": [
         "CREDIT_NOTE"
       ],
@@ -252,13 +279,14 @@
       "pages": 2,
       "kind": "printed credit note; page 2 is the goods-return note it cites",
       "aliases": [
+        "pack_credit_note_sol014.pdf",
         "24 (1).pdf",
         "24.pdf"
       ]
     },
     {
       "id": "sol015",
-      "pdf": "pack_billing_note_sol015.pdf",
+      "pdf": "multiple_sol015.pdf",
       "doc_types": [
         "BILLING_NOTE"
       ],
@@ -324,6 +352,7 @@
       "pages": 7,
       "kind": "one settlement, seven documents: two billing notes, the receipt/tax invoice that settles them, two payment schedules and the bank's cheque advice pair",
       "aliases": [
+        "pack_billing_note_sol015.pdf",
         "25.pdf"
       ]
     },
@@ -385,6 +414,151 @@
       "kind": "WHT certificate (50 tavi), form P.N.D.53; tax IDs one digit per box and the satang printed in its own column",
       "aliases": [
         "tawi5.png"
+      ]
+    },
+    {
+      "id": "sol021",
+      "pdf": "multiple_sol021.pdf",
+      "doc_types": [
+        "TAX_INVOICE"
+      ],
+      "documents": [
+        {
+          "pages": [
+            1,
+            2
+          ],
+          "doc_types": [
+            "TAX_INVOICE"
+          ]
+        },
+        {
+          "pages": [
+            3
+          ],
+          "doc_types": [
+            "PURCHASE_ORDER"
+          ]
+        },
+        {
+          "pages": [
+            4
+          ],
+          "doc_types": [
+            "STOCK_TRANSFER"
+          ]
+        }
+      ],
+      "pages": 4,
+      "kind": "one order, three documents: a two-page tax invoice/delivery order, the purchase order it was raised against and an internal stock transfer request",
+      "aliases": [
+        "multiple1.pdf"
+      ]
+    },
+    {
+      "id": "sol022",
+      "pdf": "multiple_sol022.pdf",
+      "doc_types": [
+        "TAX_INVOICE"
+      ],
+      "documents": [
+        {
+          "pages": [
+            1
+          ],
+          "doc_types": [
+            "TAX_INVOICE"
+          ]
+        },
+        {
+          "pages": [
+            2
+          ],
+          "doc_types": [
+            "RECEIPT"
+          ]
+        },
+        {
+          "pages": [
+            3
+          ],
+          "doc_types": [
+            "TAX_INVOICE"
+          ]
+        },
+        {
+          "pages": [
+            4
+          ],
+          "doc_types": [
+            "RECEIPT"
+          ]
+        }
+      ],
+      "pages": 4,
+      "kind": "two monthly cleaning charges, four documents: each tax invoice followed by the receipt for it, copies 1 and 5 of the same set",
+      "aliases": [
+        "multiple2.pdf"
+      ]
+    },
+    {
+      "id": "sol023",
+      "pdf": "multiple_sol023.pdf",
+      "doc_types": [
+        "CREDIT_NOTE",
+        "TAX_INVOICE"
+      ],
+      "documents": [
+        {
+          "pages": [
+            1,
+            2,
+            3,
+            4,
+            5
+          ],
+          "doc_types": [
+            "CREDIT_NOTE",
+            "TAX_INVOICE"
+          ]
+        },
+        {
+          "pages": [
+            6,
+            7,
+            8
+          ],
+          "doc_types": [
+            "CREDIT_NOTE",
+            "TAX_INVOICE"
+          ]
+        },
+        {
+          "pages": [
+            9,
+            10,
+            11
+          ],
+          "doc_types": [
+            "CREDIT_NOTE",
+            "TAX_INVOICE"
+          ]
+        },
+        {
+          "pages": [
+            12,
+            13
+          ],
+          "doc_types": [
+            "CREDIT_NOTE",
+            "TAX_INVOICE"
+          ]
+        }
+      ],
+      "pages": 13,
+      "kind": "four credit notes from one issuer on one date, 5/3/3/2 pages, none of them page-numbered and all of them the same type -- the only thing separating them is the number each page reprints",
+      "aliases": [
+        "multiple3.pdf"
       ]
     }
   ]

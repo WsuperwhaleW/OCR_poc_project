@@ -140,6 +140,28 @@ _TYPE_HEADINGS = [
     ("PAYMENT_ADVICE", (), ("payment advice", "credit advice",
                             "ใบแจ้งการโอนเงิน")),
     ("PAYMENT_SCHEDULE", (), ("ใบนัดจ่าย", "ใบนัดชำระ")),
+    # Added 2026-09-14 with sol021, whose four pages are a tax invoice, the
+    # purchase order it was raised against and an internal stock-transfer
+    # request. Same standing as the five above: no requirement covers either, so
+    # each contributes no key and nothing Mandatory, and they are here so the
+    # SPLIT works -- without them sol021's page 4 heads itself with nothing the
+    # table knows, which is `segment._boundary`'s rule for a CONTINUATION, and it
+    # would have merged into the purchase order on page 3.
+    #
+    # `ใบสั่งซื้อ` also appears INSIDE a line item on sol022 ("ใบสั่งซื้อเลขที่
+    # :2260007911.Rev.0"), which is a citation and not a heading. That is safe
+    # for the reason the band exists: a table row is far longer than
+    # `app._TYPE_SCAN_MAX_CHARS`, and a citation line that does reach the scanner
+    # is mostly not needles, so `heading_confidence` sends it to the model rather
+    # than answering off it.
+    ("PURCHASE_ORDER", (), ("ใบสั่งซื้อ", "purchase order")),
+    # "Inventroy" is the form's own typo and is printed that way on sol021 page
+    # 4, so it is a needle in its own right. A needle that only matches the word
+    # spelled correctly matches nothing on the one document this code exists for.
+    ("STOCK_TRANSFER", (), ("ใบโอนสินค้า", "ใบขอโอนสินค้า",
+                            "inventory transfer request",
+                            "inventroy transfer request",
+                            "stock transfer request")),
     # ใบวางบิล was a needle under INVOICE until 2026-09-08. A billing note is a
     # covering slip that lists OTHER documents' numbers, dates and totals, so
     # asking the invoice form of one fills its keys from the invoices it names.

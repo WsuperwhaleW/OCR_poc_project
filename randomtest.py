@@ -1085,6 +1085,27 @@ def main(argv=None):
         args.app + "/api/randomtest/stream",
         data=json.dumps({**request_body, "seed": body["seed"]}).encode(),
         headers={"Content-Type": "application/json"})
+    try:
+        _consume(request_)
+    except KeyboardInterrupt:
+        # Ctrl-C hangs up on the stream and tells the app nothing, and an
+        # abandoned stream is not stopped there -- it runs every remaining
+        # round. So ask, the same way the page's Stop does, or the next run is
+        # refused with a 409 for as long as this one had left to go.
+        print("\nstopping the run on the server...", flush=True)
+        try:
+            urllib.request.urlopen(urllib.request.Request(
+                args.app + "/api/randomtest/stop", data=b"",
+                headers={"Content-Type": "application/json"}), timeout=30).read()
+            print("asked. It ends once the round in flight is cut short.")
+        except Exception as err:                    # noqa: BLE001
+            print(f"could not ask it to stop ({err}); it is still running.")
+        return 130
+    return 0
+
+
+def _consume(request_):
+    """Print the run as its events arrive."""
     with urllib.request.urlopen(request_, timeout=None) as stream:
         for line in stream:
             line = line.decode().strip()
@@ -1131,10 +1152,12 @@ def main(argv=None):
                               + (f"  {event.get('seconds', 0):.0f}s"
                                  if scope == "fields" else ""))
                 print(flush=True)
+            elif event.get("event") == "stopped":
+                print(f"stopped {event['where']}.")
             elif event.get("event") == "done":
-                print(f"done: {event['completed']}/{event['total']} rounds, "
+                print(f"{'stopped' if event.get('stopped') else 'done'}: "
+                      f"{event['completed']}/{event['total']} rounds, "
                       f"{event['failed']} failed, {event['seconds']:.0f}s")
-    return 0
 
 
 if __name__ == "__main__":

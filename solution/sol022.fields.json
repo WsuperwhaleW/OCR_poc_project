@@ -1,0 +1,283 @@
+{
+  "_readme": [
+    "This file holds one block per DOCUMENT, because the PDF holds more than one.",
+    "Each block states the pages it covers, the types those pages name, and the",
+    "value every key of that document's own form should come back with.",
+    "\"\" means the document does not print this; null means not checked; a list",
+    "means the page prints the value in more than one way and any of them counts.",
+    "The file's headline score pools every block -- see app._merge_field_scores."
+  ],
+  "_note": [
+    "Four documents: two monthly cleaning charges, each a tax invoice followed",
+    "by the receipt for it. The tax invoice is copy 1 of its set and the receipt",
+    "copy 5, so the two share one number -- which is what เลขที่ใบกำกับ prints on",
+    "both. No requirement covers TAX_INVOICE, so those two blocks are scored as",
+    "found-only; the two receipts are held to the receipt requirement's seven.",
+    "Neither receipt records a payment: no box is ticked and the cheque, bank,",
+    "date and amount lines are all blank, so payment_date and cheque_number are",
+    "empty on both."
+  ],
+  "documents": [
+    {
+      "pages": [
+        1
+      ],
+      "doc_types": [
+        "TAX_INVOICE"
+      ],
+      "_mandatory": {
+        "types": [
+          "TAX_INVOICE"
+        ],
+        "required": [],
+        "found_only": [
+          "document_type",
+          "document_number",
+          "issue_date",
+          "po_gr_rtv_number",
+          "inv_rtv_cnr_number",
+          "seller_tax_id",
+          "seller_branch",
+          "buyer_tax_id",
+          "buyer_branch",
+          "subtotal",
+          "vat_total",
+          "amount_incl_vat",
+          "remaining_amount",
+          "remaining_vat_amount",
+          "payment_date",
+          "cheque_number",
+          "book_no",
+          "certificate_no",
+          "sequence_no",
+          "payer_tax_id",
+          "payer_name",
+          "payer_branch",
+          "payer_address",
+          "payee_tax_id",
+          "payee_name",
+          "payee_branch",
+          "payee_address",
+          "dividend_rate_option",
+          "total_amount_paid",
+          "total_wht_amount"
+        ]
+      },
+      "document_type": [
+        "ต้นฉบับใบกำกับภาษี/ใบส่งของ/บริการ",
+        "ORIGINAL TAX INVOICE/DELIVERY ORDER/SERVICE",
+        "ต้นฉบับใบกำกับภาษี/ใบส่งของ/บริการ\nORIGINAL TAX INVOICE/DELIVERY ORDER/SERVICE"
+      ],
+      "document_number": "NW-726050172",
+      "issue_date": "19/05/2026",
+      "po_gr_rtv_number": [
+        "2260007911.Rev.0",
+        "2260007911"
+      ],
+      "inv_rtv_cnr_number": "",
+      "seller_tax_id": "0105537191594",
+      "seller_branch": "สำนักงานใหญ่",
+      "buyer_tax_id": "0107536070412",
+      "buyer_branch": [
+        "สาขาที่ 00057",
+        "00057"
+      ],
+      "subtotal": "266,500.00",
+      "vat_total": "18,655.00",
+      "amount_incl_vat": "285,155.00",
+      "remaining_amount": "",
+      "remaining_vat_amount": "",
+      "payment_date": "",
+      "cheque_number": "",
+      "book_no": "",
+      "certificate_no": "",
+      "sequence_no": "",
+      "payer_tax_id": "",
+      "payer_name": "",
+      "payer_branch": "",
+      "payer_address": "",
+      "payee_tax_id": "",
+      "payee_name": "",
+      "payee_branch": "",
+      "payee_address": "",
+      "dividend_rate_option": "",
+      "total_amount_paid": "",
+      "total_wht_amount": ""
+    },
+    {
+      "pages": [
+        2
+      ],
+      "doc_types": [
+        "RECEIPT"
+      ],
+      "_mandatory": {
+        "types": [
+          "RECEIPT"
+        ],
+        "required": [
+          "inv_rtv_cnr_number",
+          "seller_tax_id",
+          "seller_branch",
+          "buyer_tax_id",
+          "buyer_branch",
+          "subtotal",
+          "vat_total"
+        ],
+        "found_only": [
+          "remaining_amount",
+          "remaining_vat_amount",
+          "payment_date",
+          "cheque_number"
+        ]
+      },
+      "_note": [
+        "inv_rtv_cnr_number is the number under เลขที่ใบกำกับ -- a tax invoice",
+        "label, and the tax invoice this receipt settles is page 1, which prints",
+        "the same number. The receipt does not number itself separately."
+      ],
+      "inv_rtv_cnr_number": "NW-726050172",
+      "seller_tax_id": "0105537191594",
+      "seller_branch": "สำนักงานใหญ่",
+      "buyer_tax_id": "0107536070412",
+      "buyer_branch": [
+        "สาขาที่ 00057",
+        "00057"
+      ],
+      "subtotal": "266,500.00",
+      "vat_total": "18,655.00",
+      "remaining_amount": "",
+      "remaining_vat_amount": "",
+      "payment_date": "",
+      "cheque_number": ""
+    },
+    {
+      "pages": [
+        3
+      ],
+      "doc_types": [
+        "TAX_INVOICE"
+      ],
+      "_mandatory": {
+        "types": [
+          "TAX_INVOICE"
+        ],
+        "required": [],
+        "found_only": [
+          "document_type",
+          "document_number",
+          "issue_date",
+          "po_gr_rtv_number",
+          "inv_rtv_cnr_number",
+          "seller_tax_id",
+          "seller_branch",
+          "buyer_tax_id",
+          "buyer_branch",
+          "subtotal",
+          "vat_total",
+          "amount_incl_vat",
+          "remaining_amount",
+          "remaining_vat_amount",
+          "payment_date",
+          "cheque_number",
+          "book_no",
+          "certificate_no",
+          "sequence_no",
+          "payer_tax_id",
+          "payer_name",
+          "payer_branch",
+          "payer_address",
+          "payee_tax_id",
+          "payee_name",
+          "payee_branch",
+          "payee_address",
+          "dividend_rate_option",
+          "total_amount_paid",
+          "total_wht_amount"
+        ]
+      },
+      "document_type": [
+        "ต้นฉบับใบกำกับภาษี/ใบส่งของ/บริการ",
+        "ORIGINAL TAX INVOICE/DELIVERY ORDER/SERVICE",
+        "ต้นฉบับใบกำกับภาษี/ใบส่งของ/บริการ\nORIGINAL TAX INVOICE/DELIVERY ORDER/SERVICE"
+      ],
+      "document_number": "NW-726050173",
+      "issue_date": "19/05/2026",
+      "po_gr_rtv_number": [
+        "226001088.Rev.0",
+        "226001088"
+      ],
+      "inv_rtv_cnr_number": "",
+      "seller_tax_id": "0105537191594",
+      "seller_branch": "สำนักงานใหญ่",
+      "buyer_tax_id": "0107536070412",
+      "buyer_branch": [
+        "สาขาที่ 00057",
+        "00057"
+      ],
+      "subtotal": "280,500.00",
+      "vat_total": "19,635.00",
+      "amount_incl_vat": "300,135.00",
+      "remaining_amount": "",
+      "remaining_vat_amount": "",
+      "payment_date": "",
+      "cheque_number": "",
+      "book_no": "",
+      "certificate_no": "",
+      "sequence_no": "",
+      "payer_tax_id": "",
+      "payer_name": "",
+      "payer_branch": "",
+      "payer_address": "",
+      "payee_tax_id": "",
+      "payee_name": "",
+      "payee_branch": "",
+      "payee_address": "",
+      "dividend_rate_option": "",
+      "total_amount_paid": "",
+      "total_wht_amount": ""
+    },
+    {
+      "pages": [
+        4
+      ],
+      "doc_types": [
+        "RECEIPT"
+      ],
+      "_mandatory": {
+        "types": [
+          "RECEIPT"
+        ],
+        "required": [
+          "inv_rtv_cnr_number",
+          "seller_tax_id",
+          "seller_branch",
+          "buyer_tax_id",
+          "buyer_branch",
+          "subtotal",
+          "vat_total"
+        ],
+        "found_only": [
+          "remaining_amount",
+          "remaining_vat_amount",
+          "payment_date",
+          "cheque_number"
+        ]
+      },
+      "inv_rtv_cnr_number": "NW-726050173",
+      "seller_tax_id": "0105537191594",
+      "seller_branch": "สำนักงานใหญ่",
+      "buyer_tax_id": "0107536070412",
+      "buyer_branch": [
+        "สาขาที่ 00057",
+        "00057"
+      ],
+      "subtotal": "280,500.00",
+      "vat_total": "19,635.00",
+      "remaining_amount": "",
+      "remaining_vat_amount": "",
+      "payment_date": "",
+      "cheque_number": ""
+    }
+  ]
+}

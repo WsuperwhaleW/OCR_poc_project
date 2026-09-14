@@ -2985,6 +2985,40 @@ def _primary_type(codes) -> str:
     return ""
 
 
+# The catch-all column of the model x type tab. **Not a document type**: it is
+# every type no requirement covers, which is why its key cannot collide with one
+# of `prompts.TYPE_NAMES`.
+OTHER_TYPE_GROUP = "OTHER"
+
+
+def _type_group(code: str) -> str:
+    """The COLUMN a document type is filed under -- itself, or the catch-all.
+
+    **Grouped 2026-09-14 at the user's request** -- *the type is too many,
+    simplify the type to the requirement and some other, try group them
+    together*. Fourteen types is fourteen columns, nine of which are one to
+    three documents, and a grid that wide answers nothing at a glance.
+
+    The line is the one this project already draws and not a taxonomy invented
+    for the tab: a type a requirement covers gets its own form, its own
+    Mandatory set and its own validation rules, and every other type gets
+    `DEFAULT_FIELDS` -- the 30-key base form, scored `unknown_type`. So the four
+    requirement types are four columns and the rest are ONE column of documents
+    that are all asked the same thing and all scored the same way.
+
+    `prompts.DOC_TYPE_FIELDS` is the authority rather than a list repeated here,
+    so a requirement arriving for `TAX_INVOICE` splits it out of the catch-all
+    with nothing in this module changing. An empty tuple there means *known, and
+    no requirement covers it*, which is the same answer as no entry at all.
+
+    **It groups the column, never the document.** `_primary_type` still settles
+    what each document IS, every entry keeps it as `_primary`, and the catch-all
+    row names its members with their own counts -- so the grouping loses the
+    ranking BETWEEN those types and loses nothing about which they are.
+    """
+    return code if prompts.DOC_TYPE_FIELDS.get(code) else OTHER_TYPE_GROUP
+
+
 def _doc_codes(row: dict, manifest: dict) -> tuple:
     """(codes, is_pack) for the document this row read."""
     codes, pack = manifest.get(row.get("case") or "", ((), False))
@@ -3047,7 +3081,8 @@ def _typed_rows(rows: list, manifest: dict, model_of) -> tuple:
             if not code:
                 skipped["untyped"] += 1
                 continue
-            out.append({**row, "_type": code, "_codes": codes,
+            out.append({**row, "_type": _type_group(code), "_primary": code,
+                        "_codes": codes,
                         "_model_key": model, "_shape": shape,
                         "_group": _group_key(model, shape),
                         "_doc_char": None,
@@ -3059,7 +3094,7 @@ def _typed_rows(rows: list, manifest: dict, model_of) -> tuple:
             if not code:
                 skipped["untyped"] += 1
                 continue
-            out.append({**row, "_type": code,
+            out.append({**row, "_type": _type_group(code), "_primary": code,
                         "_codes": tuple(part["doc_types"]),
                         "_model_key": model, "_shape": shape,
                         "_group": _group_key(model, shape),
@@ -3192,9 +3227,24 @@ def _type_entry(code: str, rows: list, failed, pick, scored_test) -> dict:
     # usually a tax invoice as well, and without this the column reads as a claim
     # that those pages are not -- which is the cost of filing each run under one
     # type, paid back where it is incurred.
-    also = sorted({c for row in windowed for c in row["_codes"] if c != code})
+    # The types folded into this column, each with its own document count. On a
+    # requirement column that is the one type and the page draws nothing; on the
+    # catch-all it is the whole of what the column holds, which is the only
+    # thing the grouping would otherwise lose.
+    held = {}
+    for row in windowed:
+        held.setdefault(row["_primary"], set()).add(_typed_key(row))
+    members = sorted(((c, len(d)) for c, d in held.items()),
+                     key=lambda pair: (-pair[1], pair[0]))
+    also = sorted({c for row in windowed for c in row["_codes"]}
+                  - set(held) - {code})
     return {
         "key": code,
+        # The types this column IS, against the types its pages ALSO are. Both
+        # are printed and they are not the same claim: a receipt column holding
+        # pages that are tax invoices as well is one type with a qualifier, and
+        # the catch-all is eight types under one heading.
+        "members": [{"key": c, "documents": n} for c, n in members],
         "runs": len(windowed),
         "documents": len({_typed_key(row) for row in windowed}),
         # Two counts, because on pass 2 they differ and both are worth saying:
@@ -3334,9 +3384,10 @@ def type_models(rows: list = None) -> dict:
     | `models` | a model x type grid -- *what is THIS model good at, and where does it fall over* |
 
     **The type is the document's, never the run's** -- see `_manifest_types`.
-    **One run is filed under one type**, the most specific it carries -- see
-    `_primary_type`. **A file holding several documents is excluded**, because
-    its two scores are over all of them.
+    **One document is filed under one type**, the most specific it carries --
+    see `_primary_type` -- and a file holding several contributes one entry per
+    document, see `_typed_rows`. **The columns are the four requirement forms
+    and one catch-all**, not the fourteen types -- see `_type_group`.
 
     Deliberately NOT a second ranking of models: the score is `_standout_score`,
     the figures are `_per_case`-shaped, and a failure is counted and never
@@ -3370,8 +3421,19 @@ def type_models(rows: list = None) -> dict:
         # The article form a prompt uses -- "an invoice", "a withholding tax
         # certificate (50 thawi)". One string, two presentations: the page trims
         # the article for a heading, exactly as the Doc types tab already does.
-        "labels": {code: prompts.TYPE_NAMES[code]
-                   for code in prompts.TYPE_SPECIFICITY},
+        "labels": {**{code: prompts.TYPE_NAMES[code]
+                      for code in prompts.TYPE_SPECIFICITY},
+                   # It names the RULE, not "other": these pages are not a
+                   # leftover, they are the population asked the 30-key base
+                   # form and scored as an unknown type, which is the whole
+                   # reason they are one column. Short enough for a grid
+                   # heading; what it holds is on the row and in the tooltip.
+                   OTHER_TYPE_GROUP: "other types (no requirement)"},
+        "other_group": OTHER_TYPE_GROUP,
+        # Which types have a requirement, so the page can say what the grouping
+        # is without repeating the test. Order is specificity, as everywhere.
+        "requirement_types": [c for c in prompts.TYPE_SPECIFICITY
+                              if prompts.DOC_TYPE_FIELDS.get(c)],
         "specificity": list(prompts.TYPE_SPECIFICITY),
     }
 

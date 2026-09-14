@@ -216,8 +216,10 @@ class EasyAppTests(unittest.TestCase):
              patch("app.backends.select_extract") as select_extract:
             result = app._run_round(round_)
         self.assertEqual(result["reader"], "easyocr")
+        # `cancel` rides along on every read so a random test's Stop can reach
+        # the page in flight; None is a round nobody asked to stop.
         read.assert_called_once_with("sol001", "medium", extract=False,
-                                     reader="easyocr")
+                                     reader="easyocr", cancel=None)
         select.assert_not_called()
         select_extract.assert_not_called()
 

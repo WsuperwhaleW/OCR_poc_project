@@ -240,6 +240,13 @@ TYPE_NAMES = {
     "CHEQUE_DELIVERY": "a cheque delivery acknowledgement",
     "PAYMENT_ADVICE": "a bank payment advice",
     "PAYMENT_SCHEDULE": "a payment appointment slip",
+    # Added 2026-09-14 with sol021 -- a purchase order and an internal
+    # stock-transfer request sitting behind a tax invoice in one file. No
+    # requirement covers either, so both contribute no key and nothing
+    # Mandatory; they exist so `segment` can tell those pages from a
+    # continuation of the document before them.
+    "PURCHASE_ORDER": "a purchase order",
+    "STOCK_TRANSFER": "an internal stock transfer request",
     # Its own code rather than a needle under INVOICE, where ใบวางบิล sat until
     # now. A billing note is a covering slip that LISTS invoices -- sol015 prints
     # two of them, each tabling four or five invoice numbers and their totals --

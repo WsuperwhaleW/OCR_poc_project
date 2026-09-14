@@ -1,0 +1,230 @@
+{
+  "_readme": [
+    "This file holds one block per DOCUMENT, because the PDF holds more than one.",
+    "Each block states the pages it covers, the types those pages name, and the",
+    "value every key of that document's own form should come back with.",
+    "\"\" means the document does not print this; null means not checked; a list",
+    "means the page prints the value in more than one way and any of them counts.",
+    "The file's headline score pools every block -- see app._merge_field_scores."
+  ],
+  "_note": [
+    "FOUR credit notes, all of them ใบลดหนี้/ใบกำกับภาษี, all dated 01/12/2025,",
+    "split 5 / 3 / 3 / 2 pages. Every page reprints the whole form, so the only",
+    "thing that says where one document ends is its printed number -- no page",
+    "carries a page marker and no two adjacent documents differ in type.",
+    "Every figure was checked against the documents' own arithmetic before it was",
+    "written here: the 136 line amounts sum to each จำนวนเงินรวม exactly, the 30%",
+    "discount and the balance carried down both reconcile, and each total divides",
+    "by 1.07 to the printed มูลค่าสินค้า/บริการ -- these are VAT-INCLUSIVE credit",
+    "notes, so subtotal is มูลค่าสินค้า/บริการ and amount_incl_vat is",
+    "จำนวนเงินรวมทั้งสิ้น. The running figure beside จำนวนเงินรวมทั้งสิ้น (ตัวอักษร)",
+    "on every page is a cumulative QUANTITY, not an amount; the amount in words is",
+    "printed under it on the last page of each document only.",
+    "po_gr_rtv_number takes the returns reference printed after the credit reason",
+    "(122/06094-98 and so on). That is a reading: the number is not under a label",
+    "of its own, and the alternative is \"\" on all four."
+  ],
+  "documents": [
+    {
+      "pages": [
+        1,
+        2,
+        3,
+        4,
+        5
+      ],
+      "doc_types": [
+        "CREDIT_NOTE",
+        "TAX_INVOICE"
+      ],
+      "_mandatory": {
+        "types": [
+          "CREDIT_NOTE",
+          "TAX_INVOICE"
+        ],
+        "required": [
+          "document_type",
+          "document_number",
+          "issue_date",
+          "seller_tax_id",
+          "seller_branch",
+          "buyer_tax_id",
+          "buyer_branch",
+          "subtotal",
+          "vat_total",
+          "amount_incl_vat"
+        ],
+        "found_only": [
+          "po_gr_rtv_number"
+        ]
+      },
+      "document_type": "ใบลดหนี้/ใบกำกับภาษี",
+      "document_number": "24AA001251200008",
+      "issue_date": "01/12/2025",
+      "po_gr_rtv_number": "122/06094-98",
+      "seller_tax_id": "0 10 551356 5645",
+      "seller_branch": [
+        "สำนักงานใหญ่",
+        "HEAD OFFICE"
+      ],
+      "buyer_tax_id": "0107536020412",
+      "buyer_branch": [
+        "สาขา 00008",
+        "00008"
+      ],
+      "subtotal": "512,157.94",
+      "vat_total": "35,851.06",
+      "amount_incl_vat": "548,009.00"
+    },
+    {
+      "pages": [
+        6,
+        7,
+        8
+      ],
+      "doc_types": [
+        "CREDIT_NOTE",
+        "TAX_INVOICE"
+      ],
+      "_mandatory": {
+        "types": [
+          "CREDIT_NOTE",
+          "TAX_INVOICE"
+        ],
+        "required": [
+          "document_type",
+          "document_number",
+          "issue_date",
+          "seller_tax_id",
+          "seller_branch",
+          "buyer_tax_id",
+          "buyer_branch",
+          "subtotal",
+          "vat_total",
+          "amount_incl_vat"
+        ],
+        "found_only": [
+          "po_gr_rtv_number"
+        ]
+      },
+      "document_type": "ใบลดหนี้/ใบกำกับภาษี",
+      "document_number": "24AA001251200001",
+      "issue_date": "01/12/2025",
+      "po_gr_rtv_number": "191/09525-27",
+      "seller_tax_id": "0 10 551356 5645",
+      "seller_branch": [
+        "สำนักงานใหญ่",
+        "HEAD OFFICE"
+      ],
+      "buyer_tax_id": "0107536020412",
+      "buyer_branch": [
+        "สาขา 00032",
+        "00032"
+      ],
+      "subtotal": "68,397.20",
+      "vat_total": "4,787.80",
+      "amount_incl_vat": "73,185.00"
+    },
+    {
+      "pages": [
+        9,
+        10,
+        11
+      ],
+      "doc_types": [
+        "CREDIT_NOTE",
+        "TAX_INVOICE"
+      ],
+      "_mandatory": {
+        "types": [
+          "CREDIT_NOTE",
+          "TAX_INVOICE"
+        ],
+        "required": [
+          "document_type",
+          "document_number",
+          "issue_date",
+          "seller_tax_id",
+          "seller_branch",
+          "buyer_tax_id",
+          "buyer_branch",
+          "subtotal",
+          "vat_total",
+          "amount_incl_vat"
+        ],
+        "found_only": [
+          "po_gr_rtv_number"
+        ]
+      },
+      "document_type": "ใบลดหนี้/ใบกำกับภาษี",
+      "document_number": "24AA001251200002",
+      "issue_date": "01/12/2025",
+      "po_gr_rtv_number": "041/02024-28",
+      "seller_tax_id": "0 10 551356 5645",
+      "seller_branch": [
+        "สำนักงานใหญ่",
+        "HEAD OFFICE"
+      ],
+      "buyer_tax_id": "0107536020412",
+      "buyer_branch": [
+        "สาขา 00037",
+        "00037"
+      ],
+      "subtotal": "195,633.64",
+      "vat_total": "13,694.36",
+      "amount_incl_vat": "209,328.00"
+    },
+    {
+      "pages": [
+        12,
+        13
+      ],
+      "doc_types": [
+        "CREDIT_NOTE",
+        "TAX_INVOICE"
+      ],
+      "_mandatory": {
+        "types": [
+          "CREDIT_NOTE",
+          "TAX_INVOICE"
+        ],
+        "required": [
+          "document_type",
+          "document_number",
+          "issue_date",
+          "seller_tax_id",
+          "seller_branch",
+          "buyer_tax_id",
+          "buyer_branch",
+          "subtotal",
+          "vat_total",
+          "amount_incl_vat"
+        ],
+        "found_only": [
+          "po_gr_rtv_number"
+        ]
+      },
+      "_note": [
+        "Same customer and branch as the document before it, a different",
+        "credit reason and a different number."
+      ],
+      "document_type": "ใบลดหนี้/ใบกำกับภาษี",
+      "document_number": "24AA001251200003",
+      "issue_date": "01/12/2025",
+      "po_gr_rtv_number": "153/07630",
+      "seller_tax_id": "0 10 551356 5645",
+      "seller_branch": [
+        "สำนักงานใหญ่",
+        "HEAD OFFICE"
+      ],
+      "buyer_tax_id": "0107536020412",
+      "buyer_branch": [
+        "สาขา 00037",
+        "00037"
+      ],
+      "subtotal": "78,936.45",
+      "vat_total": "5,525.55",
+      "amount_incl_vat": "84,462.00"
+    }
+  ]
+}
