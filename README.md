@@ -354,7 +354,7 @@ The ones that matter for a deployment:
 | `OCR_MOCK_DIR` | `./mockOcr` | Source documents for the folder picker. Absent ⇒ upload-only. |
 | `OCR_SOLUTION_DIR` | `./solution` | Ground truth. Absent ⇒ accuracy scoring switches off and the page hides its controls. |
 | `MAX_UPLOAD_MB` | `32` | Per-upload size cap. |
-| `MAX_PAGES` | `10` | Pages read per document — a direct cap on the worst case cost of one request. |
+| `MAX_PAGES` | `0` | Pages read per document, **`0` meaning no cap — every page is read**. A positive value caps and **truncates rather than refusing**: the rest of the file is dropped. The page says so under the preview *before* a run, on the result, and above the accuracy bar; the run log records `pages_total` and a truncated read is counted as incomplete rather than scored. Uncapped, a long file is bounded by `MAX_UPLOAD_MB` and by memory — nothing is streamed. |
 | `MAX_JOBS` | `5` | Rendered documents held in memory for the compare view. A 10-page document at `medium` is ~40 MB, so this is a RAM ceiling. |
 | `GEN_READ_TIMEOUT` | `1800` | Raise on slow hardware; a timeout firing mid-generation throws away work the model server is still doing. |
 | `EXTRACT` | `1` | Set `0` to run the OCR pass only. |
@@ -550,6 +550,20 @@ headings on a Markdown profile, and the `bbox` coordinates on a layout one, whic
 no way to carry. Enabled as soon as a run returns anything, on every profile.
 
 Like Layout, it is a toggle rather than a tab — press it again to go back to where you were.
+
+### Grouping (which pages became which documents)
+
+A **Grouping** toggle sits at the top right of the Result card, beside Layout. It is enabled once
+a multi-page file starts being split into documents, and fills in page by page while that runs:
+the page it is on, how many pages are left, the session (document) it is building, and — on a
+walked file — how many questions the model was asked and answered. The progress bar says the
+same, with a **View** button.
+
+Each row is one document: its pages, its type, why it started, and how the boundary was settled
+(*read off the page*, *model decided*, or *guess*). Click a row to open its pages — the prepared
+page image (click for full size), the reason each page joined, and the text the grouping read —
+to check a boundary while the run is still going. A run fed the ground truth has no page images
+and says so.
 
 ### Layout (where the reader found each block)
 
@@ -1302,6 +1316,69 @@ file, in three places:
   it, and a row for a document with no truth file shows nothing there rather than 0%. Both are absent while the truth file is
 still all `null` — a bar reading 0.0% because nobody has filled it in would be a score, and
 there is no score. It reaches the run log as `field_acc` and `field_expected`.
+
+### Who lost it: the read, or the extraction
+
+The field score says a value is wrong. On a full run there are two candidates for whose fault
+that is, and the page now says which — for every value the score charged for, worked out in
+Python and shown beside it.
+
+The test is one question, asked of **the transcript this run actually read**: is the value the
+ground truth wants findable in it?
+
+| Attribution | Shown as | Means |
+|---|---|---|
+| the read | `read` | the transcript does not hold this value, so the extraction had nothing to copy. Whichever model extracted, the value was not in front of it |
+| the extraction | `extract` | the value **is** in the transcript and did not reach the field |
+| neither | `unclear` | the value is in neither the transcript nor `solution/<id>.md`, so the field truth and the transcript truth disagree about that key — a question for the answer sheet, not for a model |
+
+The matcher is the grounding check's own (`grounding.Source`), so a value reported lost here is
+exactly a value the grounding audit could not have grounded: loose about punctuation, spacing
+and Thai digits, strict about content. Its limits come with it — a one- or two-character value
+is found in any page of text, and a figure is compared by value against every number the
+transcript prints — and both err the same way, toward naming the extraction rather than the
+read.
+
+There is one more attribution it can make, and it needs `solution/<id>.md`: a value filled in
+under a key the page leaves blank, whose text **is** in the transcript and is **not** on the
+page, is the read's — pass 1 invented it and pass 2 copied it faithfully. Without the
+ground-truth transcript to check against, that one falls back to naming the extraction.
+
+**It changes no score.** The rate, the verdicts and the denominators are `fieldscore`'s and are
+untouched; this only attributes what the rate already charged for.
+
+Where it appears:
+
+- the **Fields** tab — each failing row is **flagged**: a coloured stripe down the row, in the
+  culprit's colour, and a `⚑ READ` / `⚑ EXTRACT` / `⚑ UNCLEAR` chip beside the value with the
+  reason in its tooltip. Table cells carry the same stripe. One hue per culprit, so a column of
+  flags is readable without reading a word of it — teal for the read, violet for the extraction,
+  grey where neither is named. They are deliberately off the red/amber/green scale: the score
+  mark beside them already says how bad the value is, and an attribution is not a severity.
+  Under the fields, one line: *of the 3 value(s) in the rate that did not come back right,
+  1 the read, 2 the extraction*, with the counts in the same colours;
+- the **pipeline strip** at the top of that tab — `1 field lost` on the **Read** box and
+  `2 fields lost` on the **Extract** box, so the answer is visible without reading the list;
+- the **run log** — `blame_ocr`, `blame_extract`, `blame_unknown` and `field_blame`, the last
+  holding the same attribution per field as `key=letter` pairs (`o`, `e`, `u`), the way
+  `field_verdicts` holds the verdicts.
+
+The three counts are taken over the same values the headline rate is, so they reconcile with
+the row they sit on: `blame_ocr + blame_extract + blame_unknown` equals
+`p1_scored − p1_correct`. A value invented where the page states nothing, and a value on a
+field the requirement marks Optional, are attributed and shown and counted in **neither** — the
+same standing those two have in the rate itself.
+
+**A run fed the ground truth is not attributed at all**, and the Fields tab shows nothing for
+it. Its transcript *is* the ground truth, so every value the extraction missed was in front of
+it by construction and every attribution would read `extract` whether or not the extraction was
+at fault. That covers the **Fields only** pane, `--from-truth`, and `POST /api/extract` with
+`from_truth`.
+
+**A run the read floor left unscored still gets it**, and that is the case it is worth the most
+in: there the rate is deliberately blank, and this is the only thing on the page that says why
+in values rather than percentages — a row with a blank `field_acc` and `blame_ocr=7` is a
+complete statement about what happened.
 
 ---
 
@@ -2273,8 +2350,43 @@ pickers mark it `· N documents`, and the note under them names the kinds it hol
 else in that note — the type, the field count, the required count — describes document 1,
 which is what the truth file describes and what the extractor is scored on.
 
+### A long file is walked instead of asked about all at once
+
+The question above carries a digest of every page, so its prompt grows with the file. Past
+`SEGMENT_MAX_PAGES` (20) it is not asked at all: the file is **walked** instead, one short
+question per unsettled boundary, carrying the document so far as the conversation — and the
+conversation is reset the moment a document ends, so each question is about one document
+rather than about the file. The prompt is then bounded by the length of a document, and a
+file of any length is a walk of short requests.
+
+The guards are the same: the model's quote must be printed on the page it was asked about,
+no number in its reply is ever read, and a refusal costs that one boundary and leaves
+Python's own reading standing. A boundary the pages settle costs no request at all, so a
+file whose pages number themselves is walked without asking anything.
+
+**Use a capable model for it.** On the six multi-document fixtures `qwen3.5:9b` walks all
+six correctly; three smaller models each get one wrong, where the rules alone get all six.
+Warm the model first — a walk is reproducible within a session, and the model's own replies
+are its memory, so one flipped boundary changes every question after it. With
+`SEGMENT_CHAT=0`, or with no model server, a file this long is read as one document instead,
+and says so.
+
+| setting | default | |
+|---|---|---|
+| `SEGMENT_CHAT` | `1` | walk a file longer than `SEGMENT_MAX_PAGES` |
+| `SEGMENT_CHAT_WINDOW` | `8` | turns of the current document each question carries, including its opening page, which is always kept |
+| `SEGMENT_CHAT_MAX_ASKS` | `200` | most questions one file may cost |
+| `SEGMENT_TYPE_GATE` | `1` | on a walked file, a change of document type the classifier is under `CLASSIFY_MIN_CONFIDENCE` about is asked about rather than trusted. Costs questions; long files only |
+
+**`MAX_PAGES` defaults to `0` — no cap, so a long file is read in full.** Set a positive
+value and it truncates rather than refusing: the page warns under the preview before the
+run, on the result, and above the accuracy bar, and the run log counts such a read as
+incomplete rather than scoring it. Uncapped, what bounds a long file is `MAX_UPLOAD_MB`
+(32) and memory — a 100-page PDF peaks around 3.6 GB at `medium`, so use `low` on one.
+
 Every result carries `segments` (which pages each document is, and why it starts there),
-`documents_found`, and `split_from` — `rules`, `model`, `guess` or `whole`. A file read as more
+`documents_found`, and `split_from` — `rules`, `model`, `chat`, `guess` or `whole`
+(`chat` is the walk). A file read as more
 than one document carries `documents`, a list of complete extraction results; the Fields tab
 draws a button per document above the values, with the reason for the boundary in its tooltip.
 The run log writes `documents`, and its `p1_present`, `p1_absent`, `other_fields` and
@@ -2730,6 +2842,7 @@ still never parses `.env` itself.
 | `backends.py` | Endpoint probing and switching; every llama.cpp-vs-Ollama difference |
 | `grounding.py` | Checking extracted fields against the transcript they came from |
 | `fieldscore.py` | Scoring extracted fields against the hand-written field ground truth, and `init` to create it |
+| `blame.py` | Which pass lost a field the score charged for — the read, or the extraction |
 | `verify.py` | Reads document amounts, and decides whether the extracted figures already carry VAT |
 | `normalise.py` | Derives the normalised values from what pass 2 copied — standard document type, branch codes, tax-ID digits, the reference list |
 | `scoring.py` | Ground-truth lookup and accuracy scoring, shared by page and CLI |

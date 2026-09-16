@@ -43,6 +43,7 @@ FILES = [
     "backends.py",
     "grounding.py",
     "fieldscore.py",
+    "blame.py",
     "paddle_runtime.py",
     "paddle_worker.py",
     "easy_runtime.py",

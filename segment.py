@@ -175,7 +175,22 @@ def document_numbers(text: str) -> set:
     return numbers
 
 
-def _boundary(page: str, previous: str, seg: dict, codes):
+def _confident(page_confidence, doc_confidence, bar) -> bool:
+    """Is the table sure enough of BOTH types to call a change of type certain?
+
+    A type change is the one boundary the rules settle without asking anyone,
+    so it is only as good as the two readings it compares. `bar` 0 is no gate,
+    which is what every caller that does not pass one gets. A confidence that
+    was never measured is not a low one, and is not held against the answer.
+    """
+    if not bar:
+        return True
+    return all((c if c is not None else 1.0) >= bar
+               for c in (page_confidence, doc_confidence))
+
+
+def _boundary(page: str, previous: str, seg: dict, codes, confidence=None,
+              min_confidence: float = 0.0):
     """Does this page open a new document? `(new, certain, why)`.
 
     `seg` is the document it would otherwise continue, so the type test compares
@@ -229,10 +244,53 @@ def _boundary(page: str, previous: str, seg: dict, codes):
         # Python continues it, which is right far more often than not, and says
         # the boundary is unsettled so the caller can put it to the model.
         return False, False, "the page heads itself with nothing"
-    if not _same_types(codes, seg["codes"]):
-        return (True, True,
-                "it heads itself %s, and the document so far is %s"
-                % (" + ".join(codes), " + ".join(seg["codes"]) or "untyped"))
+    if seg["codes"] and not _same_types(codes, seg["codes"]):
+        # **A change of type is only certain when the table is sure of both
+        # types** (2026-09-16). It is the one boundary that ends a document
+        # without asking anybody, and it was trusted at any confidence -- so a
+        # continuation table carrying the row `ขาดใบกำกับภาษี (Tax Invoice)`
+        # read TAX_INVOICE at 0.66, well under the classifier's own 0.90 bar,
+        # and cut a receipt in two with `certain=True` and no question asked.
+        # Below the bar it is still a split -- that direction loses least when
+        # wrong, for the reason at the foot of this function -- but it is a
+        # guess, so the model is asked about it like any other.
+        sure = _confident(confidence, seg.get("confidence"), min_confidence)
+        why = ("it heads itself %s, and the document so far is %s"
+               % (" + ".join(codes), " + ".join(seg["codes"])))
+        if not sure:
+            why += (" -- but the table is under %d%% sure of %s, so the change"
+                    " of type is a guess"
+                    % (round(min_confidence * 100),
+                       "this page's type" if (confidence or 0) < min_confidence
+                       else "the document's type"))
+        return True, sure, why
+    if not seg["codes"]:
+        # **An unknown type is not a different type** (2026-09-16). The document
+        # so far has no heading recorded -- because its own first page printed
+        # none, or printed one the read lost -- and a page that DOES head itself
+        # is evidence about what this document is, not proof that it is another
+        # one. Treating it as a type change was a CERTAIN split, so a document
+        # whose opening page lost its heading could never be held together and
+        # nothing was ever asked about it: the escalation below was unreachable
+        # for exactly the shape it exists to resolve. It is also what made the
+        # join branch's "a continuation page can carry the heading its document
+        # never printed on page 1" very nearly dead code.
+        #
+        # Falls through to the document number, which is the right next
+        # question, and comes back uncertain either way -- which is honest: a
+        # heading appearing over an untyped document is a real reason to suspect
+        # a boundary and not a reason to be sure of one.
+        here_numbers = document_numbers(page)
+        there_numbers = document_numbers(previous)
+        shared = here_numbers & there_numbers
+        if shared:
+            return (False, False,
+                    "it heads itself %s where the document so far heads itself "
+                    "nothing, but both pages print the same document number, %s"
+                    % (" + ".join(codes), ", ".join(sorted(shared))))
+        return (True, False,
+                "it heads itself %s and the document so far heads itself nothing"
+                % " + ".join(codes))
     # Same types, its own heading, neither page numbered. **The layout has
     # nothing left to say, so the DOCUMENT NUMBER is asked instead** -- a
     # multi-page invoice reprints its own number on every page, and two invoices
@@ -263,7 +321,8 @@ def _boundary(page: str, previous: str, seg: dict, codes):
             % " + ".join(codes))
 
 
-def segment(pages, classify, whole: str = None) -> list:
+def walk(pages, classify, whole: str = None, ask=None,
+         min_confidence: float = 0.0):
     """The pages of one file, grouped into documents.
 
     `classify(text)` is injected rather than imported: the type classifier lives
@@ -271,6 +330,34 @@ def segment(pages, classify, whole: str = None) -> list:
     and a second copy here would be a second answer to drift from the first. It
     returns `(codes, heading, confidence, detail)` -- `app.classify_transcript`'s
     own shape.
+
+    **`ask` is the rolling walk** (2026-09-16), and it is injected for the same
+    reason `classify` is: it talks to a model server, and this module holds the
+    rules rather than the transport. `None` is the pre-2026-09-16 behaviour
+    exactly -- the rules walk, every guess left as a guess -- so a caller that
+    does not pass one cannot be changed by this.
+
+    It is an object with three methods, and the shape is what it is because the
+    conversation has to follow the DOCUMENTS rather than the file:
+
+      * `opened(number, page)` -- a document starts here. **The memory resets**:
+        the pages of the document before it are not context for a question about
+        this one, they are contamination.
+      * `kept(number, page, why)` -- Python settled this page without asking.
+        It still goes into the memory, or the next question would be asked
+        against a document with holes in it -- but it costs no request.
+      * `decide(seg, number, page, guess, why)` -- the question, asked ONLY
+        where `_boundary` could not settle it. Returns `(new, why)`, or None to
+        leave Python's own reading standing.
+
+    **Every rule in `_boundary` still answers first**, which is what bounds the
+    one real hazard of a sequential walk: a decision here cannot be revisited,
+    so a wrong answer propagates to the end of the document. Asking only where
+    the page prints nothing that settles it keeps the number of chances to be
+    wrong down to the boundaries nothing else could read -- and it is the same
+    rule the one-shot escalation already follows, for the reason given there: a
+    request that could only ever disagree with printed text can only make the
+    answer worse.
 
     Always at least one segment. A one-page file is one document and is reported
     as one, so **the single-document case is a real answer from this function
@@ -284,12 +371,35 @@ def segment(pages, classify, whole: str = None) -> list:
         if not segments:
             segments.append(_open(number, page, codes, heading, confidence,
                                   "the first page of the file"))
+            if ask is not None:
+                ask.opened(number, page)
+            yield _step(number, len(pages), segments, True, True,
+                        "the first page of the file", codes, confidence)
             continue
         seg = segments[-1]
-        new, certain, why = _boundary(page, pages[number - 2], seg, codes)
+        new, certain, why = _boundary(page, pages[number - 2], seg, codes,
+                                      confidence, min_confidence)
+        asked = answered = False
+        if not certain and ask is not None:
+            asked = True
+            answer = ask.decide(seg, number, page, new, why)
+            if answer is not None:
+                answered = True
+                # **Settled.** An answered boundary is certain for the same
+                # reason `apply_groups` opens its segments certain: the guess
+                # was put to something that could resolve it and it did. WHO
+                # resolved it is `split_from` on the result, not a third state
+                # here -- a boundary is a reading, a guess, or answered, and the
+                # page says which.
+                new, why = answer
+                certain = True
         if new:
             segments.append(_open(number, page, codes, heading, confidence,
                                   why, certain))
+            if ask is not None:
+                ask.opened(number, page)
+            yield _step(number, len(pages), segments, True, certain, why,
+                        codes, confidence, asked, answered)
             continue
         seg["pages"].append(number)
         seg["page_texts"].append(page)
@@ -306,6 +416,12 @@ def segment(pages, classify, whole: str = None) -> list:
         if codes and not seg["codes"]:
             seg["codes"], seg["heading"] = list(codes), heading
             seg["confidence"] = confidence
+        if ask is not None:
+            # Into the memory whether or not it cost a request, or the next
+            # question would be asked against a document missing its middle.
+            ask.kept(number, page, why)
+        yield _step(number, len(pages), segments, False, certain, why,
+                    codes, confidence, asked, answered)
     for seg in segments:
         seg["text"] = _join(seg)
     if len(segments) == 1 and whole is not None:
@@ -320,6 +436,40 @@ def segment(pages, classify, whole: str = None) -> list:
         segments[0]["text"] = whole
     return segments
 
+
+def segment(pages, classify, whole: str = None, ask=None,
+            min_confidence: float = 0.0) -> list:
+    """`walk` run to the end: the documents, without the page-by-page steps.
+
+    Every caller that only wants the answer uses this; the extraction stream
+    uses `walk` itself, so a long file can report which page it is on while it
+    is being grouped. One loop behind both, so the steps a page draws and the
+    documents the run then extracts cannot come from two different readings.
+    """
+    steps = walk(pages, classify, whole, ask, min_confidence)
+    while True:
+        try:
+            next(steps)
+        except StopIteration as done:
+            return done.value
+
+
+def _step(number, total, segments, opened, certain, why, codes, confidence,
+          asked=False, answered=False) -> dict:
+    """What one page's decision was, for a page watching the walk.
+
+    `document` is the 1-based document this page ended up in -- the session
+    it opened, or the one it was kept in. `doc_pages` and `doc_codes` are that
+    document as it stands NOW, so a reader can see a session grow page by page.
+    No page text: the caller has the pages and decides how much of one to send.
+    """
+    seg = segments[-1]
+    return {"page": number, "pages": total, "document": len(segments),
+            "opened": bool(opened), "certain": bool(certain), "why": why or "",
+            "codes": list(codes or []),
+            "confidence": round(confidence, 3) if confidence is not None else None,
+            "asked": bool(asked), "answered": bool(answered),
+            "doc_pages": list(seg["pages"]), "doc_codes": list(seg["codes"])}
 
 def _open(number, page, codes, heading, confidence, why, certain=True) -> dict:
     return {"pages": [number], "page_texts": [page], "codes": list(codes or []),
@@ -594,5 +744,135 @@ def _selftest():
     assert valid_groups([[1], [4]], 3) is None         # out of range
     assert valid_groups([], 1) is None
 
+
+
+    # --------------------------------------------------------------------
+    # an unknown type is not a different type (2026-09-16)
+    # --------------------------------------------------------------------
+    #
+    # A document whose first page printed no heading, or printed one the read
+    # lost. A later page that heads itself is evidence about what this document
+    # IS -- so it must not be a certain split, or the document can never be held
+    # together and the escalation is never offered the one shape it is for.
+
+    # Same document number on both pages: kept, and reported as a guess.
+    segs = segment(["เลขที่ RC-01 total 100", "receipt heading เลขที่ RC-01"],
+                   classify)
+    assert [s["pages"] for s in segs] == [[1, 2]], [s["pages"] for s in segs]
+    assert segs[0]["joins"][0]["certain"] is False
+    # And the document picks up the type its own first page never printed.
+    assert segs[0]["codes"] == ["RECEIPT"]
+
+    # No shared number: split, and still a guess rather than a certainty.
+    segs = segment(["เลขที่ RC-01 total 100", "receipt heading เลขที่ RC-99"],
+                   classify)
+    assert [s["pages"] for s in segs] == [[1], [2]]
+    assert segs[1]["certain"] is False
+
+    # A real type change between two TYPED documents is untouched: still a
+    # split, still certain, which is every fixture in this corpus.
+    segs = segment(["receipt A", "credit note B"], classify)
+    assert [s["pages"] for s in segs] == [[1], [2]]
+    assert segs[1]["certain"] is True
+
+    # --------------------------------------------------------------------
+    # the rolling walk (2026-09-16)
+    # --------------------------------------------------------------------
+
+    class _Ask:
+        """A stub asker: says what it is told to, and records the walk."""
+
+        def __init__(self, new_at=None):
+            # Keyed by page number, and the value is what `decide` RETURNS --
+            # `new`, not `same`. The two read alike and mean the opposite.
+            self.new_at = dict(new_at or {})
+            self.opened_at, self.kept_at, self.asked = [], [], []
+            # What the memory held at each question, so a test can assert the
+            # reset actually happened rather than assuming it.
+            self.memory_at = {}
+            self._memory = []
+
+        def opened(self, number, page):
+            self.opened_at.append(number)
+            self._memory = [number]
+
+        def kept(self, number, page, why):
+            self.kept_at.append(number)
+            self._memory.append(number)
+
+        def decide(self, seg, number, page, guess, why):
+            self.asked.append(number)
+            self.memory_at[number] = list(self._memory)
+            if number not in self.new_at:
+                return None
+            return self.new_at[number], "the stub said so"
+
+    # `ask=None` is the pre-2026-09-16 walk, byte for byte. Asserted rather
+    # than assumed: it is what keeps every measurement taken before the walk
+    # existed comparable with one taken after.
+    for shape in (["receipt A", "", "credit note B"],
+                  ["receipt A", "receipt A", "Page 2 of 2"],
+                  ["receipt A"],
+                  ["receipt A", "receipt A"]):
+        plain = [s["pages"] for s in segment(list(shape), classify)]
+        silent = [s["pages"] for s in segment(list(shape), classify, ask=_Ask())]
+        assert plain == silent, shape
+
+    # The asker is offered ONLY the boundaries `_boundary` could not settle.
+    # Two receipts, neither numbered, each with its own heading: unsettled.
+    ask = _Ask()
+    segment(["receipt A", "receipt B"], classify, ask=ask)
+    assert ask.asked == [2], ask.asked
+    # A page numbering itself is settled and costs no question.
+    ask = _Ask()
+    segment(["receipt A", "Page 2 of 2"], classify, ask=ask)
+    assert ask.asked == [], ask.asked
+    # A heading naming another type is settled too.
+    ask = _Ask()
+    segment(["receipt A", "credit note B"], classify, ask=ask)
+    assert ask.asked == [], ask.asked
+
+    # The answer is ACTED on, in both directions, over Python's own guess.
+    # Python SPLITS two same-type unnumbered pages; an answer of "not new"
+    # merges them.
+    segs = segment(["receipt A", "receipt B"], classify,
+                   ask=_Ask({2: False}))
+    assert [s["pages"] for s in segs] == [[1, 2]]
+    assert segs[0]["joins"][0]["certain"] is True
+    # And the other way: Python CONTINUES an unheaded page, and "new" cuts it.
+    segs = segment(["receipt A", ""], classify, ask=_Ask({2: True}))
+    assert [s["pages"] for s in segs] == [[1], [2]]
+    assert segs[1]["certain"] is True
+
+    # A refusal leaves Python's reading standing, unchanged and still a guess.
+    segs = segment(["receipt A", "receipt B"], classify, ask=_Ask())
+    assert [s["pages"] for s in segs] == [[1], [2]]
+    assert segs[1]["certain"] is False
+
+    # **The memory resets at a cut.** Page 4 is judged against the document
+    # page 3 opened, not against pages 1-2 -- which is the whole design, and
+    # the one thing a walk gets wrong if `opened` forgets to throw it away.
+    ask = _Ask({2: False, 4: False})
+    segment(["receipt A", "receipt A", "credit note B", "credit note B"],
+            classify, ask=ask)
+    assert ask.opened_at == [1, 3], ask.opened_at
+    assert ask.memory_at[2] == [1], ask.memory_at[2]
+    assert ask.memory_at[4] == [3], ask.memory_at[4]
+
+    # Every page reaches the memory, asked about or not: a question put to a
+    # document missing its middle is a question about a different document.
+    ask = _Ask({4: False})
+    segment(["receipt A", "Page 2 of 3", "Page 3 of 3", "receipt A"],
+            classify, ask=ask)
+    assert ask.memory_at[4] == [1, 2, 3], ask.memory_at[4]
+
+    # A walk over a long file still yields a grouping `valid_groups` accepts --
+    # it is satisfied by construction here, which is exactly why it is cheap to
+    # assert: a walk cannot lose or duplicate a page, and a change that let it
+    # would be caught here rather than in a run.
+    long_pages = ["receipt A"] + ["" for _ in range(60)] + ["credit note B"]
+    segs = segment(long_pages, classify, ask=_Ask())
+    groups = [s["pages"] for s in segs]
+    assert valid_groups(groups, len(long_pages)) == groups
 
 _selftest()

@@ -503,6 +503,71 @@ The pages:
 """
 
 
+# --------------------------------------------------------------------------
+# stage 0a, the ROLLING walk: one boundary at a time, with a memory (2026-09-16)
+# --------------------------------------------------------------------------
+#
+# `SEGMENT_PROMPT` above puts the whole file in one request, which is what makes
+# it unusable on a long one: a hundred-page digest is a hundred-page prompt, and
+# `SEGMENT_MAX_PAGES` exists because of it. These three strings ask the same
+# question the other way round -- **page by page, carrying the document so far
+# as the conversation** -- so the prompt is bounded by the length of the
+# DOCUMENT rather than of the file, and a file of any length is a walk of short
+# requests.
+#
+# **The memory is reset the moment a document ends**, which is the whole design
+# rather than an economy: what is being asked is whether this page continues
+# THIS document, so the pages of the one before it are not context, they are
+# contamination -- and a reset is what stops document 7 being judged against
+# document 1's parties and totals.
+#
+# Two things are deliberately NOT asked for. No type: the classifier that
+# already exists resolves those per document afterwards, and a second answer
+# here would be one to drift from the first. And no number -- see `_selftest`
+# 6b, which asserts it of this prompt as well.
+
+SEGMENT_CHAT_PROMPT = """You are reading one scanned file, page by page. The file may hold one
+document, or several documents one after another.
+
+I will show you the pages in order. For each page after the first, answer whether it is
+part of the SAME document as the pages I have shown you so far.
+
+Return ONLY this JSON object each time, with no prose and no code fence:
+
+{{ "same": true, "evidence": "the exact line on this page that told you" }}
+
+- The question is whether this page records the SAME TRANSACTION as the document so far.
+  The same document number, the same parties, the same totals, or a table carrying
+  straight on from the page before -- or a page numbered 2 of 2 -- is the same document.
+- A page with its own heading, its own document number and date, its own parties or
+  totals, or numbered 1 of something, starts a NEW document.
+- A page with no heading of its own is USUALLY a continuation, but not always: read its
+  numbers. Where they belong to a different transaction it is its own document.
+- Two documents of the same kind, one after another, are still two documents.
+- "evidence" is a line COPIED from the page you are being asked about, exactly as it is
+  printed there. Copy it; do not describe it and do not summarise it.
+
+The document so far begins on page {number}:
+
+{digest}"""
+
+# One page the walk decided WITHOUT asking, stated as a fact rather than asked as
+# a question. It goes in as a user turn, never as an assistant one: the model did
+# not say this, Python did, and putting Python's reading in the model's mouth
+# would make the transcript of the conversation a record of something that did
+# not happen.
+SEGMENT_CHAT_KEPT = """Page {number} is part of this document -- {why}. Here it is:
+
+{digest}"""
+
+# The question itself.
+SEGMENT_CHAT_ASK = """Page {number}:
+
+{digest}
+
+Is page {number} part of the same document? Answer with the JSON object."""
+
+
 def classify_vocabulary():
     """The code list `CLASSIFY_PROMPT` offers, one line each."""
     return "\n".join("  %s -- %s" % (code, TYPE_NAMES[code])
@@ -2282,11 +2347,25 @@ def _selftest():
     #     project is computed in Python from evidence that can be re-derived,
     #     and a figure a model handed over would sit among them looking like one
     #     of them. This is the only prompt that asks a question whose answer is
-    #     not copied text, so it is the only one that could drift.
-    low = CLASSIFY_PROMPT.lower()
-    for word in ("confidence", "confident", "how sure", "certainty",
-                 "probability", "percent", "score", "%"):
-        assert word not in low, f"the classify prompt asks for a {word}"
+    #     not copied text, and the two segmentation prompts ask another, so
+    #     all three are checked rather than the one that came first.
+    # 6a. Every templated prompt survives `.format` with the arguments its one
+    #     caller passes. A JSON example inside one of these is a brace that has
+    #     to be doubled, and the cost of getting it wrong is a KeyError on the
+    #     first request of a long file rather than at import.
+    assert "{count}" in SEGMENT_PROMPT and SEGMENT_PROMPT.format(count=3)
+    assert SEGMENT_CHAT_PROMPT.format(number=1, digest="x")
+    assert SEGMENT_CHAT_KEPT.format(number=2, why="why", digest="x")
+    assert SEGMENT_CHAT_ASK.format(number=2, digest="x")
+    assert CLASSIFY_PROMPT.format(vocabulary=classify_vocabulary())
+
+    for name, text in (("classify", CLASSIFY_PROMPT),
+                       ("segment", SEGMENT_PROMPT),
+                       ("segment chat", SEGMENT_CHAT_PROMPT)):
+        low = text.lower()
+        for word in ("confidence", "confident", "how sure", "certainty",
+                     "probability", "percent", "score", "%"):
+            assert word not in low, f"the {name} prompt asks for a {word}"
 
     # 7. Every rule is about a key that exists and a type that has one, and the
     #    key is one that type actually asks for -- a bullet about a key the form

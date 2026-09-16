@@ -211,6 +211,65 @@ _SUBSUMED = {
 }
 
 
+# A Thai receipt that is not a tax invoice says so, in as many words, directly
+# under its own heading: `ต้นฉบับใบเสร็จรับเงิน` / `(ไม่ใช่ใบกำกับภาษี)`. The
+# needle `ใบกำกับภาษี` sits inside that denial, so a line whose whole purpose is
+# to say THIS IS NOT A TAX INVOICE classified as one -- and on sol022 it tied
+# with the real heading at 0.69 and won the tie, typing two receipt pages as tax
+# invoices and merging the file's four documents into one.
+#
+# **This is stage 0, so it chooses the FORM.** Those pages would be asked the
+# 30-key base set instead of the receipt's eleven and held to the wrong
+# validation rules. The fixtures are shielded because the manifest overrides the
+# table; a real upload is not, and this wording is standard on Thai non-tax
+# receipts rather than a quirk of one document.
+_NEGATIONS = _needles(
+    "ไม่ใช่", "มิใช่", "ไม่ถือเป็น", "ไม่เป็น",
+    "this is not", "is not a", "is not an", "not a", "not an",
+)
+
+# How far before a needle a denial may sit and still be about it, in squashed
+# characters. **Deliberately tiny**: on the page the two are adjacent
+# (`ไม่ใช่ใบกำกับภาษี` squashes to `ไมใช` then `ใบกากบภาษ`, nothing between), and
+# the alternative -- a line-wide rule -- would let `ใบกำกับภาษี (ไม่ใช่ต้นฉบับ)`,
+# a tax invoice that is not the ORIGINAL, deny its own heading. A denial that is
+# not next to what it denies is not something this can read, and guessing at one
+# is how a rule that describes a title starts describing a logo.
+NEGATION_WINDOW = 4
+
+
+def _denied(squashed, start) -> bool:
+    """Does a denial end just before `start`?"""
+    for no in _NEGATIONS:
+        before = squashed[max(0, start - NEGATION_WINDOW - len(no)):start]
+        at = before.rfind(no)
+        if at != -1 and len(before) - (at + len(no)) <= NEGATION_WINDOW:
+            return True
+    return False
+
+
+def _positions(needle, squashed):
+    """Where `needle` occurs in `squashed`, skipping occurrences that are denied.
+
+    Per OCCURRENCE rather than per line, which is the whole of why this is safe
+    to apply: `ต้นฉบับใบเสร็จรับเงิน (ไม่ใช่ใบกำกับภาษี)` is one line naming two
+    types and only the second is denied. A line-level rule would throw the
+    receipt away along with the tax invoice, which is the answer the page
+    actually gives.
+    """
+    out, start = [], squashed.find(needle)
+    while start != -1:
+        if not _denied(squashed, start):
+            out.append((start, start + len(needle)))
+        start = squashed.find(needle, start + 1)
+    return out
+
+
+def _present(needle, squashed) -> bool:
+    """`needle in squashed`, except where every occurrence of it is denied."""
+    return bool(_positions(needle, squashed))
+
+
 def _drop_subsumed(codes, squashed):
     """Remove a code whose only evidence was a substring of a narrower code's."""
     out = list(codes)
@@ -222,7 +281,7 @@ def _drop_subsumed(codes, squashed):
                 continue
             # Evidence for the wider code that is NOT inside the narrower one.
             independent = [n for n in wide_any
-                           if n in squashed
+                           if _present(n, squashed)
                            and not any(n in w for w in narrow_needles)]
             if not independent and set(wide_any) & set(wide_needles):
                 out.remove(wide_code)
@@ -242,10 +301,13 @@ def match_types(raw_title):
         return [], [], ""
     codes, hits = [], []
     for code, required, any_of in DOCUMENT_TYPES:
-        if not all(n in squashed for n in required):
+        # `_present` rather than `in`: a needle whose every occurrence is DENIED
+        # is not evidence for its code. See `_positions`.
+        if not all(_present(n, squashed) for n in required):
             continue
-        matched = [n for n in tuple(required) + tuple(any_of) if n in squashed]
-        if any_of and not any(n in squashed for n in any_of):
+        matched = [n for n in tuple(required) + tuple(any_of)
+                   if _present(n, squashed)]
+        if any_of and not any(_present(n, squashed) for n in any_of):
             continue
         if code not in codes:
             codes.append(code)
@@ -286,12 +348,13 @@ def heading_confidence(raw_title, line_no=1):
     if any(squashed.startswith(lead) for lead in REFERENCE_LEADINS):
         return 0.0, {"coverage": 0.0, "position": 1.0, "matched": [],
                      "chars": len(squashed), "why": "refers to another document"}
+    # The SAME occurrences `match_types` counted as evidence, so a denied phrase
+    # cannot inflate the coverage of a code it was not evidence for. One
+    # function, two callers: working the positions out a second way here is how
+    # a score and the answer it scores drift apart.
     spans = []
     for needle in hits:
-        start = squashed.find(needle)
-        while start != -1:
-            spans.append((start, start + len(needle)))
-            start = squashed.find(needle, start + 1)
+        spans.extend(_positions(needle, squashed))
     spans.sort()
     covered, end = 0, -1
     for a, b in spans:
@@ -657,5 +720,42 @@ def _selftest():
         f"normalise.DOCUMENT_TYPES is {ours} and prompts.TYPE_SPECIFICITY is "
         f"{theirs}: the two must name the same codes in the same order")
 
+
+
+    # ----------------------------------------------------------------------
+    # a denied type is not a type (2026-09-16)
+    # ----------------------------------------------------------------------
+    #
+    # `(ไม่ใช่ใบกำกับภาษี)` is standard on a Thai receipt that is not a tax
+    # invoice, and the needle sits inside the denial. On sol022 it tied with the
+    # real heading and won, typing two receipt pages as tax invoices.
+
+    # The denial alone names nothing, and scores nothing.
+    assert document_types("(ไม่ใช่ใบกำกับภาษี)") == []
+    assert heading_confidence("(ไม่ใช่ใบกำกับภาษี)")[0] == 0.0
+    assert document_types("(This is not a tax invoice)") == []
+
+    # **Per occurrence, not per line**: one line naming two types keeps the one
+    # it does not deny. This is the shape the page actually prints, and a
+    # line-level rule would throw the receipt away with the tax invoice.
+    assert document_types("ต้นฉบับใบเสร็จรับเงิน (ไม่ใช่ใบกำกับภาษี)") == ["RECEIPT"]
+
+    # A denial AFTER the heading denies something else -- here the copy, not the
+    # kind. Looking only backwards is what keeps this true.
+    assert document_types("ใบกำกับภาษี (ไม่ใช่ต้นฉบับ)") == ["TAX_INVOICE"]
+
+    # And the ordinary headings are untouched, including the one that is two
+    # types and covers its whole line.
+    assert document_types("ใบเสร็จรับเงิน/ใบกำกับภาษี") == ["RECEIPT", "TAX_INVOICE"]
+    assert heading_confidence("ใบเสร็จรับเงิน/ใบกำกับภาษี")[0] == 1.0
+    assert document_types("ต้นฉบับใบกำกับภาษี/ใบส่งของ/บริการ") == ["TAX_INVOICE"]
+
+    # The window is tight on purpose: a denial with a whole clause between it
+    # and the needle is not read as being about it.
+    assert document_types("ไม่ใช่เอกสารสำคัญทางการเงินใบกำกับภาษี") == ["TAX_INVOICE"]
+
+    # A needle denied in one place and printed plainly in another still counts:
+    # every occurrence has to be denied, not merely one.
+    assert document_types("ใบกำกับภาษี (ไม่ใช่ใบกำกับภาษี)") == ["TAX_INVOICE"]
 
 _selftest()

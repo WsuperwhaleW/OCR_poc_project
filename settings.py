@@ -30,7 +30,17 @@ import config
 # sharing one server between several users will want them lower than these
 # single-user defaults.
 MAX_UPLOAD_MB = config.env_int("MAX_UPLOAD_MB", 32, minimum=1, maximum=512)
-MAX_PAGES = config.env_int("MAX_PAGES", 10, minimum=1, maximum=200)
+# **0 means no cap: read every page of the file** (2026-09-16, at the user's
+# request -- *no cap page*). A positive value caps and the rest of the file is
+# DROPPED, which the page and the run log now say out loud rather than silently
+# -- see `app.load_pages`.
+#
+# What bounds a long file now is `MAX_UPLOAD_MB` above and the machine: nothing
+# here is streamed, so `load_pages` holds every page at `PDF_DPI` in one list
+# (~26 MB per A4 page at 300 DPI, so ~2.4 GB for 100 pages) and `prepare_input`
+# builds the downscaled copies beside it -- ~3.6 GB peak at `medium` for 100
+# pages, measured. Lower `Detail` and `MAX_JOBS` are the levers, in that order.
+MAX_PAGES = config.env_int("MAX_PAGES", 0, minimum=0)
 # Render PDFs above the pixel cap so the downscale resamples from real detail
 # rather than the model reading a coarsely rasterised page.
 PDF_DPI = config.env_int("PDF_DPI", 300, minimum=72, maximum=600)
@@ -579,10 +589,53 @@ SEGMENT_MAX_CHARS = config.env_int("SEGMENT_MAX_CHARS", 700, minimum=100)
 # for the reason `CLASSIFY_MAX_TOKENS` is: a reply long enough to overrun it is
 # one that started transcribing the pages instead of grouping them.
 SEGMENT_MAX_TOKENS = config.env_int("SEGMENT_MAX_TOKENS", 200, minimum=32)
-# The most pages this app will try to split. A boundary question over a
-# fifty-page file is a fifty-page prompt, and a file that long is a batch of
-# documents rather than a document -- the queue is the thing for that.
+# The most pages the ONE-SHOT question is asked over. Its prompt carries a
+# digest of every page, so it grows with the file -- which is the whole reason
+# for the cap, and the reason the walk below exists rather than the cap simply
+# being raised.
+#
+# Above it the file is not read as one document any more (2026-09-16): it goes
+# to `SEGMENT_CHAT`, and only falls back to one document where that is off or
+# there is no model server to ask.
 SEGMENT_MAX_PAGES = config.env_int("SEGMENT_MAX_PAGES", 20, minimum=2)
+# Past that cap, walk the file page by page instead of asking about all of it at
+# once: one short question per unsettled boundary, carrying the document so far
+# as the conversation, and the memory reset the moment a document ends.
+#
+# **The prompt is then bounded by the length of a DOCUMENT rather than of the
+# file**, which is what makes a hundred-page file answerable at all -- and the
+# reset is what stops document 7 being judged against document 1's parties and
+# totals.
+#
+# Off restores the pre-2026-09-16 answer for a long file: read as one document,
+# saying so. That is not a small difference -- one document is one form, asked
+# once, filled from a hundred pages of candidates, with `grounding.py` endorsing
+# every value because it genuinely is on some page.
+SEGMENT_CHAT = config.env_bool("SEGMENT_CHAT", True)
+# How many turns of the current document the question carries, INCLUDING the
+# page the document opened on, which is always kept.
+#
+# **A conversation is not memory the server holds** -- both backends are
+# stateless, so every turn is resent, and an unbounded one grows with the
+# document until it overruns `num_ctx` on exactly the long files this was built
+# for. What identifies a document is its first page (the heading, the number,
+# the parties) and its most recent (the running table, the `3 of 7`); the middle
+# contributes least and is what drops out.
+SEGMENT_CHAT_WINDOW = config.env_int("SEGMENT_CHAT_WINDOW", 8, minimum=2)
+# The most questions one file may cost. Only an UNSETTLED boundary asks, so a
+# file whose pages number themselves costs none of these however long it is --
+# the cap is for the pathological file where nothing is settled and every page
+# is a question. Reached, the rest of the walk is Python's own reading, and the
+# result says how many were asked.
+SEGMENT_CHAT_MAX_ASKS = config.env_int("SEGMENT_CHAT_MAX_ASKS", 200, minimum=1)
+
+# A change of type the classifier is under CLASSIFY_MIN_CONFIDENCE about is a
+# question on the walk rather than a certain cut (2026-09-16). It costs requests
+# and it is only as good as the model answering: on the 100-page pack qwen3.5:9b
+# stayed 78/78 at 50 questions instead of 13, while gemma4:e4b fell 76 -> 64 of
+# 78. Off restores trusting every type change. Never applied to a short file --
+# there one unsure boundary sends the WHOLE file to the one-shot regroup.
+SEGMENT_TYPE_GATE = config.env_bool("SEGMENT_TYPE_GATE", True)
 
 # Second pass: feed the finished transcript back to the model as text and ask for
 # structured fields. Text-only, so there is no image to prefill and it costs a

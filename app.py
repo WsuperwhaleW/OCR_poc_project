@@ -28,6 +28,7 @@ import requests
 from flask import Flask, Response, jsonify, render_template, request
 
 import backends
+import blame
 import config
 import easy_runtime
 import fieldscore
@@ -96,6 +97,10 @@ from settings import (
     SEGMENT_DOCUMENTS,
     SEGMENT_MAX_CHARS,
     SEGMENT_MAX_PAGES,
+    SEGMENT_CHAT,
+    SEGMENT_CHAT_WINDOW,
+    SEGMENT_TYPE_GATE,
+    SEGMENT_CHAT_MAX_ASKS,
     SEGMENT_MAX_TOKENS,
     SEGMENT_WITH_MODEL,
     TYPE_FRAMING_AGENTIC,
@@ -1379,7 +1384,173 @@ def _segment_with_model(pages, status: dict):
         return None
 
 
+class _SegmentChat:
+    """The rolling boundary walk: one short question per unsettled boundary.
+
+    **Why this exists when the one-shot above does not answer it.**
+    `_segment_with_model` puts a digest of every page in one request, so its
+    prompt grows with the FILE -- which is what `SEGMENT_MAX_PAGES` is, and why
+    a longer file used to be read as one document instead. Here the question is
+    turned round: the pages arrive one at a time and the document so far is the
+    conversation, so the prompt is bounded by the length of a DOCUMENT and a
+    file of any length is a walk of short requests.
+
+    **The reset is the design, not an economy.** What is being asked is whether
+    this page continues THIS document; the pages of the one before it are not
+    context for that, they are contamination -- and without the reset document 7
+    would be judged partly against document 1's parties and totals. So `opened`
+    throws the memory away and starts again from the page that opened the
+    document.
+
+    **A conversation is not memory the server holds.** Both backends are
+    stateless: every turn is resent, so what this class calls memory is a list
+    rebuilt into each request. That is what `SEGMENT_CHAT_WINDOW` is for -- an
+    unbounded one grows with the document until it overruns `num_ctx` on exactly
+    the long files this was built for. The opening page is always kept and the
+    middle drops out, because what identifies a document is its first page and
+    its most recent one.
+
+    **Python's decisions go in as USER turns, never as assistant ones.** A page
+    `segment.py` settled still has to be in the memory, or the next question is
+    asked against a document with holes in it -- but writing Python's reading as
+    something the model said would make the conversation a record of a thing
+    that did not happen, and the next answer would be conditioned on it.
+
+    Three guards, the same three the classifier has and for the same reasons:
+
+    * the reply is read for exactly two keys and nothing else -- **no number is
+      taken**, here as anywhere;
+    * **the evidence it quotes must be printed on the page it was asked about**,
+      checked with `grounding.squash` like every extracted value. An answer that
+      cannot point at the page is discarded whole and Python's reading stands;
+    * a refusal costs the walk that one boundary and nothing else -- it never
+      raises and never stops the walk.
+    """
+
+    def __init__(self, status: dict):
+        self.status = status
+        # The current document's conversation. Thrown away by `opened`.
+        self._first = None
+        self._turns = []
+        # Reported: a walk that asked nothing and a walk that was refused
+        # everything reach the same answer by different roads.
+        self.asked = 0
+        self.answered = 0
+        self.refused = 0
+        self.capped = False
+
+    # -- the memory ------------------------------------------------------
+
+    def _digest(self, page: str) -> str:
+        return (page or "").strip()[:SEGMENT_MAX_CHARS]
+
+    def opened(self, number: int, page: str):
+        self._first = {
+            "role": "user",
+            "content": prompts.SEGMENT_CHAT_PROMPT.format(
+                number=number, digest=self._digest(page))}
+        self._turns = []
+
+    def kept(self, number: int, page: str, why: str):
+        self._turns.append({
+            "role": "user",
+            "content": prompts.SEGMENT_CHAT_KEPT.format(
+                number=number, why=why, digest=self._digest(page))})
+
+    def _messages(self, number: int, page: str):
+        """The opening page, the tail of the document, and the question.
+
+        The opening turn is never dropped: it is what the document IS, and a
+        window that let it fall off would leave the model comparing a page
+        against the middle of a table it can no longer identify.
+        """
+        window = max(SEGMENT_CHAT_WINDOW - 1, 1)
+        return (backends.system_prefix(self.status)
+                + [self._first]
+                + self._turns[-window:]
+                + [{"role": "user",
+                    "content": prompts.SEGMENT_CHAT_ASK.format(
+                        number=number, digest=self._digest(page))}])
+
+    # -- the question ----------------------------------------------------
+
+    def decide(self, seg, number: int, page: str, guess: bool, why: str):
+        """(new, why) from one question, or None to leave Python's reading."""
+        if self._first is None:
+            return None
+        if self.asked >= SEGMENT_CHAT_MAX_ASKS:
+            self.capped = True
+            return None
+        self.asked += 1
+        answer = self._ask(number, page)
+        if answer is None:
+            self.refused += 1
+            return None
+        same, evidence = answer
+        self.answered += 1
+        # The reply goes back into the memory unedited: this turn is the one
+        # thing in the conversation the model actually said, and rewriting it
+        # would condition the next answer on words it did not use.
+        self._turns.append({
+            "role": "assistant",
+            "content": json.dumps({"same": same, "evidence": evidence},
+                                  ensure_ascii=False)})
+        return (not same,
+                "the model reads page %d as %s, quoting %s"
+                % (number, "the same document" if same else "a new document",
+                   json.dumps(evidence, ensure_ascii=False)))
+
+    def _ask(self, number: int, page: str):
+        """(same, evidence) from one request, or None. Never raises."""
+        try:
+            url, payload = backends.structured_request(
+                self._messages(number, page), None, SEGMENT_MAX_TOKENS,
+                self.status)
+            res = requests.post(url, json=payload, timeout=GEN_TIMEOUT)
+            if res.status_code != 200:
+                return None
+            raw, _, _ = backends.structured_reply(res.json(), self.status)
+            reply = json.loads(_first_json_object(strip_fence(raw)) or raw)
+            if not isinstance(reply, dict):
+                return None
+            if not isinstance(reply.get("same"), bool):
+                return None
+            evidence = str(reply.get("evidence") or "").strip()
+            # **The quote has to be on the page it was asked about.** This is
+            # the guard that makes a sequential walk safe to act on: an answer
+            # that can point at the page is a reading of printed text, and one
+            # that cannot is a guess wearing a citation. Checked against the
+            # whole page rather than the digest the model was shown -- the
+            # digest is a window on the page, and a correct quote from just past
+            # its edge is still a correct quote.
+            if not evidence:
+                return None
+            if grounding.squash(evidence) not in grounding.squash(page or ""):
+                return None
+            return bool(reply["same"]), evidence
+        except Exception:
+            return None
+
+    def note(self) -> str:
+        """What the walk cost, for the reason the split reports anything."""
+        if not self.asked:
+            return "every boundary was read off the pages"
+        parts = ["%d boundary question(s), %d answered"
+                 % (self.asked, self.answered)]
+        if self.refused:
+            parts.append("%d refused" % self.refused)
+        if self.capped:
+            parts.append("stopped at SEGMENT_CHAT_MAX_ASKS=%d"
+                         % SEGMENT_CHAT_MAX_ASKS)
+        return ", ".join(parts)
+
+
 def resolve_segments(text: str, pages=None, status: dict = None):
+    """`(segments, how)`, without the page-by-page progress. See `_segment_stream`."""
+    return _drain(_segment_stream(text, pages, status))
+
+
+def _segment_stream(text: str, pages=None, status: dict = None):
     """`(segments, how)` -- the documents in this file, and on whose authority.
 
     `how` is reported for the reason `doc_type_from` is: a run that came back as
@@ -1387,7 +1558,10 @@ def resolve_segments(text: str, pages=None, status: dict = None):
     check is one nobody should take on trust.
 
       * `rules` -- `segment.py` read it off the pages, and was sure
-      * `model` -- a boundary was a guess and the model was asked
+      * `model` -- a boundary was a guess and the model was asked, about the
+        whole file in one request
+      * `chat` -- the file was too long for that, so it was WALKED: one question
+        per unsettled boundary, carrying the document so far
       * `guess` -- a boundary was a guess, the model was not asked or would not
         answer, and Python's own reading stands
       * `whole` -- not split at all: one page, the setting off, or too many pages
@@ -1408,14 +1582,60 @@ def resolve_segments(text: str, pages=None, status: dict = None):
     if not SEGMENT_DOCUMENTS:
         return segment.one(pages, classify_transcript, text,
                            "splitting is off (SEGMENT_DOCUMENTS=0)"), "whole"
-    if len(pages) > SEGMENT_MAX_PAGES:
-        # A file this long is a batch of documents rather than a document, and
-        # a sweep is the thing for a batch. Read as one rather than split
-        # badly, and it says so.
+    walking = len(pages) > SEGMENT_MAX_PAGES
+    if walking and not (SEGMENT_CHAT and status):
+        # No model server, or the walk is off. Read as one rather than split
+        # badly, and it says so -- remembering that one document is one form,
+        # asked once, filled from however many pages this file has.
         return segment.one(pages, classify_transcript, text,
                            "the file has %d pages, over SEGMENT_MAX_PAGES=%d"
                            % (len(pages), SEGMENT_MAX_PAGES)), "whole"
-    segments = segment.segment(pages, classify_transcript, whole=text)
+    # Too long for the one-shot question, whose prompt carries a digest of every
+    # page, is **walked instead** (2026-09-16): one short question per unsettled
+    # boundary, the document so far as the conversation, and the memory reset at
+    # every cut -- so the prompt is bounded by the length of a document rather
+    # than of the file.
+    chat = _SegmentChat(status) if walking else None
+    # Every multi-page file reports its grouping page by page, walked or not
+    # (2026-09-16, at the user's request: *see how many pages remain, what the
+    # current session is at, and view the grouped pages*). On a short file the
+    # steps arrive in a burst and cost nothing; on a long one they are the only
+    # thing that says the run is moving between the last page read and the first
+    # field extracted.
+    yield {"event": "segmenting", "pages": len(pages), "walk": walking}
+    # The type-change gate is the classifier's own bar, CLASSIFY_MIN_CONFIDENCE:
+    # a change of type the table is not sure of is a guess, and a guess is what
+    # gets asked about. See `segment._boundary`.
+    #
+    # **The walk only.** Measured on qwen3.5:9b: gated on a SHORT file, one
+    # unsure type change sends the whole file to the one-shot question, which
+    # regroups every page and overruled correct splits -- sol015 and sol022 both
+    # came back wrong where the rules alone are right. The walk asks about the
+    # one boundary in doubt and nothing else, so the gate is safe there.
+    steps = segment.walk(pages, classify_transcript, whole=text, ask=chat,
+                         min_confidence=(CLASSIFY_MIN_CONFIDENCE
+                                         if walking and SEGMENT_TYPE_GATE else 0.0))
+    while True:
+        try:
+            step = next(steps)
+        except StopIteration as done:
+            segments = done.value
+            break
+        # The head of the page, which is what the walk itself was shown -- a
+        # reader verifying a group sees the text the decision was taken on. The
+        # whole page is already on screen as the transcript; this is bounded at
+        # SEGMENT_MAX_CHARS so a hundred-page walk stays a few tens of KB.
+        yield {"event": "segment_page", **step,
+               "remaining": step["pages"] - step["page"],
+               "head": (pages[step["page"] - 1] or "").strip()[:SEGMENT_MAX_CHARS],
+               **({"asked_total": chat.asked, "answered_total": chat.answered,
+                   "refused_total": chat.refused} if chat else {})}
+    if walking:
+        # `chat` only where a question actually settled something. A walk
+        # nobody answered IS Python's own reading and must not claim otherwise
+        # -- the same rule `doc_type_from` follows, and the reason a refusal
+        # here is reported rather than swallowed.
+        return segments, ("chat" if chat.answered else "guess")
     if not segment.uncertain(segments):
         return segments, "rules"
     if status:
@@ -2514,7 +2734,8 @@ def set_extract_mode(mode: str) -> str:
 
 
 def extract_fields_stream(text: str, mode: str = None, case_id: str = None,
-                          steps=None, doc_type: str = None, pages=None):
+                          steps=None, doc_type: str = None, pages=None,
+                          truth_fed: bool = False):
     """Turn a finished transcript into structured JSON, yielding progress.
 
     A separate text-only pass rather than part of the OCR prompt: mixing
@@ -2560,7 +2781,7 @@ def extract_fields_stream(text: str, mode: str = None, case_id: str = None,
     if not status["text_available"]:
         return {"error": status["text_reason"]}
     mode = mode or extract_mode()
-    segments, split_from = resolve_segments(text, pages, status)
+    segments, split_from = yield from _segment_stream(text, pages, status)
     records = [_segment_record(seg, index, len(segments))
                for index, seg in enumerate(segments, 1)]
     # Emitted on every run, one document or several. A page that only heard
@@ -2571,10 +2792,12 @@ def extract_fields_stream(text: str, mode: str = None, case_id: str = None,
            "split_from": split_from, "segments": records}
     if len(segments) > 1:
         result = yield from _extract_documents(segments, records, mode, case_id,
-                                               steps, doc_type, status)
+                                               steps, doc_type, status,
+                                               truth_fed)
     else:
         result = yield from _extract_document(segments[0]["text"], mode, case_id,
-                                              steps, doc_type, status)
+                                              steps, doc_type, status,
+                                              truth_fed=truth_fed)
     if isinstance(result, dict):
         # On every result, however many documents: what the file was read as is
         # a fact about the run, and a reader looking at one document's fields
@@ -2586,7 +2809,8 @@ def extract_fields_stream(text: str, mode: str = None, case_id: str = None,
 
 
 def _extract_document(text: str, mode: str, case_id: str, steps, doc_type,
-                      status: dict, record: dict = None):
+                      status: dict, record: dict = None,
+                      truth_fed: bool = False):
     """One document: classify it, ask for its form, ground it, validate it, score it.
 
     The whole of what `extract_fields_stream` used to be, lifted out unchanged so
@@ -2625,11 +2849,11 @@ def _extract_document(text: str, mode: str, case_id: str, steps, doc_type,
         result = _extract_single(text, status, form)
     result = _validate_fields(result, form, text, mode)
     return _score_fields(result, case_id, form,
-                         (record or {}).get("pages"))
+                         (record or {}).get("pages"), text, truth_fed)
 
 
 def _extract_documents(segments, records, mode: str, case_id: str, steps,
-                       doc_type, status: dict):
+                       doc_type, status: dict, truth_fed: bool = False):
     """Every document in the file, one at a time, merged into one result.
 
     **The fields are independent and are kept that way.** Each document is
@@ -2652,7 +2876,8 @@ def _extract_documents(segments, records, mode: str, case_id: str, steps,
                "documents": len(records), "pages": list(record["pages"]),
                "page_range": record["page_range"]}
         result = yield from _extract_document(seg["text"], mode, case_id,
-                                              steps, doc_type, status, record)
+                                              steps, doc_type, status, record,
+                                              truth_fed)
         if not isinstance(result, dict):
             result = {"error": "extraction returned nothing"}
         result["document"] = record["document"]
@@ -2731,6 +2956,12 @@ def _merge_documents(documents, records, mode: str, failed: int) -> dict:
                        if result.get("model")), ""),
         "partial": any(result.get("partial") for result in documents),
         "grounding": _merge_grounding(documents),
+        # Every document's attribution as one for the file, paths prefixed with
+        # the document they belong to exactly as grounding's are. The counts sum
+        # because the score's counts pool the same way, which is what keeps the
+        # run-log invariant true of a pack as well as of a page.
+        "blame": blame.merge([(result.get("document") or index, result.get("blame"))
+                              for index, result in enumerate(documents, 1)]),
         # Stage 0 of the FIRST document, so a page rendering the strip has
         # something true to draw before the reader picks a document. The
         # per-document classification is on each entry of `documents`.
@@ -2859,7 +3090,8 @@ def _validate_fields(result: dict, form: dict, text: str, mode: str) -> dict:
 
 
 def _score_fields(result: dict, case_id: str, form: dict = None,
-                  pages=None) -> dict:
+                  pages=None, transcript: str = "",
+                  truth_fed: bool = False) -> dict:
     """Attach the field score, when this document has field ground truth.
 
     Absent rather than an error when there is none: most documents are not
@@ -2904,9 +3136,44 @@ def _score_fields(result: dict, case_id: str, form: dict = None,
                 # one block per document, so without this every document would
                 # be marked against the first one's answers.
                 pages=pages)
+            # Which pass lost each value the score just charged for. Attached
+            # here rather than anywhere else for the same reason the score is:
+            # this is the one place a result has its fields, its truth and the
+            # transcript they were read from all in hand at once.
+            result["blame"] = _attribute_blame(result["field_score"], case_id,
+                                               transcript, truth_fed)
     except Exception as err:  # pragma: no cover - a score is never worth a 500
         result["field_score"] = {"error": f"field scoring failed: {err}"}
     return result
+
+
+def _page_text(case_id: str) -> str:
+    """A case's own ground-truth transcript, or "" where there is none.
+
+    Read whole rather than cut to this document's pages, and that is the
+    conservative direction on both of the questions `blame` asks it: a value
+    found anywhere in the file's truth is a value the page really prints, so the
+    only attributions this can move are the two that would otherwise have
+    accused somebody -- never the other way about.
+    """
+    try:
+        case = scoring.cases_index().get(case_id)
+        return case["ground_truth"].read_text("utf-8") if case else ""
+    except Exception:  # pragma: no cover - a missing page is not a failure
+        return ""
+
+
+def _attribute_blame(score, case_id: str, transcript: str,
+                     truth_fed: bool) -> dict:
+    """`blame.check`, guarded, because an attribution is never worth a run.
+
+    It moves no score and no verdict -- see `blame.py`, which is emphatic about
+    that -- so a failure here costs a note and must not cost the fields.
+    """
+    try:
+        return blame.check(score, transcript, _page_text(case_id), truth_fed)
+    except Exception as err:  # pragma: no cover
+        return {"skipped": f"attribution failed: {err}"}
 
 
 def _drain(generator):
@@ -2919,10 +3186,11 @@ def _drain(generator):
 
 
 def extract_fields(text: str, mode: str = None, case_id: str = None,
-                   steps=None, doc_type: str = None, pages=None) -> dict:
+                   steps=None, doc_type: str = None, pages=None,
+                   truth_fed: bool = False) -> dict:
     """`extract_fields_stream` for callers with nowhere to show progress."""
     return _drain(extract_fields_stream(text, mode, case_id, steps, doc_type,
-                                        pages))
+                                        pages, truth_fed))
 
 
 def strip_fence(text: str) -> str:
@@ -3107,8 +3375,34 @@ def _looks_like_pdf(data: bytes) -> bool:
     return data[:1024].lstrip()[:5] == b"%PDF-"
 
 
+def _capped(items, limit: int):
+    """`items`, at most `limit` of them -- and ALL of them when `limit` is 0.
+
+    `zip(items, range(limit))` was the old spelling and it reads as harmless
+    until the limit is zero, where it yields nothing rather than everything.
+    """
+    for index, item in enumerate(items):
+        if limit and index >= limit:
+            return
+        yield item
+
+
 def load_pages(data: bytes):
-    """Decode an upload into a list of RGB page images."""
+    """Decode an upload into `(pages, total)` -- the pages READ and the pages IT HAS.
+
+    **The two differ, silently, and that is why this returns both** (2026-09-16).
+    `MAX_PAGES` caps what is rasterised, and until now the cap was applied with
+    `min()` and nothing else: a hundred-page file came back as ten pages, the run
+    reported `status=ok` and `pages=10`, and a benchmark document was then scored
+    against the ground truth of all of it. That is the silent-drop-at-HTTP-200
+    class this project is organised around, in the one place that had no symptom
+    at all -- and it is live on `sol023`, which has 13 pages against a default cap
+    of 10.
+
+    `total` is what the file holds. Every caller is expected to carry it: the
+    preview reports it before a run is paid for, and `prepare_input` puts it on
+    the job so the result and the run log can say the read was partial.
+    """
     if _looks_like_pdf(data):
         if not PDF_OK:
             raise ValueError("PDF support needs PyMuPDF: pip install pymupdf")
@@ -3117,20 +3411,29 @@ def load_pages(data: bytes):
         with fitz.open(stream=data, filetype="pdf") as doc:
             if doc.needs_pass:
                 raise ValueError("That PDF is password-protected.")
-            for page in doc.pages(0, min(doc.page_count, MAX_PAGES)):
+            total = doc.page_count
+            # MAX_PAGES 0 is no cap. A bare `min(total, MAX_PAGES)` reads
+            # NOTHING there rather than everything -- the same trap as the
+            # `zip(..., range(limit))` in the frame branch, and both are why
+            # `_capped` exists instead of either spelling.
+            for page in doc.pages(0, min(total, MAX_PAGES) if MAX_PAGES else total):
                 pix = page.get_pixmap(matrix=fitz.Matrix(zoom, zoom))
                 pages.append(Image.frombytes("RGB", (pix.width, pix.height), pix.samples))
         if not pages:
             raise ValueError("That PDF has no pages.")
-        return pages
+        return pages, total
 
     try:
         image = Image.open(io.BytesIO(data))
         # Multi-frame formats (TIFF scans, GIF) carry a page per frame.
+        # A multi-frame image is capped the same way, so its total is counted
+        # the same way -- `n_frames` where the format reports one, else the
+        # frames actually decoded (a single-frame image has exactly one).
         frames = [
             ImageOps.exif_transpose(frame).convert("RGB")
-            for frame, _ in zip(ImageSequence.Iterator(image), range(MAX_PAGES))
+            for frame in _capped(ImageSequence.Iterator(image), MAX_PAGES)
         ]
+        total = int(getattr(image, "n_frames", len(frames)) or len(frames))
     except UnidentifiedImageError:
         hint = "" if HEIF_OK else " (HEIC/HEIF needs: pip install pillow-heif)"
         raise ValueError(f"Unsupported or corrupt file format.{hint}") from None
@@ -3139,7 +3442,7 @@ def load_pages(data: bytes):
 
     if not frames:
         raise ValueError("That file contains no image data.")
-    return frames
+    return frames, total
 
 
 def trim_margins(image: Image.Image, tolerance: int = TRIM_TOLERANCE,
@@ -3277,6 +3580,7 @@ def summarise_paddle(all_stats, detail, started, job_id=None, model_info=None):
     weighted = sum(value * count for value, count in confidences)
     return {
         "page_count": len(all_stats),
+        **_page_coverage(job_id, len(all_stats)),
         "detail": detail,
         "ocr_profile": "paddle",
         "job": job_id,
@@ -3363,7 +3667,8 @@ def summarise_easy(all_stats, detail, started, job_id=None, model_info=None):
     weighted = sum(value * count for value, count in confidences)
     status = easy_runtime.configured_status()
     return {
-        "page_count": len(all_stats), "detail": detail,
+        "page_count": len(all_stats),
+        **_page_coverage(job_id, len(all_stats)), "detail": detail,
         "ocr_profile": "easyocr", "job": job_id,
         "model": model_info.get("recognizer") or status["recognizer"],
         "url": "local", "backend": "easyocr", "ocr_engine": "library",
@@ -3393,6 +3698,20 @@ def join_page_texts(page_texts) -> str:
     return page_texts[0] if page_texts else ""
 
 
+def _page_coverage(job_id, counted):
+    """`{"pages_total": n, "pages_truncated": n}` for a read, or {}.
+
+    Read back off the job rather than threaded through every summariser's
+    arguments: `prepare_input` put it there and each of these already takes the
+    job id. **Empty where the total is unknown** -- a re-extraction has no job,
+    and a blank is not a claim that nothing was dropped.
+    """
+    total = (job_context(job_id) or {}).get("pages_total") if job_id else None
+    if not isinstance(total, int) or total <= 0:
+        return {}
+    return {"pages_total": total, "pages_truncated": max(0, total - counted)}
+
+
 def summarise(all_stats, detail, started, job_id=None):
     """Roll per-page stats into the totals both endpoints report."""
     tokens = sum(s.get("new_tokens", 0) for s in all_stats)
@@ -3406,6 +3725,7 @@ def summarise(all_stats, detail, started, job_id=None):
     profiles = [s.get("ocr_profile") for s in all_stats if s.get("ocr_profile")]
     return {
         "page_count": len(all_stats),
+        **_page_coverage(job_id, len(all_stats)),
         "detail": detail,
         # From the pages, like model and backend above: a profile switched during
         # a batch must not relabel the pages that were already read under the old
@@ -3475,12 +3795,18 @@ def prepare_input(data: bytes, detail: str, case=None, source=None):
     # script lands on the nearest preset that still exists rather than silently
     # on the default. See `settings.resolve_detail`.
     detail = resolve_detail(detail)
-    pages = load_pages(data)
+    pages, total = load_pages(data)
     budget = DETAIL_PRESETS[detail]
     # Trim first, then fit: the pixel budget is spent on content, not margins.
     prepared = [fit_pixels(trim_margins(page) if TRIM_MARGINS else page, budget)
                 for page in pages]
     context = {"source": source or {}, "detail": detail, "pages": len(prepared),
+               # What the FILE holds, against what was read. Carried on the job
+               # rather than threaded through a wider return, because `summarise`
+               # already has the job id and `job_context` already exists -- and a
+               # fifth element on this tuple would have to be unpicked at every
+               # caller, which is how one of them ends up dropping it.
+               "pages_total": total,
                "case": case["id"] if case else ""}
     return prepared, detail, register_job(prepared, context), case
 
@@ -4011,6 +4337,21 @@ def _extract_input(body):
     return text, (case_id or context.get("case") or None), context
 
 
+def _is_truth_fed(context) -> bool:
+    """Whether this pass-2 request was handed the ground-truth transcript.
+
+    Read off the log context `_extract_input` already builds rather than off the
+    request body a second time: that function is the one place the three input
+    shapes are told apart, and a second reading of `from_truth` here could
+    disagree with the `source=truth` it writes on the row.
+
+    It decides one thing and nothing else: whether `blame` is asked who lost a
+    value. Fed the truth, the answer is `extraction` by construction -- see the
+    module docstring -- and a tautology on screen is worse than a blank.
+    """
+    return ((context or {}).get("source") or {}).get("origin") == "truth"
+
+
 def _requested_mode(body):
     """The extraction shape for one request: what it asked for, or the current one."""
     mode = (body.get("mode") or "").strip().lower() or None
@@ -4113,7 +4454,8 @@ def extract_endpoint():
     # so. `doc_types` is the plural spelling of the same field.
     result = extract_fields(text, mode, case_id, steps,
                             doc_type=body.get("doc_types")
-                            or body.get("doc_type"))
+                            or body.get("doc_type"),
+                            truth_fed=_is_truth_fed(context))
     log_extract(result, body.get("job"), context)
     return jsonify(result)
 
@@ -4144,7 +4486,8 @@ def extract_stream_endpoint():
         try:
             stream = extract_fields_stream(text, mode, case_id, steps,
                                            doc_type=body.get("doc_types")
-                                           or body.get("doc_type"))
+                                           or body.get("doc_type"),
+                                           truth_fed=_is_truth_fed(context))
             while True:
                 try:
                     yield json.dumps(next(stream)) + "\n"
@@ -4459,7 +4802,7 @@ def preview_prepared():
     """
     try:
         data, _case, _source = request_input(request.files, request.form, match=False)
-        pages = load_pages(data)
+        pages, page_total = load_pages(data)
     except ValueError as err:
         return jsonify(error=str(err)), 400
     detail = resolve_detail(request.form.get("detail", DEFAULT_DETAIL))
@@ -4483,6 +4826,11 @@ def preview_prepared():
         # between requests to the same URL.
         "Cache-Control": "no-store",
         "X-Preview-Pages": str(len(pages)),
+        # What the file HOLDS, against the pages above, which is what would be
+        # read. The preview is the one place this can be said before an hour of
+        # OCR is paid for, and it costs a header.
+        "X-Preview-Pages-Total": str(page_total),
+        "X-Preview-Max-Pages": str(MAX_PAGES),
         "X-Preview-Page": str(index),
         # The RESOLVED name: an unknown preset falls back to the default rather
         # than raising, so the caption has to say what actually ran.
@@ -4834,7 +5182,7 @@ def _extract_case(case_id: str, mode: str) -> dict:
     of 100% against the text that was fed in would be a lie about what ran.
     """
     text, case, context = _extract_input({"case": case_id, "from_truth": True})
-    result = extract_fields(text, mode, case)
+    result = extract_fields(text, mode, case, truth_fed=True)
     log_extract(result, None, context)
     return {"extracted": result,
             "status": "error" if result.get("error") else "ok"}

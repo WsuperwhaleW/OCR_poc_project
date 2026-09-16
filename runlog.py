@@ -376,6 +376,60 @@ COLUMNS = [
     # describe -- and blank on every row written before 2026-09-11, which is the
     # same instruction to a reader either way: use the row.
     "doc_scores",
+    # WHICH PASS lost each value the field score charged for. Appended
+    # 2026-09-15 at the user's request: *check who is wrong using code -- if the
+    # text the extraction needed is not there you blame the OCR, if the value is
+    # there and the model cannot pick it up you blame the later model.*
+    #
+    # `blame.check` asks one question of the transcript the extraction actually
+    # read -- is the value the ground truth wants findable in it -- with
+    # `grounding.Source`, the same matcher that decides whether an extracted
+    # value is on the page. **It moves no score**: these count what the rate
+    # already charged for, they never change what it charged.
+    #
+    # The three counts are over the headline's own population, which is what
+    # makes them readable beside the pair two columns up:
+    #
+    #     blame_ocr + blame_extract + blame_unknown == p1_scored - p1_correct
+    #
+    # `spurious` and the Optional fields are attributed per value and counted
+    # nowhere, the standing they have in `fieldscore` and for the same reasons.
+    # `blame_unknown` is the attribution REFUSED -- the field truth and the
+    # transcript truth disagree about that key, so neither pass can be blamed --
+    # and it is in the triple rather than folded into either so that the
+    # invariant holds without an argument.
+    #
+    # **Blank is not zero and means one of three things**, all of them "nobody
+    # asked": the document has no field truth, the run was fed the ground-truth
+    # transcript (every value the extraction missed was in front of it by
+    # construction, so every verdict would read `extraction`), or the row
+    # predates the columns. A run that was attributed and lost nothing writes
+    # three zeroes.
+    #
+    # **The read floor does NOT blank these, unlike the correctness pair.** That
+    # rule exists because a field score over a broken transcript is a
+    # measurement of the read wearing the extraction's name -- and these columns
+    # are the ones that say so. A row with a blank `field_acc` and
+    # `blame_ocr=7` is the most informative row this file can hold.
+    "blame_ocr",
+    "blame_extract",
+    "blame_unknown",
+    # The same attribution per FIELD, as `key=letter` pairs joined by `;`,
+    # exactly as `field_verdicts` spells its verdicts -- o(cr), e(xtraction),
+    # u(nknown). Scalars only, and the field names only, for the two reasons
+    # that column gives: no value ever reaches this file, and one cell of one
+    # table row going wrong is not a weakness of a key.
+    #
+    # Optional fields are in it, like `field_verdicts` and unlike the counts
+    # above: *which field does this setting lose, and to which pass* is a
+    # question about every key it was asked for.
+    "field_blame",
+    # How many pages the FILE held, where a read knows -- against
+    # `pages`, which is how many were READ. They differ when MAX_PAGES
+    # truncates, which until 2026-09-16 had no symptom anywhere.
+    # **Blank is not zero**: a re-extraction read no page, and every row
+    # written before the column has no answer rather than the answer 0.
+    "pages_total",
 ]
 
 # The value the run was actually made with, taken from `settings` rather than
@@ -519,7 +573,9 @@ EXTRACT_COLUMNS = ("extract_seconds", "extract_tokens", "extract_mode",
                    "field_acc", "field_expected", "p1_correct", "p1_scored",
                    "p1_partial", "other_distinct", "extract_looped",
                    "extract_model", "doc_types", "doc_type_from",
-                   "field_verdicts", "documents")
+                   "field_verdicts", "documents",
+                   "blame_ocr", "blame_extract", "blame_unknown",
+                   "field_blame")
 
 _TIERS = ("p1_present", "p1_absent", "p2_present", "p2_absent",
           "p3_present", "p3_absent")
@@ -603,6 +659,8 @@ def _extract_cells(summary: dict) -> dict:
         # that this one cannot be undone and that one can.
         **_field_cells(None if extracted.get("fields_unscored")
                        else extracted.get("field_score")),
+        # Deliberately NOT gated on `fields_unscored` -- see the columns.
+        **_blame_cells(extracted.get("blame")),
     }
 
 
@@ -705,6 +763,65 @@ def field_verdicts(score: dict) -> str:
     rows = ((score or {}).get("scalars") or {}).get("rows") or []
     return ";".join(f"{r['path']}={VERDICT_LETTERS[r['status']]}"
                     for r in rows if r.get("status") in VERDICT_LETTERS)
+
+
+# The three attributions as one letter each, and back. `blame.MEANING` is the
+# authority on what each claims; this is only how they are spelled in a CSV cell.
+BLAME_LETTERS = {"ocr": "o", "extraction": "e", "unknown": "u"}
+BLAME_OF_LETTER = {v: k for k, v in BLAME_LETTERS.items()}
+
+_BLAME = ("blame_ocr", "blame_extract", "blame_unknown", "field_blame")
+
+
+def _blame_cells(attribution: dict) -> dict:
+    """Which pass lost each value the field score charged for.
+
+    Blank where the attribution did not run at all -- no field truth, a
+    truth-fed transcript, or a row from before the columns. `counts` being
+    present is the test, so a run that WAS attributed and lost nothing writes
+    three zeroes rather than three blanks: those are different statements and
+    only one of them is a measurement.
+    """
+    if not isinstance(attribution, dict) or "counts" not in attribution:
+        return {name: "" for name in _BLAME}
+    counts = attribution.get("counts") or {}
+    return {"blame_ocr": counts.get("ocr", 0),
+            "blame_extract": counts.get("extraction", 0),
+            "blame_unknown": counts.get("unknown", 0),
+            "field_blame": field_blame(attribution)}
+
+
+def field_blame(attribution: dict) -> str:
+    """`key=letter;key=letter` for the scalars one attribution reached.
+
+    **The document prefix a pack's paths carry is dropped**, so this column is
+    keyed the way `field_verdicts` is keyed and the two can be read side by side
+    for one field. It costs what that column already costs on a pack, and in the
+    same place: both documents are WRITTEN, and `parse_blame` keeps whichever
+    came last. The cell is the honest record either way; what cannot survive a
+    pack is reading one field out of it.
+    """
+    out = []
+    for path, entry in ((attribution or {}).get("fields") or {}).items():
+        # Tested on the WHOLE path, before the prefix comes off: the last
+        # segment of `doc1.income_items[0].amount_paid` is a bare cell name and
+        # would otherwise be written as if it were a key of the form.
+        if "[" in str(path):
+            continue
+        letter = BLAME_LETTERS.get(entry.get("blame"))
+        if letter:
+            out.append(f"{str(path).split('.')[-1]}={letter}")
+    return ";".join(out)
+
+
+def parse_blame(cell: str) -> dict:
+    """One `field_blame` cell back as {field: attribution}. {} when unwritten."""
+    out = {}
+    for part in str(cell or "").split(";"):
+        key, _, letter = part.partition("=")
+        if key and letter in BLAME_OF_LETTER:
+            out[key] = BLAME_OF_LETTER[letter]
+    return out
 
 
 def parse_verdicts(cell: str) -> dict:
@@ -940,6 +1057,7 @@ def record(summary: dict, source: dict = None, extras: dict = None) -> dict:
         "file": source.get("name", ""),
         "file_size_mb": round(size / 1024 ** 2, 3) if size else "",
         "pages": summary.get("page_count", ""),
+        "pages_total": summary.get("pages_total", ""),
         "detail": summary.get("detail", ""),
         "source": source.get("origin", ""),
         "server": summary.get("url", ""),
@@ -1883,8 +2001,28 @@ def _incomplete(row: dict) -> bool:
     speed anyone can use; and `app._unscorable_read` still refuses to score
     fields extracted from an empty transcript, because that figure would belong
     to the read.
+    **A read the page cap TRUNCATED is incomplete** (2026-09-16), and that is the
+    one addition to the rule above rather than an exception to it: a run that read
+    10 pages of a 13-page document did not fail, but neither did it read that
+    document, and its `char_accuracy` is against the ground truth of all 13. The
+    figure belongs to a document nobody read. Counted, never scored -- the same
+    treatment a loop gets, for the same reason.
+
+    It cannot change a row written before `pages_total` existed: those are blank,
+    and blank is not a claim that nothing was dropped.
     """
-    return (row.get("status") or "") in _INCOMPLETE
+    if (row.get("status") or "") in _INCOMPLETE:
+        return True
+    return _truncated_read(row)
+
+
+def _truncated_read(row: dict) -> bool:
+    """True where the page cap cut the file short. Blank columns mean unknown."""
+    try:
+        read, total = int(row.get("pages") or 0), int(row.get("pages_total") or 0)
+    except (TypeError, ValueError):
+        return False
+    return bool(read and total and total > read)
 
 
 def _extras_loop(row: dict) -> bool:
@@ -2859,9 +2997,10 @@ def field_weakness(rows: list = None) -> dict:
     | `fields` | every key, weakest first, pooled over everything -- *what is hard* |
     | `by_model` | a model x field grid -- *what is THIS model bad at* |
     | `by_case` | a document x field grid -- *what does this page lose* |
+    | `by_type` | a document-type x field grid -- *what does this KIND of page lose* |
 
     **The field order is the ranking**, weakest first, and it is the same order
-    in all three grids so a column means the same thing wherever it is read.
+    in all four grids so a column means the same thing wherever it is read.
 
     Two things this deliberately does not do. It does not score table cells: a
     path like `income_items[0].amount_paid` is one row of a table going wrong,
@@ -2880,6 +3019,44 @@ def field_weakness(rows: list = None) -> dict:
                             by_model, _document_key)
     pairs = _verdict_reads(recent_by(rows, by_doc))
     cases = _verdict_group(pairs, by_doc, by_model)
+
+    # The third axis, added 2026-09-15 at the user's request. `by_model` answers
+    # *who is bad at this key* and `by_case` *which page loses it*; neither can
+    # say whether a key is hard on a KIND of document -- and that is the axis the
+    # requirement is written on, so it is the one a prompt or a truth file is
+    # fixed against. The column is `_type_group`'s, the same four requirement
+    # types and one catch-all the Model x type tab uses, so a type means one
+    # thing on both tabs.
+    #
+    # **A pack is left out rather than filed under its first document's type.**
+    # Its verdicts are pooled over several documents of DIFFERENT types (one
+    # `field_verdicts` cell per row, one row per file), so unlike the transcript
+    # and field scores there is nothing per document to take apart -- which is
+    # exactly what `doc_scores` does for the Model x type tab and what this
+    # column has no equivalent of. Counted and reported, never silently dropped.
+    manifest = _manifest_types()
+
+    def by_type(row):
+        codes, pack = _doc_codes(row, manifest)
+        return "" if pack or not codes else _type_group(_primary_type(codes))
+
+    type_pairs = _verdict_reads(recent_by(rows, by_type))
+    types = _verdict_group(type_pairs, by_type, _document_key)
+    packs = sum(1 for row, _ in pairs if _doc_codes(row, manifest)[1])
+    # What the catch-all holds, with a document count each: the grouping loses
+    # the ranking between those types and must not lose which they are.
+    members = {}
+    for row, _ in type_pairs:
+        group = by_type(row)
+        if group:
+            code = _primary_type(_doc_codes(row, manifest)[0])
+            members.setdefault(group, {}).setdefault(code, set()).add(
+                _document_key(row))
+    for entry in types:
+        entry["members"] = sorted(
+            ([code, len(docs)]
+             for code, docs in members.get(entry["key"], {}).items()),
+            key=lambda pair: (-pair[1], pair[0]))
 
     pooled, required_on, asked_on = {}, {}, {}
     for row, verdicts in pairs:
@@ -2913,7 +3090,16 @@ def field_weakness(rows: list = None) -> dict:
         "order": [e["field"] for e in fields],
         "by_model": models,
         "by_case": cases,
+        "by_type": types,
+        # Extractions of a multi-document file, which carry one pooled verdict
+        # cell for several kinds of page. Reported so an absent type reads as a
+        # backlog rather than as a corpus that has none.
+        "packs": packs,
         "runs": len(pairs),
+        "type_labels": {**{code: prompts.TYPE_NAMES[code]
+                           for code in prompts.TYPE_SPECIFICITY},
+                        OTHER_TYPE_GROUP: "other types (no requirement)"},
+        "other_group": OTHER_TYPE_GROUP,
         "verdicts": dict(VERDICT_LETTERS),
     }
 
@@ -2983,6 +3169,40 @@ def _primary_type(codes) -> str:
         if code in codes:
             return code
     return ""
+
+
+# The catch-all column of the model x type tab. **Not a document type**: it is
+# every type no requirement covers, which is why its key cannot collide with one
+# of `prompts.TYPE_NAMES`.
+OTHER_TYPE_GROUP = "OTHER"
+
+
+def _type_group(code: str) -> str:
+    """The COLUMN a document type is filed under -- itself, or the catch-all.
+
+    **Grouped 2026-09-14 at the user's request** -- *the type is too many,
+    simplify the type to the requirement and some other, try group them
+    together*. Fourteen types is fourteen columns, nine of which are one to
+    three documents, and a grid that wide answers nothing at a glance.
+
+    The line is the one this project already draws and not a taxonomy invented
+    for the tab: a type a requirement covers gets its own form, its own
+    Mandatory set and its own validation rules, and every other type gets
+    `DEFAULT_FIELDS` -- the 30-key base form, scored `unknown_type`. So the four
+    requirement types are four columns and the rest are ONE column of documents
+    that are all asked the same thing and all scored the same way.
+
+    `prompts.DOC_TYPE_FIELDS` is the authority rather than a list repeated here,
+    so a requirement arriving for `TAX_INVOICE` splits it out of the catch-all
+    with nothing in this module changing. An empty tuple there means *known, and
+    no requirement covers it*, which is the same answer as no entry at all.
+
+    **It groups the column, never the document.** `_primary_type` still settles
+    what each document IS, every entry keeps it as `_primary`, and the catch-all
+    row names its members with their own counts -- so the grouping loses the
+    ranking BETWEEN those types and loses nothing about which they are.
+    """
+    return code if prompts.DOC_TYPE_FIELDS.get(code) else OTHER_TYPE_GROUP
 
 
 # The catch-all column of the model x type tab. **Not a document type**: it is

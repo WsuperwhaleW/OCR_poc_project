@@ -60,6 +60,13 @@
        good nor bad in themselves. Kept apart from the red/amber/green so a
        clock can be coloured without implying a verdict on it. */
     --info: #4fb3c4;
+    /* WHO LOST A VALUE -- one hue each, so a column of flags is readable without
+       reading a word of it. Deliberately OFF the red/amber/green scale: the score
+       mark beside them already says how bad the value is, and an attribution is
+       not a severity. Named for the job, because the next person reading
+       `--blame-read` knows what it marks where `--teal` would not. */
+    --blame-read: #4fb3c4;
+    --blame-extract: #b98cf5;
   }
   @media (prefers-color-scheme: light) {
     :root:not([data-theme="dark"]) {
@@ -69,6 +76,7 @@
       --accent-soft: rgba(47, 111, 224, 0.11);
       --tint: rgba(16, 24, 40, 0.055);
       --warn: #9a6410; --ok: #1a7f37; --danger: #c0392f; --info: #2a6f7a;
+      --blame-read: #1d5560; --blame-extract: #56309f;
       --code-bg: rgba(16, 24, 40, 0.07);
     }
   }
@@ -79,6 +87,7 @@
     --accent-soft: rgba(47, 111, 224, 0.11);
     --tint: rgba(16, 24, 40, 0.055);
     --warn: #9a6410; --ok: #1a7f37; --danger: #c0392f; --info: #2a6f7a;
+      --blame-read: #1d5560; --blame-extract: #56309f;
     --code-bg: rgba(16, 24, 40, 0.07);
   }
   * { box-sizing: border-box; }
@@ -271,6 +280,52 @@
     background: var(--accent-soft); border-radius: 0 8px 8px 0; font-size: .85rem;
   }
   #fields { display: none; }
+  /* The Grouping view (2026-09-16): which pages of the file are becoming which
+     documents, page by page as the walk goes, with each group's pages on hand
+     to check. */
+  #grouping { display: none; }
+  .grp-head { display: flex; gap: 12px; align-items: baseline; flex-wrap: wrap;
+              margin: 4px 0 6px; font-size: .9rem; }
+  .grp-head .muted-inline { font-size: .8rem; }
+  .grp-bar { height: 6px; background: var(--tint); border-radius: 3px;
+             overflow: hidden; margin: 0 0 10px; }
+  .grp-bar > span { display: block; height: 100%; background: var(--accent);
+                    transition: width .2s; }
+  .grp-bar.done > span { background: var(--ok); }
+  .grp-now { border: 1px solid var(--accent); border-radius: 8px; padding: 8px 10px;
+             margin: 0 0 10px; font-size: .85rem; display: flex; gap: 10px;
+             align-items: baseline; flex-wrap: wrap; }
+  .grp-now b { font-weight: 600; }
+  .grp-now .grp-why { flex: 1 1 260px; }
+  .grp-scroll { max-height: 62vh; overflow: auto; border: 1px solid var(--border);
+                border-radius: 8px; }
+  table.grp { width: 100%; border-collapse: collapse; font-size: .82rem; }
+  table.grp th { position: sticky; top: 0; background: var(--card); z-index: 1;
+                 text-align: left; font-weight: 600; color: var(--muted); }
+  table.grp th, table.grp td { padding: 6px 9px; border-bottom: 1px solid var(--border);
+                               vertical-align: top; text-align: left; }
+  table.grp tr.grp-row { cursor: pointer; }
+  table.grp tr.grp-row:hover td { background: var(--tint); }
+  table.grp tr.cur td { background: var(--accent-soft); }
+  table.grp tr.open td { background: var(--tint); }
+  table.grp td.grp-why { color: var(--muted); }
+  .grp-badge { font-size: .7rem; padding: 1px 7px; border-radius: 9px; white-space: nowrap;
+               border: 1px solid var(--border); color: var(--muted); }
+  .grp-badge.rules { color: var(--ok); border-color: var(--ok); }
+  .grp-badge.asked { color: var(--accent); border-color: var(--accent); }
+  .grp-badge.guess { color: var(--warn); border-color: var(--warn); }
+  .grp-pages { display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr));
+               gap: 10px; padding: 4px 0 6px; }
+  .grp-page { border: 1px solid var(--border); border-radius: 8px; padding: 6px;
+              background: var(--card); }
+  .grp-page img { width: 100%; display: block; border-radius: 4px; background: #fff;
+                  min-height: 60px; }
+  .grp-pn { display: flex; justify-content: space-between; gap: 6px; align-items: baseline;
+            font-weight: 600; font-size: .8rem; margin: 0 0 5px; }
+  .grp-page .grp-why { font-size: .72rem; color: var(--muted); margin: 5px 0 3px; }
+  .grp-page summary { font-size: .72rem; cursor: pointer; color: var(--muted); }
+  .grp-page pre { white-space: pre-wrap; font-size: .72rem; max-height: 180px;
+                  overflow: auto; margin: 4px 0 0; }
   .fld-bar { display: flex; align-items: center; gap: 10px; margin-bottom: 12px;
              font-size: .82rem; color: var(--muted); }
   .fld-bar #fldStatus { flex: 1; }
@@ -381,6 +436,41 @@
   .val-note { font-size: .78rem; margin-top: 2px; }
   .val-note.failed { color: var(--danger); }
   .val-note.warning { color: var(--warn); }
+  /* WHICH PASS lost a value, beside the mark that says what went wrong.
+     Deliberately NOT on the red/amber/green scale: an attribution is not a
+     severity, and the value has already been marked for what it cost. It is the
+     neutral `--info` for that reason, and the words are the STAGE NAMES on the
+     pipeline strip above -- read, extract -- so the chip points at a box on
+     screen rather than naming a pass in a vocabulary of its own. */
+  .bl { font-size: .66rem; font-weight: 700; padding: 1px 7px; border-radius: 4px;
+        margin-left: 6px; white-space: nowrap; vertical-align: 1px;
+        text-transform: uppercase; letter-spacing: .04em;
+        background: color-mix(in srgb, var(--flag) 18%, transparent);
+        color: var(--flag); border: 1px solid color-mix(in srgb, var(--flag) 45%, transparent); }
+  /* The attribution refused: the two ground truths disagree about the key, so
+     neither pass is named. Drawn back, because it is a finding about the answer
+     sheet rather than about this run. */
+  .bl.unknown { font-weight: 600; }
+  #fields td .bl { display: block; margin-top: 2px; margin-left: 0; width: max-content; }
+  /* WHICH CULPRIT, as one custom property the row and its flag both read, so a
+     stripe and the chip inside it can never disagree about who is named. */
+  .blame-ocr { --flag: var(--blame-read); }
+  .blame-extraction { --flag: var(--blame-extract); }
+  .blame-unknown { --flag: var(--muted); }
+  /* THE FLAG ITSELF: a stripe down the failing row, in the culprit's colour.
+     The chip says who in a word; this is what makes the row findable while
+     scanning a form of fourteen, which a chip at the end of a value is not.
+     It marks the LABEL because that is the edge the eye runs down. */
+  .fld-grid dt.blamed { box-shadow: inset 3px 0 0 var(--flag); padding-left: 9px; }
+  .fld-grid dd.blamed { box-shadow: inset 3px 0 0 color-mix(in srgb, var(--flag) 35%, transparent);
+                        padding-left: 9px; }
+  #fields td.blamed { box-shadow: inset 3px 0 0 var(--flag); }
+  /* The same attribution on the pipeline strip, where it names a stage rather
+     than a value. Neutral for the reason the chip is. */
+  .pipe-bl { color: var(--info); font-weight: 600; }
+  /* The same culprits in the summary sentence, so it and the stripes
+     below it are one statement rather than two. */
+  .bl-count { color: var(--flag); font-weight: 700; }
   .truth { font-size: .78rem; color: var(--muted); margin-top: 2px; }
   .truth b { color: var(--text); font-weight: 600; }
   .truth i { font-style: normal; opacity: .8; }
@@ -1182,6 +1272,9 @@ follows your desktop; Light is the one to pick for projecting or screenshotting.
         <span id="prepCap"></span>
         <a id="prepDl" class="ghost-sm" download hidden>Download</a>
       </div>
+      <!-- Below the bar, not inside it: the bar is a one-line flex row and this
+           is a sentence. -->
+      <p class="note warn" id="prepTrunc" hidden></p>
       <div id="filechip"><strong>📄</strong><span id="filechipname"></span></div>
       <div id="mapchip"></div>
 
@@ -1678,6 +1771,8 @@ follows your desktop; Light is the one to pick for projecting or screenshotting.
                 title="The model's reply exactly as it arrived, before any cleanup">Raw output</button>
         <button id="tabLayout" class="ghost-sm" aria-pressed="false" disabled
                 title="Show the boxes the model reported, on the page it read">Layout</button>
+        <button id="tabGroup" class="ghost-sm" aria-pressed="false" disabled
+                title="Which pages of this file are grouped into which documents -- page by page while it runs, with each group's pages to check">Grouping</button>
       </div>
       <div class="pagebar" id="pagebar"></div>
       <div class="warn" id="warn"></div>
@@ -1709,6 +1804,8 @@ follows your desktop; Light is the one to pick for projecting or screenshotting.
         <div class="lay-pop" id="layPop" hidden></div>
       </div>
 
+      <div id="grouping"></div>
+
       <div id="fields">
         <div id="pipeline" class="pipe"></div>
         <div class="fld-bar">
@@ -1734,6 +1831,7 @@ follows your desktop; Light is the one to pick for projecting or screenshotting.
 
       <table id="stats"></table>
       <div id="meta"></div>
+      <p class="note warn" id="metaTrunc" hidden></p>
     </div>
   </div>
 
@@ -1944,6 +2042,7 @@ const fileInput = document.getElementById('file');
 const preview = document.getElementById('preview');
 const prepBar = document.getElementById('prepBar');
 const prepCap = document.getElementById('prepCap');
+const prepTrunc = document.getElementById('prepTrunc');
 const prepDl = document.getElementById('prepDl');
 const chip = document.getElementById('filechip');
 const chipName = document.getElementById('filechipname');
@@ -1958,7 +2057,17 @@ const pagebar = document.getElementById('pagebar');
 const warn = document.getElementById('warn');
 const detailNote = document.getElementById('detailNote');
 const meta = document.getElementById('meta');
+const metaTrunc = document.getElementById('metaTrunc');
 const statsEl = document.getElementById('stats');
+const groupingEl = document.getElementById('grouping');
+const tabGroup = document.getElementById('tabGroup');
+/* The page grouping of the run in progress, built from its `segmenting` /
+   `segment_page` / `segmented` events. Outside the render because the view is
+   repainted on every page, and a group left open to be checked must stay open
+   while the walk moves on. */
+let segWalk = null;
+let segOpen = null;
+const segOpenHeads = new Set();
 const dot = document.getElementById('dot');
 const serverText = document.getElementById('serverText');
 const serverReason = document.getElementById('serverReason');
@@ -2292,12 +2401,15 @@ function showTab(mode) {
   accuracyEl.style.display = mode === 'accuracy' ? 'block' : 'none';
   fieldsEl.style.display = mode === 'fields' ? 'block' : 'none';
   layoutEl.style.display = mode === 'layout' ? 'block' : 'none';
+  groupingEl.style.display = mode === 'grouping' ? 'block' : 'none';
+  tabGroup.setAttribute('aria-pressed', mode === 'grouping');
+  tabGroup.classList.toggle('on', mode === 'grouping');
   tabLayout.setAttribute('aria-pressed', mode === 'layout');
   tabLayout.classList.toggle('on', mode === 'layout');
   rawoutEl.style.display = mode === 'rawout' ? 'block' : 'none';
   tabRawOut.setAttribute('aria-pressed', mode === 'rawout');
   tabRawOut.classList.toggle('on', mode === 'rawout');
-  statsEl.style.display = ['accuracy', 'fields', 'layout', 'rawout'].includes(mode) ? 'none' : '';
+  statsEl.style.display = ['accuracy', 'fields', 'layout', 'rawout', 'grouping'].includes(mode) ? 'none' : '';
   tabRendered.classList.toggle('on', mode === 'rendered');
   tabRaw.classList.toggle('on', mode === 'raw');
   tabAccuracy.classList.toggle('on', mode === 'accuracy');
@@ -2306,6 +2418,7 @@ function showTab(mode) {
   if (mode === 'fields') paintFields();
   if (mode === 'layout') paintLayout();
   if (mode === 'rawout') paintRawOut();
+  if (mode === 'grouping') paintGrouping();
 }
 tabRendered.addEventListener('click', () => showTab('rendered'));
 tabRaw.addEventListener('click', () => showTab('raw'));
@@ -2575,6 +2688,12 @@ tabLayout.addEventListener('click', () => {
   lastMode = curMode;
   showTab('layout');
 });
+tabGroup.addEventListener('click', () => {
+  if (tabGroup.disabled) return;
+  if (curMode === 'grouping') { showTab(lastMode === 'grouping' ? 'raw' : lastMode); return; }
+  lastMode = curMode;
+  showTab('grouping');
+});
 
 /* ---------- extracted fields (second LLM pass) ---------- */
 /* The requirement's eleven fields and nothing else. `seller_name`, `buyer_name`,
@@ -2838,6 +2957,56 @@ function cellScope(row) {
       ? '. Optional on this document type, so it is outside the field score.'
       : '.' + rateClause(row.status);
 }
+/* WHICH PASS lost this value -- `blame.py`, computed in Python from the
+   transcript the extraction actually read, and worth reading beside the score
+   mark rather than instead of it: that one says what went wrong, this one says
+   who it is down to.
+
+   The labels are the pipeline strip's own stage names, so a chip reading
+   `read` points at the box above that says how the page was read. The
+   attributions themselves are the server's -- nothing here re-derives one --
+   for the reason `scoreMark` has a paragraph about: a second answer to one
+   question drifts from the first, and the drift is invisible. */
+const BLAME_TAG = {
+  ocr: ['read', 'this stage did not produce the text the field needed'],
+  extraction: ['extract', 'the text was in the transcript and did not reach the field'],
+  unknown: ['unclear', 'neither stage is named for it']
+};
+/* The attributions for the document on screen, keyed the way the values are.
+   `extracted` is the SELECTED document of a split file, so these are that
+   document's own paths -- the file-level ones carry a `docN.` prefix and are not
+   what anything here is keyed by. */
+function blameFields() {
+  return ((extracted && extracted.blame) || {}).fields || {};
+}
+/* One chip. Silent where the value came back right, where the run was not
+   attributed at all, and where there is no field truth -- the same three
+   silences `scoreMark` keeps, and for the same reason: a mark on every row says
+   nothing. */
+/* The class that colours a flagged row and its chip. One custom property is
+   set on the row (`--flag`), so the stripe and the chip inside it read the same
+   value and cannot name two different culprits. Empty where nothing was
+   attributed, so a clean row gains no class at all. */
+function blameClass(entry) {
+  return entry && BLAME_TAG[entry.blame] ? ' blamed blame-' + entry.blame : '';
+}
+function blameMark(entry) {
+  const tag = entry && BLAME_TAG[entry.blame];
+  if (!tag) return '';
+  /* **The reason is the SERVER's, per value, not a sentence kept here per
+     attribution.** A fixed line about what `read` means is true of the ordinary
+     case and false of the one that matters most -- a value invented under a key
+     the page leaves blank is `read` because the transcript holds text the page
+     does not, which is the opposite of "the read did not produce this text".
+     `blame.py` already worked out which of those this value is; a second
+     wording here could only ever be the one that contradicts it. */
+  return '<span class="bl ' + entry.blame + '" title="'
+    + esc('Down to the ' + tag[0] + ' — ' + (entry.why || tag[1]) + '.'
+          + (entry.counted ? '' : ' This value is outside the field score either'
+             + ' way, so the attribution is reported and not counted.'))
+    + '">⚑ ' + esc(tag[0]) + '</span>';
+}
+
 /* The readings of the truth file this row was NOT judged against, quoted.
    `expected` is the one the answer came closest to, so these are the rest. */
 function otherReadings(row) {
@@ -2906,9 +3075,13 @@ function valMark(rows) {
     + esc(shown[0].why || shown[0].detail || '') + '</div>';
 }
 
-function defList(pairs, truth, val, req) {
+function defList(pairs, truth, val, req, bl) {
   if (!pairs.length) return '';
   return '<dl class="fld-grid">' + pairs.map(([label, value, money, status, key]) => {
+    // Which pass lost this value, resolved once: the label's stripe, the value's
+    // stripe and the chip are three marks of ONE fact and are built from it.
+    const blm = (bl && key) ? bl[key] : null;
+    const flag = blameClass(blm);
     const blank = (value === null || value === undefined || value === '');
     const tag = GROUND_TAG[status];
     const tier = FIELD_TIER[key];
@@ -2944,7 +3117,8 @@ function defList(pairs, truth, val, req) {
     // hangs off it rather than beside it -- forty-four one-line definitions
     // printed on the page would bury the values they describe.
     const hint = key ? FIELD_HINTS[key] : '';
-    return '<dt' + (hint ? ' class="has-hint" title="' + esc(hint) + '"' : '')
+    return '<dt class="' + (hint ? 'has-hint' : '') + flag + '"'
+      + (hint ? ' title="' + esc(hint) + '"' : '')
       + '>' + esc(label)
       + (must ? '<span class="req" title="Mandatory in the requirement for this '
                 + 'document type — the page has to state it and the extraction '
@@ -2955,8 +3129,8 @@ function defList(pairs, truth, val, req) {
                    : tier === 'p2' ? 'production readiness'
                    : 'advanced extraction') + '">' + tier.toUpperCase()
                 + '</span>' : '')
-      + '</dt><dd class="' + cls.trim() + '">' + body
-      + scoreMark(sc) + truthLine(sc)
+      + '</dt><dd class="' + (cls.trim() + flag).trim() + '">' + body
+      + scoreMark(sc) + blameMark(blm) + truthLine(sc)
       + valMark(val && key ? val[key] : null)
       + '</dd>';
   }).join('') + '</dl>';
@@ -3053,6 +3227,49 @@ function scoreTally(fs) {
     scope: 'the keys the ground truth states that the requirement marks Optional '
       + '— it states none of the Mandatory ones' };
   return null;
+}
+
+/* Who lost the values the score charged for, in one sentence.
+
+   It says what the marks above cannot: the marks are per value and a reader
+   wants the shape of the run. Placed with the score and never instead of it --
+   `fieldscore` says how much went wrong, this says whose it was, and neither
+   answers the other's question.
+
+   **It renders under a run the read floor suppressed as well**, which is the
+   case it is worth the most in: there the rate is deliberately blank, and this
+   is the only thing on the tab that says why in terms of values rather than
+   percentages. */
+function blameNote() {
+  const b = (extracted && extracted.blame) || {};
+  const c = b.counts;
+  if (!c || (!b.counted && !b.uncounted)) return '';
+  const say = [[c.ocr, 'the read', 'ocr'], [c.extraction, 'the extraction', 'extraction'],
+               [c.unknown, 'unclear', 'unknown']]
+    .filter(([n]) => n)
+    .map(([n, who, kind]) => '<b class="blame-' + kind + ' bl-count">'
+                             + n + ' ' + who + '</b>');
+  return '<p class="ground-note">'
+    + '<strong>Who lost it</strong> — '
+    + (b.counted
+        ? 'of the ' + b.counted + ' value(s) in the rate that did not come back '
+          + 'right, ' + say.join(', ') + '.'
+        : 'nothing in the rate went wrong.')
+    + ' <span class="how">Each value the ground truth states was looked for in '
+    + 'the transcript this run actually read — so a value that is not in it was '
+    + 'lost by the read whatever the extraction did, and one that is in it '
+    + 'reached the model and did not reach the field. '
+    + 'This attributes what the score already charged for and changes none of it.'
+    + (b.uncounted ? ' ' + b.uncounted + ' more value(s) are attributed above and '
+        + 'counted in neither: an Optional field, or one filled where the page '
+        + 'states nothing — the same two the rate itself leaves out.' : '')
+    /* Said only when it is missing, because its absence is what weakens the
+       two attributions that need it -- see `blame.py`. Both then fall back to
+       claiming less, so the effect is one-directional and worth naming. */
+    + (b.page_checked ? '' : ' There was no ground-truth transcript to check an '
+        + 'invented value against, so an attribution that would have named the '
+        + 'read names the extraction instead.')
+    + '</span></p>';
 }
 
 function unscoredReason() {
@@ -3407,12 +3624,43 @@ function stepEvent(msg) {
   if (msg.event === 'classified') {
     const { event, ...rest } = msg;
     classified = rest;
+  } else if (msg.event === 'segmenting') {
+    /* A multi-page file is about to be grouped. Everything the Grouping view
+       draws starts here, so a view left open from the last file is emptied
+       rather than shown under this one. */
+    segWalk = { pages: msg.pages, walk: !!msg.walk, steps: [], heads: {},
+                final: null, how: '', asked: 0, answered: 0, refused: 0 };
+    segOpen = null; segOpenHeads.clear();
+    enableGrouping();
+  } else if (msg.event === 'segment_page') {
+    if (!segWalk) {
+      segWalk = { pages: msg.pages, walk: false, steps: [], heads: {},
+                  final: null, how: '', asked: 0, answered: 0, refused: 0 };
+    }
+    segWalk.steps.push(msg);
+    segWalk.heads[msg.page] = msg.head || '';
+    if ('asked_total' in msg) {
+      segWalk.asked = msg.asked_total; segWalk.answered = msg.answered_total;
+      segWalk.refused = msg.refused_total || 0;
+    }
+    enableGrouping();
+    /* Said on the progress bar as well: between the last page read and the
+       first field extracted, this is the only thing that says the run moves. */
+    pagebar.dataset.grouping = '1';
+    pagebar.innerHTML = '<span class="spin"></span> Grouping pages — page ' + msg.page
+      + ' of ' + msg.pages + ' · ' + msg.remaining + ' left · session ' + msg.document
+      + ' (page' + (msg.doc_pages.length > 1 ? 's ' : ' ') + segRange(msg.doc_pages) + ', '
+      + esc(segTypes(msg.doc_codes)) + ')'
+      + (segWalk.walk ? ' · ' + segWalk.asked + ' asked' : '')
+      + ' <button type="button" class="ghost-sm" data-go="grouping">View</button>';
   } else if (msg.event === 'segmented') {
     /* How many documents the file was read as, and on what authority. Kept
        even when it is one: "one document" is a finding about a three-page file
        quite as much as "three documents" is, and the strip below decides on
        the count rather than on this event existing. */
     fileSplit = msg;
+    if (segWalk) { segWalk.final = msg.segments || []; segWalk.how = msg.split_from || ''; }
+    if (pagebar.dataset.grouping) { pagebar.textContent = ''; delete pagebar.dataset.grouping; }
   } else if (msg.event === 'document' || msg.event === 'document_done') {
     /* Which document the steps arriving now belong to. Without it a page
        receiving twenty-one step events across three documents cannot say which
@@ -3433,6 +3681,7 @@ function stepEvent(msg) {
     return false;
   }
   if (tabFields.classList.contains('on')) paintFields();
+  if (curMode === 'grouping') scheduleGrouping();
   return true;
 }
 
@@ -3460,11 +3709,197 @@ let runningDoc = null;
    Nothing here is worked out from the pages -- `segment.py` decided it and said
    why, and a second reading of the same evidence in JavaScript would eventually
    disagree with the one the fields were actually extracted under. */
+/* ---------- the Grouping view ---------------------------------------------
+   Which pages became which documents, drawn from the run's own events: live
+   while the walk goes -- the page it is on, how many are left, the session it
+   is building -- and settled once `segmented` arrives, which is authoritative
+   (the one-shot model may have regrouped what the rules walked). Each group
+   opens to its own pages, so a boundary can be checked against the page it was
+   decided on while the run is still going. */
+function segRange(pages) {
+  if (!pages || !pages.length) return '';
+  return pages.length === 1 ? String(pages[0])
+                            : pages[0] + '–' + pages[pages.length - 1];
+}
+function segTypes(codes) {
+  return (codes || []).join(' + ').replace(/_/g, ' ').toLowerCase() || 'untyped';
+}
+function enableGrouping() {
+  tabGroup.disabled = !(segWalk && segWalk.pages > 1);
+}
+function resetGrouping() {
+  segWalk = null; segOpen = null; segOpenHeads.clear();
+  enableGrouping();
+  if (curMode === 'grouping') paintGrouping();
+}
+let groupingFrame = 0;
+function scheduleGrouping() {
+  if (groupingFrame) return;
+  groupingFrame = requestAnimationFrame(() => { groupingFrame = 0; paintGrouping(); });
+}
+/* How a boundary was settled, in three words and a colour. `rules` is a
+   reading of the page, `asked` is the model's answer (quoted back from the page
+   before it was believed), `guess` is what is left when neither settled it. */
+function segSettled(entry, how) {
+  if (how === 'model') return ['asked', 'model decided'];
+  if (entry.asked && entry.answered) return ['asked', 'model decided'];
+  if (entry.certain === false) return ['guess', entry.asked ? 'guess (model refused)' : 'guess'];
+  return ['rules', 'read off the page'];
+}
+function segGroups() {
+  const w = segWalk;
+  if (!w) return [];
+  const stepOf = {};
+  for (const st of w.steps) stepOf[st.page] = st;
+  if (w.final && w.final.length) {
+    return w.final.map(r => {
+      const open = stepOf[r.pages[0]] || {};
+      return { document: r.document, pages: r.pages, codes: r.doc_types,
+               why: r.start_reason, certain: r.certain,
+               asked: !!open.asked, answered: !!open.answered,
+               joins: (r.joins || []).map(j => Object.assign({}, j, {
+                 asked: !!(stepOf[j.page] || {}).asked,
+                 answered: !!(stepOf[j.page] || {}).answered })) };
+    });
+  }
+  const by = new Map();
+  for (const st of w.steps) {
+    if (!by.has(st.document)) {
+      by.set(st.document, { document: st.document, pages: [], codes: [], why: '',
+                            certain: true, asked: false, answered: false, joins: [] });
+    }
+    const g = by.get(st.document);
+    g.pages = st.doc_pages; g.codes = st.doc_codes;
+    if (st.opened) {
+      g.why = st.why; g.certain = st.certain; g.asked = st.asked; g.answered = st.answered;
+    } else {
+      g.joins.push({ page: st.page, why: st.why, certain: st.certain,
+                     asked: st.asked, answered: st.answered });
+    }
+  }
+  return [...by.values()];
+}
+function segPagesHtml(g) {
+  const how = segWalk.how;
+  const cards = g.pages.map(n => {
+    const join = g.joins.find(j => j.page === n);
+    const entry = n === g.pages[0] ? g : (join || { certain: true });
+    const why = n === g.pages[0] ? g.why : (join ? join.why : '');
+    const [cls, word] = segSettled(entry, how);
+    const head = segWalk.heads[n] || '';
+    return '<div class="grp-page">'
+      + '<div class="grp-pn"><span>Page ' + n + (n === g.pages[0] ? ' · opens' : '') + '</span>'
+      + '<span class="grp-badge ' + cls + '">' + esc(word) + '</span></div>'
+      + (job ? '<a href="/api/page/' + encodeURIComponent(job) + '/' + (n - 1)
+               + '" target="_blank" rel="noopener" title="Open this page full size">'
+               + '<img loading="lazy" alt="Page ' + n + '" src="/api/page/'
+               + encodeURIComponent(job) + '/' + (n - 1) + '"></a>' : '')
+      + '<div class="grp-why">' + esc(why || '') + '</div>'
+      + (head ? '<details data-page="' + n + '"' + (segOpenHeads.has(n) ? ' open' : '')
+                + '><summary>Text the grouping read</summary><pre>' + esc(head)
+                + '</pre></details>' : '')
+      + '</div>';
+  }).join('');
+  return '<tr class="grp-verify"><td colspan="5">'
+    + (job ? '' : '<p class="note">No page images for this run -- the transcript did not come '
+                  + 'from a read. The text each decision was taken on is under each page.</p>')
+    + '<div class="grp-pages">' + cards + '</div></td></tr>';
+}
+function paintGrouping() {
+  const w = segWalk;
+  if (!w) {
+    groupingEl.innerHTML = '<p class="note">Nothing grouped yet. A file of more than one '
+      + 'page is split into documents before its fields are extracted, and that '
+      + 'grouping appears here as it happens.</p>';
+    return;
+  }
+  const scroller = groupingEl.querySelector('.grp-scroll');
+  const keep = scroller ? scroller.scrollTop : 0;
+  const groups = segGroups();
+  const settled = !!(w.final && w.final.length);
+  const last = w.steps[w.steps.length - 1];
+  const done = settled ? w.pages : (last ? last.page : 0);
+  const howText = { rules: 'every boundary read off the pages',
+                    model: 'regrouped by the model in one request',
+                    chat: 'walked page by page with the model',
+                    guess: 'some boundaries are guesses nothing settled',
+                    whole: 'read as one document' }[w.how] || '';
+  let html = '<div class="grp-head"><b>' + (settled
+      ? groups.length + ' document' + (groups.length === 1 ? '' : 's') + ' from '
+        + w.pages + ' pages'
+      : 'Grouping ' + w.pages + ' pages — page ' + done + ' of ' + w.pages + ', '
+        + (w.pages - done) + ' left') + '</b>'
+    + (settled && howText ? '<span class="muted-inline">' + esc(howText) + '</span>' : '')
+    + (w.walk ? '<span class="muted-inline" title="Questions put to the model at boundaries the pages did not settle. A boundary the pages settle costs none.">'
+                + w.asked + ' question' + (w.asked === 1 ? '' : 's') + ' asked · '
+                + w.answered + ' answered' + (w.refused ? ' · ' + w.refused + ' refused' : '')
+                + '</span>' : '')
+    + '</div>'
+    + '<div class="grp-bar' + (settled ? ' done' : '') + '"><span style="width:'
+    + (w.pages ? Math.round(100 * done / w.pages) : 0) + '%"></span></div>';
+  if (!settled && last) {
+    const cur = groups.find(g => g.document === last.document) || {};
+    html += '<div class="grp-now"><b>Session ' + last.document + '</b>'
+      + '<span>page' + ((cur.pages || []).length > 1 ? 's ' : ' ') + segRange(cur.pages)
+      + ' · ' + esc(segTypes(cur.codes)) + '</span>'
+      + '<span class="grp-why">page ' + last.page + ' ' + (last.opened ? 'opened it' : 'was kept')
+      + ' — ' + esc(last.why) + '</span>'
+      + '<button type="button" class="ghost-sm" data-doc="' + last.document + '">'
+      + (segOpen === last.document ? 'Hide pages' : 'View pages') + '</button></div>';
+  }
+  html += '<div class="grp-scroll"><table class="grp"><thead><tr><th>Document</th><th>Pages</th>'
+    + '<th>Type</th><th>Started because</th><th>Settled</th></tr></thead><tbody>';
+  for (const g of groups) {
+    const [cls, word] = segSettled(g, w.how);
+    const isCur = !settled && last && g.document === last.document;
+    const asked = g.joins.filter(j => j.asked).length + (g.asked ? 1 : 0);
+    html += '<tr class="grp-row' + (isCur ? ' cur' : '') + (segOpen === g.document ? ' open' : '')
+      + '" data-doc="' + g.document + '" title="Click to ' + (segOpen === g.document ? 'hide' : 'check')
+      + ' this group’s pages">'
+      + '<td>' + g.document + (isCur ? ' <span class="grp-badge asked">now</span>' : '') + '</td>'
+      + '<td>' + segRange(g.pages) + ' <span class="muted-inline">(' + g.pages.length + ')</span></td>'
+      + '<td>' + esc(segTypes(g.codes)) + '</td>'
+      + '<td class="grp-why">' + esc(g.why || '') + '</td>'
+      + '<td><span class="grp-badge ' + cls + '">' + esc(word) + '</span>'
+      + (asked ? ' <span class="muted-inline">' + asked + ' asked</span>' : '') + '</td></tr>';
+    if (segOpen === g.document) html += segPagesHtml(g);
+  }
+  html += '</tbody></table></div>';
+  groupingEl.innerHTML = html;
+  const box = groupingEl.querySelector('.grp-scroll');
+  if (box) box.scrollTop = keep;
+}
+groupingEl.addEventListener('click', e => {
+  const hit = e.target.closest('[data-doc]');
+  if (!hit || !groupingEl.contains(hit)) return;
+  const doc = Number(hit.dataset.doc);
+  segOpen = segOpen === doc ? null : doc;
+  paintGrouping();
+});
+/* `toggle` does not bubble, so it is caught on the way down. */
+groupingEl.addEventListener('toggle', e => {
+  const d = e.target;
+  if (!d.dataset || !d.dataset.page) return;
+  const n = Number(d.dataset.page);
+  if (d.open) segOpenHeads.add(n); else segOpenHeads.delete(n);
+}, true);
+pagebar.addEventListener('click', e => {
+  const go = e.target.closest('[data-go="grouping"]');
+  if (!go || tabGroup.disabled || curMode === 'grouping') return;
+  lastMode = curMode;
+  showTab('grouping');
+});
+
 function docStrip() {
   const docs = (extractedFile && extractedFile.documents) || null;
   if (!docs || docs.length < 2) return '';
   const segs = (extractedFile.segments) || [];
+  /* `chat` is the rolling walk: too long for one question about the whole
+     file, so one question per unsettled boundary with the document so far as
+     the conversation. Worth its own wording rather than folding into `model`,
+     because the two were asked different questions. */
   const how = {rules: 'read off the pages', model: 'decided by the model',
+               chat: 'walked page by page with the model',
                guess: 'a guess -- nothing on the pages settled it',
                whole: 'not split'}[extractedFile.split_from] || '';
   return '<div class="docs">' + docs.map((d, i) => {
@@ -3713,6 +4148,31 @@ function stepNote(r) {
    because these strings pass through a Jinja template on the way out. */
 const NL = String.fromCharCode(10);
 
+/* What this stage is blamed for, on its own box. The strip is the one place
+   that already draws the two passes side by side, so a count of the values each
+   lost belongs on it -- and putting it here rather than only under the fields is
+   what makes the question answerable at a glance, which is what it was asked
+   for. Silent where nothing was attributed to the stage, so a clean run draws
+   an ordinary strip. */
+function pipeBlame(who) {
+  const c = ((extracted && extracted.blame) || {}).counts;
+  const n = c && c[who];
+  return n ? ' · <b class="pipe-bl">' + n + ' field' + (n > 1 ? 's' : '')
+             + ' lost</b>' : '';
+}
+function pipeBlameHint(who) {
+  const c = ((extracted && extracted.blame) || {}).counts;
+  const n = c && c[who];
+  /* A statement about the STAGE, which is what this box is, so it cannot
+     contradict any one value: the per-value reasons are on the chips beside the
+     values themselves. */
+  return n ? NL + NL + n + ' of the values the field score charged for '
+             + (n > 1 ? 'are' : 'is') + ' down to this stage — '
+             + BLAME_TAG[who][1] + '. Each one is marked on the Fields tab with '
+             + 'what was looked for and where.'
+           : '';
+}
+
 /* One stage box. `state` is done / run / wait / skip. */
 function pipeBox(n, name, state, value, detail, hint) {
   return '<div class="pipe-st ' + state + '"' + (hint ? ' title="' + esc(hint) + '"' : '')
@@ -3758,8 +4218,10 @@ function paintPipeline() {
                    pageStats.length + ' page' + (pageStats.length > 1 ? 's' : ''),
                    Math.round(secs) + 's'
                      + (truth && truth.char_accuracy !== undefined
-                        ? ' · ' + (truth.char_accuracy * 100).toFixed(1) + '% chars' : ''),
-                   'Pass 1: the page image in, a verbatim transcript out.');
+                        ? ' · ' + (truth.char_accuracy * 100).toFixed(1) + '% chars' : '')
+                     + pipeBlame('ocr'),
+                   'Pass 1: the page image in, a verbatim transcript out.'
+                     + pipeBlameHint('ocr'));
   } else {
     read = pipeBox(1, 'Read', 'wait', 'no page read', '',
                    'Pass 1 has not run in this tab.');
@@ -3888,8 +4350,10 @@ function paintPipeline() {
     const p = Number(tiers.p1_present), a = Number(tiers.p1_absent);
     const filled = Number.isFinite(p) && p + a > 0 ? p + '/' + (p + a) + ' filled' : '';
     ext = pipeBox(3, 'Extract', 'done', esc(modeLabel(extracted)),
-                  [filled, extracted.seconds + 's'].filter(Boolean).join(' · '),
-                  'Pass 2 asked for exactly the form stage 2 chose.');
+                  [filled, extracted.seconds + 's'].filter(Boolean).join(' · ')
+                    + pipeBlame('extraction'),
+                  'Pass 2 asked for exactly the form stage 2 chose.'
+                    + pipeBlameHint('extraction'));
   } else {
     ext = pipeBox(3, 'Extract', 'wait', 'not run', '', '');
   }
@@ -4036,6 +4500,8 @@ function paintFieldBody() {
 
   const truth = truthIndex(extracted.field_score);
   const val = valIndex(extracted.validation);
+  // Which pass lost each value the score charged for, keyed by the same paths.
+  const bl = blameFields();
   /* The form this document's TYPE asked for. Falls back to every key when a
      result predates per-type forms, so an old run read back from the log still
      renders in full rather than blank. */
@@ -4069,7 +4535,7 @@ function paintFieldBody() {
         && !(truth.scalars[k] && truth.scalars[k].status === 'missed'))) continue;
     html += '<div class="fld-sec">' + title + '</div>'
       + defList(keys.map(k => [label(k), f[k], MONEY_KEYS.has(k), st[k], k]),
-                truth.scalars, val, req);
+                truth.scalars, val, req, bl);
   }
 
   // Filtered exactly as the grounding pass filters it, so the row index in
@@ -4108,10 +4574,12 @@ function paintFieldBody() {
             const tip = bad ? GROUND_TAG[s][1]
                       : off ? SCORE_TAG[sc.status][1] + cellScope(sc) : '';
             return '<td class="' + (num ? 'num ' : '') + (bad ? 'ungrounded' : '')
-              + (off ? ' sc-' + sc.status : '') + '"'
+              + (off ? ' sc-' + sc.status : '')
+              + blameClass(bl['line_items[' + i + '].' + k]) + '"'
               + (tip ? ' title="' + esc(tip) + '"' : '') + '>' + esc(v)
               + (off && sc.status !== 'spurious'
                   ? '<div class="truth">' + esc(String(sc.expected)) + '</div>' : '')
+              + blameMark(bl['line_items[' + i + '].' + k])
               + '</td>';
           }).join('') + '</tr>';
         }).join('')
@@ -4195,11 +4663,16 @@ function paintFieldBody() {
                                 + ' row left it empty' : '';
               return '<td class="' + (num ? 'num ' : '')
                 + (bad ? 'ungrounded' : gap ? 'sc-missed' : '')
-                + (off ? ' sc-' + sc.status : '') + '"'
+                + (off ? ' sc-' + sc.status : '')
+                + blameClass(bl['income_items[' + i + '].' + k]) + '"'
                 + (tip ? ' title="' + esc(tip) + '"' : '')
                 + '>' + (v ? esc(v) : gap ? 'required' : '')
                 + (off && sc.status !== 'spurious'
                     ? '<div class="truth">' + esc(String(sc.expected)) + '</div>' : '')
+                // The four cells of this table are Mandatory of every row, so
+                // they are IN the headline -- which is exactly why a reader has
+                // to be able to see which pass lost one.
+                + blameMark(bl['income_items[' + i + '].' + k])
                 + '</td>';
             }).join('')
             + '<td class="num derived">'
@@ -4239,7 +4712,11 @@ function paintFieldBody() {
       + 'measurement of the read. Lower <b>Score fields only above</b> to score '
       + 'runs like this one.</p>'
     : fieldScoreNote(extracted.field_score);
-  if (score) html += '<div class="fld-sec">Score</div>' + score;
+  // Under the score and under the not-scored banner alike: which pass lost a
+  // value is a question the suppressed rate makes MORE worth answering, not
+  // less.
+  const who = blameNote();
+  if (score || who) html += '<div class="fld-sec">Score</div>' + score + who;
 
   // There is no "Warnings and findings" block any more, and its absence is the
   // point rather than an omission. Every line of it restated something already
@@ -4270,7 +4747,7 @@ async function runExtract() {
 async function extractInto(payload) {
   setExtracted({ pending: true });
   extractSteps = null;
-  fileSplit = null; runningDoc = null;
+  fileSplit = null; runningDoc = null; resetGrouping();
   // Cleared with the steps, and for the same reason: last document's answer
   // sitting over this run's fields would name the wrong form.
   classified = null;
@@ -7779,13 +8256,20 @@ function wkChars(mean, what) {
     + '</span>';
 }
 
-/* A model x field or document x field grid. The field ORDER is the ranking --
-   weakest overall first -- and it is the same order in both grids, so a column
-   means the same thing wherever it is read. */
-function wkFieldGrid(rows, order, what, required) {
+/* A model x field, document x field or type x field grid. The field ORDER is
+   the ranking -- weakest overall first -- and it is the same order in every
+   grid, so a column means the same thing wherever it is read.
+
+   `opts.labels` names a document-type row (`prompts.TYPE_NAMES`, trimmed of its
+   article by `tmType` exactly as the Model x type tab does, so a type reads the
+   same on both tabs); a model or document row is its own key. */
+function wkFieldGrid(rows, order, what, required, opts) {
   if (!rows.length || !order.length) return '';
-  const head = '<tr><th class="an-corner">'
-    + (what === 'model' ? 'Model \\ Field' : 'Document \\ Field') + '</th>'
+  const o = opts || {};
+  const corner = what === 'model' ? 'Model' : what === 'type'
+    ? 'Document type' : 'Document';
+  const rowName = e => what === 'type' ? tmType(e.key, o.labels) : csModel(e.key);
+  const head = '<tr><th class="an-corner">' + corner + ' \\ Field</th>'
     + order.map(f => '<th title="' + esc(f
         + (required[f] ? ' — the requirement demands it ' + required[f] : ''))
         + '">' + esc(wkField(f)) + '</th>').join('')
@@ -7794,20 +8278,28 @@ function wkFieldGrid(rows, order, what, required) {
     const cells = order.map(f => {
       const c = e.cells[f];
       if (!c) return '<td class="an-empty" title="not asked of this '
-        + (what === 'model' ? 'model' : 'document') + '">&mdash;</td>';
+        + (what === 'model' ? 'model' : what === 'type' ? 'document type'
+           : 'document') + '">&mdash;</td>';
       const counts = c.counts || {};
       // The counts in the tooltip rather than in the cell: `missed` and
       // `spurious` are OPPOSITE mistakes wanting opposite fixes, and a cell
       // showing one rate cannot say which of them it is made of.
-      const tip = csModel(e.key) + ' · ' + f + ' — '
+      const tip = rowName(e) + ' · ' + f + ' — '
         + ['correct', 'partial', 'wrong', 'missed', 'spurious', 'absent']
             .filter(k => counts[k]).map(k => counts[k] + ' ' + k).join(', ');
       return wkCell(c.rate, tip,
                     c.spurious ? c.spurious + ' invented'
                     : c.rate !== null && c.rate < 100 && c.worst ? c.worst : '');
     }).join('');
-    return '<tr><td class="an-rowh" title="' + esc(e.key) + '">'
-      + esc(csModel(e.key)) + '<span class="an-t">' + e.runs + ' run(s)</span></td>'
+    // A grouped type column must name what it holds, or the catch-all is a row
+    // nobody can take apart; a model or document row is its own name.
+    const members = (e.members || [])
+      .map(m => tmType(m[0], o.labels) + ' ×' + m[1]).join(', ');
+    const sub = e.runs + ' run(s)'
+      + (what === 'type' ? ' · ' + e.inner + ' doc(s)' : '');
+    return '<tr><td class="an-rowh" title="' + esc(e.key
+        + ((e.members || []).length > 1 ? ' — ' + members : '')) + '">'
+      + esc(rowName(e)) + '<span class="an-t">' + esc(sub) + '</span></td>'
       + cells
       + (e.mean === null
          ? '<td class="an-mean-col an-empty">&mdash;</td>'
@@ -7910,7 +8402,19 @@ function paintWeak(t) {
       + 'and the read was good enough to judge the extraction by. Run a '
       + 'benchmark document, or a fields-only test, and it will appear here.</p>';
   } else {
+    const typeGrid = wkFieldGrid(fw.by_type || [], fw.order || [], 'type',
+                                 required, {labels: fw.type_labels});
     html += wkFieldTable(fw.fields)
+      + '<span class="cs-title">Each document type, field by field'
+      + windowNote('document type') + '</span>'
+      + (typeGrid || '<p class="note">No extraction in view could be placed '
+          + 'against a document type.</p>')
+      + (fw.packs ? '<p class="note">' + fw.packs + ' extraction(s) of a '
+          + 'multi-document file are left out of <b>this grid alone</b>: one '
+          + 'row of the log carries one set of verdicts for several documents '
+          + 'of <i>different</i> types, so unlike the transcript and field '
+          + 'scores there is nothing per document to take apart. They are in '
+          + 'every other table here.</p>' : '')
       + '<span class="cs-title">Each model, field by field'
       + windowNote('model') + '</span>'
       + wkFieldGrid(fw.by_model || [], fw.order || [], 'model', required)
@@ -7921,8 +8425,13 @@ function paintWeak(t) {
       + 'right, a partial counting half &mdash; the same arithmetic the field '
       + 'score uses, so a cell here and the field accuracy on the same run '
       + 'cannot disagree. <b>The column order is the ranking</b>, weakest key '
-      + 'first, and it is the same in both grids so a column means the same '
-      + 'thing in each. A cell is blank where nothing measured it: the key was '
+      + 'first, and it is the same in every grid so a column means the same '
+      + 'thing in each. <b>The type grid is the axis the requirement is '
+      + 'written on</b> &mdash; a key that is hard on a KIND of page is a '
+      + 'prompt or a ground-truth question, where a key one model alone loses '
+      + 'is a model question. Its columns are the four requirement types and '
+      + 'one catch-all, the same grouping <b>Model &times; type</b> uses, so a '
+      + 'type reads the same on both tabs. A cell is blank where nothing measured it: the key was '
       + 'not asked of that document&rsquo;s type, or every verdict on it was '
       + '<i>absent</i> (both sides empty, which is agreement) or <i>spurious</i> '
       + '(the page states nothing, so there is nothing to be right about) '
@@ -8667,6 +9176,45 @@ function fieldAccNote(fs) {
     + (cov.line_items_checked ? ', plus the table' : '')
     + '. The <b>Fields</b> tab lists each one.</p>';
 }
+/* What the page cap dropped from this read, or ''. One function, three callers,
+   so the meta line, the Accuracy tab and a re-render cannot word it differently.
+   `pages_total` is ABSENT rather than equal where nothing knows -- a fields-only
+   run read no page -- so a missing value is never read as "nothing was dropped". */
+function truncatedNote(res) {
+  const read = Number((res || {}).page_count || 0);
+  const total = Number((res || {}).pages_total || 0);
+  if (!read || !total || total <= read) return '';
+  return 'Only ' + read + ' of ' + total + ' pages were read — MAX_PAGES cut the '
+       + 'file short. Any score below is against the whole document, so it is not '
+       + 'a measurement of this read.';
+}
+
+/* **The cap truncates, it does not refuse**, and this is the one place that can
+   be said BEFORE an hour of OCR is paid for. A named function rather than inline
+   in the fetch handler so the banner has one wording and can be exercised on its
+   own -- the same reason `truncatedNote` is one function with three callers. */
+function paintPrepTruncated(read, total, cap) {
+  const cut = total > read;
+  prepTrunc.innerHTML = cut
+    ? '<b>Only ' + read + ' of ' + total + ' pages will be read.</b> '
+      + 'The rest are dropped, and a score would be against the whole document. '
+      + 'Raise <code>MAX_PAGES</code>' + (cap ? ' (now ' + cap + ')' : '')
+      + ' and restart to read all of it.'
+    : '';
+  prepTrunc.hidden = !cut;
+}
+
+/* The run's own summary, kept because the Accuracy tab is painted long after
+   the `done` event -- on a tab switch, and again after a re-extraction. */
+let lastSummary = null;
+
+function paintTruncated(res) {
+  lastSummary = res;
+  const note = truncatedNote(res);
+  metaTrunc.textContent = note;
+  metaTrunc.hidden = !note;
+}
+
 function paintAccuracy() {
   if (!truth) { accHead.innerHTML = ''; accBars.innerHTML = ''; accDiff.textContent = ''; return; }
   if (truth.error) {
@@ -8677,6 +9225,13 @@ function paintAccuracy() {
   }
   accHead.innerHTML = '<span class="case">' + esc(truth.case) + '</span> '
     + '<span class="kind">· ' + esc(truth.pdf) + (truth.kind ? ' · ' + esc(truth.kind) : '') + '</span>';
+
+  // **Above the bar, not under it.** A truncated read is scored against the whole
+  // document, so the number below belongs to pages nobody read -- and a caveat
+  // printed after the figure it disqualifies is one that arrives too late. Same
+  // reasoning as the `partial` banner above the fields.
+  const cut = truncatedNote(lastSummary);
+  accHead.innerHTML += cut ? '<p class="note warn">' + esc(cut) + '</p>' : '';
 
   // ONE number, not three. `word_accuracy` and `char_accuracy_no_marks` are
   // still computed and still logged -- they are useful diagnostics when reading
@@ -9487,6 +10042,7 @@ function dropPreview() {
    looking at `low` would otherwise leave a scaled-down picture on screen with
    nothing left on the page to say so. */
 function localPreview() {
+  paintPrepTruncated(1, 1, 0);      // a banner from the last file is about that file
   dropPreview();
   if (!current) { chip.style.display = 'none'; return; }
   if (current.type === 'application/pdf' || /\.(pdf|heic|heif)$/i.test(current.name)) {
@@ -9578,6 +10134,10 @@ async function refreshPrepared() {
     const w = head('X-Preview-Width'), h = head('X-Preview-Height');
     const sw = head('X-Preview-Source-Width'), sh = head('X-Preview-Source-Height');
     const pages = Number(head('X-Preview-Pages')) || 1;
+    // What the file HOLDS, against what would be read. The preview is the only
+    // place this can be said BEFORE an hour of OCR is paid for.
+    const pagesTotal = Number(head('X-Preview-Pages-Total')) || pages;
+    const maxPages = Number(head('X-Preview-Max-Pages')) || 0;
     dropPreview();
     previewUrl = URL.createObjectURL(blob);
     // This one cannot fail to decode -- the server just encoded it -- so the
@@ -9594,6 +10154,7 @@ async function refreshPrepared() {
           ? ' <span class="muted-inline">(from ' + esc(sw + '×' + sh) + ')</span>'
           : ' <span class="muted-inline">(unchanged — under the cap)</span>')
       + (pages > 1 ? ' · page 1 of ' + pages : '');
+    paintPrepTruncated(pages, pagesTotal, maxPages);
     prepDl.href = previewUrl;
     prepDl.download = prepStem() + '.' + head('X-Preview-Detail') + '.png';
     prepDl.hidden = false;
@@ -9672,9 +10233,10 @@ clearBtn.addEventListener('click', () => {
   copyBtn.disabled = true;
   pagebar.textContent = ''; warn.textContent = '';
   meta.textContent = ''; meta.classList.remove('err');
+  paintTruncated(null);            // a banner from the last run is a lie about this one
   stopTicker(); pageStats = []; renderStats();
   setExtracted(null); extractSteps = null; tabFields.disabled = true;
-  fileSplit = null; runningDoc = null;
+  fileSplit = null; runningDoc = null; resetGrouping();
   truthOnlyCase = null;
   job = null; pageTexts = []; curPage = -1; cmpPage = 0;
   cmpImg.removeAttribute('src');
@@ -9718,11 +10280,12 @@ async function startRead(opts) {
   roPage = 0; enableRawOut();
   truth = null; tabAccuracy.disabled = true;
   setExtracted(null); extractSteps = null; tabFields.disabled = true;
-  fileSplit = null; runningDoc = null;
+  fileSplit = null; runningDoc = null; resetGrouping();
   if (['accuracy','fields'].some(m => document.querySelector('#tab' + m[0].toUpperCase() + m.slice(1)).classList.contains('on'))) showTab('rendered');
   paint(); renderStats();
   pagebar.innerHTML = '<span class="spin"></span> Starting…';
   warn.textContent = ''; meta.textContent = ''; meta.classList.remove('err');
+  paintTruncated(null);
   startTicker();
 
   const body = new FormData();
@@ -9820,17 +10383,22 @@ async function startRead(opts) {
               + `${msg.tokens} tokens · ${msg.seconds}s total `
               + `(${msg.prefill_seconds}s prefill + ${msg.decode_seconds}s decode) · `
               + `${msg.tokens_per_second} tok/s · ${msg.model}`;
+          // A read the cap cut short is not a read of that document, and the
+          // accuracy beside it is against the whole of it. Said on the meta line
+          // AND on the Accuracy tab, because the two are read at different times.
+          paintTruncated(msg);
           copyBtn.disabled = !text;
         } else if (msg.event === 'extracting') {
           // OCR is finished and on screen; the second pass runs after it.
           setExtracted({ pending: true });
           extractSteps = null;
-          classified = null; fileSplit = null; runningDoc = null;
+          classified = null; fileSplit = null; runningDoc = null; resetGrouping();
           tabFields.disabled = false;
           pagebar.innerHTML = '<span class="spin"></span> Extracting fields…';
           if (tabFields.classList.contains('on')) paintFields();
         } else if (msg.event === 'segmented' || msg.event === 'document'
-                   || msg.event === 'document_done') {
+                   || msg.event === 'document_done' || msg.event === 'segmenting'
+                   || msg.event === 'segment_page') {
           // How many documents the file holds, and which of them pass 2 is on.
           // A three-document file otherwise spends three classifications and
           // twenty-one steps saying nothing about which document any of it is.
