@@ -67,6 +67,12 @@
        `--blame-read` knows what it marks where `--teal` would not. */
     --blame-read: #4fb3c4;
     --blame-extract: #b98cf5;
+    /* The stress test's two pipeline stages, stacked in its in-flight chart.
+       Blue and orange from the validated categorical order: they must read
+       apart under colour-vision deficiency, which the teal/violet pair above
+       does not (deutan dE 7.2). */
+    --st-1: #3987e5;
+    --st-2: #d95926;
   }
   @media (prefers-color-scheme: light) {
     :root:not([data-theme="dark"]) {
@@ -77,6 +83,7 @@
       --tint: rgba(16, 24, 40, 0.055);
       --warn: #9a6410; --ok: #1a7f37; --danger: #c0392f; --info: #2a6f7a;
       --blame-read: #1d5560; --blame-extract: #56309f;
+      --st-1: #2a78d6; --st-2: #eb6834;
       --code-bg: rgba(16, 24, 40, 0.07);
     }
   }
@@ -88,6 +95,7 @@
     --tint: rgba(16, 24, 40, 0.055);
     --warn: #9a6410; --ok: #1a7f37; --danger: #c0392f; --info: #2a6f7a;
       --blame-read: #1d5560; --blame-extract: #56309f;
+      --st-1: #2a78d6; --st-2: #eb6834;
     --code-bg: rgba(16, 24, 40, 0.07);
   }
   * { box-sizing: border-box; }
@@ -588,6 +596,47 @@
   #rtOut { margin-top: 10px; }
   /* Include/exclude chips. An excluded model stays visible and greyed rather
      than disappearing: a pool you cannot see is a pool you cannot put back. */
+  .st-metrics-box { margin-top: 16px; border: 1px solid var(--border); border-radius: 10px;
+    padding: 10px 12px; }
+  .st-metrics-head { font-size: .8rem; }
+  .st-check { display: inline-flex; align-items: center; gap: 6px; font-size: .78rem;
+    color: var(--muted); }
+  .st-plan { font-size: .8rem; color: var(--muted); margin: 10px 0 0; line-height: 1.5; }
+  .st-progress { margin-top: 12px; }
+  .st-bar { height: 8px; border-radius: 4px; background: var(--tint); overflow: hidden; }
+  .st-bar i { display: block; height: 100%; background: var(--accent); border-radius: 4px;
+    transition: width .3s; }
+  .st-live { font-size: .82rem; margin-top: 8px; font-variant-numeric: tabular-nums; }
+  .st-tiles { display: grid; gap: 10px; margin-top: 14px;
+    grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); }
+  .st-tile { border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px; }
+  .st-tile-label { font-size: .72rem; color: var(--muted); text-transform: uppercase;
+    letter-spacing: .04em; }
+  .st-tile-num { font-size: 1.45rem; font-weight: 700; margin-top: 4px;
+    font-variant-numeric: tabular-nums; }
+  .st-tile-num small { font-size: .78rem; font-weight: 500; color: var(--muted); }
+  .st-tile-sub { font-size: .74rem; color: var(--muted); margin-top: 4px; line-height: 1.4; }
+  .st-tile.st-bad .st-tile-num { color: var(--danger); }
+  .st-h { font-size: .9rem; margin: 18px 0 0; }
+  table.st-kv td:first-child { color: var(--muted); }
+  .st-chart-wrap { position: relative; margin-top: 16px; }
+  .st-legend { display: flex; flex-wrap: wrap; gap: 14px; font-size: .76rem; color: var(--muted); }
+  .st-key { display: inline-flex; align-items: center; gap: 6px; }
+  .st-sw { display: inline-block; width: 12px; height: 12px; border-radius: 3px; }
+  .st-sw.st-s1 { background: var(--st-1); }
+  .st-sw.st-s2 { background: var(--st-2); }
+  .st-sw.st-dash { height: 0; border-top: 2px dashed var(--muted); border-radius: 0; }
+  .st-chart { width: 100%; height: 190px; display: block; margin-top: 6px; }
+  .st-area.st-s1 { fill: var(--st-1); fill-opacity: .8; stroke: var(--panel); stroke-width: 1; }
+  .st-area.st-s2 { fill: var(--st-2); fill-opacity: .8; stroke: var(--panel); stroke-width: 1; }
+  .st-grid { stroke: var(--border); stroke-width: 1; vector-effect: non-scaling-stroke; }
+  .st-conc { stroke: var(--muted); stroke-width: 1.5; stroke-dasharray: 5 4;
+    vector-effect: non-scaling-stroke; }
+  .st-cross { stroke: var(--text); stroke-width: 1; opacity: .5; vector-effect: non-scaling-stroke; }
+  .st-axis { fill: var(--muted); font-size: 10px; }
+  .st-tip { position: absolute; top: 30px; background: var(--panel); border: 1px solid var(--border);
+    border-radius: 8px; padding: 6px 9px; font-size: .76rem; pointer-events: none;
+    box-shadow: 0 4px 14px rgba(0,0,0,.25); min-width: 120px; }
   .rt-ex { margin-top: 10px; }
   .rt-ex-label { display: block; font-size: .74rem; color: var(--muted);
                  margin-bottom: 5px; }
@@ -1251,6 +1300,7 @@ follows your desktop; Light is the one to pick for projecting or screenshotting.
         <button type="button" data-pane="ocr" title="read a benchmark document and score the transcript, with no extraction at all">OCR only</button>
         <button type="button" data-pane="fields">Fields only</button>
         <button type="button" data-pane="random">Random test</button>
+        <button type="button" data-pane="stress" title="many requests in flight at once against the selected server, and one report of throughput, latency and score">Stress test</button>
         <!-- Reference, not a run. It is the only side tab that reads nothing
              from the run log and starts nothing: what the requirements ask for,
              which is a question you have before a document rather than after
@@ -1631,6 +1681,125 @@ follows your desktop; Light is the one to pick for projecting or screenshotting.
           broke something is still selected when it stops.</p>
       </div>
 
+      <!-- The stress test (2026-09-25): many requests in flight at once against
+           the selected server, and one report. Nothing it runs is written to
+           the run log -- the figures were taken under contention no other run
+           was, so they stay out of the setting tables. -->
+      <div class="pane" id="paneStress">
+        <p class="note">A benchmark of the <b>server</b>: a queue of jobs worked
+          by as many concurrent requests as you set, against the reading and
+          extraction models selected in the Workspace. Documents are drawn the
+          way the random test draws them. Only the final metrics and scores are
+          shown, and <b>nothing is written to the run log</b>.</p>
+
+        <div class="row">
+          <label class="field" style="flex:1;min-width:210px">
+            What each job runs
+            <select id="stMode">
+              <option value="ocr">OCR only &mdash; read the pages, score the transcript</option>
+              <option value="extract">Extract only &mdash; pass 2 from the ground truth</option>
+              <option value="classify">Classify 100+ pages &mdash; split and type a long file</option>
+              <option value="full">Full pipeline &mdash; read, then extract (stages timed apart)</option>
+            </select>
+          </label>
+        </div>
+        <div class="row">
+          <label class="field" style="flex:1;min-width:90px"
+                 title="how many requests are in flight at once">
+            Concurrent
+            <input id="stConc" type="number" min="1" max="256" value="4">
+          </label>
+          <label class="field" style="flex:1;min-width:90px"
+                 title="how many jobs are queued in total; the concurrent workers take them in order">
+            Queue (jobs)
+            <input id="stJobs" type="number" min="1" max="5000" value="20">
+          </label>
+          <label class="field" style="flex:1;min-width:90px"
+                 title="jobs run first at the same concurrency and left out of every figure -- loads the model and warms its caches">
+            Warm-up
+            <input id="stWarm" type="number" min="0" max="64" value="0">
+          </label>
+          <label class="field" style="flex:1;min-width:90px"
+                 title="stop starting new jobs after this many seconds; 0 runs the whole queue">
+            Time limit (s)
+            <input id="stMax" type="number" min="0" value="0">
+          </label>
+        </div>
+        <div class="row">
+          <label class="field" style="flex:1;min-width:110px" id="stDetailField">
+            Detail
+            <select id="stDetail">
+              {% for d in details %}
+              <option value="{{ d }}" {% if d == default_detail %}selected{% endif %}>{{ d }}</option>
+              {% endfor %}
+            </select>
+          </label>
+          <label class="field" style="flex:1;min-width:110px" id="stShapeField">
+            Extraction shape
+            <select id="stShape">
+              <option value="single">single</option>
+              <option value="agentic">agentic</option>
+            </select>
+          </label>
+          <label class="field" style="flex:1;min-width:110px" id="stPagesField"
+                 title="each job glues ground-truth transcripts into one file of at least this many pages, then groups and classifies it">
+            Pages per file
+            <input id="stPages" type="number" min="2" max="1000" value="100">
+          </label>
+        </div>
+        <div class="row">
+          <label class="field" style="flex:1;min-width:180px" id="stStrategyField">
+            How documents are drawn
+            <select id="stStrategy">
+              <option value="balanced">Balanced &mdash; the least-read document each time</option>
+              <option value="uniform">Random &mdash; every document once before any twice</option>
+            </select>
+          </label>
+          <label class="field" style="flex:1;min-width:120px">
+            Seed <span class="muted-inline" style="font-weight:400">&mdash; blank for new</span>
+            <input id="stSeed" type="text" placeholder="e.g. 1787218747">
+          </label>
+        </div>
+        <div class="row" id="stLockRow">
+          <label class="field" style="flex:1;min-width:150px">
+            Lock document
+            <select id="stLock">
+              <option value="">&mdash; spread over all &mdash;</option>
+              {% for doc_type, group in cases|selectattr('field_truth')|list|groupby('doc_type') %}
+              <optgroup label="{{ doc_type or 'unclassified' }}">
+                {% for c in group %}
+                <option value="{{ c.id }}">{{ c.id }} &middot; {{ c.kind }}</option>
+                {% endfor %}
+              </optgroup>
+              {% endfor %}
+            </select>
+          </label>
+        </div>
+
+        <!-- vLLM's Prometheus endpoint. Offered only when the selected server
+             says it IS vLLM; on a local llama-server or Ollama nothing is ever
+             requested, and the server refuses the route as well. -->
+        <div class="st-metrics-box" id="stMetricsBox">
+          <div class="st-metrics-head">
+            <b>Server /metrics</b>
+            <span id="stMetricsState" class="muted-inline"></span>
+          </div>
+          <div class="row" style="margin-top:8px">
+            <button id="stFetchMetrics" class="ghost-sm" disabled>Fetch /metrics now</button>
+            <label class="st-check">
+              <input id="stSample" type="checkbox" disabled> sample during the test, every
+              <input id="stEvery" type="number" min="1" max="600" value="5" style="width:56px"> s
+            </label>
+          </div>
+        </div>
+
+        <div class="row">
+          <button id="stRun" class="primary">Run stress test</button>
+          <button id="stStop" class="ghost-sm" disabled>Stop</button>
+        </div>
+        <p class="note" id="stModeNote"></p>
+      </div>
+
       <!-- The narrow half of the Doc types tab: what the tab is, and the
            legend for the matrix beside it. Everything with a shape goes in
            `schemaCard`, which is full width -- a five-column matrix of thirty
@@ -1736,6 +1905,19 @@ follows your desktop; Light is the one to pick for projecting or screenshotting.
         <button id="rtClear" class="ghost-sm">Clear</button>
       </div>
       <div id="rtOut"></div>
+    </div>
+
+    <!-- The stress test's report, in the Result card's place like the random
+         test's rounds. Aggregates only: the user asked for the final metric and
+         score and nothing per job. -->
+    <div class="card" id="stCard" hidden>
+      <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+        <h2 style="margin:0">Stress test</h2>
+        <span id="stNote" class="muted-inline" style="font-size:.8rem"></span>
+        <button id="stStop2" class="ghost-sm" style="margin-left:auto" disabled>Stop</button>
+        <button id="stClear" class="ghost-sm">Clear</button>
+      </div>
+      <div id="stOut"></div>
     </div>
 
     <!-- The Doc types reference. It takes the Result card's place the way the
@@ -2294,14 +2476,16 @@ function showPane(name) {
    `var`, and only ids inside, because `showPane` is defined long before the
    card elements' own consts are -- a `let` read from here at parse time is a
    temporal-dead-zone throw, which takes the whole inline script down with it. */
-var scOpen = false, rtWanted = false;
+var scOpen = false, rtWanted = false, stWanted = false;
 function paintMain() {
   const el = id => document.getElementById(id);
-  const rt = !scOpen && rtWanted;
+  const st = !scOpen && stWanted;
+  const rt = !scOpen && !st && rtWanted;
   el('schemaCard').hidden = !scOpen;
+  el('stCard').hidden = !st;
   el('rtCard').hidden = !rt;
-  el('resultCard').hidden = scOpen || rt;
-  el('compareCard').hidden = scOpen || rt;
+  el('resultCard').hidden = scOpen || rt || st;
+  el('compareCard').hidden = scOpen || rt || st;
 }
 sideTabs.addEventListener('click', e => {
   const btn = e.target.closest('button[data-pane]');
@@ -7413,6 +7597,8 @@ function rtPaintScope() {
    it holds that same read's page images. */
 function rtShowing(on) {
   rtWanted = on;
+  // Whichever run was started last owns the column.
+  if (on) stWanted = false;
   paintMain();
 }
 function rtPaint() {
@@ -7512,6 +7698,8 @@ function rtBusy(on) {
   // does nothing.
   rtStop.disabled = !on || rtStopping;
   rtStop2.disabled = !on || rtStopping;
+  // One sweep at a time: the server refuses the second with a 409 anyway.
+  if (typeof stRun !== 'undefined' && stRun) stRun.disabled = on;
   // The two share one card, so they cannot share the screen: a read started
   // mid-test would stream into a Result card the next round event hides again.
   // `paintServer` owns this button otherwise and puts it back on its own terms.
@@ -9715,6 +9903,8 @@ function paintEndpoint() {
   // The random test's locks are painted from the same two lists, so a model that
   // stops being served stops being lockable at the same moment.
   if (typeof rtPaintLocks === 'function') rtPaintLocks();
+  // The /metrics button follows the server kind: only vLLM is ever asked.
+  if (typeof stPaintServer === 'function') stPaintServer();
 }
 
 /* One switch, two panes: the note goes to both, because the pane you are not
@@ -10869,6 +11059,454 @@ enableCompare();
 paintEndpoint();
 paintServer();
 refreshRuns();
+
+/* ---------- stress test ----------
+   One report per run and nothing per job: the server streams a progress event
+   a second (in flight by stage, done, live throughput) and one `done` event
+   carrying the report. Nothing here writes to the run log, so nothing here
+   refreshes it. */
+const stEl = id => document.getElementById(id);
+const stMode = stEl('stMode'), stRun = stEl('stRun'), stStop = stEl('stStop');
+const stStop2 = stEl('stStop2'), stClear = stEl('stClear');
+const stOut = stEl('stOut'), stNote = stEl('stNote');
+const stFetchBtn = stEl('stFetchMetrics'), stSample = stEl('stSample');
+let stAbort = null, stStopping = false;
+let stState = null;          // {plan, progress, report, metrics, draining}
+let stSnapshot = null;       // a manual /metrics snapshot, shown until the next run
+
+const ST_MODE_TEXT = {
+  ocr: 'Each job reads one document with the Workspace reading model and scores '
+    + 'the transcript. Pages are decoded, trimmed, resized and encoded once '
+    + 'before the clock starts, so what is timed is the server.',
+  extract: 'Each job sends one ground-truth transcript to pass 2 on the extraction '
+    + 'model and scores the fields. No page is read.',
+  classify: 'Each job glues ground-truth transcripts into one long file, then '
+    + 'splits it into documents (the walk asks the extraction model only where '
+    + 'the pages do not settle a boundary) and classifies each one. Scored on '
+    + 'grouping and type. No page is read and no field is extracted.',
+  full: 'Each job reads a document, then extracts from that transcript. The OCR '
+    + 'stage and the extraction stage are timed apart, and the chart shows how '
+    + 'many jobs are in each at every moment.'
+};
+
+function stPaintMode() {
+  const m = stMode.value;
+  stEl('stDetailField').style.display = (m === 'ocr' || m === 'full') ? '' : 'none';
+  stEl('stShapeField').style.display = (m === 'extract' || m === 'full') ? '' : 'none';
+  stEl('stPagesField').style.display = m === 'classify' ? '' : 'none';
+  stEl('stLockRow').style.display = m === 'classify' ? 'none' : '';
+  stEl('stStrategyField').style.display = m === 'classify' ? 'none' : '';
+  stEl('stModeNote').textContent = ST_MODE_TEXT[m] || '';
+}
+
+/* The metrics controls follow the SERVER, not a setting: only a server that
+   says it is vLLM gets /metrics asked of it. */
+// A function declaration, so it is hoisted and `paintEndpoint` can call it at
+// parse time -- which is why it looks its elements up rather than reading the
+// consts below, whose temporal dead zone would take the whole script down.
+function stPaintServer() {
+  const btn = document.getElementById('stFetchMetrics');
+  const sample = document.getElementById('stSample');
+  if (!btn) return;
+  const vllm = server && server.kind === 'vllm';
+  const busy = !!document.getElementById('stStop') && !document.getElementById('stStop').disabled;
+  btn.disabled = !vllm || busy;
+  sample.disabled = !vllm || busy;
+  if (!vllm) sample.checked = false;
+  document.getElementById('stMetricsState').textContent = vllm
+    ? '— vLLM at ' + server.url
+    : '— ' + (server && server.kind ? server.kind : 'no server')
+      + ' is not vLLM, so /metrics is never requested';
+}
+
+function stShowing(on) {
+  stWanted = on;
+  if (on) rtWanted = false;
+  paintMain();
+}
+
+function stBusy(on) {
+  if (on) stStopping = false;
+  stRun.disabled = on;
+  stStop.disabled = stStop2.disabled = !on || stStopping;
+  if (rtRun) rtRun.disabled = on;
+  if (on) runBtn.disabled = true; else paintServer();
+  stPaintServer();
+}
+
+const stNum = (v, d = 1) => (v === null || v === undefined) ? '—'
+  : Number(v).toLocaleString(undefined, { maximumFractionDigits: d, minimumFractionDigits: 0 });
+const stSec = v => (v === null || v === undefined) ? '—'
+  : (v >= 100 ? Math.round(v) + ' s' : Number(v).toFixed(v >= 10 ? 1 : 2) + ' s');
+const stPct = v => (v === null || v === undefined) ? '—' : (v * 100).toFixed(1) + '%';
+
+function stTile(label, value, sub, cls) {
+  return '<div class="st-tile' + (cls ? ' ' + cls : '') + '"><div class="st-tile-label">'
+    + esc(label) + '</div><div class="st-tile-num">' + value + '</div>'
+    + (sub ? '<div class="st-tile-sub">' + sub + '</div>' : '') + '</div>';
+}
+
+function stLatencyRows(rows) {
+  const cols = ['n', 'mean', 'p50', 'p90', 'p95', 'p99', 'max'];
+  const body = rows.filter(r => r[1] && r[1].n).map(([name, d, tip, unit]) =>
+    '<tr><td title="' + esc(tip || '') + '">' + esc(name) + '</td>'
+    + cols.map(c => '<td class="n">' + (c === 'n' ? d.n
+        : unit === 'tps' ? stNum(d[c], 1) : stSec(d[c])) + '</td>').join('') + '</tr>'
+  ).join('');
+  if (!body) return '';
+  return '<table class="queue st-lat"><tr><th>Stage</th>'
+    + cols.map(c => '<th class="n">' + c + '</th>').join('') + '</tr>' + body + '</table>';
+}
+
+/* In-flight jobs over time, stacked by stage. One axis (jobs in flight), two
+   series at most -- only two stages can hold jobs in any one mode -- with a
+   legend and a hover readout, and the numbers are in the tables beside it. */
+function stChart(report) {
+  const t = report.timeline || [];
+  const cols = report.timeline_columns || [];
+  if (t.length < 2) return '';
+  const idx = n => cols.indexOf(n);
+  const mode = report.mode;
+  const series = (mode === 'classify' ? [['segment', 'Splitting'], ['classify', 'Classifying']]
+    : mode === 'extract' ? [['extract', 'Extracting']]
+    : mode === 'ocr' ? [['ocr', 'Reading']]
+    : [['ocr', 'Reading (OCR)'], ['extract', 'Extracting']]);
+  // Drawn at the card's real width, so the axis text is never stretched.
+  const W = Math.max(320, Math.round(stOut.clientWidth || 640)), H = 190;
+  const L = 34, R = 10, T = 10, B = 22;
+  const tMax = t[t.length - 1][0] || 1;
+  const yMax = Math.max(1, report.concurrency || 1,
+    ...t.map(p => series.reduce((a, [k]) => a + (p[idx(k)] || 0), 0)));
+  const x = v => L + (W - L - R) * v / tMax;
+  const y = v => T + (H - T - B) * (1 - v / yMax);
+  let base = t.map(() => 0);
+  const paths = series.map(([k, label], si) => {
+    const top = t.map((p, i) => base[i] + (p[idx(k)] || 0));
+    const up = t.map((p, i) => x(p[0]) + ',' + y(top[i])).join(' L');
+    const down = t.map((p, i) => x(p[0]) + ',' + y(base[i])).reverse().join(' L');
+    base = top;
+    return '<path d="M' + up + ' L' + down + ' Z" class="st-area st-s' + (si + 1) + '"/>';
+  }).join('');
+  const ticks = [0, Math.round(yMax / 2), yMax].filter((v, i, a) => a.indexOf(v) === i)
+    .map(v => '<line x1="' + L + '" x2="' + (W - R) + '" y1="' + y(v) + '" y2="' + y(v)
+      + '" class="st-grid"/><text x="' + (L - 6) + '" y="' + (y(v) + 4)
+      + '" class="st-axis" text-anchor="end">' + v + '</text>').join('');
+  const xt = [0, tMax / 2, tMax].map(v => '<text x="' + x(v) + '" y="' + (H - 6)
+    + '" class="st-axis" text-anchor="middle">' + stSec(v) + '</text>').join('');
+  const conc = '<line x1="' + L + '" x2="' + (W - R) + '" y1="' + y(report.concurrency)
+    + '" y2="' + y(report.concurrency) + '" class="st-conc"/>';
+  const legend = series.map(([, label], si) => '<span class="st-key"><i class="st-sw st-s'
+    + (si + 1) + '"></i>' + esc(label) + '</span>').join('')
+    + '<span class="st-key"><i class="st-sw st-dash"></i>concurrency limit</span>';
+  return '<div class="st-chart-wrap"><div class="st-legend">' + legend + '</div>'
+    + '<svg class="st-chart" viewBox="0 0 ' + W + ' ' + H + '" data-w="' + W + '" '
+    + 'data-series="' + esc(JSON.stringify(series.map(s => [idx(s[0]), s[1]]))).replace(/"/g, '&quot;') + '">'
+    + ticks + paths + conc + xt
+    + '<line class="st-cross" y1="' + T + '" y2="' + (H - B) + '" x1="-10" x2="-10"/></svg>'
+    + '<div class="st-tip" hidden></div></div>';
+}
+
+function stWireChart() {
+  const svg = stOut.querySelector('.st-chart');
+  if (!svg || !stState || !stState.report) return;
+  const rep = stState.report, t = rep.timeline, cols = rep.timeline_columns;
+  const series = JSON.parse(svg.dataset.series);
+  const tip = svg.parentElement.querySelector('.st-tip');
+  const cross = svg.querySelector('.st-cross');
+  const tMax = t[t.length - 1][0] || 1;
+  svg.addEventListener('mousemove', e => {
+    const box = svg.getBoundingClientRect();
+    const frac = (e.clientX - box.left) / box.width;
+    const W = Number(svg.dataset.w) || 640, L = 34, R = 10;
+    const tv = Math.max(0, Math.min(tMax, (frac * W - L) / (W - L - R) * tMax));
+    let best = t[0];
+    for (const p of t) if (Math.abs(p[0] - tv) < Math.abs(best[0] - tv)) best = p;
+    const cx = L + (W - L - R) * best[0] / tMax;
+    cross.setAttribute('x1', cx); cross.setAttribute('x2', cx);
+    tip.hidden = false;
+    tip.innerHTML = '<b>' + stSec(best[0]) + '</b>'
+      + series.map(([i, label]) => '<div>' + esc(label) + ': ' + best[i] + '</div>').join('')
+      + '<div>Queued: ' + best[cols.indexOf('queued')] + '</div>'
+      + '<div>Done: ' + best[cols.indexOf('done')] + '</div>';
+    const px = e.clientX - box.left;
+    tip.style.left = Math.min(px + 12, box.width - 150) + 'px';
+  });
+  svg.addEventListener('mouseleave', () => {
+    tip.hidden = true; cross.setAttribute('x1', -10); cross.setAttribute('x2', -10);
+  });
+}
+
+function stMetricsTable(view, title, since) {
+  if (!view) return '';
+  const rows = [
+    ['Requests running', view.running, 'n'], ['Requests waiting', view.waiting, 'n'],
+    ['KV cache usage', view.kv_cache, 'pct'],
+    ['Prompt tokens' + since, view.prompt_tokens, 'n'],
+    ['Generation tokens' + since, view.generation_tokens, 'n'],
+    ['Prompt tokens / s', view.prompt_tokens_per_s, 'n'],
+    ['Generation tokens / s', view.generation_tokens_per_s, 'n'],
+    ['Requests finished' + since, view.requests_ok, 'n'],
+    ['Preemptions' + since, view.preemptions, 'n'],
+    ['Prefix cache hit rate', view.prefix_hit_rate, 'pct'],
+    ['Mean time to first token', view.ttft, 's'],
+    ['Mean time per output token', view.tpot, 's'],
+    ['Mean queue time', view.queue_time, 's'],
+    ['Mean prefill time', view.prefill_time, 's'],
+    ['Mean decode time', view.decode_time, 's'],
+    ['Mean end-to-end', view.e2e, 's'],
+  ].filter(r => r[1] !== null && r[1] !== undefined);
+  if (!rows.length) return '<p class="note">The server answered /metrics but none of '
+    + 'the vLLM series this page knows were in it.</p>';
+  return '<h3 class="st-h">' + esc(title) + '</h3><table class="queue st-kv">'
+    + rows.map(([k, v, u]) => '<tr><td>' + esc(k) + '</td><td class="n">'
+      + (u === 'pct' ? stPct(v) : u === 's' ? stSec(v) : stNum(v, 1)) + '</td></tr>').join('')
+    + '</table>';
+}
+
+function stPaint() {
+  stShowing(!!(stState || stSnapshot));
+  if (!stState && !stSnapshot) { stOut.innerHTML = ''; return; }
+  let html = '';
+  const s = stState || {};
+  const plan = s.plan;
+  if (plan) {
+    html += '<p class="st-plan">' + esc(plan.mode === 'full' ? 'Full pipeline'
+        : plan.mode === 'ocr' ? 'OCR only' : plan.mode === 'extract' ? 'Extract only'
+        : 'Classify ' + plan.pack_pages + '-page files')
+      + ' · ' + plan.concurrency + ' concurrent · ' + plan.jobs + ' job(s)'
+      + (plan.warmup ? ' + ' + plan.warmup + ' warm-up' : '')
+      + ' · ' + esc(plan.server.kind || '') + ' ' + esc(plan.server.url || '')
+      + (plan.reader ? ' · reads with <b>' + esc(csModel(plan.reader)) + '</b>' : '')
+      + (plan.extractor ? ' · extracts with <b>' + esc(csModel(plan.extractor)) + '</b>' : '')
+      + (plan.detail ? ' · ' + esc(plan.detail) : '')
+      + (plan.extract_mode ? ' · ' + esc(plan.extract_mode) : '')
+      + (plan.metrics ? ' · sampling vLLM /metrics' : '')
+      + ' · seed ' + plan.seed + '</p>';
+  }
+  const p = s.progress;
+  if (p && !s.report) {
+    const frac = p.total ? p.done / p.total : 0;
+    const st = p.stages || {};
+    html += '<div class="st-progress"><div class="st-bar"><i style="width:'
+      + (frac * 100).toFixed(1) + '%"></i></div><div class="st-live">'
+      + '<b>' + (p.phase === 'warmup' ? 'Warming up' : 'Running') + '</b> · '
+      + p.done + ' of ' + p.total + ' done · ' + stSec(p.elapsed)
+      + ' · queued ' + (st.queued || 0)
+      + (st.ocr ? ' · reading ' + st.ocr : '') + (st.extract ? ' · extracting ' + st.extract : '')
+      + (st.segment ? ' · splitting ' + st.segment : '')
+      + (st.classify ? ' · classifying ' + st.classify : '')
+      + (p.failed ? ' · <span style="color:var(--danger)">' + p.failed + ' failed</span>' : '')
+      + (p.pages ? ' · ' + stNum(p.pages_per_second, 2) + ' pages/s · '
+        + stNum(p.tokens_per_second, 0) + ' tok/s' : '')
+      + '</div></div>';
+    if (s.metricsNow) {
+      // The last sample, kept between ticks: only every Nth progress event
+      // carries one, and drawing only those made the line flicker.
+      const m = s.metricsNow;
+      html += '<p class="note">vLLM now: ' + stNum(m.running, 0) + ' running, '
+        + stNum(m.waiting, 0) + ' waiting'
+        + (m.kv_cache !== null && m.kv_cache !== undefined ? ', KV cache ' + stPct(m.kv_cache) : '')
+        + (m.generation_tokens_per_s ? ', ' + stNum(m.generation_tokens_per_s, 0)
+          + ' gen tok/s since start' : '') + '.</p>';
+    }
+    if (p.metrics_error) html += '<p class="note err">/metrics: ' + esc(p.metrics_error) + '</p>';
+  }
+  const r = s.report;
+  if (r) {
+    const c = r.counts || {};
+    const tiles = [
+      stTile('Completed', r.completed + '<small> / ' + r.attempted + '</small>',
+        [c.looped ? c.looped + ' looped' : '', c.truncated ? c.truncated + ' at token cap' : '',
+         c.cancelled ? c.cancelled + ' cancelled' : '', c.skipped ? c.skipped + ' past the time limit' : '']
+          .filter(Boolean).join(' · ')),
+      stTile('Error rate', stPct(r.error_rate), (c.error || 0) + ' error(s)',
+        r.error_rate ? 'st-bad' : ''),
+      stTile('Wall clock', stSec(r.wall_seconds), 'prepare ' + stSec(r.prepare_seconds) + ', not timed'),
+      stTile('Throughput', stNum(r.jobs_per_minute, 2) + '<small> jobs/min</small>',
+        r.ocr ? stNum(r.ocr.pages_per_second, 3) + ' pages/s'
+          : r.classify ? stNum(r.classify.pages_per_second, 2) + ' pages/s' : ''),
+    ];
+    if (r.ocr) tiles.push(stTile('OCR tokens / s', stNum(r.ocr.tokens_per_second, 1),
+      'all requests together; one request decodes at '
+      + stNum((r.ocr.decode_tps || {}).p50, 0) + ' (median)'));
+    if (r.extract) tiles.push(stTile('Extract tokens / s', stNum(r.extract.tokens_per_second, 1),
+      stNum(r.extract.tokens, 0) + ' tokens'));
+    if (r.ocr) tiles.push(stTile('Transcript score', stPct(r.ocr.char_accuracy),
+      'mean character accuracy of ' + r.ocr.char_scored + ' clean read(s)'));
+    if (r.extract) tiles.push(stTile('Field score', stPct(r.extract.field_accuracy),
+      'mean of ' + r.extract.field_scored + ' job(s) · pooled ' + stPct(r.extract.field_pooled)
+      + ' of ' + r.extract.field_values + ' values'
+      + (r.extract.unscored ? ' · ' + r.extract.unscored + ' under the read floor' : '')));
+    if (r.classify) {
+      tiles.push(stTile('Grouped exactly', stPct(r.classify.grouping_exact),
+        r.classify.documents_found + ' found of ' + r.classify.documents_expected + ' documents'));
+      tiles.push(stTile('Typed correctly', stPct(r.classify.types_exact),
+        'same form ' + stPct(r.classify.form_match) + ' · of the exactly grouped'));
+      tiles.push(stTile('Walk questions', stNum(r.classify.asks_per_100_pages, 1)
+        + '<small> / 100 pages</small>', r.classify.asks + ' asked · '
+        + r.classify.refused + ' refused · ' + r.classify.model_classified + ' typed by the model'));
+    }
+    html += '<div class="st-tiles">' + tiles.join('') + '</div>';
+    if (r.stage_share && r.stage_share.ocr !== null) {
+      html += '<p class="note">Of the time jobs spent working, <b>' + stPct(r.stage_share.ocr)
+        + '</b> was reading and <b>' + stPct(r.stage_share.extract) + '</b> was extracting.</p>';
+    }
+    html += stChart(r);
+    const lat = r.latency || {};
+    const latency = stLatencyRows([
+      ['Waiting in the queue', lat.queue_wait, 'time a job waited for a free worker on this side'],
+      ['End to end', lat.end_to_end, 'one whole job, from starting work to finishing'],
+      ...(r.ocr ? [
+        ['OCR, per job', r.ocr.latency_job, 'every page of the document read'],
+        ['OCR, per page', r.ocr.latency_page, 'one page request'],
+        ['Time to first token', r.ocr.ttft, 'measured here, so it includes time the request waited in the server queue'],
+        ['Decode tokens/s, per request', r.ocr.decode_tps, 'one request own decode rate', 'tps'],
+      ] : []),
+      ...(r.extract ? [['Extraction, per job', r.extract.latency_job, 'pass 2, all of its requests']] : []),
+      ...(r.classify ? [['Splitting into documents', r.classify.latency_segment, 'the page walk, including every question asked'],
+                        ['Classifying the documents', r.classify.latency_classify, 'one type per document found']] : []),
+    ]);
+    if (latency) html += '<h3 class="st-h">Latency</h3>' + latency;
+    if (r.errors && r.errors.length) {
+      html += '<h3 class="st-h">Errors</h3><table class="queue">' + r.errors.map(e =>
+        '<tr><td class="n">' + e.count + '×</td><td>' + esc(e.error) + '</td></tr>').join('') + '</table>';
+    }
+    if (r.server_metrics) html += stMetricsTable(r.server_metrics, 'vLLM /metrics during the run', ' (this run)');
+  }
+  if (s.draining) {
+    html += '<p class="note err">Stopped. ' + s.draining + ' request(s) are still running '
+      + 'on the server; another test can start when they finish.</p>';
+  }
+  if (stSnapshot) {
+    html += stMetricsTable(stSnapshot.view, 'vLLM /metrics snapshot · '
+      + new Date(stSnapshot.at * 1000).toLocaleTimeString(), ' (since server start)');
+  }
+  stOut.innerHTML = html;
+  stWireChart();
+}
+
+function stBody() {
+  const val = id => stEl(id).value;
+  return {
+    mode: stMode.value, concurrency: Number(val('stConc')) || 1,
+    jobs: Number(val('stJobs')) || 1, warmup: Number(val('stWarm')) || 0,
+    max_seconds: Number(val('stMax')) || 0, detail: val('stDetail'),
+    extract_mode: val('stShape'), pack_pages: Number(val('stPages')) || 100,
+    strategy: val('stStrategy'), seed: val('stSeed').trim() || null,
+    lock_case: stMode.value === 'classify' ? '' : val('stLock'),
+    metrics: stSample.checked && !stSample.disabled,
+    metrics_every: Number(val('stEvery')) || 5
+  };
+}
+
+async function stStart() {
+  // Read the form BEFORE going busy: busy disables the sampling checkbox, and
+  // a body built after that would never ask for /metrics.
+  const body = stBody();
+  stState = { draining: 0 };
+  stSnapshot = null;
+  stNote.textContent = 'Preparing…';
+  stNote.classList.remove('err');
+  stAbort = new AbortController();
+  stBusy(true);
+  stPaint();
+  try {
+    const res = await fetch('/api/stress/stream', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      signal: stAbort.signal, body: JSON.stringify(body)
+    });
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      throw new Error(data.error || ('HTTP ' + res.status));
+    }
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '', lastPaint = 0;
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split('\n');
+      buffer = lines.pop();
+      for (const line of lines) {
+        if (!line.trim()) continue;
+        const ev = JSON.parse(line);
+        if (ev.event === 'plan') {
+          stState.plan = ev;
+          stEl('stSeed').value = ev.seed;
+          stNote.textContent = 'Seed ' + ev.seed + '.';
+        } else if (ev.event === 'preparing') {
+          stNote.textContent = 'Preparing ' + ev.done + ' of ' + ev.total
+            + (stMode.value === 'classify' ? ' file(s)…' : ' document(s)…');
+        } else if (ev.event === 'progress') {
+          stState.progress = ev;
+          if (ev.server_metrics) stState.metricsNow = ev.server_metrics;
+          stNote.textContent = (ev.phase === 'warmup' ? 'Warming up — ' : 'Running — ')
+            + ev.done + '/' + ev.total;
+        } else if (ev.event === 'done') {
+          stState.report = ev.report;
+          stState.draining = ev.draining || 0;
+          stNote.textContent = (ev.stopped ? 'Stopped' : 'Finished') + ' — seed ' + ev.seed
+            + '. Nothing was written to the run log.';
+        } else if (ev.event === 'draining') {
+          stState.draining = ev.in_flight;
+        } else if (ev.event === 'error') {
+          throw new Error(ev.error);
+        }
+      }
+      const now = Date.now();
+      if (now - lastPaint > 300) { lastPaint = now; stPaint(); }
+    }
+  } catch (err) {
+    stNote.textContent = err.name === 'AbortError'
+      ? 'Hung up on the test; the server may still be running it.' : err.message;
+    stNote.classList.add('err');
+  } finally {
+    if (stState) stState.draining = 0;
+    stAbort = null;
+    stBusy(false);
+    stPaint();
+  }
+}
+
+if (stRun) {
+  stMode.addEventListener('change', stPaintMode);
+  stRun.addEventListener('click', () => stStart());
+  const stop = async () => {
+    if (!stAbort || stStopping) return;
+    stStopping = true;
+    stStop.disabled = stStop2.disabled = true;
+    stNote.textContent = 'Stopping — no new job starts, reads in flight are hung up…';
+    try { await fetch('/api/stress/stop', { method: 'POST' }); } catch { stAbort.abort(); }
+  };
+  stStop.addEventListener('click', stop);
+  stStop2.addEventListener('click', stop);
+  stClear.addEventListener('click', () => {
+    if (stAbort) return;
+    stState = null; stSnapshot = null; stNote.textContent = '';
+    stPaint();
+  });
+  stFetchBtn.addEventListener('click', async () => {
+    stFetchBtn.disabled = true;
+    try {
+      const res = await fetch('/api/stress/metrics');
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || ('HTTP ' + res.status));
+      stSnapshot = data;
+      stNote.textContent = 'Fetched ' + data.url + '/metrics.';
+      stNote.classList.remove('err');
+    } catch (err) {
+      stNote.textContent = err.message;
+      stNote.classList.add('err');
+      stShowing(true);
+    } finally {
+      stPaintServer();
+      stPaint();
+    }
+  });
+  stPaintMode();
+  stPaintServer();
+}
 </script>
 </body>
 </html>

@@ -7,6 +7,10 @@ API but differ everywhere else:
   `/slots`, and ignores the "model" field of a request.
 * Ollama -- many models in one process, exposes `/api/tags` and `/api/ps`, has no
   `/props`, and REQUIRES the model name in every request.
+* vLLM (2026-09-25) -- the high-end-GPU server the stress test is aimed at. It
+  answers `/v1/models` with `owned_by: "vllm"`, requires the model name like
+  Ollama, and exposes Prometheus `/metrics`. Any other server that answers
+  `/v1/models` is kind `openai` and is spoken to the same way, minus `/metrics`.
 
 Every difference between the two is decided in this module, so `app.py` only ever
 asks for "the active endpoint" and gets one uniform status dict back.
@@ -198,6 +202,56 @@ def _probe_ollama(url):
             "vision": None, "slots": None, "reason": None}
 
 
+def _probe_openai(url):
+    """vLLM (or another OpenAI-compatible server) if `/v1/models` lists models.
+
+    Asked LAST, after llama.cpp and Ollama, because both of those answer
+    `/v1/models` as well -- this is the fallback for a server that has neither
+    `/props` nor `/api/tags`, which is what vLLM, SGLang and LM Studio look like
+    from here.
+
+    **`kind` is `vllm` only where the server says `owned_by: "vllm"`**, and that
+    is the whole of what decides whether the stress test may fire `/metrics` at
+    it. A generic OpenAI-compatible server is `openai` and never gets that
+    request -- the user's rule, *if I am testing on my machine do not fire it*,
+    reduced to a fact the server states about itself rather than a guess from
+    its address.
+
+    Vision is reported as unknown (None): `/v1/models` does not say, and the
+    status rule already attempts a read on a model that did not say rather than
+    refusing one that would have worked.
+    """
+    try:
+        res = requests.get(f"{url}/v1/models", timeout=PROBE_TIMEOUT)
+        if res.status_code != 200:
+            return None
+        body = res.json()
+    except Exception:
+        return None
+    data = body.get("data") if isinstance(body, dict) else None
+    if not isinstance(data, list):
+        return None
+    models = [{"name": str(m.get("id") or ""), "vision": None,
+               "max_model_len": m.get("max_model_len")}
+              for m in data if isinstance(m, dict) and m.get("id")]
+    if not models:
+        return None
+    vllm = any(isinstance(m, dict) and m.get("owned_by") == "vllm" for m in data)
+    return {"kind": "vllm" if vllm else "openai", "reachable": True,
+            "model": models[0]["name"], "models": models, "vision": None,
+            "slots": None, "reason": None}
+
+
+def serves_metrics(info: dict) -> bool:
+    """Does this server expose Prometheus `/metrics` the stress test may read?
+
+    vLLM only. llama-server has one behind `--metrics`, but it shares the task
+    queue with inference -- the reason this project never polls it -- and a
+    local server is exactly the case the metrics button must stay off for.
+    """
+    return bool(info and info.get("kind") == "vllm" and info.get("reachable", True))
+
+
 def known(url: str = None) -> dict:
     """The last probe of `url`, however old, or None if it has never been probed.
 
@@ -237,7 +291,7 @@ def probe(url: str, force: bool = False) -> dict:
             if time.time() - at < ttl:
                 return cached
 
-    info = _probe_llama(url) or _probe_ollama(url) or {
+    info = _probe_llama(url) or _probe_ollama(url) or _probe_openai(url) or {
         "kind": None,
         "reachable": False,
         "model": None,
@@ -326,6 +380,13 @@ def _resolve_model(url, info):
     reports vision, otherwise the first model at all -- so a freshly added
     endpoint is usable without picking anything.
     """
+    if info["kind"] in ("vllm", "openai") and info["models"]:
+        # One or several served models and no capability flags to rank on: the
+        # explicit choice if it is still served, otherwise what the server
+        # lists first.
+        names = [m["name"] for m in info["models"]]
+        picked = _chosen.get(url)
+        return picked if picked in names else info.get("model")
     if info["kind"] != "ollama" or not info["models"]:
         return info.get("model")
     names = [m["name"] for m in info["models"]]
@@ -918,7 +979,8 @@ def request_extras(info: dict = None) -> dict:
     not honour it ignores the field and keeps the window from its own -c, so
     sending it costs nothing where it does not apply.
 
-    `reasoning_effort` goes to Ollama only, and it is what keeps a reasoning model
+    `reasoning_effort` goes to Ollama, and `chat_template_kwargs.enable_thinking`
+    to llama-server, and it is what keeps a reasoning model
     usable here at all: such a model returns its chain of thought in a separate
     field and leaves `content` empty until it stops thinking, so every capped
     request this app makes comes back empty. `settings.OLLAMA_REASONING_EFFORT`
@@ -934,7 +996,23 @@ def request_extras(info: dict = None) -> dict:
         if chosen > 0:
             extras["options"] = {"num_ctx": chosen}
         return extras
-    return {"n_ctx": chosen} if chosen > 0 else {}
+    if info["kind"] in ("vllm", "openai"):
+        # The model name is required, like Ollama. No window is sent: vLLM fixes
+        # it at launch (--max-model-len) and has no per-request equivalent.
+        extras = {"model": info["model"]} if info.get("model") else {}
+        if settings.OLLAMA_REASONING_EFFORT == "none":
+            extras["chat_template_kwargs"] = {"enable_thinking": False}
+        return extras
+    extras = {"n_ctx": chosen} if chosen > 0 else {}
+    # llama-server serves thinking models too (qwen3.6-35b-a3b, 2026-09-23) and
+    # fails the same way: every capped request comes back with its budget spent
+    # in `reasoning_content` and `content` empty. Its switch is the chat
+    # template's `enable_thinking`, passed through `chat_template_kwargs`; a
+    # template that never reads it ignores it, so a non-thinking model is
+    # unaffected. Same setting as Ollama's, so one knob turns thinking on for both.
+    if settings.OLLAMA_REASONING_EFFORT == "none":
+        extras["chat_template_kwargs"] = {"enable_thinking": False}
+    return extras
 
 
 def structured_request(messages: list, schema: dict, max_tokens: int,

@@ -21,7 +21,9 @@ import tempfile
 import threading
 import time
 import uuid
+import weakref
 from collections import OrderedDict
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from pathlib import Path
 
 import requests
@@ -41,6 +43,7 @@ import randomtest
 import runlog
 import scoring
 import segment
+import stress
 import validate
 import verify
 
@@ -302,12 +305,47 @@ def _close_quietly(closeable):
         pass
 
 
-def begin_sweep():
-    """Mark this thread as running a sweep, and hand back its cancel flag."""
+class MultiCancel(Cancel):
+    """A `Cancel` for a run with MANY requests in flight -- the stress test.
+
+    `Cancel.attach` keeps one slot because a sweep has one read in flight at a
+    time; a stress run has as many as its concurrency. The live requests are
+    held weakly, so a response that has finished and been dropped does not stay
+    referenced for the rest of a thousand-job run.
+    """
+
+    def __init__(self):
+        super().__init__()
+        self._live = weakref.WeakSet()
+
+    def attach(self, closeable):
+        with self._lock:
+            if not self._event.is_set():
+                try:
+                    self._live.add(closeable)
+                except TypeError:                   # not weak-referenceable
+                    pass
+                return
+        _close_quietly(closeable)
+
+    def set(self):
+        with self._lock:
+            self._event.set()
+            live, self._live = list(self._live), weakref.WeakSet()
+        for closeable in live:
+            _close_quietly(closeable)
+
+
+def begin_sweep(cancel=None):
+    """Mark this thread as running a sweep, and hand back its cancel flag.
+
+    `cancel` lets the stress test bring a `MultiCancel`; the random test takes
+    the one-slot default.
+    """
     global _sweep_thread, _sweep_cancel
     with _sweep_lock:
         _sweep_thread = threading.current_thread()
-        _sweep_cancel = Cancel()
+        _sweep_cancel = cancel or Cancel()
         return _sweep_cancel
 
 
@@ -629,6 +667,13 @@ def looks_repetitive(text: str, tail_chars: int = LOOP_TAIL_CHARS,
 
 
 def image_data_uri(image: Image.Image) -> str:
+    # The stress test encodes each prepared page once, before its clock starts,
+    # and hangs the result on the image: a page sent a hundred times under load
+    # would otherwise pay a PNG encode on this machine a hundred times, and that
+    # CPU is not the server being measured. Every other caller sets nothing.
+    cached = getattr(image, "_data_uri", None)
+    if cached:
+        return cached
     buf = io.BytesIO()
     image.save(buf, format="PNG")
     return "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode()
@@ -791,6 +836,11 @@ def stream_page(image: Image.Image, stats: dict | None = None,
             decode = max(finished - first_at, 1e-9) if first_at else 0
             new_tokens = int(usage.get("completion_tokens") or pieces)
         stats.update(
+            # Client-side time to first token, on every backend. `prefill_seconds`
+            # is llama.cpp's own prompt_ms where it sends one, which EXCLUDES the
+            # time the request waited in the server's queue -- exactly the part a
+            # stress test with more requests than slots is measuring.
+            ttft_seconds=round((first_at or finished) - started, 3),
             new_tokens=new_tokens,
             truncated=new_tokens >= MAX_NEW_TOKENS,
             looped=looped,
@@ -5019,8 +5069,8 @@ def random_test_stream():
     # had just moved. The page disables its own button; this is the same rule for
     # a caller that is not the page.
     if sweeps_running():
-        return jsonify(error="A random test is already running. Wait for it or "
-                             "stop it before starting another."), 409
+        return jsonify(error="A random test or stress test is already running. "
+                             "Wait for it or stop it before starting another."), 409
 
     cancel = begin_sweep()
 
@@ -5283,6 +5333,543 @@ def _read_case(case_id: str, detail: str, extract: bool = True,
     payload["status"] = ("looped" if payload.get("looped")
                          else "truncated" if payload.get("truncated") else "ok")
     return payload
+
+
+# --------------------------------------------------------------------------
+# The stress test (2026-09-25)
+#
+# N requests in flight against the model server, from a queue of M jobs, and one
+# report at the end. `stress.py` holds the dataset draw, the 100+ page pack
+# builder, the Prometheus reader and the report; what is here is the part that
+# talks to the server -- the same `read_page`, `extract_fields`,
+# `_segment_stream` and `resolve_doc_types` every other path uses, so a stress
+# run exercises the code a real run exercises.
+#
+# **What it deliberately does NOT share with the random test:**
+#
+# * **Nothing is logged.** No run-log row, no `solution/out/` transcript, no
+#   page job in the compare-view cache. The user's rule -- *only show the final
+#   metric and score* -- and the right one: every figure here was taken under
+#   contention no other run was, and averaging it into the setting tables would
+#   put two different questions under one column.
+# * **No model is switched.** The whole run uses the reader and the extraction
+#   model selected now. A stress test compares LOAD, and a model change between
+#   jobs would be a second variable nobody could separate from the first.
+# * **Pages are prepared once, before the clock.** Decode, trim, resize and the
+#   PNG encode are this machine's CPU, not the server's; a thousand-job run
+#   would otherwise be measuring Pillow. The time it took is reported beside the
+#   report, not inside it.
+#
+# It holds the sweep guard like the random test, so the server cannot be
+# switched and a random test cannot start underneath it, and its Stop is the
+# same route: no new job starts, every read in flight is hung up (a
+# `MultiCancel`), and an extraction already running is allowed to finish -- an
+# extraction is one request, or seven, and a half-filled form scores as a bad
+# one.
+# --------------------------------------------------------------------------
+
+STRESS_METRICS_TIMEOUT = (1.5, 5)
+
+
+class _StressLive:
+    """What is in flight right now, by stage, for the progress events."""
+
+    def __init__(self, queued: int):
+        self._lock = threading.Lock()
+        self.stages = {name: 0 for name in stress.STAGES}
+        self.stages["queued"] = queued
+        self.done = self.failed = self.pages = self.tokens = 0
+
+    def move(self, frm, to):
+        with self._lock:
+            if frm:
+                self.stages[frm] -= 1
+            if to:
+                self.stages[to] += 1
+
+    def page(self, tokens: int):
+        with self._lock:
+            self.pages += 1
+            self.tokens += tokens or 0
+
+    def finish(self, failed: bool):
+        with self._lock:
+            self.done += 1
+            self.failed += int(bool(failed))
+
+    def snapshot(self) -> dict:
+        with self._lock:
+            return {"stages": dict(self.stages), "done": self.done,
+                    "failed": self.failed, "pages": self.pages,
+                    "tokens": self.tokens}
+
+
+def _vllm_metrics(url: str) -> dict:
+    """GET `/metrics` from a vLLM server, parsed. Raises on any failure."""
+    res = requests.get(f"{url}/metrics", timeout=STRESS_METRICS_TIMEOUT)
+    if res.status_code != 200:
+        raise ValueError(f"/metrics answered HTTP {res.status_code}")
+    return stress.parse_prometheus(res.text)
+
+
+def _stress_cases(mode: str) -> list:
+    """The documents a stress run draws from -- the random test's pool.
+
+    Every case with both truths for the modes that score fields, as
+    `_random_pools` has it; the classification mode needs only the transcript
+    truth, because its score is the grouping and the manifest's types.
+    """
+    index = scoring.cases_index()
+    if mode == "classify":
+        return sorted(cid for cid, c in index.items() if c["ground_truth"].exists())
+    return sorted(cid for cid in index if fieldscore.has_truth(cid))
+
+
+def _stress_config(body: dict) -> dict:
+    """The request, checked and clamped, or ValueError naming what is wrong."""
+    def number(key, default, low, high):
+        try:
+            value = int(body.get(key, default) if body.get(key) not in (None, "")
+                        else default)
+        except (TypeError, ValueError):
+            raise ValueError(f"{key} must be a whole number.")
+        return max(low, min(value, high))
+
+    mode = (body.get("mode") or stress.DEFAULT_MODE).strip().lower()
+    if mode not in stress.MODES:
+        raise ValueError(f"mode must be one of {', '.join(stress.MODES)}.")
+    shape = (body.get("extract_mode") or extract_mode()).strip().lower()
+    if shape not in ("single", "agentic"):
+        raise ValueError("extract_mode must be 'single' or 'agentic'.")
+    strategy = (body.get("strategy") or randomtest.DEFAULT_STRATEGY).strip().lower()
+    if strategy not in randomtest.STRATEGIES:
+        raise ValueError("strategy must be 'balanced' or 'uniform'.")
+    cases = _stress_cases(mode)
+    lock = (body.get("lock_case") or "").strip()
+    if lock and mode == "classify":
+        lock = ""        # a pack of one case glued to itself has no findable boundaries
+    if lock and lock not in cases:
+        raise ValueError(f"{lock} is not a document this mode can use.")
+    if not cases:
+        raise ValueError("No benchmark case has the ground truth this mode needs.")
+
+    if mode in ("ocr", "full"):
+        if current_reader() != "server":
+            raise ValueError("The stress test reads with the model server. Switch "
+                             "the Workspace's reading engine to the model server "
+                             "first -- an OCR library runs in one local worker, "
+                             "so there is no concurrency to measure.")
+        info = llama_status()
+        if not info["available"]:
+            raise ValueError(info["reason"])
+    if mode in ("extract", "classify", "full"):
+        info = backends.extract_status()
+        if not info["text_available"]:
+            raise ValueError(info["text_reason"])
+
+    return {
+        "mode": mode,
+        "concurrency": number("concurrency", 4, 1, stress.MAX_CONCURRENCY),
+        "jobs": number("jobs", 20, 1, stress.MAX_JOBS),
+        "warmup": number("warmup", 0, 0, stress.MAX_WARMUP),
+        "max_seconds": number("max_seconds", 0, 0, 7 * 24 * 3600),
+        "pack_pages": number("pack_pages", stress.DEFAULT_PACK_PAGES, 2,
+                             stress.MAX_PACK_PAGES),
+        "metrics_every": number("metrics_every", 5, 1, 600),
+        "metrics": bool(body.get("metrics")),
+        "detail": resolve_detail(body.get("detail") or "medium"),
+        "extract_mode": shape,
+        "strategy": strategy,
+        "seed": body.get("seed"),
+        "lock": lock,
+        "cases": cases,
+    }
+
+
+def _stress_pages(case_id: str, detail: str) -> list:
+    """A case's pages, prepared exactly as `prepare_input` does it, encoded once.
+
+    Not `prepare_input` itself, because that registers a page job -- and a
+    stress run's pages in the compare-view cache would evict the reads somebody
+    is looking at, `MAX_JOBS` being a RAM ceiling.
+    """
+    data, _ = case_bytes(case_id)
+    pages, _ = load_pages(data)
+    budget = DETAIL_PRESETS[detail]
+    prepared = [fit_pixels(trim_margins(page) if TRIM_MARGINS else page, budget)
+                for page in pages]
+    for page in prepared:
+        page._data_uri = image_data_uri(page)
+    return prepared
+
+
+def _stress_read(pages, cancel, rec: dict, live: _StressLive) -> tuple:
+    """Pass 1 over prepared pages. `(page_texts, looped, truncated)`."""
+    started = time.perf_counter()
+    texts, looped, truncated = [], False, False
+    ttft, page_s, page_tps, tokens = [], [], [], 0
+    for page in pages:
+        if cancel.is_set():
+            raise SweepCancelled("stopped")
+        stats = {}
+        try:
+            texts.append(read_page(page, stats, cancel=cancel))
+        except Exception:
+            if cancel.is_set():
+                raise SweepCancelled("stopped")
+            raise
+        if cancel.is_set():
+            raise SweepCancelled("stopped")
+        looped = looped or bool(stats.get("looped"))
+        truncated = truncated or bool(stats.get("truncated"))
+        tokens += stats.get("new_tokens") or 0
+        ttft.append(stats.get("ttft_seconds"))
+        page_s.append(stats.get("seconds"))
+        if stats.get("tokens_per_second"):
+            page_tps.append(stats["tokens_per_second"])
+        live.page(stats.get("new_tokens") or 0)
+    rec.update(ocr_s=round(time.perf_counter() - started, 3), pages=len(pages),
+               ocr_tokens=tokens, ttft_s=ttft, page_s=page_s, page_tps=page_tps)
+    return texts, looped, truncated
+
+
+def _stress_classify(pack: dict, rec: dict, live: _StressLive, cancel) -> None:
+    """Group a long glued file into documents, then classify each one."""
+    status = backends.extract_status()
+    started = time.perf_counter()
+    asked = refused = 0
+    steps = _segment_stream(pack["text"], pack["pages"], status)
+    while True:
+        if cancel.is_set():
+            steps.close()
+            raise SweepCancelled("stopped")
+        try:
+            event = next(steps)
+        except StopIteration as done:
+            segments, _ = done.value
+            break
+        if event.get("event") == "segment_page":
+            asked = event.get("asked_total", asked)
+            refused = event.get("refused_total", refused)
+    rec["segment_s"] = round(time.perf_counter() - started, 3)
+    live.move("segment", "classify")
+
+    started = time.perf_counter()
+    expected = {tuple(sorted(doc["pages"])): doc for doc in pack["expected"]}
+    exact = types = forms = by_model = 0
+    for seg in segments:
+        if cancel.is_set():
+            raise SweepCancelled("stopped")
+        codes, how = resolve_doc_types(seg.get("text") or "", status=status,
+                                       pages=seg.get("page_texts"))[:2]
+        by_model += how == "model"
+        doc = expected.get(tuple(sorted(seg.get("pages") or [])))
+        if doc is None:
+            continue
+        exact += 1
+        types += set(codes) == set(doc["types"])
+        forms += (prompts.fields_for_types(codes)
+                  == prompts.fields_for_types(doc["types"]))
+    rec.update(classify_s=round(time.perf_counter() - started, 3),
+               pages=len(pack["pages"]), asks=asked, refused=refused,
+               docs_expected=len(pack["expected"]), docs_found=len(segments),
+               docs_exact=exact, types_exact=types, form_match=forms,
+               model_classified=by_model, status="ok")
+
+
+def _stress_job(spec: dict, cfg: dict, prepared: dict, cancel,
+                live: _StressLive) -> dict:
+    """One job of the queue, start to finish. Returns its record; never raises."""
+    rec = {"wait_s": round(time.perf_counter() - spec["submitted"], 3)}
+    deadline = spec.get("deadline")
+    if cancel.is_set() or (deadline and time.perf_counter() > deadline):
+        live.move("queued", None)
+        rec["status"] = "cancelled" if cancel.is_set() else "skipped"
+        return rec
+    mode = cfg["mode"]
+    stage = {"ocr": "ocr", "full": "ocr", "extract": "extract",
+             "classify": "segment"}[mode]
+    live.move("queued", stage)
+    began = time.perf_counter()
+    try:
+        if mode == "classify":
+            _stress_classify(prepared["packs"][spec["index"]], rec, live, cancel)
+        else:
+            case_id = spec["case"]
+            case = scoring.cases_index()[case_id]
+            texts, looped, truncated, truth = None, False, False, None
+            if mode in ("ocr", "full"):
+                texts, looped, truncated = _stress_read(prepared["pages"][case_id],
+                                                        cancel, rec, live)
+                text = join_page_texts(texts) if len(texts) > 1 else texts[0]
+                try:
+                    truth = scoring.evaluate(case, text)
+                except Exception:                   # noqa: BLE001
+                    truth = None
+                rec["char_accuracy"] = (truth or {}).get("char_accuracy")
+            if mode in ("extract", "full"):
+                if mode == "full":
+                    live.move("ocr", "extract")
+                    stage = "extract"
+                else:
+                    text = prepared["truths"][case_id]
+                started = time.perf_counter()
+                result = extract_fields(text, cfg["extract_mode"], case_id,
+                                        pages=texts, truth_fed=mode == "extract")
+                rec["extract_s"] = round(time.perf_counter() - started, 3)
+                rec["extract_tokens"] = result.get("tokens") or 0
+                if result.get("error"):
+                    raise ValueError(result["error"])
+                payload = {"truth": truth, "looped": looped,
+                           "truncated": truncated, "extracted": result}
+                if mode == "full":
+                    apply_read_floor(payload)
+                summary = randomtest.summarise_round(payload)
+                rec.update(field_rate=(summary["field"] / 100
+                                       if summary["field"] is not None else None),
+                           field_correct=summary["correct"],
+                           field_partial=summary["partial"],
+                           field_expected=summary["expected"],
+                           unscored=bool(summary["unscored"]),
+                           partial_reply=summary["partial_reply"])
+            rec["status"] = ("looped" if looped else
+                             "truncated" if truncated else "ok")
+    except SweepCancelled:
+        rec["status"] = "cancelled"
+    except Exception as err:                        # noqa: BLE001
+        if cancel.is_set():
+            rec["status"] = "cancelled"
+        else:
+            rec["status"] = "error"
+            rec["error"] = f"{type(err).__name__}: {err}"[:300]
+    finally:
+        live.move("classify" if mode == "classify" and "segment_s" in rec
+                  else stage, None)
+    rec["total_s"] = round(time.perf_counter() - began, 3)
+    live.finish(rec["status"] == "error")
+    return rec
+
+
+def _stress_phase(specs: list, cfg: dict, prepared: dict, cancel, phase: str,
+                  metrics_url: str = None, metrics_base: dict = None):
+    """Run one queue of jobs at the configured concurrency, yielding progress.
+
+    Every job is queued at once and a pool of `concurrency` workers works
+    through it -- which is what makes `queue_wait` a real figure: a job's wait is
+    the time it spent behind the jobs ahead of it, on THIS side of the wire.
+    Returns `(records, wall, timeline, last_metrics, draining)`.
+
+    **On Stop it returns at once**, with every job that had not finished counted
+    as cancelled, and hands back the ones still running as `draining`. A request
+    still waiting in the SERVER's queue has no response yet to hang up on -- the
+    `Cancel` docstring has the measurement -- so waiting for those before
+    reporting made a Stop take as long as the server's backlog (two minutes,
+    measured through Ollama). The caller reports first and drains after,
+    holding the guard until the last one ends.
+    """
+    live = _StressLive(len(specs))
+    pool = ThreadPoolExecutor(max_workers=cfg["concurrency"],
+                              thread_name_prefix="stress")
+    started = time.perf_counter()
+    deadline = started + cfg["max_seconds"] if cfg["max_seconds"] and phase == "run" else None
+    for spec in specs:
+        spec["submitted"], spec["deadline"] = started, deadline
+    futures = [pool.submit(_stress_job, spec, cfg, prepared, cancel, live)
+               for spec in specs]
+    pending, timeline = set(futures), []
+    last_metrics, sampled_at = None, started
+    try:
+        while pending and not cancel.is_set():
+            _, pending = wait(pending, timeout=1.0, return_when=FIRST_COMPLETED)
+            now = time.perf_counter()
+            elapsed = now - started
+            snap = live.snapshot()
+            stages = snap["stages"]
+            timeline.append([round(elapsed, 1)] + [stages[s] for s in stress.STAGES]
+                            + [snap["done"]])
+            event = {"event": "progress", "phase": phase,
+                     "elapsed": round(elapsed, 1), "total": len(specs), **snap,
+                     "pages_per_second": round(snap["pages"] / elapsed, 3) if elapsed else 0,
+                     "tokens_per_second": round(snap["tokens"] / elapsed, 2) if elapsed else 0}
+            if metrics_url and now - sampled_at >= cfg["metrics_every"]:
+                sampled_at = now
+                try:
+                    last_metrics = _vllm_metrics(metrics_url)
+                    event["server_metrics"] = stress.metrics_view(
+                        last_metrics, metrics_base, elapsed)
+                except Exception as err:            # noqa: BLE001
+                    event["metrics_error"] = str(err)[:200]
+            yield json.dumps(event) + "\n"
+    finally:
+        # Queued jobs are dropped; running ones carry on and are drained by the
+        # caller. Nothing here blocks on them.
+        pool.shutdown(wait=False, cancel_futures=True)
+    wall = time.perf_counter() - started
+    records, draining = [], []
+    for future in futures:
+        if future.done() and not future.cancelled():
+            records.append(future.result())
+        else:
+            records.append({"status": "cancelled"})
+            if not future.cancelled():
+                draining.append(future)
+    return records, wall, timeline, last_metrics, draining
+
+
+def _stress_run(cfg: dict, cancel):
+    """The whole run: plan, prepare, warm up, measure, report."""
+    rng, seed = stress.seeded_rng(cfg["seed"])
+    mode = cfg["mode"]
+    total = cfg["warmup"] + cfg["jobs"]
+    reader = llama_status() if mode in ("ocr", "full") else None
+    extractor = backends.extract_status() if mode != "ocr" else None
+    info = reader or extractor
+    metrics_url = info["url"] if cfg["metrics"] and backends.serves_metrics(info) else None
+
+    specs = [{"index": i} for i in range(total)]
+    if mode != "classify":
+        history = runlog.case_counts() if cfg["strategy"] == "balanced" else {}
+        for spec, case_id in zip(specs, stress.draw_cases(
+                total, cfg["cases"], cfg["strategy"], rng, history, cfg["lock"])):
+            spec["case"] = case_id
+
+    yield json.dumps({
+        "event": "plan", "mode": mode, "seed": seed,
+        "concurrency": cfg["concurrency"], "jobs": cfg["jobs"],
+        "warmup": cfg["warmup"], "max_seconds": cfg["max_seconds"],
+        "strategy": cfg["strategy"], "lock": cfg["lock"],
+        "detail": cfg["detail"] if mode in ("ocr", "full") else "",
+        "extract_mode": cfg["extract_mode"] if mode in ("extract", "full") else "",
+        "pack_pages": cfg["pack_pages"] if mode == "classify" else 0,
+        "documents": len({s["case"] for s in specs if "case" in s}),
+        "server": {"url": info["url"], "kind": info["kind"]},
+        "reader": (reader or {}).get("model") or "",
+        "extractor": (extractor or {}).get("model") or "",
+        "metrics": bool(metrics_url),
+    }) + "\n"
+
+    began = time.perf_counter()
+    prepared = {"pages": {}, "truths": {}, "packs": []}
+    index = scoring.cases_index()
+    if mode == "classify":
+        truths = {cid: index[cid]["ground_truth"].read_text("utf-8")
+                  for cid in cfg["cases"]}
+        docs_of = {cid: index[cid].get("documents") or [] for cid in cfg["cases"]}
+        docs_of["_types"] = {cid: index[cid].get("doc_types") or []
+                             for cid in cfg["cases"]}
+        for i in range(total):
+            prepared["packs"].append(stress.build_pack(
+                cfg["cases"], truths, docs_of, cfg["pack_pages"], rng))
+            yield json.dumps({"event": "preparing", "done": i + 1,
+                              "total": total}) + "\n"
+    else:
+        wanted = sorted({s["case"] for s in specs})
+        for i, case_id in enumerate(wanted, 1):
+            if cancel.is_set():
+                break
+            if mode in ("ocr", "full"):
+                prepared["pages"][case_id] = _stress_pages(case_id, cfg["detail"])
+            else:
+                prepared["truths"][case_id] = index[case_id]["ground_truth"].read_text("utf-8")
+            yield json.dumps({"event": "preparing", "done": i,
+                              "total": len(wanted)}) + "\n"
+    prepare_seconds = round(time.perf_counter() - began, 2)
+
+    draining = []
+    if cfg["warmup"] and not cancel.is_set():
+        draining = (yield from _stress_phase(specs[:cfg["warmup"]], cfg, prepared,
+                                             cancel, "warmup"))[-1]
+
+    base = None
+    if metrics_url:
+        try:
+            base = _vllm_metrics(metrics_url)
+        except Exception:                           # noqa: BLE001
+            base = None
+    records, wall, timeline, last = [], 0.0, [], None
+    if not cancel.is_set():
+        records, wall, timeline, last, draining = yield from _stress_phase(
+            specs[cfg["warmup"]:], cfg, prepared, cancel, "run", metrics_url, base)
+
+    report = stress.report(records, wall, mode, cfg["concurrency"])
+    report["timeline"] = stress.thin_timeline(timeline)
+    report["timeline_columns"] = ["t", *stress.STAGES, "done"]
+    report["prepare_seconds"] = prepare_seconds
+    if metrics_url:
+        try:
+            last = _vllm_metrics(metrics_url)
+        except Exception:                           # noqa: BLE001
+            pass
+        if last is not None:
+            report["server_metrics"] = stress.metrics_view(last, base, wall)
+    yield json.dumps({"event": "done", "seed": seed, "stopped": cancel.is_set(),
+                      "draining": len(draining), "report": report}) + "\n"
+    # After a Stop: the report is out, and what is left is requests the server
+    # is still working on. The guard is held until they end, so nothing else is
+    # started on top of them and measured against their load.
+    pending = set(draining)
+    while pending:
+        _, pending = wait(pending, timeout=1.0)
+        yield json.dumps({"event": "draining", "in_flight": len(pending)}) + "\n"
+
+
+@app.post("/api/stress/stream")
+def stress_stream():
+    """Run a stress test, one NDJSON progress event a second and one report.
+
+    No per-job event is sent and nothing is written anywhere: the report is the
+    whole output. See the section comment above.
+    """
+    body = request.get_json(silent=True) or {}
+    try:
+        cfg = _stress_config(body)
+    except ValueError as err:
+        return jsonify(error=str(err)), 400
+    if sweeps_running():
+        return jsonify(error="A random test or stress test is already running. "
+                             "Wait for it or stop it before starting another."), 409
+    cancel = begin_sweep(MultiCancel())
+
+    def generate():
+        try:
+            yield from _stress_run(cfg, cancel)
+        except Exception as err:                    # noqa: BLE001
+            yield json.dumps({"event": "error",
+                              "error": f"{type(err).__name__}: {err}"[:300]}) + "\n"
+        finally:
+            end_sweep()
+
+    return Response(generate(), mimetype="application/x-ndjson")
+
+
+@app.post("/api/stress/stop")
+def stress_stop():
+    """Ask the running stress test to stop. The same guard as the random test."""
+    return jsonify(stopping=cancel_sweep(), running=sweeps_running())
+
+
+@app.get("/api/stress/metrics")
+def stress_metrics():
+    """One snapshot of the active server's Prometheus `/metrics` -- vLLM only.
+
+    **Refused, not fired, on anything else**, which is the user's rule: the
+    button is for the high-end vLLM box, and on a local llama-server or Ollama
+    nothing is requested at all. `?server=extract` asks about the extraction
+    model's server instead of the reader's, for a text-only stress run.
+    """
+    info = (backends.extract_status() if request.args.get("server") == "extract"
+            else backends.status())
+    if not backends.serves_metrics(info):
+        return jsonify(error=f"{info.get('kind') or 'no server'} at {info['url']} is "
+                             "not vLLM, so /metrics was not requested.",
+                       kind=info.get("kind"), url=info["url"]), 409
+    try:
+        now = _vllm_metrics(info["url"])
+    except Exception as err:                        # noqa: BLE001
+        return jsonify(error=f"Could not read {info['url']}/metrics: {err}"), 502
+    return jsonify(kind=info["kind"], url=info["url"], at=time.time(),
+                   view=stress.metrics_view(now),
+                   vllm={k: v for k, v in sorted(now.items()) if k.startswith("vllm:")})
 
 
 @app.post("/api/ocr")

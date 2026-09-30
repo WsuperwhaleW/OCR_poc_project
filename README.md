@@ -818,7 +818,17 @@ talks to, without restarting it. Offered by default:
 | `http://127.0.0.1:8080` | llama-server (the `LLAMA_URL` default) |
 | `http://127.0.0.1:11434` | Ollama's standard port |
 
-Set the list with `OCR_ENDPOINTS` if your servers listen elsewhere.
+Set the list with `OCR_ENDPOINTS` if your servers listen elsewhere, or type an address
+into the picker.
+
+**vLLM works too.** A server that answers neither llama.cpp's `/props` nor Ollama's
+`/api/tags` is asked for `/v1/models`; if it lists models it is used through the same
+OpenAI-compatible API, with the model name sent on every request. The status bar shows its
+kind as `vllm` when the server says `owned_by: "vllm"`, and as `openai` for any other
+compatible server (SGLang, LM Studio). The context window cannot be changed per request on
+vLLM — it is fixed by `--max-model-len` when the server starts — and a page read asks for up
+to `MAX_NEW_TOKENS`, so start vLLM with a window that holds a page image plus that many
+tokens.
 
 **The app picks one that is online at startup.** The list above is a constant and the run
 log is a history, and neither says which port has something listening on it today. So
@@ -1580,6 +1590,63 @@ pool, and the reader chips narrow it, which is the finer control. Either way the
 pool is never narrowed: pass 2 runs on the model server under both engines. Asking for an
 engine that has nothing installed is refused by name rather than coming back as "no model
 reports vision".
+
+## Stress test
+
+The **Stress test** tab benchmarks the **server**: a queue of jobs worked by as many
+concurrent requests as you set, and one report at the end. It uses the reading and extraction
+models selected in the Workspace and never switches them.
+
+| Setting | What it does |
+|---|---|
+| **What each job runs** | **OCR only** — read one document, score the transcript. **Extract only** — pass 2 on a ground-truth transcript, score the fields. **Classify 100+ pages** — glue ground-truth transcripts into one long file, split it into documents and classify each one, score the grouping and the types. **Full pipeline** — read, then extract, with the two stages timed apart |
+| **Concurrent** | how many requests are in flight at once (1–256) |
+| **Queue (jobs)** | how many jobs in total; the concurrent workers take them in order |
+| **Warm-up** | jobs run first at the same concurrency and left out of every figure |
+| **Time limit** | stop starting new jobs after this many seconds; `0` runs the whole queue |
+| **Detail** / **Extraction shape** / **Pages per file** | shown for the modes that use them |
+| **How documents are drawn**, **Seed**, **Lock document** | the same rules as the random test; the seed goes into the box so a run can be repeated |
+
+**Nothing is written anywhere.** No run-log row, no `solution/out/` transcript, no page image
+in the Compare cache. Only the report is shown — no per-document values.
+
+**What is timed is the server.** Pages are decoded, resized and encoded once before the clock
+starts; the time that took is shown as *prepare, not timed*.
+
+The report: completed and error counts, wall clock, jobs per minute, pages and generated
+tokens per second across all requests together, and a latency table — mean, p50, p90, p95,
+p99 and max — for time waiting in this app's queue, end to end, and each stage: OCR per job
+and per page, time to first token (measured here, so it includes time spent waiting in the
+server's own queue), one request's decode rate, extraction per job, and for the classification
+mode the page walk and the per-document classification separately. The chart shows how many
+jobs were in each stage at every moment, against the concurrency limit. Scores — transcript
+accuracy, field accuracy (mean per job and pooled over all values), grouping and type
+accuracy — are over the jobs that finished cleanly; a read that looped or hit the token cap
+counts as completed for the timing and is left out of the score.
+
+In the full pipeline the report says what share of the working time was reading and what share
+was extracting, and gives each stage its own latency and tokens per second.
+
+### vLLM /metrics
+
+When the selected server is **vLLM**, the tab offers **Fetch /metrics now** — a snapshot of the
+server's own Prometheus counters: requests running and waiting, KV-cache usage, prompt and
+generation tokens, preemptions, prefix-cache hit rate and mean time to first token, time per
+output token, queue, prefill, decode and end-to-end time. Tick **sample during the test** to
+read it every few seconds while a run is going; the report then includes the change over the
+run, including generation tokens per second as the server counts them.
+
+On llama-server, Ollama or any other server both controls are disabled and **nothing is
+requested** — the route refuses with `409` as well.
+
+### Stopping a stress test
+
+**Stop** starts no new job, hangs up every read in flight, and lets an extraction already
+running finish. The report appears at once, counting what did not finish as cancelled; a
+request still waiting in the server's own queue cannot be hung up until the server starts it,
+so the page says how many are still running on the server and **Run** comes back when they
+end. A stress test and a random test cannot run at the same time, and the model server
+cannot be switched during either.
 
 ## Run log
 
@@ -2677,6 +2744,21 @@ nothing is logged. `types` is every code, most specific first, each with `name`,
 in play has a requirement, `rule_notes` says what each validation rule checks and whether it
 can run here, and `keys` is every key in the schema in the order the prompt lists them.
 
+`POST /api/stress/stream` — run a stress test. Body: `mode` (`ocr`, `extract`, `classify`,
+`full`), `concurrency`, `jobs`, `warmup`, `max_seconds`, `detail`, `extract_mode`,
+`pack_pages`, `strategy`, `seed`, `lock_case`, `metrics` (sample vLLM `/metrics`) and
+`metrics_every`. Streams NDJSON: `plan`, `preparing`, a `progress` event about once a second
+(jobs in each stage, done, live pages and tokens per second, and `server_metrics` when
+sampling), then `done` with `report`. After a Stop, `draining` events follow until the
+server's last request ends. `409` while a random test or another stress test is running.
+
+`POST /api/stress/stop` — stop the running stress test. Same answer shape as
+`/api/randomtest/stop`.
+
+`GET /api/stress/metrics` — one snapshot of the active server's `/metrics`: `view` (the curated
+values) and `vllm` (every `vllm:*` series, summed over labels). `409` unless the server is vLLM;
+`?server=extract` asks about the extraction model's server.
+
 `GET /api/ocr/engine` — which reading pipeline is selected and what each one offers.
 Answers with the same body as `/api/ocr/reader`: `engine` (`llm` or `library`), `engines`
 (each with its `readers`), `selected`, and a `readers` list carrying an `engine` per entry.
@@ -2839,7 +2921,7 @@ still never parses `.env` itself.
 | `settings.py` | Every tunable the app runs with — limits, timeouts, detail presets, sampling, loop thresholds |
 | `prompts.py` | The prompts, and nothing else — the ones the passes send, plus the step table agentic extraction walks |
 | `config.py` | Every path and the typed environment readers. The only place that knows where anything lives |
-| `backends.py` | Endpoint probing and switching; every llama.cpp-vs-Ollama difference |
+| `backends.py` | Endpoint probing and switching; every llama.cpp / Ollama / vLLM difference |
 | `grounding.py` | Checking extracted fields against the transcript they came from |
 | `fieldscore.py` | Scoring extracted fields against the hand-written field ground truth, and `init` to create it |
 | `blame.py` | Which pass lost a field the score charged for — the read, or the extraction |
@@ -2852,6 +2934,7 @@ still never parses `.env` itself.
 | `paddle_worker.py` | Isolated long-lived PaddleOCR JSON-lines worker and coordinate decoding |
 | `easy_runtime.py` | Interpreter discovery, serialization, lifecycle, timeouts, and cancellation for the optional EasyOCR worker |
 | `easy_worker.py` | Isolated long-lived EasyOCR JSON-lines worker and coordinate decoding |
+| `stress.py` | The stress test's dataset draw, 100+ page file builder, `/metrics` reader and report |
 | `compare.py` | CLI benchmark runner |
 | `package.py` | Builds the deployable zip |
 | `templates/index.html` | The whole UI, in one file |

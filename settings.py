@@ -185,7 +185,10 @@ PROMPT_FIRST_OLLAMA = config.env_bool("PROMPT_FIRST_OLLAMA", False)
 OLLAMA_SYSTEM = config.env_str("OLLAMA_SYSTEM", "You are a helpful assistant.",
                                allow_empty=True)
 
-# Ollama only. A reasoning model answers in two parts -- a chain of thought and
+# Both backends, despite the name (llama-server gets it as
+# `chat_template_kwargs.enable_thinking=false` since 2026-09-23, when a
+# qwen3.6-35b-a3b there returned empty content on every capped request -- the
+# same failure as below). A reasoning model answers in two parts -- a chain of thought and
 # then the answer -- and Ollama returns the first in its own field, leaving
 # `content` EMPTY until the thinking finishes. Every request this app makes is
 # capped (an agentic step at 120-900 tokens, an OCR page at MAX_NEW_TOKENS), so
