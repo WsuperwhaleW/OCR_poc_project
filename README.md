@@ -199,6 +199,25 @@ Windows or arm64. pip reports `No matching distribution found` and names the pac
 means the wheelhouse is wrong for the machine, not that the requirement is unavailable;
 rebuild it for the target.
 
+### Windows offline install
+
+`wheelhouse-windows/` is a separate bundle for **Windows x64 and standard CPython
+3.13**, including PDF and HEIC/HEIF support. It contains 16 wheels plus a pinned
+package list and SHA-256 manifest. Optional PaddleOCR/EasyOCR dependencies and
+model weights are not included.
+
+From the project directory, with Python 3.13 x64 installed:
+
+```powershell
+py -3.13 -m venv .venv
+.\.venv\Scripts\python.exe -m pip install --no-index --find-links .\wheelhouse-windows -r .\wheelhouse-windows\requirements-lock.txt
+.\.venv\Scripts\python.exe app.py
+```
+
+See [`wheelhouse-windows/README.md`](wheelhouse-windows/README.md) for verification
+and rebuild instructions. Use a different wheelhouse for other Python versions
+or CPU architectures.
+
 ### Rebuilding the wheelhouse
 
 Run this on a machine that **does** have internet, then copy the folder to the target:
