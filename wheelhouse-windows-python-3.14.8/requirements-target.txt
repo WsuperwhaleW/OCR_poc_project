@@ -1,0 +1,23 @@
+# Windows x64 / CPython 3.14.8 target.
+# HEIC support needs a 1.x release with cp314 wheels.
+# Python 3.9+ (developed on 3.13; the deployment server and wheelhouse/ are 3.9).
+#
+# Upper bounds are deliberate: this is pinned to major versions so that a
+# deployment installed six months from now gets what was tested, not whatever
+# released since. Widen them on purpose, after running compare.py.
+
+flask>=3.0,<4.0
+requests>=2.31,<3.0
+pillow>=10.0,<12.0
+
+# Optional inputs. Both are import-guarded in app.py -- without them the app runs
+# and rejects that format with a clear message rather than failing to start.
+pymupdf>=1.24,<2.0        # optional: PDF input   (without it, PDFs are refused)
+
+# No torch / transformers / accelerate / numpy HERE. Model-server inference
+# stays external. The optional Paddle/EasyOCR readers install into this same
+# environment (requirements-paddle.txt / requirements-easyocr.txt) but are
+# imported only by their worker subprocesses -- this app's own process infers
+# nothing, which is the rule that keeps it small and predictable.
+
+pillow-heif==1.1.0
