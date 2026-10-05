@@ -212,6 +212,18 @@ the command, so a Windows laptop can build a Linux server's wheelhouse. Both fla
 `--only-binary=:all:`, which is also what guarantees no source distribution sneaks in —
 an sdist would need a compiler on the offline box.
 
+**`--python-version` does not reach environment markers.** pip still evaluates
+`python_version < "3.10"` against the interpreter running the download, so building a
+3.9 wheelhouse from a newer Python silently leaves out 3.9-only dependencies. Flask's
+`importlib-metadata` (and its `zipp`) are the ones that bit; they are downloaded
+separately:
+
+```bash
+python -m pip download "importlib-metadata>=3.6.0" -d wheelhouse --only-binary=:all: --platform manylinux2014_x86_64 --python-version 3.9
+```
+
+Building on a 3.9 interpreter avoids the problem entirely.
+
 Set `--python-version` to the interpreter the target will actually run, and
 `--platform` to its architecture (`manylinux2014_aarch64` for arm64, `win_amd64` for
 64-bit Windows). Delete the old wheels first; `pip download` adds to the folder rather
