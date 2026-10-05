@@ -369,6 +369,16 @@ def serves_metrics(info: dict) -> bool:
     return bool(info and info.get("kind") == "vllm" and info.get("reachable", True))
 
 
+def parallel_ok(info: dict) -> bool:
+    """May independent requests to this server be sent at once?
+
+    vLLM only, on the server's own statement -- the gate `serves_metrics` uses.
+    It batches concurrent requests; llama-server serves one per slot and Ollama
+    queues them behind `OLLAMA_NUM_PARALLEL`, so there they would only wait.
+    """
+    return bool(info and info.get("kind") == "vllm" and info.get("reachable", True))
+
+
 def known(url: str = None) -> dict:
     """The last probe of `url`, however old, or None if it has never been probed.
 
@@ -1221,6 +1231,10 @@ def overview(force: bool = False) -> dict:
             # "Same as the reading model" only exists where both passes share a
             # server -- across two servers there is no reading model to share.
             "same_as_reading": not separate and not extract_model(),
+            # Every model the extraction server serves, OCR fine-tunes
+            # included: a fields-only random round runs ONE model and any of
+            # them may be it, so the random test's lists need the whole set.
+            "models": [m["name"] for m in extract["models"]],
             "choices": [m["name"] for m in extract["models"]
                         if not is_ocr_model(m["name"])
                         or _same_model(m["name"], server["model"])],

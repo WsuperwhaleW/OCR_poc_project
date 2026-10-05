@@ -279,6 +279,28 @@ EXTRACT_URL = config.env_str("EXTRACT_URL", "", allow_empty=True)
 # /v1/models -- the 404s a vLLM or Ollama server sees in its log. Also settable
 # per server from the page's "Server type" picker.
 SERVER_KINDS = config.env_str("SERVER_KINDS", "", allow_empty=True)
+# Server-side timing (2026-10-05, at the user's request: *the app on the server
+# takes time to hop to the model server, so the time tracked in the app is not
+# accurate -- use /metrics on vLLM to get the time and subtract it*). Every
+# model request is also timed by the SERVER, and the gap between that and the
+# app's own clock is recorded as hop time (`network_seconds`). The source is the
+# server's own statement of how long it worked:
+#   vLLM       /metrics, read before and after the request -- the change in
+#              `vllm:e2e_request_latency_seconds` (arrival to finish, queue
+#              included). Two extra GETs per request, vLLM only.
+#   llama.cpp  the `timings` block it already sends (prompt_ms + predicted_ms;
+#              compute only, the server's queue is NOT in it).
+#   Ollama     `total_duration` on the native /api/chat reply (the schema-
+#              constrained extraction request); /v1 sends nothing, so a read
+#              on Ollama has no server time.
+# Under concurrency a /metrics difference covers more than one request and
+# cannot be attributed, so it is left blank rather than guessed. 0 asks nothing
+# extra of any server.
+SERVER_TIMING = config.env_bool("SERVER_TIMING", True)
+# How long to wait for vLLM to record a request that has just finished before
+# calling it unattributed. The stream can close a moment before the server's
+# stats logger has run, so the after-snapshot is retried within this budget.
+SERVER_TIMING_WAIT = config.env_float("SERVER_TIMING_WAIT", 1.0, minimum=0.0)
 # How many candidates a single auto-select is willing to probe. Each dead one is
 # ~3 s of connect timeouts, and the list is the constants plus every server in
 # the log, which grows without bound on a machine that has moved endpoints
@@ -816,6 +838,24 @@ AGENTIC_EXTRACT = config.env_bool("AGENTIC_EXTRACT", False)
 # retry costs a short question and a short answer, and a second retry almost never
 # changed an answer the first had not.
 AGENTIC_RETRIES = config.env_int("AGENTIC_RETRIES", 1, minimum=0, maximum=3)
+
+# On a vLLM extraction server, ask the agentic steps AT ONCE rather than one
+# after another. Added 2026-10-05 at the user's request: vLLM batches concurrent
+# requests, so seven steps sent together cost about one step's wall clock.
+#
+# Safe because no step reads another's answer: each is sent the shared prefix
+# and its own question, and its reply contributes only its own keys -- the
+# standing agentic rule. A step's grounding re-ask stays inside that step.
+#
+# vLLM only (`backends.parallel_ok`). llama-server serves one request per slot
+# and the instruction-first shape exists to share ONE prefilled prefix, and
+# Ollama queues concurrent requests behind `OLLAMA_NUM_PARALLEL`; on either the
+# steps would only wait for each other with nothing gained. 0 turns it off.
+AGENTIC_PARALLEL = config.env_bool("AGENTIC_PARALLEL", True)
+
+# The most steps in flight at once when `AGENTIC_PARALLEL` applies. 0 = every
+# step of the form at once (7-9 on a typed form, 17 unclassified).
+AGENTIC_PARALLEL_MAX = config.env_int("AGENTIC_PARALLEL_MAX", 0, minimum=0, maximum=64)
 
 # The lowest character accuracy a transcript may score and still have the fields
 # extracted from it SCORED. Below it -- and on a read that looped, was cut off,

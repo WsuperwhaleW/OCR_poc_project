@@ -496,6 +496,35 @@ COLUMNS = [
     "fix_cells_read",
     "fix_cells_agent",
     "fix_cells",
+    # The MODEL SERVER's own time, beside the app's (2026-10-05, at the user's
+    # request: *the app on the server takes time to hop to the model server, so
+    # the time tracked is not accurate -- use /metrics on vLLM and subtract*).
+    # See servertime.py.
+    #
+    #   server_seconds   what the server says the read took, over the pages it
+    #                    gave a figure for
+    #   network_seconds  the app's clock minus that, over the same pages: the
+    #                    hops to and from the server (plus, on llama.cpp, its
+    #                    queue -- `timings` is compute only)
+    #   server_timing    which source: `vllm /metrics`, `llama.cpp timings`,
+    #                    `ollama`
+    #   extract_*        the same for every model request pass 2 made --
+    #                    classify, segment, steps, table agents -- summed
+    #
+    # **Blank is not zero**: blank is "the server gave no figure" (Ollama /v1
+    # sends none) or "it could not be attributed" (a /metrics change spanning
+    # concurrent requests), and every row written before these columns.
+    "server_seconds",
+    "network_seconds",
+    "server_timing",
+    "extract_server_seconds",
+    "extract_network_seconds",
+    "extract_server_timing",
+    # How many agentic steps were sent at once (2026-10-05): on vLLM they go
+    # concurrently, and `extract_seconds` is then a wall clock over a batch
+    # rather than a sum of one-at-a-time requests. Blank on a sequential run --
+    # every row before this column, and every llama.cpp and Ollama run.
+    "extract_parallel",
 ]
 
 # The value the run was actually made with, taken from `settings` rather than
@@ -647,7 +676,9 @@ EXTRACT_COLUMNS = ("extract_seconds", "extract_tokens", "extract_mode",
                    "item_tables", "master_tables", "table_rows",
                    "table_realigned", "table_misaligned",
                    "table_cells_ok", "table_cells", "master_ok", "master_scored",
-                   "extract_server") + FIX_COLUMNS
+                   "extract_server", "extract_server_seconds",
+                   "extract_network_seconds",
+                   "extract_server_timing", "extract_parallel") + FIX_COLUMNS
 
 _TIERS = ("p1_present", "p1_absent", "p2_present", "p2_absent",
           "p3_present", "p3_absent")
@@ -687,6 +718,7 @@ def _extract_cells(summary: dict) -> dict:
         "extract_seconds": extracted.get("seconds", ""),
         "extract_tokens": extracted.get("tokens", ""),
         "extract_mode": extracted.get("mode", ""),
+        "extract_parallel": extracted.get("parallel") or "",
         # Written only where the two passes differed, so the column reads as an
         # exception. `summary["model"]` is the reading model; on a re-extraction
         # there is no read and nothing to differ from, so it is written outright.
@@ -701,6 +733,7 @@ def _extract_cells(summary: dict) -> dict:
                           if (extracted.get("url")
                               and extracted.get("url") != (summary or {}).get("url"))
                           else "",
+        **_server_time_cells(extracted.get("server_time")),
         # Blank rather than 0 where nothing was extracted at all, the same rule
         # the tiers follow below: an extraction that never ran did not name zero
         # extra fields, it named none because it never answered.
@@ -741,6 +774,18 @@ def _extract_cells(summary: dict) -> dict:
         **_blame_cells(extracted.get("blame")),
         **_table_cells([extracted], extracted.get("table_score")),
         **_fix_cells(extracted.get("fix_score")),
+    }
+
+
+def _server_time_cells(served) -> dict:
+    """Pass 2's server-timed totals as cells. Blank where none was attributed."""
+    served = served if isinstance(served, dict) else {}
+    seconds = served.get("server_seconds")
+    return {
+        "extract_server_seconds": "" if seconds is None else seconds,
+        "extract_network_seconds": ("" if served.get("network_seconds") is None
+                                    else served["network_seconds"]),
+        "extract_server_timing": served.get("source", "") if seconds is not None else "",
     }
 
 
@@ -1216,6 +1261,11 @@ def record(summary: dict, source: dict = None, extras: dict = None) -> dict:
         "decode_seconds": summary.get("decode_seconds", ""),
         "tokens": summary.get("tokens", ""),
         "tokens_per_second": summary.get("tokens_per_second", ""),
+        "server_seconds": ("" if summary.get("server_seconds") is None
+                           else summary["server_seconds"]),
+        "network_seconds": ("" if summary.get("network_seconds") is None
+                            else summary["network_seconds"]),
+        "server_timing": summary.get("server_timing") or "",
         **_extract_cells(summary),
         "case": truth.get("case", ""),
         "char_accuracy": _pct(truth.get("char_accuracy")),

@@ -307,6 +307,8 @@ The ones that matter for a deployment:
 | `OCR_ENDPOINTS` | *(unset)* | Comma-separated list offered in the server picker. |
 | `EXTRACT_URL` | *(unset)* | A second server for field extraction (and the other text requests: classification, segmentation, the table agents). Unset, both passes use the reading server — the one-URL setup for local llama-server or Ollama. Set, page images go to the reading server and extraction goes here. Any OpenAI-compatible server works. Changeable in the page's **Extraction server** picker. |
 | `SERVER_KINDS` | *(unset)* | Pin servers to an inference engine: comma-separated `url=kind`, kind one of `llama.cpp`, `ollama`, `vllm`, `openai` — e.g. `http://gpu-box:8000=vllm`. A pinned server is probed with that engine's endpoint only (`/props`, `/api/tags` or `/v1/models`), so it never answers 404 to another engine's probe, and only a `vllm` server is ever asked `/metrics`. Unpinned servers are detected (**Auto**), which remembers what it found; **Re-check** detects again. Also settable per server in the page's **Server type** picker. |
+| `SERVER_TIMING` | `1` | Time every model request on the **server** as well as in the app, and log the difference as hop time (`network_seconds`). vLLM: `/metrics` read before and after each request (two extra GETs), the change in `vllm:e2e_request_latency_seconds`. llama.cpp: its `timings` block (compute only, its queue not included). Ollama: native `/api/chat` durations; `/v1` sends none, so most Ollama requests have no server time. A `/metrics` change that spans concurrent requests is left blank. `0` asks nothing extra. |
+| `SERVER_TIMING_WAIT` | `1.0` | Seconds to wait for vLLM to record a just-finished request before leaving it blank. |
 | `AUTO_SELECT_SERVER` | `1` | Probe the configured endpoints and the ones the run log has runs against at startup, and select the first that answers. `0` starts on the first in the list whether or not anything is listening there. |
 | `AUTO_SELECT_MAX_CANDIDATES` | `8` | How many endpoints one auto-select will probe. A dead port costs a pair of connect timeouts. |
 | `AUTO_BEST_MODEL` | `1` | Select each pass's model at startup: the one the run log ranks first for that pass. Both stay changeable in the pickers. `0` starts both passes on the reading model — the one-model setup every figure in `CLAUDE.md` was measured under. |
@@ -325,6 +327,8 @@ The ones that matter for a deployment:
 | `EXTRACT` | `1` | Set `0` to run the OCR pass only. |
 | `AGENTIC_EXTRACT` | `0` | Start with field extraction in agentic mode. Switchable from the page at any time; this only sets what a fresh process starts in. |
 | `AGENTIC_RETRIES` | `1` | How many times an agentic step may be re-asked after returning a value that is not in the transcript. `0` turns the retry off. |
+| `AGENTIC_PARALLEL` | `1` | On a **vLLM** extraction server, send the agentic steps at once instead of one after another. Ignored on llama.cpp, Ollama and a generic OpenAI server. `0` turns it off. |
+| `AGENTIC_PARALLEL_MAX` | `0` | The most steps in flight at once when the above applies. `0` = every step of the form. |
 
 ## Security
 
@@ -642,6 +646,16 @@ switched since, and a result read back from an earlier run can be older still.
 `AGENTIC_EXTRACT=1` starts in agentic mode; `AGENTIC_RETRIES` sets how many times a step may
 be re-asked (default 1, `0` to turn the retry off). Over HTTP, send `{"mode": "agentic"}` to
 `POST /api/extract`, or `POST /api/extract/mode` to change the setting.
+
+**On a vLLM extraction server the steps are sent at once** (`AGENTIC_PARALLEL`, on by
+default). No step reads another's answer -- each is sent the transcript and its own question,
+and contributes only its own keys -- so vLLM can batch them and a seven-step run costs about
+one step's wall clock. A step's re-ask stays inside that step. The result carries
+`parallel` (how many were in flight), the progress line reads *N steps at once: k of N
+answered*, and the fields, step list and replies come back in the same order as a sequential
+run. On llama.cpp, Ollama and a generic OpenAI-compatible server the steps still go one at a
+time. vLLM does not promise identical output for a request batched with others, so a
+concurrent run is not guaranteed byte-identical to a sequential one.
 
 **A step row can show what was sent and what came back**, through two buttons. Neither panel
 opens until you press for it, and neither button is on every row: each appears where it
@@ -2494,6 +2508,29 @@ score**: it is its own key on the result (`fix_score`, beside `table_score` and
 Run log: `fix_moved` / `fix_strays`, `fix_stray_removals` / `fix_removals`,
 `fix_values_removed`, `fix_cells_read` / `fix_cells_agent` / `fix_cells`. Blank where the case
 has no table truth file or no table came back.
+
+### Server time and hop time
+
+Every clock in the app is its own: it includes the network between the app and the model
+server. Each request is also timed by the server (see `SERVER_TIMING`), and the page shows
+`server Xs + hops Ys` on the result line and the Fields status line, plus **Server** and
+**Hops** columns in the page table. Run-log columns:
+
+| column | meaning |
+|---|---|
+| `server_seconds` / `network_seconds` / `server_timing` | the read: what the server says it took over the pages it timed, the app's clock minus that over the same pages, and the source (`vllm /metrics`, `llama.cpp timings`, `ollama`) |
+| `extract_server_seconds` / `extract_network_seconds` / `extract_server_timing` | the same summed over **every** model request pass 2 made — classify, segment, the steps or the single request, and the table agents. So `extract_server_seconds` can exceed `extract_seconds`, which counts the extraction requests only |
+
+Blank means the server gave no figure, or a vLLM `/metrics` change covered more than one
+request (concurrent traffic) and could not be attributed.
+
+Agentic steps sent at once are timed as **one batch**: a single `/metrics` snapshot before the
+first and after the last, attributed where the request count moved by exactly the number of
+steps -- the server's summed time against the summed client time of those requests.
+
+`extract_parallel` is how many agentic steps were in flight at once, blank on a sequential run.
+Where it is set, `extract_seconds` is a wall clock over a batch and is not comparable with a
+row where it is blank.
 
 On its own, without the app's run log:
 

@@ -187,7 +187,10 @@ class RunLogTests(unittest.TestCase):
                           "master_ok", "master_scored", "extract_server",
                           "fix_moved", "fix_strays", "fix_stray_removals",
                           "fix_removals", "fix_values_removed",
-                          "fix_cells_read", "fix_cells_agent", "fix_cells"])
+                          "fix_cells_read", "fix_cells_agent", "fix_cells",
+                          "server_seconds", "network_seconds", "server_timing",
+                          "extract_server_seconds", "extract_network_seconds",
+                          "extract_server_timing", "extract_parallel"])
 
     def test_a_failed_status_still_wins(self):
         self.assertTrue(runlog._incomplete(

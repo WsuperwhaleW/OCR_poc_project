@@ -46,6 +46,7 @@ FILES = [
     "runlog.py",
     "scoring.py",
     "segment.py",
+    "servertime.py",
     "tables.py",
     "verify.py",
     "normalise.py",

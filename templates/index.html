@@ -1660,6 +1660,18 @@ follows your desktop; Light is the one to pick for projecting or screenshotting.
             </select>
           </label>
         </div>
+        <!-- Where pass 2 goes for every round of the run: the same setting as
+             the Workspace's Extraction server, painted from the server, so
+             moving one moves both. Hidden on a read-only run, which never
+             extracts. A switch is refused while a test is running (the 409),
+             so the picker is disabled for the length of one. -->
+        <div class="row" id="rtExtractServerRow">
+          <label class="field" style="flex:1;min-width:210px">
+            Extraction server
+            <select id="rtExtractEndpoint"></select>
+          </label>
+        </div>
+        <p class="note" id="rtExtractServerNote"></p>
         <div class="row">
           <label class="field" style="flex:1;min-width:150px" id="rtLockReaderField">
             Lock OCR model
@@ -2330,6 +2342,9 @@ const extractCustomRow = document.getElementById('extractCustomRow');
 const extractEndpointCustom = document.getElementById('extractEndpointCustom');
 const extractEndpointUse = document.getElementById('extractEndpointUse');
 const extractServerNote = document.getElementById('extractServerNote');
+const rtExtractEndpoint = document.getElementById('rtExtractEndpoint');
+const rtExtractServerRow = document.getElementById('rtExtractServerRow');
+const rtExtractServerNote = document.getElementById('rtExtractServerNote');
 let pageStats = [], ticker = null, runStart = 0, liveTokens = 0, curPage = -1;
 const tabRendered = document.getElementById('tabRendered');
 const tabRaw = document.getElementById('tabRaw');
@@ -4715,8 +4730,14 @@ function paintFieldBody() {
      reader unable to work out why a key is on screen. */
   const docTypes = extracted.doc_types
     || (extracted.doc_type ? [extracted.doc_type] : []);
+  /* Over every model request pass 2 made, timed by the server as well; the
+     count says how many of them the server could put a figure on. */
+  const srvT = (extractedFile || extracted).server_time;
   fldStatus.textContent = `${modeLabel(extracted)} · ${extracted.seconds}s · `
     + `${extracted.tokens} tokens · ${extracted.model || ''}`
+    + (srvT ? serverTimeText(srvT.server_seconds, srvT.network_seconds, srvT.source)
+       + (srvT.server_seconds !== null && srvT.attributed < srvT.requests
+          ? ` [${srvT.attributed} of ${srvT.requests} requests timed]` : '') : '')
     + (docTypes.length ? ` · ${docTypes.join(' + ').replace(/_/g, ' ').toLowerCase()}` : '')
     + (filled.total ? ` · ${filled.present}/${filled.total} fields` : '')
     + (ratio === null || ratio === undefined ? ''
@@ -8263,6 +8284,12 @@ function rtChips(box, names, set) {
 function rtPaintLocks() {
   const models = server.models || [];
   const readers = models.filter(m => m.vision !== false).map(m => m.name);
+  /* A fields round runs ONE model, and where pass 2 has a server of its own
+     that model is drawn from THAT server (`randomtest.pools(extract_models=)`)
+     -- a name from the reading server would not be served where it is sent. */
+  const fieldModels = (extractInfo && extractInfo.separate)
+    ? (extractInfo.models || [])
+    : models.map(m => m.name);
   const keep = (sel, names) => {
     const chosen = sel.value;
     sel.innerHTML = '<option value="">— random —</option>'
@@ -8273,7 +8300,7 @@ function rtPaintLocks() {
   };
   keep(rtLockReader, readers);
   keep(rtLockExtract, rtScope.value === 'fields'
-    ? models.map(m => m.name)
+    ? fieldModels
     : ((extractInfo && extractInfo.choices) || []).filter(Boolean));
   // A read-only run never extracts, and a fields run never reads.
   rtLockReaderField.style.display = rtScope.value === 'fields' ? 'none' : 'flex';
@@ -8284,11 +8311,15 @@ function rtPaintLocks() {
   // endpoint cannot use for a pass is not offered as one to exclude from it.
   rtChips(rtExRead, readers, rtExcluded.readers);
   rtChips(rtExExtract, rtScope.value === 'fields'
-    ? models.map(m => m.name)
+    ? fieldModels
     : ((extractInfo && extractInfo.choices) || []).filter(Boolean),
     rtExcluded.extractors);
   rtExReadRow.style.display = rtScope.value === 'fields' ? 'none' : 'block';
   rtExExtractRow.style.display = rtScope.value === 'ocr' ? 'none' : 'block';
+  // A read-only run never extracts, so where pass 2 goes is not its question.
+  const noExtract = rtScope.value === 'ocr';
+  if (rtExtractServerRow) rtExtractServerRow.style.display = noExtract ? 'none' : 'flex';
+  if (rtExtractServerNote) rtExtractServerNote.style.display = noExtract ? 'none' : '';
 }
 
 
@@ -8447,6 +8478,9 @@ function rtBusy(on) {
   // does nothing.
   rtStop.disabled = !on || rtStopping;
   rtStop2.disabled = !on || rtStopping;
+  // The server refuses to move pass 2 mid-sweep (409), so the picker says so
+  // by being unavailable rather than by an error after the click.
+  if (rtExtractEndpoint) rtExtractEndpoint.disabled = on;
   // One sweep at a time: the server refuses the second with a 409 anyway.
   if (typeof stRun !== 'undefined' && stRun) stRun.disabled = on;
   // The two share one card, so they cannot share the screen: a read started
@@ -10534,22 +10568,28 @@ function paintExtractEndpoint(sel) {
   sel.value = want;
 }
 function paintExtractServerNote() {
-  if (!extractServerNote) return;
   const ex = extractInfo || {};
+  let text = '', bad = false;
   if (!ex.separate) {
-    extractServerNote.textContent = ex.configured
+    text = ex.configured
       ? 'The extraction server is the reading server right now, so both passes go to '
         + (ex.url || '') + '.'
       : '';
-    extractServerNote.classList.remove('err');
-    return;
+  } else {
+    bad = !ex.available;
+    text = ex.available
+      ? 'Fields are extracted on ' + (ex.kind || 'server') + ' ' + ex.url
+        + (ex.model ? ' · ' + ex.model : '') + ' · page images still go to '
+        + (server.url || 'the reading server') + '.'
+      : '⚠ Extraction server ' + ex.url + ': ' + (ex.reason || 'not reachable.');
   }
-  extractServerNote.textContent = ex.available
-    ? 'Fields are extracted on ' + (ex.kind || 'server') + ' ' + ex.url
-      + (ex.model ? ' · ' + ex.model : '') + ' · page images still go to '
-      + (server.url || 'the reading server') + '.'
-    : '⚠ Extraction server ' + ex.url + ': ' + (ex.reason || 'not reachable.');
-  extractServerNote.classList.toggle('err', !ex.available);
+  // One sentence, two panes: the random test's copy says the same thing about
+  // the same setting, so it cannot say anything different.
+  for (const el of [extractServerNote, rtExtractServerNote]) {
+    if (!el) continue;
+    el.textContent = text;
+    el.classList.toggle('err', bad);
+  }
 }
 
 function paintModelPicker(sel, field, models) {
@@ -10581,6 +10621,7 @@ function paintEndpoint() {
   paintExtractPicker(fxExtract, fxExtractField, extractInfo);
   paintExtractEndpoint(extractEndpointSel);
   paintExtractEndpoint(fxExtractEndpoint);
+  paintExtractEndpoint(rtExtractEndpoint);
   paintServerKind(serverKindSel, server);
   /* The extraction server has a type of its own only when it IS its own
      server; in the one-URL setup the picker above already covers it. */
@@ -10744,7 +10785,7 @@ if (fxModel) fxModel.addEventListener('change', () => switchServer(null, fxModel
 for (const sel of [extractModelSel, fxExtract]) {
   if (sel) sel.addEventListener('change', () => switchServer(null, null, sel.value));
 }
-for (const sel of [extractEndpointSel, fxExtractEndpoint]) {
+for (const sel of [extractEndpointSel, fxExtractEndpoint, rtExtractEndpoint]) {
   if (!sel) continue;
   sel.addEventListener('change', () => {
     if (sel.value === '__custom__') {
@@ -10822,21 +10863,45 @@ function startTicker() {
 }
 function stopTicker() { clearInterval(ticker); ticker = null; }
 
+/* The model server's own time beside the app's (servertime.py). Every other
+   clock on this page is the app's, so on a deployment several network hops from
+   the model server it carries the hops in it; `server` is what the server says
+   it worked, and `hops` is the app's clock minus that. Empty where the server
+   gave no figure -- Ollama's /v1 sends none, and a vLLM /metrics change that
+   spans concurrent requests cannot be attributed to one -- because blank is not
+   a zero-second hop. */
+function serverTimeText(srv, net, src) {
+  if (srv === null || srv === undefined) return '';
+  return ` · server ${Number(srv).toFixed(2)}s + hops ${Number(net).toFixed(2)}s`
+    + (src ? ` (${src})` : '');
+}
+function secCell(v) {
+  return v === null || v === undefined ? '—' : Number(v).toFixed(2) + 's';
+}
+
 function renderStats(summary) {
   if (!pageStats.length) { statsEl.innerHTML = ''; return; }
+  const timed = pageStats.some(s => s.server_seconds !== null && s.server_seconds !== undefined);
   const head = '<thead><tr><th>Page</th><th>Resolution</th><th>Tokens</th>'
-    + '<th>Prefill</th><th>Decode</th><th>tok/s</th></tr></thead>';
+    + '<th>Prefill</th><th>Decode</th><th>tok/s</th>'
+    + (timed ? '<th title="What the model server says this page took">Server</th>'
+       + '<th title="The app clock minus the server time: getting to and from the server">Hops</th>' : '')
+    + '</tr></thead>';
   const body = pageStats.map((s, i) =>
     `<tr><td>${i + 1}</td><td>${s.resolution || '—'}</td><td>${s.new_tokens ?? 0}</td>`
     + `<td>${(s.prefill_seconds ?? 0).toFixed(1)}s</td>`
     + `<td>${(s.decode_seconds ?? 0).toFixed(1)}s</td>`
-    + `<td>${(s.tokens_per_second ?? 0).toFixed(2)}</td></tr>`).join('');
+    + `<td>${(s.tokens_per_second ?? 0).toFixed(2)}</td>`
+    + (timed ? `<td>${secCell(s.server_seconds)}</td><td>${secCell(s.network_seconds)}</td>` : '')
+    + '</tr>').join('');
   const f = summary || {};
   const foot = pageStats.length > 1 || summary
     ? `<tfoot><tr><td>Total</td><td>${f.model || server.model || ''}</td>`
       + `<td>${f.tokens ?? ''}</td><td>${(f.prefill_seconds ?? 0).toFixed(1)}s</td>`
       + `<td>${(f.decode_seconds ?? 0).toFixed(1)}s</td>`
-      + `<td>${(f.tokens_per_second ?? 0).toFixed(2)}</td></tr></tfoot>` : '';
+      + `<td>${(f.tokens_per_second ?? 0).toFixed(2)}</td>`
+      + (timed ? `<td>${secCell(f.server_seconds)}</td><td>${secCell(f.network_seconds)}</td>` : '')
+      + '</tr></tfoot>' : '';
   statsEl.innerHTML = head + '<tbody>' + body + '</tbody>' + foot;
 }
 
@@ -11286,7 +11351,8 @@ async function startRead(opts) {
           meta.textContent = `${msg.page_count} page(s) · ${msg.detail} · `
               + `${msg.tokens} tokens · ${msg.seconds}s total `
               + `(${msg.prefill_seconds}s prefill + ${msg.decode_seconds}s decode) · `
-              + `${msg.tokens_per_second} tok/s · ${msg.model}`;
+              + `${msg.tokens_per_second} tok/s · ${msg.model}`
+              + serverTimeText(msg.server_seconds, msg.network_seconds, msg.server_timing);
           // A read the cap cut short is not a read of that document, and the
           // accuracy beside it is against the whole of it. Said on the meta line
           // AND on the Accuracy tab, because the two are read at different times.
@@ -11327,7 +11393,17 @@ async function startRead(opts) {
           // Agentic mode only. The bar names the step because 15 requests with
           // one label between them is the same silence as no progress at all.
           stepEvent(msg);
-          if (msg.event === 'extract_step' && msg.status === 'running') {
+          if (msg.event === 'extract_steps' && msg.parallel > 1 && extractSteps) {
+            extractSteps.parallel = msg.parallel;
+          }
+          if (extractSteps && extractSteps.parallel > 1) {
+            /* On vLLM the steps are asked at once, so "step 7 of 7" would name
+               whichever was submitted last. Count the answers instead. */
+            const answered = extractSteps.filter(s => s && s.status === 'done').length;
+            pagebar.innerHTML = '<span class="spin"></span> Extracting fields — '
+              + extractSteps.length + ' steps at once: ' + answered + ' of '
+              + extractSteps.length + ' answered';
+          } else if (msg.event === 'extract_step' && msg.status === 'running') {
             pagebar.innerHTML = '<span class="spin"></span> Extracting fields — step '
               + msg.step + ' of ' + msg.total + ': ' + esc(msg.title);
           }

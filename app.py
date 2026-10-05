@@ -42,6 +42,7 @@ import randomtest
 import runlog
 import scoring
 import segment
+import servertime
 import stress
 import tables
 import validate
@@ -84,6 +85,8 @@ from settings import (
     ACCEPTED_SUFFIXES,
     AGENTIC_EXTRACT,
     AUTO_SELECT_SERVER,
+    AGENTIC_PARALLEL,
+    AGENTIC_PARALLEL_MAX,
     AGENTIC_RETRIES,
     DEFAULT_DETAIL,
     DETAIL_PRESETS,
@@ -647,6 +650,10 @@ def stream_page(image: Image.Image, stats: dict = None,
         **backends.request_extras(status),
     }
 
+    # The server's own clock, beside ours. Built BEFORE `started` so the vLLM
+    # before-snapshot of /metrics is not charged to this page's time. See
+    # servertime.py: the difference is the hop time between app and server.
+    clock = servertime.Clock(status)
     started = time.perf_counter()
     first_at = None
     timings, usage, pieces = {}, {}, 0
@@ -723,6 +730,8 @@ def stream_page(image: Image.Image, stats: dict = None,
     if not guard and looks_repetitive("".join(collected)):
         looped = True
 
+    clock.timings(timings)
+    served = clock.finish(finished - started)
     if stats is not None:
         total = finished - started
         # llama.cpp reports authoritative prompt/predict splits; fall back to
@@ -757,7 +766,35 @@ def stream_page(image: Image.Image, stats: dict = None,
             model=status["model"],
             backend=status["kind"],
             url=status["url"],
+            # What the SERVER says this page took, and the app's clock minus
+            # that: the time spent getting to and from it. Both None where the
+            # server gave no figure (Ollama /v1) or one that cannot be attributed
+            # (a /metrics change covering concurrent requests).
+            server_seconds=served["server_seconds"],
+            network_seconds=served["network_seconds"],
+            server_timing=served["source"],
+            **{k: served[k] for k in ("server_queue", "server_prefill",
+                                      "server_decode", "server_ttft")
+               if k in served},
         )
+
+
+def _timed_post(url: str, payload: dict, status: dict):
+    """`requests.post` for one non-streaming model request, timed by the server
+    as well. The record lands in this thread's `servertime` tally, if one is open
+    -- which is how an extraction's classify, step, agent and table requests are
+    summed without threading a clock through each of them. A request that fails
+    or answers non-200 is not timed: the server did no work worth measuring.
+    """
+    clock = servertime.Clock(status)
+    res = requests.post(url, json=payload, timeout=GEN_TIMEOUT)
+    if res.status_code == 200:
+        try:
+            clock.body(res.json())
+        except ValueError:
+            pass
+        clock.finish()
+    return res
 
 
 def _first_json_object(text: str):
@@ -1051,7 +1088,7 @@ def _classify_with_model(text: str, status: dict):
             backends.system_prefix(status)
             + [{"role": "user", "content": message}],
             None, CLASSIFY_MAX_TOKENS, status)
-        res = requests.post(url, json=payload, timeout=GEN_TIMEOUT)
+        res = _timed_post(url, payload, status)
         if res.status_code != 200:
             return [], ""
         raw, _, _ = backends.structured_reply(res.json(), status)
@@ -1325,7 +1362,7 @@ def _segment_with_model(pages, status: dict):
             backends.system_prefix(status)
             + [{"role": "user", "content": message}],
             None, SEGMENT_MAX_TOKENS, status)
-        res = requests.post(url, json=payload, timeout=GEN_TIMEOUT)
+        res = _timed_post(url, payload, status)
         if res.status_code != 200:
             return None
         raw, _, _ = backends.structured_reply(res.json(), status)
@@ -1459,7 +1496,7 @@ class _SegmentChat:
             url, payload = backends.structured_request(
                 self._messages(number, page), None, SEGMENT_MAX_TOKENS,
                 self.status)
-            res = requests.post(url, json=payload, timeout=GEN_TIMEOUT)
+            res = _timed_post(url, payload, self.status)
             if res.status_code != 200:
                 return None
             raw, _, _ = backends.structured_reply(res.json(), self.status)
@@ -1838,7 +1875,7 @@ def _extract_once(text: str, status: dict, schema, form: dict) -> dict:
 
     started = time.perf_counter()
     try:
-        res = requests.post(url, json=payload, timeout=GEN_TIMEOUT)
+        res = _timed_post(url, payload, status)
         if res.status_code != 200:
             return {"error": f"{status['kind'] or 'model server'} HTTP "
                              f"{res.status_code}: {res.text[:200]}"}
@@ -1999,7 +2036,7 @@ def _chat(content: str, max_tokens: int, status: dict, schema: dict = None):
     url, payload = backends.structured_request(
         backends.system_prefix(status) + [{"role": "user", "content": content}],
         schema, max_tokens, status)
-    res = requests.post(url, json=payload, timeout=GEN_TIMEOUT)
+    res = _timed_post(url, payload, status)
     if res.status_code != 200:
         raise ValueError(f"{status['kind'] or 'model server'} HTTP "
                          f"{res.status_code}: {res.text[:200]}")
@@ -2273,6 +2310,122 @@ def _steps_for(wanted, doc_types=()):
     return tuple(s for s in table if s["id"] in set(ids))
 
 
+def _agentic_parallelism(status: dict, steps: int) -> int:
+    """How many agentic steps go to the server at once: 1 means one at a time.
+
+    More than one only on a server that batches concurrent requests
+    (`backends.parallel_ok`, vLLM) and with `AGENTIC_PARALLEL` on. Capped by
+    `AGENTIC_PARALLEL_MAX` where it is set, and never above the step count.
+    """
+    if not (AGENTIC_PARALLEL and steps > 1 and backends.parallel_ok(status)):
+        return 1
+    cap = AGENTIC_PARALLEL_MAX or steps
+    return max(1, min(cap, steps))
+
+
+def _run_step(step: dict, prefix: str, question: str, status: dict, source):
+    """Ask one agentic step, with its grounding re-ask, and record what happened.
+
+    Returns (record, values, replies, tokens). Self-contained by design: it reads
+    the shared prefix and its own question and nothing another step produced,
+    which is what lets `_extract_agentic` send the steps at once on vLLM. The
+    labelled replies come back rather than being appended to a shared list, so
+    a concurrent run can merge them in table order.
+    """
+    step_replies, total_tokens = [], 0
+    # `raw` holds this step's own replies, verbatim, in the order they were
+    # asked for. They are also concatenated into the result's single `raw`
+    # for the whole-reply pane, and kept per step as well because that pane
+    # cannot say which of fifteen questions a given block of JSON answers --
+    # and a step that failed is exactly the one whose text is worth reading.
+    record = {"id": step["id"], "title": step["title"],
+              "keys": list(step["keys"]), "attempts": 0, "retried": False,
+              "raw": [],
+              # This step's own question, without the shared prefix. Set
+              # before anything is asked, so a step whose request never came
+              # back can still show what it was asked -- which is the state
+              # where "what did we send it?" is the actual question.
+              "prompt": question}
+    values, elapsed = {}, 0.0
+    best_bad = None
+
+    for attempt in range(AGENTIC_RETRIES + 1):
+        # A re-ask is a different question -- the rejected values quoted back
+        # -- so it is kept beside the reply it produced rather than folded
+        # into the step's base question.
+        asked = question + (EXTRACT_STEP_RETRY.format(
+            rejected="\n".join(best_bad)) if attempt else "")
+        content = prefix + asked
+        record["attempts"] = attempt + 1
+        at = time.perf_counter()
+        truncated = False
+        # Filled by `_ask_step` as each reply arrives, so a step that raises
+        # still leaves its text behind. Labelled here afterwards on the
+        # success path, and in the handler on the failure path.
+        raws = []
+        try:
+            attempt_values, raws, truncated, tokens, salvaged = _ask_step(
+                content, step, status, raws)
+            if salvaged:
+                # The reply stopped mid-entry and what had finished was
+                # kept. Recorded rather than passed over: the step answered
+                # with less of the page than it found, and a count of
+                # entries with nothing beside it reads as the whole of what
+                # the document labels.
+                record["salvaged"] = True
+            for n, raw in enumerate(raws):
+                label = _reply_label(step["id"], attempt, n)
+                step_replies.append(f"--- {label} ---\n" + raw)
+                record["raw"].append({"label": label, "text": raw,
+                                      "prompt": asked})
+            record["schema_retry"] = len(raws) > 1
+            total_tokens += tokens
+        except Exception as err:
+            for n, raw in enumerate(raws):
+                label = _reply_label(step["id"], attempt, n, failed=True)
+                step_replies.append(f"--- {label} ---\n" + raw)
+                record["raw"].append({"label": label, "text": raw,
+                                      "prompt": asked})
+            elapsed += time.perf_counter() - at
+            # Recorded against the step and then dropped: the remaining steps
+            # do not depend on this one, and the rest of the form is a better
+            # answer than none of it. A cut-off reply is named as one, because
+            # that step wants a bigger cap rather than another attempt.
+            why = (f"the reply hit this step's {step['max_tokens']}-token cap "
+                   "and the JSON never closed" if truncated else str(err))
+            # A retry that fails leaves the answer it was meant to correct
+            # standing, so the step has fields and is not a failed step. Saying
+            # it failed would send someone looking for keys that are there.
+            where = "error" if best_bad is None else "retry_error"
+            # An extras-only step that dies costs no key anything rules on,
+            # so it is reported and NOT counted as a failed step: it does
+            # not reach `steps_failed`, the page's failed-step banner or the
+            # run log's failure rate. A priority-1 step that dies still
+            # does, because its keys are the form. See `_extras_only`.
+            if where == "error" and _extras_only(step):
+                where = "extras_error"
+            record[where] = why
+            break
+        elapsed += time.perf_counter() - at
+
+        bad = _ungrounded_in(attempt_values, source)
+        # Keep whichever attempt invents least. A retry that comes back worse
+        # than the answer it was meant to correct is not an improvement, and
+        # under greedy decoding that happens whenever the model has nothing
+        # better to offer than what it already said.
+        if best_bad is None or len(bad) < len(best_bad):
+            values, best_bad = attempt_values, bad
+        if not bad or attempt >= AGENTIC_RETRIES:
+            break
+        record["retried"] = True
+
+    record["seconds"] = round(elapsed, 2)
+    record["values"] = {k: v for k, v in values.items() if not isinstance(v, list)}
+    record["items"] = sum(len(v) for v in values.values() if isinstance(v, list))
+    record["ungrounded"] = len(best_bad or [])
+    return record, values, step_replies, total_tokens
+
+
 def _extract_agentic(text: str, status: dict, form: dict, only=None):
     """Walk the step table, yielding progress, and return the merged result.
 
@@ -2302,111 +2455,64 @@ def _extract_agentic(text: str, status: dict, form: dict, only=None):
     # per step would say the opposite of what the design does.
     prefix = _step_prefix(text)
 
+    # Concurrency, decided once per run. vLLM batches concurrent requests, and
+    # no step reads another's answer (see `AGENTIC_PARALLEL`), so on that
+    # server the steps are asked at once. Everywhere else, one after another,
+    # exactly as every measurement in CLAUDE.md was taken.
+    parallel = _agentic_parallelism(status, len(table))
+    framing = _framing(form, "agentic")
+
     yield {"event": "extract_steps", "total": len(table),
            "steps": [{"id": s["id"], "title": s["title"], "keys": list(s["keys"])}
                      for s in table],
-           "prompt_prefix": prefix}
+           "prompt_prefix": prefix, "parallel": parallel}
 
-    for index, step in enumerate(table, 1):
-        yield {"event": "extract_step", "step": index, "total": len(table),
-               "id": step["id"], "title": step["title"], "status": "running"}
+    # Each step's outcome, by its position in the table. Merged in TABLE order
+    # whichever finished first, so a concurrent run produces the same `fields`,
+    # `steps` and `raw` order as a sequential one -- the page, the run log and a
+    # diff between two runs then cannot tell the two apart by layout.
+    outcomes = [None] * len(table)
 
-        question = _step_question(step, _framing(form, "agentic"))
-        message = prefix + question
-        # `raw` holds this step's own replies, verbatim, in the order they were
-        # asked for. They are also concatenated into the result's single `raw`
-        # for the whole-reply pane, and kept per step as well because that pane
-        # cannot say which of fifteen questions a given block of JSON answers --
-        # and a step that failed is exactly the one whose text is worth reading.
-        record = {"id": step["id"], "title": step["title"],
-                  "keys": list(step["keys"]), "attempts": 0, "retried": False,
-                  "raw": [],
-                  # This step's own question, without the shared prefix. Set
-                  # before anything is asked, so a step whose request never came
-                  # back can still show what it was asked -- which is the state
-                  # where "what did we send it?" is the actual question.
-                  "prompt": question}
-        values, elapsed = {}, 0.0
-        best_bad = None
+    def running(index, step):
+        return {"event": "extract_step", "step": index, "total": len(table),
+                "id": step["id"], "title": step["title"], "status": "running"}
 
-        for attempt in range(AGENTIC_RETRIES + 1):
-            # A re-ask is a different question -- the rejected values quoted back
-            # -- so it is kept beside the reply it produced rather than folded
-            # into the step's base question.
-            asked = question + (EXTRACT_STEP_RETRY.format(
-                rejected="\n".join(best_bad)) if attempt else "")
-            content = prefix + asked
-            record["attempts"] = attempt + 1
-            at = time.perf_counter()
-            truncated = False
-            # Filled by `_ask_step` as each reply arrives, so a step that raises
-            # still leaves its text behind. Labelled here afterwards on the
-            # success path, and in the handler on the failure path.
-            raws = []
-            try:
-                attempt_values, raws, truncated, tokens, salvaged = _ask_step(
-                    content, step, status, raws)
-                if salvaged:
-                    # The reply stopped mid-entry and what had finished was
-                    # kept. Recorded rather than passed over: the step answered
-                    # with less of the page than it found, and a count of
-                    # entries with nothing beside it reads as the whole of what
-                    # the document labels.
-                    record["salvaged"] = True
-                for n, raw in enumerate(raws):
-                    label = _reply_label(step["id"], attempt, n)
-                    replies.append(f"--- {label} ---\n" + raw)
-                    record["raw"].append({"label": label, "text": raw,
-                                          "prompt": asked})
-                record["schema_retry"] = len(raws) > 1
-                total_tokens += tokens
-            except Exception as err:
-                for n, raw in enumerate(raws):
-                    label = _reply_label(step["id"], attempt, n, failed=True)
-                    replies.append(f"--- {label} ---\n" + raw)
-                    record["raw"].append({"label": label, "text": raw,
-                                          "prompt": asked})
-                elapsed += time.perf_counter() - at
-                # Recorded against the step and then dropped: the remaining steps
-                # do not depend on this one, and the rest of the form is a better
-                # answer than none of it. A cut-off reply is named as one, because
-                # that step wants a bigger cap rather than another attempt.
-                why = (f"the reply hit this step's {step['max_tokens']}-token cap "
-                       "and the JSON never closed" if truncated else str(err))
-                # A retry that fails leaves the answer it was meant to correct
-                # standing, so the step has fields and is not a failed step. Saying
-                # it failed would send someone looking for keys that are there.
-                where = "error" if best_bad is None else "retry_error"
-                # An extras-only step that dies costs no key anything rules on,
-                # so it is reported and NOT counted as a failed step: it does
-                # not reach `steps_failed`, the page's failed-step banner or the
-                # run log's failure rate. A priority-1 step that dies still
-                # does, because its keys are the form. See `_extras_only`.
-                if where == "error" and _extras_only(step):
-                    where = "extras_error"
-                record[where] = why
-                break
-            elapsed += time.perf_counter() - at
+    def done(index, step, record):
+        return {"event": "extract_step", "step": index, "total": len(table),
+                "id": step["id"], "title": step["title"], "status": "done", **record}
 
-            bad = _ungrounded_in(attempt_values, source)
-            # Keep whichever attempt invents least. A retry that comes back worse
-            # than the answer it was meant to correct is not an improvement, and
-            # under greedy decoding that happens whenever the model has nothing
-            # better to offer than what it already said.
-            if best_bad is None or len(bad) < len(best_bad):
-                values, best_bad = attempt_values, bad
-            if not bad or attempt >= AGENTIC_RETRIES:
-                break
-            record["retried"] = True
+    if parallel > 1:
+        for index, step in enumerate(table, 1):
+            yield running(index, step)
+        # One server-timing span for the lot: a /metrics difference around any
+        # single concurrent request covers its neighbours. See servertime.Batch.
+        batch = servertime.Batch(status)
+        with ThreadPoolExecutor(max_workers=parallel,
+                                thread_name_prefix="agentic-step") as pool:
+            futures = {pool.submit(batch.run, _run_step, step, prefix,
+                                   _step_question(step, framing), status,
+                                   source): index
+                       for index, step in enumerate(table)}
+            pending = set(futures)
+            while pending:
+                finished, pending = wait(pending, return_when=FIRST_COMPLETED)
+                for future in finished:
+                    index = futures[future]
+                    outcomes[index] = future.result()
+                    yield done(index + 1, table[index], outcomes[index][0])
+        batch.close()
+    else:
+        for index, step in enumerate(table):
+            yield running(index + 1, step)
+            outcomes[index] = _run_step(step, prefix, _step_question(step, framing),
+                                        status, source)
+            yield done(index + 1, step, outcomes[index][0])
 
+    for record, values, step_replies, tokens in outcomes:
         fields.update(values)
-        record["seconds"] = round(elapsed, 2)
-        record["values"] = {k: v for k, v in values.items() if not isinstance(v, list)}
-        record["items"] = sum(len(v) for v in values.values() if isinstance(v, list))
-        record["ungrounded"] = len(best_bad or [])
+        replies.extend(step_replies)
+        total_tokens += tokens
         steps.append(record)
-        yield {"event": "extract_step", "step": index, "total": len(table),
-               "id": step["id"], "title": step["title"], "status": "done", **record}
 
     elapsed = round(time.perf_counter() - started, 2)
     failed = [s for s in steps if s.get("error")]
@@ -2419,6 +2525,7 @@ def _extract_agentic(text: str, status: dict, form: dict, only=None):
         return {"error": "Every extraction step failed. First: "
                          + (dead[0].get("error") or dead[0]["extras_error"]),
                 "mode": "agentic", "steps": steps, "seconds": elapsed,
+                **({"parallel": parallel} if parallel > 1 else {}),
                 "prompt_prefix": prefix,
                 **({"steps_only": [s["id"] for s in table]}
                    if len(table) < len(full_table) else {}),
@@ -2461,6 +2568,10 @@ def _extract_agentic(text: str, status: dict, form: dict, only=None):
         # that ran it, never to the one selected afterwards.
         "url": status.get("url") or "",
         "mode": "agentic",
+        # How many steps were in flight at once, where it was more than one
+        # (vLLM). Absent on a sequential run, which is every run on llama.cpp
+        # and Ollama: the wall clock of the two shapes is not comparable.
+        **({"parallel": parallel} if parallel > 1 else {}),
         "steps": steps,
         # Present only when this run was restricted to part of the step table, so
         # nothing downstream reads its keys as the whole form. Absent on an
@@ -3407,6 +3518,24 @@ def extract_fields_stream(text: str, mode: str = None, case_id: str = None,
     if not status["text_available"]:
         return {"error": status["text_reason"]}
     mode = mode or extract_mode()
+    # Every model request this extraction makes -- the segment and classify
+    # questions, the steps or the single request, the table agents -- is timed
+    # by the server too, and summed here into `server_time`. Closed in `finally`
+    # so a run that raises does not leave the tally open on this thread.
+    previous = servertime.open_tally()
+    try:
+        result = yield from _extract_file(text, mode, case_id, steps, doc_type,
+                                          pages, truth_fed, status)
+    finally:
+        served = servertime.close_tally(previous)
+    if isinstance(result, dict) and served:
+        result["server_time"] = served
+    return result
+
+
+def _extract_file(text, mode, case_id, steps, doc_type, pages, truth_fed, status):
+    """The body of `extract_fields_stream`, split out so the server-time tally
+    can be wrapped round all of it."""
     segments, split_from = yield from _segment_stream(text, pages, status)
     records = [_segment_record(seg, index, len(segments))
                for index, seg in enumerate(segments, 1)]
@@ -3595,6 +3724,8 @@ def _merge_documents(documents, records, mode: str, failed: int) -> dict:
         "url": next((result.get("url") for result in documents
                      if result.get("url")), ""),
         "partial": any(result.get("partial") for result in documents),
+        **({"parallel": max(result.get("parallel") or 0 for result in documents)}
+           if any(result.get("parallel") for result in documents) else {}),
         "grounding": _merge_grounding(documents),
         # Every document's attribution as one for the file, paths prefixed with
         # the document they belong to exactly as grounding's are. The counts sum
@@ -4189,6 +4320,10 @@ def summarise(all_stats, detail, started, job_id=None):
     urls = [s.get("url") for s in all_stats if s.get("url")]
     kinds = [s.get("backend") for s in all_stats if s.get("backend")]
     profiles = [s.get("ocr_profile") for s in all_stats if s.get("ocr_profile")]
+    # The pages the SERVER gave a time for. Server and hop time are summed over
+    # these alone, so a page with no server figure cannot make the hops look
+    # longer by contributing its client time with nothing to subtract.
+    served = [s for s in all_stats if s.get("server_seconds") is not None]
     return {
         "page_count": len(all_stats),
         **_page_coverage(job_id, len(all_stats)),
@@ -4214,6 +4349,12 @@ def summarise(all_stats, detail, started, job_id=None):
         "prefill_seconds": round(sum(s.get("prefill_seconds", 0) for s in all_stats), 2),
         "decode_seconds": round(decode, 2),
         "tokens_per_second": round(tokens / decode, 2) if decode and tokens else 0,
+        "server_seconds": (round(sum(s["server_seconds"] for s in served), 2)
+                           if served else None),
+        "network_seconds": (round(sum(s["network_seconds"] for s in served), 2)
+                            if served else None),
+        "server_timing": served[0].get("server_timing", "") if served else "",
+        "server_timed_pages": len(served),
         "page_stats": all_stats,
     }
 
