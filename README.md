@@ -331,6 +331,27 @@ LLAMA_URL=http://127.0.0.1:11434 PORT=8000 python app.py
 Device placement, threads and quantization belong to the model server. This app has no
 CPU/GPU control.
 
+### Without the page: `test.py`
+
+`test.py` runs a read, an extraction, or both from the command line. It loads the app in
+its own process, so `python app.py` does not need to be running; only the model server
+does. The transcript streams to the terminal as it is read, then the fields, the item
+table and the scores are printed, and the full result is saved to `test_output/`.
+
+```bash
+python test.py ocr --case sol002 --server http://127.0.0.1:8000 --model typhoon-ocr
+python test.py ocr path/to/scan.pdf --server http://127.0.0.1:8000 --model typhoon-ocr
+python test.py extract --case sol002 --server http://127.0.0.1:8000 --model typhoon-ocr
+python test.py extract --text-file transcript.txt --server http://127.0.0.1:8000 --model typhoon-ocr
+python test.py e2e --case sol002 --server http://127.0.0.1:8000 --model typhoon-ocr --extract-model qwen
+```
+
+`--case` reads that benchmark document from `mockOcr/` and scores it; a file given by path
+is scored too when its name or contents match a case. `extract --case` extracts from
+`solution/<id>.md`. Other options: `--detail low|medium|original`, `--mode single|agentic`,
+`--extract-server URL`, `--quiet` (no live tokens), `--save DIR` (`''` to skip) and
+`--no-log` (keep the run out of `logs/runs.csv`). `python test.py -h` lists them all.
+
 ---
 
 ## Configuration

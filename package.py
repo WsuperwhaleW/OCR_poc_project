@@ -58,6 +58,7 @@ FILES = [
     "validate.py",
     "machine.py",
     "compare.py",
+    "test.py",
     "ocrflag.py",
     "randomtest.py",
     "stress.py",

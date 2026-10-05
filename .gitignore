@@ -35,6 +35,9 @@ logs/*.csv.tmp
 # Saved OCR output from compare.py -- regenerated on every run.
 solution/out/
 
+# Saved results from test.py -- regenerated on every run.
+test_output/
+
 # Build output from package.py.
 dist/
 
