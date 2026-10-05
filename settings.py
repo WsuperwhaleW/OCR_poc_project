@@ -268,6 +268,17 @@ AUTO_SELECT_SERVER = config.env_bool("AUTO_SELECT_SERVER", True)
 # either side -- vLLM, llama-server, Ollama or a generic OpenAI-compatible one.
 # Switchable at runtime from the page's "Extraction server" picker.
 EXTRACT_URL = config.env_str("EXTRACT_URL", "", allow_empty=True)
+# Which inference engine each server is, pinned (2026-10-05, at the user's
+# request: *pick the server engine so there is no 404 request*). Comma
+# separated `url=kind`, kind one of llama.cpp / ollama / vllm / openai, e.g.
+#   SERVER_KINDS=http://gpu-box:8000=vllm,http://127.0.0.1:11434=ollama
+# A pinned server is spoken to as that engine ONLY: it is probed with that
+# engine's endpoint alone (`/props`, `/api/tags` or `/v1/models`), and nothing
+# another engine has (`/api/ps`, `/metrics`) is ever requested of it. A server
+# not named here is detected ("auto"), which asks /props, then /api/tags, then
+# /v1/models -- the 404s a vLLM or Ollama server sees in its log. Also settable
+# per server from the page's "Server type" picker.
+SERVER_KINDS = config.env_str("SERVER_KINDS", "", allow_empty=True)
 # How many candidates a single auto-select is willing to probe. Each dead one is
 # ~3 s of connect timeouts, and the list is the constants plus every server in
 # the log, which grows without bound on a machine that has moved endpoints
@@ -356,29 +367,50 @@ DRY_PENALTY_LAST_N = config.env_int("DRY_PENALTY_LAST_N", 0, minimum=0)
 # setting anyone is expected to meet.
 DRY_PENALTY_FALLBACK = 8192
 
+# The flat repetition penalty, sent on every OpenAI-compatible request (every
+# page read, every plain extraction request, every step) under BOTH names it
+# goes by: `repeat_penalty` is llama.cpp's, `repetition_penalty` is vLLM's (and
+# most other OpenAI-compatible servers'). A server ignores the name it does not
+# know. Ollama's /v1 shim drops both -- its one penalty is the native-endpoint
+# OLLAMA_REPEAT_PENALTY on the constrained retry.
+#
+# 1.1 by default, set at the user's request on 2026-10-05. It was 1.0 (off)
+# until then, and EVERY llama.cpp figure in CLAUDE.md was measured at 1.0, so a
+# number taken under 1.1 is not comparable with them. The known cost: documents
+# legitimately repeat values (0.00, currency codes, identical cells) and a flat
+# penalty can corrupt them -- on sol005 1.1 turned a repeated thousands separator
+# into a decimal point (1.731,118.40). REPETITION_PENALTY=1.0 turns it off,
+# leaving DRY above as the only loop defence.
+REPETITION_PENALTY = config.env_float("REPETITION_PENALTY", 1.1, minimum=1.0)
+
 
 def sampler_extras(n_ctx: int = 0):
-    """llama.cpp-only sampling controls, omitted entirely when DRY is disabled.
+    """Sampling controls beyond the greedy core.
 
-    Omitted rather than sent as no-ops so that with DRY_MULTIPLIER=0 both backends
-    receive a byte-identical request body apart from Ollama's "model" field --
-    there is then nothing left to explain a difference in the results except the
-    server itself.
+    The penalty is always sent, under both of its names. The DRY block is
+    llama.cpp-only and omitted entirely when DRY is disabled -- omitted rather
+    than sent as no-ops so that with DRY_MULTIPLIER=0 both backends receive a
+    byte-identical request body apart from Ollama's "model" field, and there is
+    then nothing left to explain a difference in the results except the server
+    itself. (The penalty fields are the same on both, so that still holds.)
 
     `n_ctx` is the window this request is being sent with (backends.num_ctx());
     DRY scans that whole window unless DRY_PENALTY_LAST_N says otherwise.
     """
+    penalty = {
+        "repeat_penalty": REPETITION_PENALTY,
+        "repetition_penalty": REPETITION_PENALTY,
+    }
     if DRY_MULTIPLIER <= 0:
-        return {}
+        return penalty
     try:
         window = int(n_ctx)
     except (TypeError, ValueError):
         window = 0
     last_n = DRY_PENALTY_LAST_N or (window if window > 0 else DRY_PENALTY_FALLBACK)
     return {
-        # repeat_penalty stays OFF: documents legitimately repeat values (0.00,
-        # currency codes, identical cells) and a flat penalty corrupts them.
-        "repeat_penalty": 1.0,
+        # See REPETITION_PENALTY: off by default, DRY is the loop defence.
+        **penalty,
         # DRY instead. It penalises *sequence* repetition, and allowed_length lets
         # short legitimate repeats through while breaking runaway loops -- which
         # greedy decoding on a 2B model is prone to.

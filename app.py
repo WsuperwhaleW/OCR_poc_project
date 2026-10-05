@@ -4751,6 +4751,9 @@ def index():
         # lines. Blank sorts into its own group rather than being guessed at.
         cases=[case_payload(c) for c in scoring.cases_index().values()],
         endpoints=backends.endpoints(),
+        # The engines the Server type pickers offer, besides "auto".
+        server_kinds=[{"kind": k, "label": backends.SERVER_KIND_LABELS[k]}
+                      for k in backends.SERVER_KINDS],
         # What pass 2 will run on, seeded at render so both extraction pickers
         # are right on first paint rather than only after a switch or Re-check.
         # Same block `/api/servers` returns, so the page has one shape to read.
@@ -4911,6 +4914,30 @@ def servers_select():
                     # Page reading picker repaints instead of showing the one
                     # that was selected before the switch.
                     "ocr_profile": ocr_profile()})
+
+
+@app.post("/api/servers/kind")
+def servers_kind():
+    """Pin a server to one inference engine, or put it back on "auto".
+
+    Body: `{"url": ..., "kind": "auto" | "llama.cpp" | "ollama" | "vllm" |
+    "openai"}`, url defaulting to the active one. A pinned server is asked only
+    that engine's requests -- see `backends.set_server_kind`.
+
+    Refused with 409 mid-sweep for a server in use, the attribution rule: the
+    pin decides how requests to it are built, so half a sweep under one engine
+    and half under another would be logged as one.
+    """
+    body = request.get_json(silent=True) or {}
+    url = backends.clean_url(body.get("url") or "") or backends.active_url()
+    if sweeps_running() and url in (backends.active_url(), backends.extract_url()):
+        return jsonify(error=f"A run is in flight on {url}. Wait for it or stop "
+                             "it before changing its server type."), 409
+    try:
+        backends.set_server_kind(url, body.get("kind") or "auto")
+    except ValueError as err:
+        return jsonify(error=str(err)), 400
+    return jsonify(backends.overview())
 
 
 def case_payload(case: dict) -> dict:

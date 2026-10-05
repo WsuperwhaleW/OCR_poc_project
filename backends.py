@@ -111,6 +111,65 @@ if _extract_url and _extract_url not in _endpoints:
     _endpoints.append(_extract_url)
 _cache = {}
 
+# --------------------------------------------------------------------------
+# Which engine a server is: pinned, or detected and remembered (2026-10-05)
+#
+# At the user's request -- *pick the inference server engine so there is no
+# 404 request; vLLM has /metrics, so with Ollama or llama.cpp disable it*.
+#
+# Detection asks /props, then /api/tags, then /v1/models, and the cache lasts
+# three seconds -- so until now a vLLM server answered two 404s on EVERY
+# re-probe, and Ollama one. Two things stop that:
+#
+# * **A pinned kind is probed with its own endpoint alone.** Nothing another
+#   engine has is ever asked of it, and if it does not answer as that engine it
+#   is reported unreachable rather than tried as something else -- the pin is a
+#   statement about the server, and silently overruling it would put back the
+#   requests it exists to stop.
+# * **Auto remembers what it found** and asks that first next time, so a
+#   detected server costs its 404s once per process rather than every three
+#   seconds. "Re-check" (a forced probe) forgets it and detects from scratch,
+#   because that is what it is for after a server is swapped on a port.
+#
+# The kinds are the ones the request builders already switch on, so pinning
+# changes which requests are made and nothing about how they are made.
+# --------------------------------------------------------------------------
+
+SERVER_KINDS = ("llama.cpp", "ollama", "vllm", "openai")
+SERVER_KIND_LABELS = {
+    "llama.cpp": "llama.cpp (llama-server)",
+    "ollama": "Ollama",
+    "vllm": "vLLM",
+    "openai": "OpenAI-compatible (other)",
+}
+# The one endpoint each kind is probed with -- said in the unreachable reason,
+# so a pin that does not match the server names what it asked for.
+_KIND_PROBE_PATH = {"llama.cpp": "/props", "ollama": "/api/tags",
+                    "vllm": "/v1/models", "openai": "/v1/models"}
+
+
+def _parse_kinds(raw: str) -> dict:
+    """`url=kind,url=kind` from SERVER_KINDS. A bad entry warns and is skipped."""
+    out = {}
+    for part in (raw or "").split(","):
+        part = part.strip()
+        if not part:
+            continue
+        url, _, kind = part.rpartition("=")
+        url, kind = clean_url(url), kind.strip().lower()
+        if kind == "llamacpp" or kind == "llama":
+            kind = "llama.cpp"
+        if not url or kind not in SERVER_KINDS:
+            config.say(f"[config] SERVER_KINDS: ignoring {part!r} -- expected "
+                       f"url=kind with kind one of {', '.join(SERVER_KINDS)}")
+            continue
+        out[url] = kind
+    return out
+
+
+_kind_pinned = _parse_kinds(settings.SERVER_KINDS)
+_kind_seen = {}
+
 
 # A model whose name says it is an OCR fine-tune. A heuristic and nothing more --
 # it is a substring test on names people chose -- but it is only ever used to
@@ -254,9 +313,50 @@ def _probe_openai(url):
     if not models:
         return None
     vllm = any(isinstance(m, dict) and m.get("owned_by") == "vllm" for m in data)
-    return {"kind": "vllm" if vllm else "openai", "reachable": True,
+    return {"kind": "vllm" if vllm else "openai", "claims_vllm": vllm,
+            "reachable": True,
             "model": models[0]["name"], "models": models, "vision": None,
             "slots": None, "reason": None}
+
+
+def _probe_kind(url, kind):
+    """Probe `url` as one engine only -- one request, that engine's endpoint."""
+    if kind == "llama.cpp":
+        return _probe_llama(url)
+    if kind == "ollama":
+        return _probe_ollama(url)
+    return _probe_openai(url)
+
+
+def server_kind(url: str = None) -> str:
+    """The pinned kind of `url`, or "auto"."""
+    with _lock:
+        url = clean_url(url) if url else _active
+    return _kind_pinned.get(url) or "auto"
+
+
+def set_server_kind(url: str, kind: str) -> dict:
+    """Pin `url` to one engine, or "auto" to detect it. Returns its fresh status.
+
+    The cache entry is dropped and the server re-probed under the new rule at
+    once, so the answer the page gets back is what the pin found -- a pin that
+    does not match the server is reported unreachable now, not on the next run.
+    """
+    url = clean_url(url)
+    if not url:
+        raise ValueError("Empty server URL.")
+    kind = (kind or "auto").strip().lower()
+    if kind not in SERVER_KINDS and kind != "auto":
+        raise ValueError(f"Unknown server type {kind!r}; expected auto or one "
+                         f"of {', '.join(SERVER_KINDS)}.")
+    with _lock:
+        if kind == "auto":
+            _kind_pinned.pop(url, None)
+        else:
+            _kind_pinned[url] = kind
+        _kind_seen.pop(url, None)
+    _cache.pop(url, None)
+    return probe(url, force=True)
 
 
 def serves_metrics(info: dict) -> bool:
@@ -308,7 +408,37 @@ def probe(url: str, force: bool = False) -> dict:
             if time.time() - at < ttl:
                 return cached
 
-    info = _probe_llama(url) or _probe_ollama(url) or _probe_openai(url) or {
+    pinned = _kind_pinned.get(url)
+    if pinned:
+        order = [pinned]
+    else:
+        if force:
+            _kind_seen.pop(url, None)
+        # The remembered kind first, then the detection order. llama.cpp and
+        # Ollama both answer /v1/models too, so /v1/models stays LAST among the
+        # rest -- asked first only where it is what this server turned out to be.
+        seen = _kind_seen.get(url)
+        order = ([seen] if seen else []) + [
+            k for k in ("llama.cpp", "ollama", "openai") if k != seen
+            and not (seen == "vllm" and k == "openai")]
+    info = None
+    for kind in order:
+        info = _probe_kind(url, kind)
+        if info:
+            break
+    if info and pinned in ("vllm", "openai"):
+        # /v1/models is the same request for both, and the pin is the user's
+        # statement of which it is -- what decides whether /metrics is asked.
+        info = {**info, "kind": pinned}
+        if pinned == "vllm" and not info.get("claims_vllm"):
+            # Kept, because the pin is the user's -- but said, because the one
+            # request a vLLM pin licenses (/metrics) is likely to 404 here.
+            info["kind_warning"] = (
+                f"{url} is pinned to vLLM, but its /v1/models does not say "
+                "owned_by vllm, so /metrics may answer 404.")
+    if info and not pinned:
+        _kind_seen[url] = info["kind"]
+    info = info or {
         "kind": None,
         "reachable": False,
         "model": None,
@@ -316,11 +446,15 @@ def probe(url: str, force: bool = False) -> dict:
         "vision": False,
         "slots": None,
         "reason": (
-            f"No model server reachable at {url}. Start llama-server or Ollama "
-            "there, or pick another endpoint above."
+            f"No {SERVER_KIND_LABELS[pinned]} server answered at {url} -- "
+            f"{_KIND_PROBE_PATH[pinned]} gave nothing usable. Start it there, or "
+            "set the server type to Auto if it is a different engine."
+            if pinned else
+            f"No model server reachable at {url}. Start llama-server, Ollama or "
+            "vLLM there, or pick another endpoint above."
         ),
     }
-    info = {**info, "url": url}
+    info = {**info, "url": url, "kind_pinned": pinned}
     # Stamped on completion, not on entry: a probe that took three seconds to
     # time out would otherwise be stale the moment it was stored, and the very
     # next caller would pay for it again.
@@ -487,6 +621,9 @@ def status(url: str = None, force: bool = False) -> dict:
         "vision": bool(vision),
         "vision_known": vision is not None,
         "kind": info["kind"],
+        # The user's pin, or "auto" -- whether `kind` was stated or detected.
+        "kind_setting": info.get("kind_pinned") or "auto",
+        "kind_warning": info.get("kind_warning"),
         "model": model,
         "models": info["models"],
         "slots": info["slots"],
@@ -870,6 +1007,9 @@ def _separate_status(url: str, force: bool = False) -> dict:
         "vision": False,
         "vision_known": False,
         "kind": info["kind"],
+        # The user's pin, or "auto" -- whether `kind` was stated or detected.
+        "kind_setting": info.get("kind_pinned") or "auto",
+        "kind_warning": info.get("kind_warning"),
         "model": model,
         "models": info["models"],
         "slots": info["slots"],
@@ -1048,6 +1188,7 @@ def overview(force: bool = False) -> dict:
         listed.append({
             "url": url,
             "kind": info["kind"],
+            "kind_setting": info.get("kind_pinned") or "auto",
             "reachable": info["reachable"],
             "models": [m["name"] for m in info["models"]],
             "active": url == active,
@@ -1060,6 +1201,8 @@ def overview(force: bool = False) -> dict:
         "endpoints": listed,
         "active": active,
         "server": server,
+        # The engines the "Server type" picker offers, besides "auto".
+        "kinds": [{"kind": k, "label": SERVER_KIND_LABELS[k]} for k in SERVER_KINDS],
         # What pass 2 will run on, and which of this endpoint's models may be
         # chosen for it. The page needs the second list because the refusal in
         # `select_extract` should be visible before it is triggered, not after.
@@ -1070,6 +1213,7 @@ def overview(force: bool = False) -> dict:
             "configured": configured_extract_url(),
             "separate": separate,
             "kind": extract["kind"],
+            "kind_setting": extract.get("kind_setting") or "auto",
             "model": extract["model"],
             "chosen": extract_model() or "",
             "available": extract["text_available"],

@@ -1428,6 +1428,14 @@ follows your desktop; Light is the one to pick for projecting or screenshotting.
             <option value="__custom__">Other address…</option>
           </select>
         </label>
+        <!-- Which engine the server is (2026-10-05). Auto detects it; pinned, it
+             is asked only that engine's requests, so a vLLM server is not sent
+             /props or /api/tags, and only vLLM is ever asked /metrics. -->
+        <label class="field" style="flex:0 0 auto;min-width:150px"
+               title="Auto detects the engine by probing /props, /api/tags, then /v1/models, and remembers what it found. Pinned, the server is asked only that engine's requests -- no 404s from probing the others. Only vLLM is ever asked /metrics.">
+          Server type
+          <select id="serverKindSel"></select>
+        </label>
         <label class="field" id="modelField" style="flex:1;min-width:200px;display:none">
           <span id="modelRole">Model &middot; reads the page</span>
           <select id="modelSel"></select>
@@ -1450,6 +1458,11 @@ follows your desktop; Light is the one to pick for projecting or screenshotting.
         <label class="field" style="flex:1;min-width:200px">
           Extraction server
           <select id="extractEndpointSel"></select>
+        </label>
+        <label class="field" id="extractKindField" style="flex:0 0 auto;min-width:150px;display:none"
+               title="The extraction server's engine. Auto detects it; pinned, it is asked only that engine's requests.">
+          Server type
+          <select id="extractKindSel"></select>
         </label>
         <label class="field" id="extractModelField" style="flex:1;min-width:200px;display:none">
           Model &middot; extracts fields
@@ -2364,6 +2377,12 @@ const ocrProfileHelp = document.getElementById('ocrProfileHelp');
 const loopGuardRow = document.getElementById('loopGuardRow');
 let server = {{ server | tojson }};
 let extractInfo = {{ extract | tojson }};
+/* The inference engines a server can be pinned to, besides Auto. From the
+   server, so the page cannot offer a kind the backend does not know. */
+const SERVER_KINDS = {{ server_kinds | tojson }};
+const serverKindSel = document.getElementById('serverKindSel');
+const extractKindSel = document.getElementById('extractKindSel');
+const extractKindField = document.getElementById('extractKindField');
 const extractEndpointSel = document.getElementById('extractEndpointSel');
 const fxExtractEndpoint = document.getElementById('fxExtractEndpoint');
 const extractCustomRow = document.getElementById('extractCustomRow');
@@ -10763,6 +10782,13 @@ function paintEndpoint() {
   paintExtractPicker(fxExtract, fxExtractField, extractInfo);
   paintExtractEndpoint(extractEndpointSel);
   paintExtractEndpoint(fxExtractEndpoint);
+  paintServerKind(serverKindSel, server);
+  /* The extraction server has a type of its own only when it IS its own
+     server; in the one-URL setup the picker above already covers it. */
+  if (extractKindField) {
+    extractKindField.style.display = extractInfo && extractInfo.separate ? 'flex' : 'none';
+    if (extractInfo && extractInfo.separate) paintServerKind(extractKindSel, extractInfo);
+  }
   paintExtractServerNote();
   // The random test's locks are painted from the same two lists, so a model that
   // stops being served stops being lockable at the same moment.
@@ -10770,6 +10796,60 @@ function paintEndpoint() {
   // The /metrics button follows the server kind: only vLLM is ever asked.
   if (typeof stPaintServer === 'function') stPaintServer();
 }
+
+/* Auto names what it detected, so a reader can see what Auto currently means
+   and whether pinning would change anything. Painted from the status that came
+   back, like every other picker here -- a refused pin leaves it showing the
+   setting really in force. */
+function kindLabel(kind) {
+  const hit = SERVER_KINDS.find(k => k.kind === kind);
+  return hit ? hit.label : (kind || 'nothing');
+}
+function paintServerKind(sel, info) {
+  if (!sel) return;
+  const setting = (info && info.kind_setting) || 'auto';
+  const detected = info && info.kind;
+  sel.innerHTML = '<option value="auto">Auto'
+    + (setting === 'auto' ? (detected ? ' · found ' + esc(kindLabel(detected))
+                                       : ' · nothing found') : '')
+    + '</option>'
+    + SERVER_KINDS.map(k => '<option value="' + esc(k.kind) + '">'
+        + esc(k.label) + '</option>').join('');
+  sel.value = setting;
+}
+async function setServerKind(url, kind) {
+  setServerNote('Setting server type…');
+  try {
+    const res = await fetch('/api/servers/kind', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url: url, kind: kind })
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      setServerNote(data.error || 'Could not set the server type.', true);
+      paintEndpoint();
+      return;
+    }
+    server = data.server;
+    if (data.extract) extractInfo = data.extract;
+    const info = url === server.url ? server : extractInfo;
+    setServerNote(kind === 'auto'
+      ? url + ' is detected automatically' + (info.kind ? ' · found ' + kindLabel(info.kind) : ' · nothing answered')
+      : url + ' is pinned to ' + kindLabel(kind)
+        + (info.kind ? '' : ' · it did not answer as one')
+        + (info.kind_warning ? ' · ⚠ ' + info.kind_warning : ''),
+      !info.kind || !!info.kind_warning);
+    paintEndpoint();
+    paintServer();
+  } catch (err) {
+    setServerNote(err.message, true);
+    paintEndpoint();
+  }
+}
+if (serverKindSel) serverKindSel.addEventListener('change',
+  () => setServerKind(server.url, serverKindSel.value));
+if (extractKindSel) extractKindSel.addEventListener('change',
+  () => setServerKind(extractInfo.url, extractKindSel.value));
 
 /* One switch, two panes: the note goes to both, because the pane you are not
    looking at is the one that would otherwise hold a stale "Now using …". */
