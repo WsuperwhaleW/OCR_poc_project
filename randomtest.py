@@ -75,16 +75,6 @@ import urllib.request
 
 import backends
 
-# Stable plan identifiers for readers that do not live on the model server.
-# They cannot be raw recognizer names: those names are provenance in runs.csv,
-# while a plan needs to know which isolated worker to invoke.
-LOCAL_READERS = {"local:paddle": "paddle", "local:easyocr": "easyocr"}
-
-
-def local_reader(name: str) -> str:
-    """Return the app reader id for a local plan entry, or an empty string."""
-    return LOCAL_READERS.get(name or "", "")
-
 # How many rounds one request may ask for. The ceiling is not arithmetic: a
 # round is a real read plus a real extraction, tens of seconds each, and a page
 # that asks for 500 of them has asked for a job it cannot watch and will not
@@ -154,12 +144,10 @@ def profile_for(model: str) -> str:
     picked profiles at random would spend most of its rounds re-measuring
     something this project already documents.
     """
-    local = local_reader(model)
-    return local or backends.profile_for_model(model)
+    return backends.profile_for_model(model)
 
 
-def pools(models: list, cases: list, local_readers: list = None,
-          extract_models: list = None) -> dict:
+def pools(models: list, cases: list, extract_models: list = None) -> dict:
     """What a plan may choose from, given what the endpoint actually serves.
 
     `models` is `status()["models"]` -- dicts with `name` and `vision`. `cases`
@@ -180,10 +168,8 @@ def pools(models: list, cases: list, local_readers: list = None,
         # is worth attempting, which is the same call `backends.status` makes.
         # Every vision model is a candidate -- see the module docstring on why
         # this is not narrowed to OCR fine-tunes.
-        "readers": ([m["name"] for m in named
-                     if m.get("vision") is not False]
-                    + [name for name in (local_readers or [])
-                       if name in LOCAL_READERS]),
+        "readers": [m["name"] for m in named
+                    if m.get("vision") is not False],
         # "" is "same as the reading model", and it is in the pool rather than
         # special-cased so that the one-model setup -- the one every measurement
         # in this project was taken under -- is part of what gets tested.
@@ -479,8 +465,8 @@ def plan(rounds: int, cases: list, readers: list, extractors: list,
         raise ValueError("Nothing to test: no document here has both a "
                          "transcript truth and a field truth.")
     if scope != "fields" and not (readers and details):
-        raise ValueError("Nothing can read a page: no model-server vision "
-                         "reader or enabled local OCR reader is available.")
+        raise ValueError("Nothing can read a page: no served model reports "
+                         "vision.")
     if scope != "ocr" and not modes:
         raise ValueError("No extraction shape to run.")
     if scope == "fields" and not text_models:
@@ -497,8 +483,8 @@ def plan(rounds: int, cases: list, readers: list, extractors: list,
         raise ValueError(f"{pinned_case} is not a document that can be scored "
                          "on both passes here, so it cannot be locked.")
     if pinned_reader and scope != "fields" and pinned_reader not in readers:
-        raise ValueError(f"{pinned_reader} is not an available model-server "
-                         "or local OCR reader, so it cannot be locked.")
+        raise ValueError(f"{pinned_reader} is not a served vision model, so "
+                         "it cannot be locked.")
     # A fields round has no reader, so its locked model is the extraction one --
     # which is drawn from every served model there, and from the non-OCR ones
     # elsewhere. Checking against the pool the round will actually draw from is
@@ -969,12 +955,10 @@ def _describe(round_: dict) -> str:
     if scope == "fields":
         return f"{rank}fields only - {extractor} - {round_.get('mode')}"
     if scope == "ocr":
-        profile = ("" if local_reader(round_.get("reader"))
-                   else f" ({round_.get('profile')})")
+        profile = f" ({round_.get('profile')})"
         return (f"{rank}read only - {reader}{profile} - "
                 f"{round_.get('detail')}")
-    profile = ("" if local_reader(round_.get("reader"))
-               else f" ({round_.get('profile')})")
+    profile = f" ({round_.get('profile')})"
     return (f"{rank}{reader}{profile} -> {extractor or 'same'} - "
             f"{round_.get('detail')} - {round_.get('mode')}")
 
@@ -984,14 +968,6 @@ def main(argv=None):
     parser.add_argument("app", nargs="?", default="http://localhost:5000")
     parser.add_argument("--rounds", type=int, default=DEFAULT_ROUNDS)
     parser.add_argument("--seed", type=int, default=None)
-    # Which pipeline's readers may be drawn. `both` is the default here and the
-    # page's default is whichever tab is showing -- a CLI sweep is the place a
-    # cross-engine comparison is actually wanted, and the pane is the place one
-    # pipeline is being worked on.
-    parser.add_argument("--engine", choices=("llm", "library", "both"),
-                        default="both",
-                        help="which pipeline may read: the model server, a "
-                             "local OCR library, or both (default)")
     parser.add_argument("--scope", choices=SCOPES, default=DEFAULT_SCOPE,
                         help="full: read and extract. ocr: read only. "
                              "fields: extract from solution/<id>.md only.")
@@ -1046,12 +1022,11 @@ def main(argv=None):
     request_body = ({"contest": True, "documents": args.documents,
                      "seed": args.seed, "subject": args.subject,
                      "top": args.top, "exclude": exclude,
-                     "engine": args.engine,
                      "bottom": 0 if args.no_bottom else args.top} if args.contest
                     else {"rounds": args.rounds, "seed": args.seed,
                           "scope": args.scope, "lock": lock,
                           "strategy": args.strategy,
-                          "engine": args.engine, "exclude": exclude})
+                          "exclude": exclude})
     body, code = _call(args.app, "/api/randomtest", request_body, timeout=120)
     if code:
         print(f"could not plan: {body.get('error', code)}")

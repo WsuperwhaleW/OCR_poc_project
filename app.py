@@ -32,13 +32,11 @@ from flask import Flask, Response, jsonify, render_template, request
 import backends
 import blame
 import config
-import easy_runtime
 import fieldscore
 import fixscore
 import grounding
 import machine
 import normalise
-import paddle_runtime
 import prompts
 import randomtest
 import runlog
@@ -430,113 +428,6 @@ def sweeps_running() -> bool:
 # --------------------------------------------------------------------------
 # model server
 # --------------------------------------------------------------------------
-
-READERS = ("server", "paddle", "easyocr")
-
-# --------------------------------------------------------------------------
-# Pipelines
-#
-# An ENGINE is which family of code reads the page in pass 1, and it is the
-# split the two side panes are built on:
-#
-#   llm      the model server reads the page -- llama.cpp or Ollama over HTTP,
-#            a prompt, a sampler, a token budget, and every failure mode this
-#            project's prompt sections document.
-#   library  a Python OCR library reads it in this machine's own processes --
-#            PaddleOCR or EasyOCR, a detector and a recognizer, no prompt and
-#            no tokens at all.
-#
-# **The engine is derived from the reader and is never stored beside it.**
-# Two settings that can disagree about one fact is the failure this file keeps
-# recording (`runlog._DRY` is why), and an engine held separately could say
-# `library` while the reader said `server`. `ENGINE_OF` is the whole mapping.
-#
-# **The split is honest about what it does NOT split: pass 2.** Mapping a
-# transcript onto a form is a text task and no OCR library does it, so a
-# library run still sends its transcript to the model server. That is why the
-# Library pane carries the endpoint and the extraction model rather than
-# hiding them -- a pane that showed no server at all would be claiming an
-# independence the run does not have.
-ENGINES = ("llm", "library")
-ENGINE_OF = {"server": "llm", "paddle": "library", "easyocr": "library"}
-ENGINE_LABEL = {"llm": "LLM pipeline", "library": "Python library"}
-# The reader an engine falls back to when it is selected with no reader named.
-# `library` prefers Paddle and takes EasyOCR when only that one is installed --
-# picked at the moment of the switch rather than fixed, so a machine with one
-# of the two never lands on the one it has not got.
-ENGINE_DEFAULT_READER = {"llm": "server", "library": "paddle"}
-
-_reader_lock = threading.Lock()
-_reader = config.env_str("OCR_READER", "server").strip().lower()
-if _reader not in READERS:
-    _reader = "server"
-
-
-def engine_of(reader) -> str:
-    """Which engine a reader belongs to. Unknown names read as `llm`.
-
-    Unknown falls to `llm` rather than raising because this is called on values
-    off the run log as well as on chosen ones, and a row naming a reader this
-    build no longer has is still a row -- see `runlog.row_engine`, which has
-    to answer for every row ever written.
-    """
-    return ENGINE_OF.get(str(reader or "").strip().lower(), "llm")
-
-
-def readers_in(engine: str) -> tuple:
-    """The readers of one engine, in offer order."""
-    return tuple(r for r in READERS if ENGINE_OF[r] == engine)
-
-
-def current_engine() -> str:
-    """Which engine is selected, derived from the selected reader."""
-    return engine_of(current_reader())
-
-
-def current_reader() -> str:
-    with _reader_lock:
-        return _reader
-
-
-def resolve_reader(value=None) -> str:
-    reader = (value or current_reader()).strip().lower()
-    if reader not in READERS:
-        raise ValueError("reader must be 'server', 'paddle', or 'easyocr'.")
-    return reader
-
-
-def set_reader(value) -> str:
-    reader = resolve_reader(value)
-    global _reader
-    with _reader_lock:
-        _reader = reader
-    return reader
-
-
-def reader_status(probe=False, probe_reader=None) -> dict:
-    """Reader inventory, optionally probing one selected implementation."""
-    server = llama_status(force=probe and probe_reader in (None, "server"))
-    paddle = paddle_runtime.status(
-        probe=probe and probe_reader in (None, "paddle"))
-    easy = easy_runtime.status(
-        probe=probe and probe_reader in (None, "easyocr"))
-    readers = [
-        {"id": "server", "label": "Model server",
-         "available": bool(server.get("available")),
-         "model": server.get("model"), "backend": server.get("kind"),
-         "reason": server.get("reason") or ""},
-        paddle,
-        easy,
-    ]
-    for item in readers:
-        item["engine"] = engine_of(item["id"])
-    return {
-        "selected": current_reader(),
-        "engine": current_engine(),
-        "engines": [{"id": e, "label": ENGINE_LABEL[e],
-                     "readers": list(readers_in(e))} for e in ENGINES],
-        "readers": readers,
-    }
 
 def llama_status(force: bool = False):
     """Reachability, model and vision capability of the *active* server.
@@ -4266,190 +4157,6 @@ def fit_pixels(image: Image.Image, max_pixels: int) -> Image.Image:
     return image.resize(size, Image.LANCZOS)
 
 
-def paddle_events(pages, cancel=None):
-    """Yield worker events for prepared pages, cleaning temporary PNGs after.
-
-    Paths are generated by this process and never accepted from the request, so
-    the separate worker cannot be used as an arbitrary local-file reader.
-    """
-    with tempfile.TemporaryDirectory(prefix="thai-ocr-paddle-") as directory:
-        paths = []
-        for index, page in enumerate(pages, 1):
-            path = Path(directory) / f"page-{index}.png"
-            page.save(path, format="PNG")
-            paths.append(path)
-        yield from paddle_runtime.WORKER.run_pages(paths, cancel)
-
-
-def paddle_page_result(event: dict, image: Image.Image) -> tuple[str, dict]:
-    """Turn one worker page into the text/stats shape the app already uses."""
-    lines = event.get("lines") or []
-    text = "\n".join(str(line.get("text") or "") for line in lines).strip()
-    confidences = [float(line["confidence"]) for line in lines
-                   if isinstance(line.get("confidence"), (int, float))]
-    status = paddle_runtime.configured_status()
-    layout = [{
-        "bbox": line.get("bbox"),
-        "category": "Text",
-        "text": str(line.get("text") or ""),
-        "confidence": line.get("confidence"),
-        "polygon": line.get("polygon"),
-        "rect": line.get("rect"),
-    } for line in lines]
-    stats = {
-        "ocr_profile": "paddle",
-        "resolution": f"{image.width}x{image.height}",
-        "megapixels": round(image.width * image.height / 1e6, 2),
-        "seconds": event.get("seconds", 0),
-        "model": status["recognizer"],
-        "backend": "paddleocr", "ocr_engine": "library",
-        "url": "local",
-        "line_count": len(lines),
-        "mean_confidence": (round(sum(confidences) / len(confidences), 4)
-                            if confidences else None),
-        "layout": layout,
-        "raw": json.dumps(lines, ensure_ascii=False, indent=2),
-    }
-    return text, stats
-
-
-def consume_paddle_pages(pages, cancel=None, progress=None):
-    """Blocking Paddle read shared by the CLI route and the random helpers."""
-    texts, all_stats, model_info = [], [], {}
-    for event in paddle_events(pages, cancel):
-        kind = event.get("event")
-        if progress:
-            progress(event)
-        if kind == "page_result":
-            index = int(event.get("page") or len(all_stats) + 1) - 1
-            text, stats = paddle_page_result(event, pages[index])
-            texts.append(text)
-            all_stats.append(stats)
-        elif kind == "done":
-            model_info = event.get("modelInfo") or {}
-    return texts, all_stats, model_info
-
-
-def summarise_paddle(all_stats, detail, started, job_id=None, model_info=None):
-    """Roll Paddle page measurements into the ordinary OCR result envelope."""
-    model_info = model_info or {}
-    confidences = [(s.get("mean_confidence"), s.get("line_count", 0))
-                   for s in all_stats if s.get("mean_confidence") is not None]
-    line_count = sum(int(s.get("line_count") or 0) for s in all_stats)
-    weighted = sum(value * count for value, count in confidences)
-    return {
-        "page_count": len(all_stats),
-        **_page_coverage(job_id, len(all_stats)),
-        "detail": detail,
-        "ocr_profile": "paddle",
-        "job": job_id,
-        "model": model_info.get("recognizer")
-                 or paddle_runtime.configured_status()["recognizer"],
-        "url": "local",
-        "backend": "paddleocr", "ocr_engine": "library",
-        "resolutions": [s.get("resolution") for s in all_stats],
-        # Token/prefill/decode values are intentionally absent. PaddleOCR is not
-        # a generative model and zero would be a real, misleading measurement.
-        "truncated": False,
-        "looped": False,
-        "seconds": round(time.perf_counter() - started, 2),
-        "page_stats": all_stats,
-        "ocr_lines": line_count,
-        "ocr_confidence": round(weighted / line_count, 4) if line_count else None,
-        "ocr_device": model_info.get("device")
-                      or paddle_runtime.configured_status()["device"],
-        "ocr_version": model_info.get("paddleOcrVersion", ""),
-        "paddle_version": model_info.get("paddlePaddleVersion", ""),
-        "ocr_detector": model_info.get("detector")
-                        or paddle_runtime.configured_status()["detector"],
-    }
-
-
-def easy_events(pages, cancel=None):
-    """Yield EasyOCR worker events for the same prepared page pixels."""
-    with tempfile.TemporaryDirectory(prefix="thai-ocr-easy-") as directory:
-        paths = []
-        for index, page in enumerate(pages, 1):
-            path = Path(directory) / f"page-{index}.png"
-            page.save(path, format="PNG")
-            paths.append(path)
-        yield from easy_runtime.WORKER.run_pages(paths, cancel)
-
-
-def easy_page_result(event: dict, image: Image.Image) -> tuple[str, dict]:
-    lines = event.get("lines") or []
-    text = "\n".join(str(line.get("text") or "") for line in lines).strip()
-    confidences = [float(line["confidence"]) for line in lines
-                   if isinstance(line.get("confidence"), (int, float))]
-    status = easy_runtime.configured_status()
-    layout = [{
-        "bbox": line.get("bbox"), "category": "Text",
-        "text": str(line.get("text") or ""),
-        "confidence": line.get("confidence"),
-        "polygon": line.get("polygon"), "rect": line.get("rect"),
-    } for line in lines]
-    return text, {
-        "ocr_profile": "easyocr",
-        "resolution": f"{image.width}x{image.height}",
-        "megapixels": round(image.width * image.height / 1e6, 2),
-        "seconds": event.get("seconds", 0),
-        "model": status["recognizer"], "backend": "easyocr",
-        "ocr_engine": "library", "url": "local",
-        "line_count": len(lines),
-        "mean_confidence": (round(sum(confidences) / len(confidences), 4)
-                            if confidences else None),
-        "layout": layout,
-        "raw": json.dumps(lines, ensure_ascii=False, indent=2),
-    }
-
-
-def consume_easy_pages(pages, cancel=None, progress=None):
-    texts, all_stats, model_info = [], [], {}
-    for event in easy_events(pages, cancel):
-        if progress:
-            progress(event)
-        if event.get("event") == "page_result":
-            index = int(event.get("page") or len(all_stats) + 1) - 1
-            text, stats = easy_page_result(event, pages[index])
-            texts.append(text)
-            all_stats.append(stats)
-        elif event.get("event") == "done":
-            model_info = event.get("modelInfo") or {}
-    return texts, all_stats, model_info
-
-
-def summarise_easy(all_stats, detail, started, job_id=None, model_info=None):
-    model_info = model_info or {}
-    confidences = [(s.get("mean_confidence"), s.get("line_count", 0))
-                   for s in all_stats if s.get("mean_confidence") is not None]
-    line_count = sum(int(s.get("line_count") or 0) for s in all_stats)
-    weighted = sum(value * count for value, count in confidences)
-    status = easy_runtime.configured_status()
-    return {
-        "page_count": len(all_stats),
-        **_page_coverage(job_id, len(all_stats)), "detail": detail,
-        "ocr_profile": "easyocr", "job": job_id,
-        "model": model_info.get("recognizer") or status["recognizer"],
-        "url": "local", "backend": "easyocr", "ocr_engine": "library",
-        "resolutions": [s.get("resolution") for s in all_stats],
-        "truncated": False, "looped": False,
-        "seconds": round(time.perf_counter() - started, 2),
-        "page_stats": all_stats, "ocr_lines": line_count,
-        "ocr_confidence": round(weighted / line_count, 4) if line_count else None,
-        "ocr_device": model_info.get("device") or status["device"],
-        "easyocr_version": model_info.get("easyOcrVersion", ""),
-        "torch_version": model_info.get("torchVersion", ""),
-        "ocr_detector": model_info.get("detector") or status["detector"],
-        "ocr_languages": ",".join(model_info.get("languages") or status["languages"]),
-    }
-
-
-def local_summary(reader, all_stats, detail, started, job_id=None, model_info=None):
-    return (summarise_paddle(all_stats, detail, started, job_id, model_info)
-            if reader == "paddle"
-            else summarise_easy(all_stats, detail, started, job_id, model_info))
-
-
 def join_page_texts(page_texts) -> str:
     if len(page_texts) > 1:
         return "\n\n".join(f"--- page {i} ---\n{text}"
@@ -4739,7 +4446,6 @@ def index():
     return render_template(
         "index.html",
         server=llama_status(),
-        reader=reader_status(),
         details=list(DETAIL_PRESETS),
         default_detail=DEFAULT_DETAIL,
         # `field_truth` says whether pass 2 can be *scored* on this document, as
@@ -5332,92 +5038,6 @@ def extract_mode_set():
     return jsonify(mode=mode, steps=len(EXTRACT_STEPS))
 
 
-@app.get("/api/ocr/reader")
-def ocr_reader_get():
-    probe = request.args.get("probe", "0").lower() in ("1", "true", "yes")
-    return jsonify(reader_status(probe=probe))
-
-
-@app.post("/api/ocr/reader")
-def ocr_reader_set():
-    body = request.get_json(silent=True) or {}
-    try:
-        set_reader(body.get("reader"))
-    except ValueError as error:
-        return jsonify(error=str(error), **reader_status()), 400
-    return jsonify(reader_status(
-        probe=body.get("probe") is True,
-        probe_reader=current_reader(),
-    ))
-
-
-def select_engine(engine, reader=None) -> str:
-    """Move to an engine, and answer with the reader that carries it.
-
-    A pane switch names an ENGINE; the reader is a detail of it. Where the
-    caller also names a reader that belongs to the engine it is honoured --
-    that is the Library pane's own Paddle/EasyOCR picker, which must not be
-    overruled by the pane it sits in.
-
-    **An unavailable default is stepped over, not selected.** `library` prefers
-    Paddle, and on a machine with only EasyOCR installed selecting Paddle would
-    hand the user a pane whose Run button refuses. Availability is read from
-    `configured_status()`, which asks whether the library is importable rather
-    than importing it, so this costs no import and no subprocess.
-    """
-    if engine not in ENGINES:
-        raise ValueError("engine must be 'llm' or 'library'.")
-    if reader:
-        chosen = resolve_reader(reader)
-        if engine_of(chosen) != engine:
-            raise ValueError(
-                f"reader {chosen!r} is not part of the {engine} engine.")
-        return set_reader(chosen)
-    options = readers_in(engine)
-    preferred = ENGINE_DEFAULT_READER[engine]
-    ordered = ([preferred] + [r for r in options if r != preferred]
-               if preferred in options else list(options))
-    for candidate in ordered:
-        if candidate == "server" or _local_available(candidate):
-            return set_reader(candidate)
-    # Nothing in this engine is installed. The switch still happens: the pane
-    # has to be reachable in order to say what is missing, and its own status
-    # line is where that is said. Refusing here would leave the user on the
-    # other pane with an error and no way to read the instructions.
-    return set_reader(ordered[0])
-
-
-def _local_available(reader: str) -> bool:
-    runtime = paddle_runtime if reader == "paddle" else easy_runtime
-    return bool(runtime.configured_status().get("available"))
-
-
-@app.get("/api/ocr/engine")
-def ocr_engine_get():
-    probe = request.args.get("probe", "0").lower() in ("1", "true", "yes")
-    return jsonify(reader_status(probe=probe))
-
-
-@app.post("/api/ocr/engine")
-def ocr_engine_set():
-    """Switch engine, optionally naming the reader inside it.
-
-    Answers with the whole reader status rather than an acknowledgement, so the
-    pane paints from what was ACCEPTED and never from what it asked for -- the
-    rule every picker on this page follows.
-    """
-    body = request.get_json(silent=True) or {}
-    try:
-        select_engine((body.get("engine") or "").strip().lower(),
-                        body.get("reader"))
-    except ValueError as error:
-        return jsonify(error=str(error), **reader_status()), 400
-    return jsonify(reader_status(
-        probe=body.get("probe") is True,
-        probe_reader=current_reader(),
-    ))
-
-
 @app.get("/api/ocr/profile")
 def ocr_profile_get():
     """The pass-1 shape in force, and every shape on offer."""
@@ -5671,44 +5291,21 @@ def preview_prepared():
     })
 
 
-def _random_pools(engine=None):
+def _random_pools():
     """What this endpoint can currently randomise over.
 
     Cases need a *transcript* truth to score pass 1 and a *field* truth to score
     pass 2; both are required here, because a round that can report neither
     number is a round that only proves the request did not crash.
-
-    `engine` narrows the READER pool to one pipeline -- `llm` drops the local
-    libraries, `library` keeps only them -- and the page sends whichever tab is
-    showing, so a sweep started from the Python library tab is a sweep of that
-    library rather than a sweep that mostly drew model-server rounds.
-
-    **`None` is both, and it is not the page's default but the CLI's.** A sweep
-    across the two engines is a legitimate and interesting thing to run -- the
-    whole point of this mode is combinations nobody would choose -- so the
-    narrowing is a choice the caller makes rather than a rule. Note that the
-    EXTRACTOR pool is never narrowed: pass 2 runs on the model server under
-    either engine, and a library round with no extractor to draw would be a
-    read-only round wearing a full round's name.
     """
     cases = [c["id"] for c in scoring.cases_index().values()
              if fieldscore.has_truth(c["id"])]
-    local = []
-    if paddle_runtime.configured_status().get("available"):
-        local.append("local:paddle")
-    if easy_runtime.configured_status().get("available"):
-        local.append("local:easyocr")
     models = llama_status()["models"]
     # Where pass 2 has a server of its own, the extractors are ITS models -- a
     # name drawn from the reading server would not be served where it is sent.
     extract_models = (backends.extract_status()["models"]
                       if backends.extract_separate() else None)
-    if engine == "library":
-        models = []
-    elif engine == "llm":
-        local = []
-    return randomtest.pools(models, cases, local_readers=local,
-                            extract_models=extract_models)
+    return randomtest.pools(models, cases, extract_models=extract_models)
 
 
 def _random_plan(body: dict) -> dict:
@@ -5735,26 +5332,8 @@ def _random_plan(body: dict) -> dict:
     # Exclusions narrow the pools before anything is planned, so they hold for a
     # contest as well: "do not test that model" is a statement about the run, not
     # about one button on the pane.
-    # Which engines' readers may be drawn. The page sends the tab that is
-    # showing; a caller that says nothing gets both, which is what the CLI and
-    # every existing script already expect.
-    engine = (body.get("engine") or "").strip().lower() or None
-    if engine not in (None, "both", *ENGINES):
-        raise ValueError("engine must be 'llm', 'library' or 'both'.")
-    if engine == "both":
-        engine = None
-    pools = randomtest.apply_exclusions(_random_pools(engine),
+    pools = randomtest.apply_exclusions(_random_pools(),
                                         body.get("exclude"), scope)
-    # A narrowing that empties the pool is refused HERE, naming the engine,
-    # rather than reaching the planner and coming back as "no model reports
-    # vision" -- which would send someone to look at their model server when the
-    # answer is that this pipeline has nothing installed.
-    if engine and scope != "fields" and not pools["readers"]:
-        raise ValueError(
-            "no vision model is served, so the model server has nothing to "
-            "read with." if engine == "llm" else
-            "no OCR library is installed, so there is nothing to read with on "
-            "the library engine.")
     # A lock and an exclusion naming the same model is a contradiction, and the
     # refusal it would otherwise get -- "not served here" -- would send someone
     # looking at their model server.
@@ -5806,14 +5385,9 @@ def random_test_plan():
     # a plan that gives one document three rounds and another none is correct
     # when the log already holds the other one, and unreadable without it.
     return jsonify({**planned,
-                    # The pools the plan was drawn from, narrowed the same way,
-                    # so the pane's chips describe what could have been chosen
-                    # rather than everything this endpoint serves.
-                    "pools": _random_pools(
-                        (body.get("engine") or "").strip().lower() or None
-                        if (body.get("engine") or "").strip().lower() != "both"
-                        else None),
-                    "engine": (body.get("engine") or "").strip().lower() or "both",
+                    # The pools the plan was drawn from, so the pane's chips
+                    # describe what could have been chosen.
+                    "pools": _random_pools(),
                     "history": runlog.case_counts(),
                     "scopes": list(randomtest.SCOPES),
                     "strategies": list(randomtest.STRATEGIES),
@@ -5985,25 +5559,14 @@ def _run_round(round_: dict, cancel=None) -> dict:
         set_extract_mode(round_["mode"])
         return _extract_case(round_["case"], round_["mode"])
 
-    local_reader = randomtest.local_reader(round_["reader"])
-    if local_reader:
-        # The local worker does pass 1. Pass 2, when requested, still belongs to
-        # the active model server: "" means its reading/default model, exactly
-        # as it does when Workspace runs Paddle or EasyOCR with field extraction.
-        set_reader(local_reader)
-        if scope != "ocr":
-            backends.select_extract(round_["extractor"], unload=False)
-    else:
-        set_reader("server")
-        backends.select(None, round_["reader"], unload=True)
-        backends.select_extract(round_["extractor"], unload=False)
-        set_ocr_profile(round_["profile"])
+    backends.select(None, round_["reader"], unload=True)
+    backends.select_extract(round_["extractor"], unload=False)
+    set_ocr_profile(round_["profile"])
     if scope == "ocr":
         return _read_case(round_["case"], round_["detail"], extract=False,
-                          reader=local_reader or "server", cancel=cancel)
+                          cancel=cancel)
     set_extract_mode(round_["mode"])
-    return _read_case(round_["case"], round_["detail"],
-                      reader=local_reader or "server", cancel=cancel)
+    return _read_case(round_["case"], round_["detail"], cancel=cancel)
 
 
 def _extract_case(case_id: str, mode: str) -> dict:
@@ -6028,7 +5591,7 @@ def _extract_case(case_id: str, mode: str) -> dict:
 
 
 def _read_case(case_id: str, detail: str, extract: bool = True,
-               reader: str = "server", cancel=None) -> dict:
+               cancel=None) -> dict:
     """One benchmark document, read and extracted, exactly as `/api/ocr` does it.
 
     Shares `prepare_input`, `summarise`, `evaluate_if_known`, `extract_fields`
@@ -6051,29 +5614,16 @@ def _read_case(case_id: str, detail: str, extract: bool = True,
     source = describe_source(case["pdf"], data, "case")
     pages, detail, job_id, case = prepare_input(data, detail, case, source)
 
-    reader = resolve_reader(reader)
     started = time.perf_counter()
     page_texts, all_stats = [], []
-    model_info = None
     cancelled = False
     try:
-        if reader in ("paddle", "easyocr"):
-            consume = (consume_paddle_pages if reader == "paddle"
-                       else consume_easy_pages)
-            # The worker takes the flag itself: it kills the subprocess and
-            # raises, which is the only way to stop a `predict()` already
-            # running. That is what `local_stream_generate` does for the page's
-            # own Stop, reached here through the argument instead.
-            page_texts, all_stats, model_info = consume(pages, cancel)
-        else:
-            for page in pages:
-                if stop_requested(cancel):
-                    break
-                stats = {}
-                page_texts.append(read_page(page, stats, cancel=cancel))
-                all_stats.append(stats)
-    except (paddle_runtime.PaddleCancelled, easy_runtime.EasyCancelled):
-        cancelled = True
+        for page in pages:
+            if stop_requested(cancel):
+                break
+            stats = {}
+            page_texts.append(read_page(page, stats, cancel=cancel))
+            all_stats.append(stats)
     except Exception:                               # noqa: BLE001
         # A hung-up request raises wherever it was blocked -- mid-prefill, most
         # of the time. If WE are the ones who hung up, that is the stop landing
@@ -6088,11 +5638,7 @@ def _read_case(case_id: str, detail: str, extract: bool = True,
         # then logged and dropped. `evaluate_if_known` is deliberately not run:
         # scoring half a document against the whole ground truth would report a
         # stop as a bad read.
-        partial = (local_summary(reader, all_stats, detail, started, job_id,
-                                 model_info)
-                   if reader != "server"
-                   else summarise(all_stats, detail, started, job_id))
-        partial["reader"] = reader
+        partial = summarise(all_stats, detail, started, job_id)
         log_run(partial, source, status="cancelled")
         raise SweepCancelled(f"{case_id} was stopped part-way through")
 
@@ -6102,11 +5648,7 @@ def _read_case(case_id: str, detail: str, extract: bool = True,
     else:
         text = page_texts[0]
 
-    payload = (local_summary(reader, all_stats, detail, started, job_id,
-                             model_info)
-               if reader != "server"
-               else summarise(all_stats, detail, started, job_id))
-    payload["reader"] = reader
+    payload = summarise(all_stats, detail, started, job_id)
     payload["truth"] = evaluate_if_known(case, text)
     if extract and EXTRACT and text.strip():
         payload["extracted"] = extract_fields(
@@ -6243,11 +5785,6 @@ def _stress_config(body: dict) -> dict:
         raise ValueError("No benchmark case has the ground truth this mode needs.")
 
     if mode in ("ocr", "full"):
-        if current_reader() != "server":
-            raise ValueError("The stress test reads with the model server. Switch "
-                             "the Workspace's reading engine to the model server "
-                             "first -- an OCR library runs in one local worker, "
-                             "so there is no concurrency to measure.")
         info = llama_status()
         if not info["available"]:
             raise ValueError(info["reason"])
@@ -6665,7 +6202,6 @@ def stress_metrics():
 def ocr():
     """Blocking read. Convenient for scripts; the page uses /api/ocr/stream."""
     try:
-        reader = resolve_reader(request.form.get("reader"))
         pages, detail, job_id, case, source = prepare(request.files, request.form)
     except ValueError as err:
         return jsonify(error=str(err)), 400
@@ -6673,34 +6209,20 @@ def ocr():
     started = time.perf_counter()
     page_texts, all_stats = [], []
     try:
-        if reader in ("paddle", "easyocr"):
-            consume = (consume_paddle_pages if reader == "paddle"
-                       else consume_easy_pages)
-            page_texts, all_stats, model_info = consume(pages)
-        else:
-            model_info = None
-            for page in pages:
-                stats = {}
-                page_texts.append(read_page(page, stats))
-                all_stats.append(stats)
+        for page in pages:
+            stats = {}
+            page_texts.append(read_page(page, stats))
+            all_stats.append(stats)
     except ValueError as err:
         log_run(summarise(all_stats, detail, started, job_id), source, error=err)
         return jsonify(error=str(err)), 400
-    except (paddle_runtime.PaddleError, easy_runtime.EasyError) as err:
-        summary = local_summary(reader, all_stats, detail, started, job_id,
-                                locals().get("model_info"))
-        log_run(summary, source, error=err)
-        return jsonify(error=str(err)), 503
     except requests.RequestException as err:
         log_run(summarise(all_stats, detail, started, job_id), source, error=err)
         return jsonify(error=f"model server connection failed: {err}"), 502
 
     text = join_page_texts(page_texts)
 
-    payload = (local_summary(reader, all_stats, detail, started, job_id, model_info)
-               if reader != "server"
-               else summarise(all_stats, detail, started, job_id))
-    payload["reader"] = reader
+    payload = summarise(all_stats, detail, started, job_id)
     payload["truth"] = evaluate_if_known(case, text)
     if EXTRACT and request.form.get("extract", "1") != "0" and text.strip():
         payload["extracted"] = extract_fields(
@@ -6709,112 +6231,14 @@ def ocr():
     return jsonify(text=text, pages=page_texts, **payload)
 
 
-def local_stream_generate(reader, pages, detail, job_id, case, source,
-                          want_extract):
-    """The ordinary OCR stream contract, produced by a local OCR worker."""
-    label = "PaddleOCR" if reader == "paddle" else "EasyOCR"
-    events = paddle_events if reader == "paddle" else easy_events
-    page_result = (paddle_page_result if reader == "paddle"
-                   else easy_page_result)
-    worker = (paddle_runtime.WORKER if reader == "paddle"
-              else easy_runtime.WORKER)
-    started = time.perf_counter()
-    collected, all_stats, model_info = [], [], {}
-    summary = {}
-    cancel = threading.Event()
-    worker_finished = False
-    try:
-        for event in events(pages, cancel):
-            kind = event.get("event")
-            if kind in {"loading", "heartbeat"}:
-                yield json.dumps({"event": "progress", "stage": reader,
-                                  "message": event.get("message")
-                                  or f"{label} is still running"}) + "\n"
-            elif kind == "page_start":
-                index = int(event.get("page") or 1)
-                page = pages[index - 1]
-                yield json.dumps({
-                    "event": "page", "page": index,
-                    "total": len(pages),
-                    "resolution": f"{page.width}x{page.height}",
-                    "job": job_id, "reader": reader,
-                }) + "\n"
-            elif kind == "page_result":
-                index = int(event.get("page") or len(all_stats) + 1)
-                text, stats = page_result(event, pages[index - 1])
-                collected.append(text)
-                all_stats.append(stats)
-                # Reuse the existing transcript path. Paddle returns complete
-                # lines rather than tokens, so one event per line is honest.
-                lines = event.get("lines") or []
-                for line_index, line in enumerate(lines):
-                    chunk = str(line.get("text") or "")
-                    if line_index < len(lines) - 1:
-                        chunk += "\n"
-                    if chunk:
-                        yield json.dumps({"event": "token", "text": chunk},
-                                         ensure_ascii=False) + "\n"
-                yield json.dumps({"event": "page_done", "page": index, **stats},
-                                 ensure_ascii=False) + "\n"
-            elif kind == "done":
-                model_info = event.get("modelInfo") or {}
-                worker_finished = True
-
-        text = join_page_texts(collected)
-        summary = local_summary(reader, all_stats, detail, started, job_id,
-                                model_info)
-        summary["reader"] = reader
-        summary["truth"] = evaluate_if_known(case, text)
-        yield json.dumps({"event": "done", "text": text, "pages": collected,
-                          **summary}, ensure_ascii=False) + "\n"
-
-        if EXTRACT and want_extract and text.strip():
-            yield json.dumps({"event": "extracting"}) + "\n"
-            stream = extract_fields_stream(text, case_id=case["id"] if case else None)
-            while True:
-                try:
-                    yield json.dumps(next(stream), ensure_ascii=False) + "\n"
-                except StopIteration as stop:
-                    result = stop.value
-                    break
-            summary["extracted"] = result
-            apply_read_floor(summary)
-            yield json.dumps({"event": "fields", **result}, ensure_ascii=False) + "\n"
-
-        log_run(summary, source)
-        yield json.dumps({"event": "logged"}) + "\n"
-    except GeneratorExit:
-        cancel.set()
-        if not worker_finished:
-            worker.cancel_active()
-        partial = summary or local_summary(
-            reader, all_stats, detail, started, job_id, model_info)
-        log_run(partial, source, status="cancelled")
-        raise
-    except Exception as err:
-        partial = summary or local_summary(
-            reader, all_stats, detail, started, job_id, model_info)
-        log_run(partial, source, error=err)
-        yield json.dumps({"event": "error", "error": str(err)},
-                         ensure_ascii=False) + "\n"
-
-
 @app.post("/api/ocr/stream")
 def ocr_stream():
     """NDJSON stream, so a slow read shows partial text instead of hanging."""
     try:
-        reader = resolve_reader(request.form.get("reader"))
         pages, detail, job_id, case, source = prepare(request.files, request.form)
     except ValueError as err:
         return jsonify(error=str(err)), 400
     want_extract = request.form.get("extract", "1") != "0"
-
-    if reader in ("paddle", "easyocr"):
-        return Response(
-            local_stream_generate(reader, pages, detail, job_id, case, source,
-                                  want_extract),
-            mimetype="application/x-ndjson",
-        )
 
     def generate():
         started = time.perf_counter()

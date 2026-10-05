@@ -2,21 +2,20 @@ __pycache__/
 *.py[cod]
 *.egg-info/
 
-# Virtual environments. Paddle and EasyOCR install into .venv with everything
-# else now; the two old per-library names stay listed so a leftover directory
-# from that layout can never be committed by accident.
+# Virtual environments. The two per-library names are from the removed
+# PaddleOCR/EasyOCR readers and stay listed so a leftover directory can never be
+# committed by accident.
 .venv/
 .venv-paddle/
 .venv-easyocr/
 venv/
 env/
 
-# Optional offline Paddle model directory. Model caches are machine artefacts,
-# not source and never belong in a release archive.
+# Model caches of the removed PaddleOCR/EasyOCR readers. Machine artefacts,
+# not source.
 paddle-models/
 .paddle-cache/
 
-# Optional offline EasyOCR model directory/cache.
 easyocr-models/
 .easyocr-cache/
 

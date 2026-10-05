@@ -170,13 +170,6 @@
   #mapchip.none { border-color: var(--border); background: transparent; color: var(--muted); }
   #mapchip .how { opacity: .8; }
   .row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 16px; }
-  /* Author display rules override the browser's weak `[hidden]` default. These
-     are model-server settings -- a page-reading prompt and a guard on a stream
-     -- and they must truly disappear while an OCR library owns pass 1, not sit
-     there greyed: a control that cannot do anything is worse than an absent
-     one. */
-  #ocrProfileRow[hidden], #ocrProfileNote[hidden], #ocrProfileHelp[hidden],
-  #loopGuardRow[hidden], #loopGuardNote[hidden] { display: none !important; }
   .pipe-h {
     font-size: 13px; font-weight: 600; letter-spacing: .02em;
     margin: 22px 0 0; padding-top: 16px; border-top: 1px solid var(--border);
@@ -1344,20 +1337,6 @@ follows your desktop; Light is the one to pick for projecting or screenshotting.
   <div class="grid">
     <div class="card side">
       <div class="side-tabs" id="sideTabs">
-        <!-- One workspace, and the reading engine is a control inside it.
-
-             The two pipelines were two tabs for a day and are one again at the
-             user's request. They are still two different machines -- a model
-             server over HTTP with a prompt and a token budget, or an OCR library
-             in this machine's own processes with neither -- and the pane says so
-             and swaps its own settings to match. What they are NOT is two
-             workflows: the file, the Detail, the extraction model and the Run
-             button are the same in both, and splitting them put one document
-             behind two tabs.
-
-             The engine still reaches the run log, the filter chips and the
-             summary badges (`ocr_engine`), which is where the comparison
-             actually happens. -->
         <button type="button" data-pane="source" class="on">Workspace</button>
         <!-- Pass 1 alone against a document's transcript ground truth, the
              mirror of Fields only. Between them they isolate the two passes:
@@ -1393,28 +1372,6 @@ follows your desktop; Light is the one to pick for projecting or screenshotting.
       <p class="note warn" id="prepTrunc" hidden></p>
       <div id="filechip"><strong>📄</strong><span id="filechipname"></span></div>
       <div id="mapchip"></div>
-
-      <!-- WHAT READS THE PAGE. One control, three answers, and the pane below
-           it changes to match: the model server needs an address, a vision
-           model, a page-reading shape and a repetition guard; an OCR library
-           needs none of those and has a detector and a recognizer instead.
-
-           Selecting a library does NOT hide the model server, because pass 2
-           still runs on it -- mapping a transcript onto a form is a text task
-           and no OCR library does it. What changes is what the server is FOR,
-           and the group below says which. -->
-      <div class="row">
-        <label class="field" style="flex:1;min-width:220px">
-          Reading engine
-          <select id="readerSel">
-            {% for item in reader.readers %}
-            <option value="{{ item.id }}" {% if item.id == reader.selected %}selected{% endif %}>{{ item.label }}</option>
-            {% endfor %}
-          </select>
-        </label>
-      </div>
-      <p class="note" id="readerReason"></p>
-      <p class="note" id="readerHelp"></p>
 
         <h3 class="pipe-h" id="serverGroupHead">Model server</h3>
         <p class="note" id="serverGroupNote"></p>
@@ -1576,7 +1533,7 @@ follows your desktop; Light is the one to pick for projecting or screenshotting.
         <p class="note">Reading only, scored against a document&rsquo;s
           <b>hand-written transcript</b>. Pass 2 does not run, so there are no
           fields and no field score &mdash; what comes back wrong here is the
-          reader&rsquo;s, whichever engine did it.</p>
+          reader&rsquo;s.</p>
         {% if cases %}
         <div class="row">
           <label class="field" style="flex:1">
@@ -1598,15 +1555,7 @@ follows your desktop; Light is the one to pick for projecting or screenshotting.
              this is where a transcript score is read. Painted from the server,
              never kept in step by the other pane's change handler. -->
         <div class="row">
-          <label class="field" style="flex:1;min-width:200px">
-            Reading engine
-            <select id="ocReader">
-              {% for item in reader.readers %}
-              <option value="{{ item.id }}" {% if item.id == reader.selected %}selected{% endif %}>{{ item.label }}</option>
-              {% endfor %}
-            </select>
-          </label>
-          <label class="field" style="flex:0 0 130px">
+          <label class="field" style="flex:1">
             Detail
             <select id="ocDetail">
               {% for d in details %}
@@ -1741,10 +1690,8 @@ follows your desktop; Light is the one to pick for projecting or screenshotting.
         <div class="rt-ex" id="rtExReadRow">
           <span class="rt-ex-label">Readers that may read &mdash; tick any combination</span>
           <div class="rt-chips" id="rtExRead"></div>
-          <p class="note">Model-server vision models and installed OCR
-            libraries share this list &mdash; keep exactly the combination you
-            want drawn. A library round still uses the model server for field
-            extraction, because pass 2 is a text task no library does.</p>
+          <p class="note">Every served vision model &mdash; keep exactly the
+            combination you want drawn.</p>
         </div>
         <div class="rt-ex" id="rtExExtractRow">
           <span class="rt-ex-label">Models that may extract</span>
@@ -2366,15 +2313,9 @@ const dot = document.getElementById('dot');
 const serverText = document.getElementById('serverText');
 const serverReason = document.getElementById('serverReason');
 const recheckBtn = document.getElementById('recheck');
-const readerSel = document.getElementById('readerSel');
-const readerHelp = document.getElementById('readerHelp');
 const serverGroupHead = document.getElementById('serverGroupHead');
 const serverGroupNote = document.getElementById('serverGroupNote');
-const readerReason = document.getElementById('readerReason');
 const modelRole = document.getElementById('modelRole');
-const ocrProfileRow = document.getElementById('ocrProfileRow');
-const ocrProfileHelp = document.getElementById('ocrProfileHelp');
-const loopGuardRow = document.getElementById('loopGuardRow');
 let server = {{ server | tojson }};
 let extractInfo = {{ extract | tojson }};
 /* The inference engines a server can be pinned to, besides Auto. From the
@@ -2389,7 +2330,6 @@ const extractCustomRow = document.getElementById('extractCustomRow');
 const extractEndpointCustom = document.getElementById('extractEndpointCustom');
 const extractEndpointUse = document.getElementById('extractEndpointUse');
 const extractServerNote = document.getElementById('extractServerNote');
-let readerState = {{ reader | tojson }};
 let pageStats = [], ticker = null, runStart = 0, liveTokens = 0, curPage = -1;
 const tabRendered = document.getElementById('tabRendered');
 const tabRaw = document.getElementById('tabRaw');
@@ -6169,8 +6109,6 @@ function paintBests(t) {
    attribute wherever this is used, because two `hf.co/...` repacks of one model
    differ only in the part this drops. */
 function csModel(name) {
-  if (name === 'local:paddle') return 'Local PaddleOCR';
-  if (name === 'local:easyocr') return 'Local EasyOCR';
   return String(name || '')
     .replace(/^hf\.co\//, '').replace(/:latest$/, '').split('/').pop();
 }
@@ -8271,9 +8209,7 @@ function rtPct(value, digits) {
    reads as a pass that ran and found nothing. */
 function rtPlanLines(p) {
   const line = t => '<span class="rt-plan">' + t + '</span>';
-  const reader = esc(csModel(p.reader))
-    + (String(p.reader || '').startsWith('local:') ? ''
-       : ' (' + esc(p.profile) + ')');
+  const reader = esc(csModel(p.reader)) + ' (' + esc(p.profile) + ')';
   // Which end of the ranking a contender came from. Absent on a random round,
   // and absent on a contest where every ranked model is running -- there is no
   // top half when everyone is in it.
@@ -8326,16 +8262,7 @@ function rtChips(box, names, set) {
 }
 function rtPaintLocks() {
   const models = server.models || [];
-  const localReaders = (readerState.readers || [])
-    .filter(r => r.engine === 'library' && r.available)
-    .map(r => 'local:' + r.id);
-  /* Both engines in one list, because a sweep across them is the comparison the
-     shared run log exists for: a vision model and an installed OCR library are
-     both things that can read a page, and which is better on which document is
-     the question. Tick the combination you want. The EXTRACTOR pool is separate
-     and is never narrowed -- pass 2 runs on the model server either way. */
-  const readers = models.filter(m => m.vision !== false).map(m => m.name)
-    .concat(localReaders);
+  const readers = models.filter(m => m.vision !== false).map(m => m.name);
   const keep = (sel, names) => {
     const chosen = sel.value;
     sel.innerHTML = '<option value="">— random —</option>'
@@ -8408,13 +8335,7 @@ function rtStrategyText(strategy) {
        + 'drawn at all until the others catch up.';
 }
 function rtPaintScope() {
-  /* What may read, said before the run rather than inferred from its rounds
-     afterwards. A fields-only sweep reads no page, so no engine is involved and
-     naming one would be false. */
-  const eng = rtScope.value === 'fields' ? ''
-    : 'Vision models and installed OCR libraries are drawn from the same pool — '
-      + 'narrow it with the chips below. ';
-  rtScopeNote.innerHTML = eng + (rtScopeText(rtScope.value) || '')
+  rtScopeNote.innerHTML = (rtScopeText(rtScope.value) || '')
     + rtStrategyText(rtStrategy.value);
 }
 
@@ -8558,10 +8479,6 @@ async function rtStart() {
         // Exclusions are a statement about the run: do not draw that model.
         exclude: { readers: [...rtExcluded.readers],
                    extractors: [...rtExcluded.extractors] },
-        // Both engines are drawn from. `randomtest.py --engine llm|library`
-        // narrows it for a CLI sweep that wants one; the pane offers the chips
-        // instead, which is the finer control and the one already here.
-        engine: 'both',
         rounds, seed: rtSeed.value.trim() || null, scope: rtScope.value,
         // The same seed under the other draw is a different plan, so this goes
         // with the seed rather than being remembered anywhere.
@@ -10536,142 +10453,24 @@ const subUrl = document.getElementById('subUrl');
 const serverFieldLabel = document.getElementById('serverFieldLabel');
 const ctxFieldLabel = document.getElementById('ctxFieldLabel');
 
-/* ---------- which engine reads, and which reader inside it ----------
-
-   The ENGINE is the tab; the READER is a detail of it. `readerState.selected`
-   is the one truth for both, and it is always what the SERVER last accepted --
-   never what a control was set to. Two pickers kept in step by each other's
-   change handlers is what this page refuses everywhere else, and here it would
-   be worse than usual: a switch the server refused would leave a tab claiming
-   to be reading with something that is not selected.
-
-   `currentReader()` is what every request body asks for, so nothing has to know
-   whether the answer came from a tab or from the library picker. */
-function currentReader() {
-  return readerState.selected || 'server';
-}
-function engineOfReader(id) {
-  const info = (readerState.readers || []).find(r => r.id === id);
-  return (info && info.engine) || 'llm';
-}
-function currentEngine() {
-  return engineOfReader(currentReader());
-}
-function selectedReader() {
-  return (readerState.readers || []).find(r => r.id === currentReader()) || {};
-}
-function paintReader() {
-  const local = currentEngine() === 'library';
-  const info = selectedReader();
-  /* Snap the picker back to what is really selected -- but NOT while a switch
-     is in flight. `switchEngine` disables the select for the length of its
-     request, and a status poll landing in that window would otherwise reset the
-     value the user just chose, so the dropdown visibly jumps back and then
-     forward again. Painting from the server is the rule; fighting a request
-     that has not answered yet is not part of it. */
-  if (!readerSel.disabled && readerSel.value !== currentReader())
-    readerSel.value = currentReader();
-  /* The MODEL SERVER group says a different thing depending on what reads,
-     because on a library run it is only pass 2. Saying so is not decoration: a
-     library run whose extraction failed would otherwise read as a library
-     failure, and the fix is in a different place. */
-  /* With a separate extraction server the two passes are on two boxes, and
-     the heading must not claim this one does both. */
+/* The MODEL SERVER group's heading and labels. With a separate extraction
+   server the two passes are on two boxes, and the heading must not claim this
+   one does both. */
+function paintServerGroup() {
   const split = !!(extractInfo && extractInfo.separate);
-  serverGroupHead.textContent = local
-    ? (split ? 'Model servers · field extraction' : 'Model server · field extraction')
-    : (split ? 'Model servers · reads, then extracts elsewhere'
-             : 'Model server · reads and extracts');
-  serverGroupNote.textContent = local
-    ? 'The library above reads the page. Mapping that transcript onto a form is '
-      + 'a text task no OCR library does, so pass 2 still runs on a model server'
-      + (split ? ' -- the extraction server below.' : ' -- this one.')
-    : split
+  serverGroupHead.textContent = split ? 'Model servers · reads, then extracts elsewhere'
+                                      : 'Model server · reads and extracts';
+  serverGroupNote.textContent = split
     ? 'The model server reads each prepared page image; the extraction server '
       + 'below maps that transcript onto the form.'
     : 'This server reads each prepared page image and then extracts the fields '
       + 'from its own transcript.';
-  modelRole.textContent = local ? 'Model · extracts fields'
-                                : 'Model · reads the page';
-  serverFieldLabel.textContent = local ? 'Model server · fields only'
-                                       : 'Model server';
-  ctxFieldLabel.textContent = local ? 'Context · field extraction' : 'Context';
-  subKind.textContent = local ? ('local ' + (info.label || currentReader()))
-                              : (server.kind || 'no server');
-  subUrl.textContent = local ? (info.python || 'not installed') : (server.url || '');
-  /* The page-reading shape and the repetition guard are settings OF a
-     model-server request -- a prompt, and whether to abort a stream that starts
-     cycling. A library read has neither a prompt nor a stream to abort, so they
-     are hidden rather than shown greyed: a control that cannot do anything is
-     worse than an absent one, and leaving them visible is how a model-server
-     profile came to be shown over a run that never touched a model server. */
-  for (const el of [ocrProfileRow, ocrProfileNote, ocrProfileHelp,
-                    loopGuardRow, loopGuardNote]) {
-    if (el) el.hidden = local;
-  }
-  if (local) {
-    readerReason.classList.toggle('err', !info.available);
-    readerReason.textContent = info.available
-      ? `${info.detector || 'detector'} + ${info.recognizer || 'recognizer'} · ${info.device || 'cpu'} · models stay loaded between runs`
-      : ('⚠ ' + (info.reason || 'This OCR library is not available.'));
-    /* An unavailable library is a normal state on a machine that never
-       installed it, so the pane explains it rather than the Run button failing
-       at the end of a read. */
-    readerHelp.textContent = info.available
-      ? 'No prompt, no sampler and no token budget — so no prompt echo, no '
-        + 'repetition loop and no empty transcript at HTTP 200. What it cannot '
-        + 'do is read a layout it was not trained for.'
-      : 'It is optional. It installs into the same environment as this app and '
-        + 'is imported only by its worker subprocess, so this server still '
-        + 'loads no ML dependency. Install it, or pick the model server above.';
-  } else {
-    readerReason.classList.remove('err');
-    readerReason.textContent = 'The model server reads each prepared page image.';
-    readerHelp.textContent = '';
-  }
+  modelRole.textContent = 'Model · reads the page';
+  serverFieldLabel.textContent = 'Model server';
+  ctxFieldLabel.textContent = 'Context';
+  subKind.textContent = server.kind || 'no server';
+  subUrl.textContent = server.url || '';
 }
-
-
-/* Switch engine, optionally naming a reader inside it. One request, and the
-   answer repaints from what came back -- a refused switch must leave every
-   control on the page showing what is really active, the same rule a refused
-   server switch taught the model pickers. */
-async function switchEngine(engine, reader) {
-  readerSel.disabled = true;
-  if (ocReader) ocReader.disabled = true;
-  const before = currentReader();
-  try {
-    const res = await fetch('/api/ocr/engine', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ engine: engine, reader: reader || undefined,
-                             probe: engine === 'library' })
-    });
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.error || 'Could not select that engine.');
-    readerState = data;
-    if (data.selected !== before)
-      setServerNote('Now reading with ' + (selectedReader().label || data.selected) + '.');
-  } catch (err) {
-    if (readerSel.value !== before) readerSel.value = before;
-    setServerNote(err.message, true);
-  } finally {
-    readerSel.disabled = false;
-    if (ocReader) ocReader.disabled = false;
-    paintReader();
-    paintServer();
-    // The Random test pane draws from this engine, so its locks, its exclusion
-    // chips and its scope note all describe the wrong pool until they are
-    // repainted. Guarded because a switch can land before that pane's own
-    // consts exist on a very early click.
-    if (typeof rtPaintLocks === 'function') rtPaintLocks();
-    if (typeof rtPaintScope === 'function') rtPaintScope();
-  }
-}
-/* The picker names a READER; the engine follows from it. One request, and the
-   pane repaints from what came back -- a refused switch must leave every control
-   showing what is really active, the rule a refused switch taught these pickers. */
-readerSel.addEventListener('change', () =>
-  switchEngine(engineOfReader(readerSel.value), readerSel.value));
 
 // Add the active URL to a list if it was typed in rather than configured.
 function addUrlOption(sel, url) {
@@ -10769,7 +10568,7 @@ function paintModelPicker(sel, field, models) {
    while a random test is running is the one that bites -- has to leave every picker
    on the page showing what is really active, not what was asked for. */
 function paintEndpoint() {
-  paintReader();
+  paintServerGroup();
   for (const sel of [endpointSel, fxEndpoint]) {
     if (!sel) continue;
     addUrlOption(sel, server.url);
@@ -10966,40 +10765,18 @@ if (extractEndpointCustom) extractEndpointCustom.addEventListener('keydown', e =
 });
 
 function paintServer() {
-  const reading = selectedReader();
-  const local = currentEngine() === 'library';
   const kind = server.kind || 'server';
-  /* **The bar describes the MODEL SERVER, on both panes, because that is the
-     group it sits in.** It described whichever reader was active until the two
-     pipelines became two panes -- and on the library pane that put "Local
-     PaddleOCR unavailable" inside a box headed *Model server*, which reads as
-     the server being down. The library has its own status line directly under
-     its own picker; this one has never had anywhere else to be said.
-
-     Vision is only asked of a server that is going to read a page. On the
-     library pane it extracts and nothing else, and a text pass does not need
-     it -- the same rule the Fields-only pane measures under. */
-  const ok = local ? !!server.text_available : !!server.available;
+  const ok = !!server.available;
   dot.className = 'dot ' + (ok ? 'ok' : 'bad');
   serverText.textContent = ok
     ? (server.model || kind) + ' · ' + kind
-      + (local ? ' · fields only'
-               : (server.vision ? ' · vision ready'
-                                : (server.vision_known ? ' · no vision'
-                                                       : ' · vision not reported')))
+      + (server.vision ? ' · vision ready'
+                       : (server.vision_known ? ' · no vision'
+                                              : ' · vision not reported'))
     : (server.model ? server.model + ' · unusable'
                     : 'No model server at ' + server.url);
-  serverReason.textContent = ok ? '' : ('⚠ ' + (local
-    ? (server.text_reason || server.reason || '')
-    : (server.reason || '')));
-  /* What has to be working before Run means anything, and it differs by pane:
-     the LLM pipeline needs a server that can read an image, the library
-     pipeline needs the library itself. Pass 2 not being reachable does NOT
-     disable Run on the library pane -- a transcript is a result, and refusing
-     to read a page because the extractor is down would throw away the half of
-     the work that was available. */
-  const canRun = local ? !!reading.available : !!server.available;
-  runBtn.disabled = !canRun || !current;
+  serverReason.textContent = ok ? '' : ('⚠ ' + (server.reason || ''));
+  runBtn.disabled = !ok || !current;
   // Whether the context picker does anything depends on which kind is active.
   paintCtx();
   paintFieldsOnly();
@@ -11019,13 +10796,9 @@ async function refreshServer() {
   try {
     // probe=1 bypasses the status cache and re-reads the model list too, which
     // is what "Re-check" is for after starting or stopping a server.
-    const [data, readers] = await Promise.all([
-      fetch('/api/servers?probe=1').then(r => r.json()),
-      fetch('/api/ocr/reader?probe=1').then(r => r.json())
-    ]);
+    const data = await fetch('/api/servers?probe=1').then(r => r.json());
     server = data.server;
     if (data.extract) extractInfo = data.extract;
-    readerState = readers;
     paintEndpoint();
   } catch {
     serverText.textContent = was;
@@ -11043,10 +10816,6 @@ function startTicker() {
   clearInterval(ticker);
   ticker = setInterval(() => {
     const s = ((Date.now() - runStart) / 1000).toFixed(1);
-    if (currentEngine() === 'library') {
-      meta.textContent = `${s}s · ${(selectedReader().label || currentReader())} running`;
-      return;
-    }
     const rate = liveTokens > 0 ? ' · ' + (liveTokens / ((Date.now() - runStart) / 1000)).toFixed(2) + ' tok/s' : '';
     meta.textContent = `${s}s · ${liveTokens} tokens${rate}`;
   }, 200);
@@ -11055,23 +10824,6 @@ function stopTicker() { clearInterval(ticker); ticker = null; }
 
 function renderStats(summary) {
   if (!pageStats.length) { statsEl.innerHTML = ''; return; }
-  const local = (summary && ['paddleocr', 'easyocr'].includes(summary.backend))
-    || pageStats.some(s => ['paddleocr', 'easyocr'].includes(s.backend));
-  if (local) {
-    const head = '<thead><tr><th>Page</th><th>Resolution</th><th>Lines</th>'
-      + '<th>Mean confidence</th><th>OCR time</th></tr></thead>';
-    const body = pageStats.map((s, i) =>
-      `<tr><td>${i + 1}</td><td>${s.resolution || '—'}</td><td>${s.line_count ?? 0}</td>`
-      + `<td>${s.mean_confidence == null ? '—' : (s.mean_confidence * 100).toFixed(1) + '%'}</td>`
-      + `<td>${(s.seconds ?? 0).toFixed(1)}s</td></tr>`).join('');
-    const f = summary || {};
-    const foot = `<tfoot><tr><td>Total</td><td>${f.model || 'Local OCR'}</td>`
-      + `<td>${f.ocr_lines ?? pageStats.reduce((n, s) => n + (s.line_count || 0), 0)}</td>`
-      + `<td>${f.ocr_confidence == null ? '—' : (f.ocr_confidence * 100).toFixed(1) + '%'}</td>`
-      + `<td>${(f.seconds ?? pageStats.reduce((n, s) => n + (s.seconds || 0), 0)).toFixed(1)}s</td></tr></tfoot>`;
-    statsEl.innerHTML = head + '<tbody>' + body + '</tbody>' + foot;
-    return;
-  }
   const head = '<thead><tr><th>Page</th><th>Resolution</th><th>Tokens</th>'
     + '<th>Prefill</th><th>Decode</th><th>tok/s</th></tr></thead>';
   const body = pageStats.map((s, i) =>
@@ -11251,7 +11003,6 @@ function prepBody() {
   if (current) body.append('image', current);
   else return null;
   body.append('detail', detailSel.value);
-  body.append('reader', currentReader());
   return body;
 }
 function prepStem() {
@@ -11452,7 +11203,6 @@ async function startRead(opts) {
   if (opts.case) body.append('case', opts.case);   // the server loads the PDF
   else body.append('image', opts.image);
   body.append('detail', opts.detail);
-  body.append('reader', currentReader());
   // Pass 2 is skipped rather than run and discarded, so the row's pass-2 columns
   // are blank because nothing extracted -- not because an extraction returned
   // nothing. Those are different states and the run log has to keep them apart.
@@ -11480,9 +11230,7 @@ async function startRead(opts) {
       for (const line of lines) {
         if (!line.trim()) continue;
         const msg = JSON.parse(line);
-        if (msg.event === 'progress') {
-          pagebar.innerHTML = '<span class="spin"></span> ' + esc(msg.message || 'Local OCR is still running…');
-        } else if (msg.event === 'page') {
+        if (msg.event === 'page') {
           pagebar.innerHTML = '<span class="spin"></span> Reading page ' + msg.page
             + ' of ' + msg.total + ' (' + msg.resolution + ')…';
           if (msg.page > 1) text += '\n\n--- page ' + msg.page + ' ---\n';
@@ -11535,11 +11283,7 @@ async function startRead(opts) {
             meta.textContent += ` · ${(truth.char_accuracy * 100).toFixed(1)}% vs ${truth.case}`;
           }
           if (tabAccuracy.classList.contains('on')) paintAccuracy();
-          meta.textContent = ['paddleocr', 'easyocr'].includes(msg.backend)
-            ? `${msg.page_count} page(s) · ${msg.detail} · ${msg.ocr_lines || 0} lines · `
-              + `${((msg.ocr_confidence || 0) * 100).toFixed(1)}% mean confidence · `
-              + `${msg.seconds}s total · ${msg.model}`
-            : `${msg.page_count} page(s) · ${msg.detail} · `
+          meta.textContent = `${msg.page_count} page(s) · ${msg.detail} · `
               + `${msg.tokens} tokens · ${msg.seconds}s total `
               + `(${msg.prefill_seconds}s prefill + ${msg.decode_seconds}s decode) · `
               + `${msg.tokens_per_second} tok/s · ${msg.model}`;
@@ -11610,7 +11354,7 @@ async function startRead(opts) {
     pagebar.textContent = '';
     if (err.name === 'AbortError') {
       const s = ((Date.now() - runStart) / 1000).toFixed(1);
-      meta.textContent = `Stopped after ${s}s · ${currentEngine() === 'library' ? 'local OCR worker reset' : liveTokens + ' tokens'} · partial result kept.`;
+      meta.textContent = `Stopped after ${s}s · ${liveTokens} tokens · partial result kept.`;
       copyBtn.disabled = !text;
     } else {
       meta.textContent = err.message;
@@ -11660,13 +11404,8 @@ let fxBusy = false;
    The mirror of the Fields pane, and the two exist for one reason between them:
    a wrong field is otherwise unattributable. Fields only removes the read from
    the question; this removes the extraction, so a transcript score here is the
-   reader's alone with nothing downstream to blame.
-
-   It shares the process's reading engine with the Workspace rather than holding
-   its own -- one process, one choice -- and both pickers are painted from what
-   the server accepted, never kept in step by each other's change handlers. */
+   reader's alone with nothing downstream to blame. */
 const ocCase = document.getElementById('ocCase');
-const ocReader = document.getElementById('ocReader');
 const ocDetail = document.getElementById('ocDetail');
 const ocRun = document.getElementById('ocRun');
 const ocStop = document.getElementById('ocStop');
@@ -11677,36 +11416,23 @@ const ocNote = document.getElementById('ocNote');
 
 function paintOcrOnly() {
   if (!ocRun) return;
-  const local = currentEngine() === 'library';
-  const info = selectedReader();
-  if (!ocReader.disabled && ocReader.value !== currentReader())
-    ocReader.value = currentReader();
   if (ocDetail.value !== detailSel.value) ocDetail.value = detailSel.value;
-  /* Vision IS required here, unlike the Fields pane: this pass sends an image.
-     A library reads it in-process, so what has to be available is the library
-     rather than the server -- the same test the Workspace Run button makes. */
-  const ok = local ? !!info.available : !!server.available;
+  /* Vision IS required here, unlike the Fields pane: this pass sends an image. */
+  const ok = !!server.available;
   ocDot.className = 'dot ' + (ok ? 'ok' : 'bad');
-  ocServerText.textContent = local
-    ? (info.label || currentReader()) + (ok ? ' · ' + (info.device || 'cpu')
-                                            : ' · not installed')
-    : ok ? (server.model || server.kind || 'server') + ' · ' + (server.kind || '')
+  ocServerText.textContent = ok
+    ? (server.model || server.kind || 'server') + ' · ' + (server.kind || '')
     : 'No model server at ' + server.url;
   ocReason.classList.toggle('err', !ok);
   ocReason.textContent = ok
     ? 'No extraction runs, so the row keeps its pass-1 figures and leaves the '
       + 'pass-2 columns blank.'
-    : ('⚠ ' + (local ? (info.reason || 'This OCR library is not available.')
-                     : (server.reason || '')));
+    : ('⚠ ' + (server.reason || ''));
   ocRun.disabled = !ok || !ocCase.value || !!controller;
 }
 
 if (ocRun) {
-  // The engine and the Detail are process-wide, so moving either here moves it
-  // in the Workspace too -- and the Workspace repaints from the server, not from
-  // this handler.
-  ocReader.addEventListener('change', () =>
-    switchEngine(engineOfReader(ocReader.value), ocReader.value));
+  // The Detail is process-wide, so moving it here moves it in the Workspace too.
   ocDetail.addEventListener('change', () => {
     detailSel.value = ocDetail.value;
     detailSel.dispatchEvent(new Event('change'));

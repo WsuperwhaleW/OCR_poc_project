@@ -4,34 +4,13 @@ Upload a Thai/English document, get back a verbatim transcript and the fields ex
 from it, each value traced back to the text it came from.
 
 The lightweight web process holds no model weights and imports no torch, transformers,
-accelerate or numpy. It can stream OCR from an **external** OpenAI-compatible model
-server, or use optional PaddleOCR or EasyOCR in separate persistent worker environments.
+accelerate or numpy. It streams OCR from an **external** OpenAI-compatible model
+server (llama.cpp, Ollama or vLLM), and the same server -- or a second one -- extracts the
+fields. The model server and the models are switchable from the page while it runs.
 
-**There are two reading engines, and the Workspace picks between them.**
-
-| Reading engine | Pass 1 | Pass 2 |
-|---|---|---|
-| **Model server** | reads the page over HTTP — llama.cpp or Ollama at an address you choose, with a prompt, a sampler and a token budget | the same model server |
-| **Local PaddleOCR / EasyOCR** | reads it in this machine's own processes: a detector and a recognizer, no prompt and no tokens | still the model server |
-
-One **Workspace** tab holds both: a **Reading engine** picker, the server address, the
-reading model and the extraction model. Choosing a library hides the settings that only a
-model-server request has — the page-reading shape and the repetition guard — because a
-library read has no prompt to shape and no stream to guard.
-
-Pass 2 is not split, and the pane says so rather than hiding it: mapping a transcript onto
-a form is a text task and no OCR library does it, so a library run still sends its
-transcript to a model server. That is why the endpoint and the extraction model stay on
-screen whichever engine reads.
-
-**What is not split is the results.** Both pipelines write to the same `logs/runs.csv`, are
-scored by the same scorer against the same ground truth, and appear in the same summary
-tables ranked against each other on one scale — a row is badged **LLM** or **Library** and
-there is a **Reading engine** filter chip beside the others. Comparing the two is the point
-of keeping one store.
-
-The reading engine, the reading library and the model server are all switchable from the
-page while it runs.
+The local PaddleOCR and EasyOCR readers were removed on 2026-10-05. Runs they made before
+then stay in `logs/runs.csv`, badged **Library** in the summary tables, and the **Reading
+engine** filter chip can still pick them out.
 
 ---
 
@@ -40,7 +19,7 @@ page while it runs.
 | | |
 |---|---|
 | Python | 3.9 or newer |
-| OCR reader | llama.cpp/Ollama with a vision model, or optional local PaddleOCR/EasyOCR environments below |
+| OCR reader | llama.cpp, Ollama or vLLM serving a vision model |
 
 The model server's own installation, tuning and choice of model are not documented here.
 This app only requires that it accepts an image and speaks `/v1/chat/completions`.
@@ -87,88 +66,6 @@ python -m pip install -r requirements.txt
 
 `python -m pip` rather than plain `pip`, deliberately: it installs into the interpreter you
 are actually running, so it cannot silently install somewhere else.
-
-### Optional local PaddleOCR reader
-
-Install it into the same environment as the app, with that environment activated:
-
-```bash
-python -m pip install -r requirements-paddle.txt
-```
-
-The app process still never imports Paddle -- reads run in a worker subprocess -- so this
-adds a dependency tree to the environment and nothing to the server. `PADDLE_PYTHON` runs
-the worker on a different interpreter instead, for a CUDA build or a Python version Paddle
-supports and this app is not on. The default is CPU with MKL-DNN disabled, using
-`PP-OCRv5_mobile_det` and `th_PP-OCRv5_mobile_rec`. The first run downloads models to
-Paddle's normal user cache. For an offline machine, copy the two inference model folders
-under one parent as `PP-OCRv5_mobile_det/` and `th_PP-OCRv5_mobile_rec/`, then set
-`PADDLE_MODEL_DIR` to that parent directory.
-
-For GPU use, install the PaddlePaddle GPU wheel that matches the target CUDA toolkit in
-place of `paddlepaddle` and set `PADDLE_DEVICE=gpu`. Paddle publishes
-platform-specific GPU install commands, so `requirements-paddle.txt` intentionally keeps
-the portable CPU package. `PADDLE_MKLDNN=1` opts into MKL-DNN after it has been validated
-on the target machine; it is off by default for compatibility.
-
-Choose **Local PaddleOCR** under Reading engine in the Workspace. Paddle jobs are
-serialized through one persistent
-worker, so models load once and concurrent callers wait rather than starting duplicate
-model copies. Stop/cancel terminates an active Paddle process and
-the next request starts a clean worker.
-
-The same evaluator and run log are used for both readers:
-
-```bash
-python compare.py --reader paddle sol001
-python compare.py --reader paddle                 # all benchmark cases
-python compare.py --reader paddle --fields        # then use the selected LLM for fields
-```
-
-If Paddle is shown unavailable it is not importable here: check the environment is the
-one the app runs in and that its Python version is one Paddle supports, run
-`python -c "import paddle, paddleocr; print(paddle.__version__)"`, and press **Re-check**.
-An interpreter named by `PADDLE_PYTHON` is taken at its word rather than tested, so a wrong
-one shows as available and fails on Re-check, which really starts the worker. Increase
-`PADDLE_TIMEOUT` for slow CPU runs. A failed or cancelled worker is restarted automatically.
-
-### Optional local EasyOCR reader
-
-EasyOCR uses the same prepared page images, evaluator, Layout viewer, run log,
-and optional LLM field-extraction pass as PaddleOCR. Install it into the app's own
-environment, with that environment activated. The CPU Torch wheels come from PyTorch's
-own index, so they are installed first:
-
-```bash
-python -m pip install torch==2.14.0 torchvision==0.29.0 --index-url https://download.pytorch.org/whl/cpu
-python -m pip install -r requirements-easyocr.txt
-```
-
-Torch is imported only by the worker subprocess, never by the app. `EASYOCR_PYTHON` runs
-that worker on a different interpreter instead.
-The default reader loads Thai and English on CPU with `verbose=False`, uses CRAFT
-detection, preserves line polygons and confidence, and stays alive between jobs. The
-first use downloads `craft_mlt_25k.pth` and `thai.pth` to EasyOCR's normal cache.
-For an offline deployment, copy approved models to a stable directory, set
-`EASYOCR_MODEL_DIR`, and leave `EASYOCR_DOWNLOAD=0`. Model files and virtual
-environments are deliberately ignored by Git and excluded from release archives.
-
-For GPU use, install the exact CUDA-enabled Torch/Torchvision pair generated by the
-official PyTorch installer for the target machine, then set `EASYOCR_DEVICE=cuda`.
-Do not mix arbitrary CUDA and Torch wheels.
-
-Choose **Local EasyOCR** under Reading engine in the Workspace, or run:
-
-```bash
-python compare.py --reader easyocr sol001
-python compare.py --reader easyocr                 # all benchmark cases
-python compare.py --reader easyocr --fields        # selected LLM extracts fields
-```
-
-If it is unavailable it is not importable here; verify with
-`python -c "import easyocr, torch; print(easyocr.__version__, torch.__version__)"`
-and press **Re-check**. Increase `EASYOCR_TIMEOUT` on a slow CPU. Stop/cancel kills
-only the active EasyOCR subprocess; the following request starts a clean worker.
 
 ### Offline install (no internet on the target)
 
@@ -610,8 +507,8 @@ available; click it again to clear. Multi-page documents get page arrows.
 
 It is a toggle, not a fifth tab — pressing it again returns you to the tab you were on.
 
-**It is enabled only when the run actually returned boxes**: every Paddle/EasyOCR line does, as does a
-model-server profile whose reply carries geometry (**dots.ocr**). A Markdown profile has no
+**It is enabled only when the run actually returned boxes**: a model-server profile whose
+reply carries geometry (**dots.ocr**) does. A Markdown profile has no
 coordinates to draw, so the button stays disabled rather than showing an empty page.
 
 Boxes are drawn at the model's own coordinates against the image's own pixel size, unscaled and
@@ -823,7 +720,7 @@ from `GET /api/page/<job>/<n>`. Ground truth is served verbatim from
 ### OCR only tab
 
 Pass 1 on its own, against a document's hand-written transcript. Pick a **Ground-truth
-document**, a **Reading engine** and a **Detail**, and press Read: the transcript streams
+document** and a **Detail**, and press Read: the transcript streams
 into the Result card and is scored on the **Accuracy** tab exactly as a Workspace read is.
 
 **Pass 2 does not run at all** — not run and discarded. The row it appends is an ordinary
@@ -1469,14 +1366,12 @@ round adds to.
 
 On the CLI: `--strategy balanced` (default) or `--strategy uniform`.
 
-**Exclusions.** Every served vision model plus each available local Paddle/EasyOCR reader
-appears as a chip under **Readers that may read**; every eligible server model appears under
-**Models that may extract**. Unticking one takes it out of the draw, so model-server only,
-model-server + Paddle, model-server + EasyOCR, and all three are ordinary checkbox choices. The two lists are
+**Exclusions.** Every served vision model appears as a chip under **Readers that may read**;
+every eligible server model appears under **Models that may extract**. Unticking one takes it
+out of the draw. The two lists are
 separate because a model can be poor at one pass and good at the other. Exclusions apply to
 contests as well, `""` (same as reading model) is never excluded, and emptying a pool the
-run actually needs is refused with a reason. On the CLI: `--exclude-reader MODEL`
-(local identifiers are `local:paddle` and `local:easyocr`),
+run actually needs is refused with a reason. On the CLI: `--exclude-reader MODEL`,
 `--exclude-extractor MODEL`, repeatable.
 
 **Locks.** Any of the document, the OCR model, the extraction model and the extraction
@@ -1570,8 +1465,7 @@ report neither number only proves the request did not crash.
 
 **Which models each pass may draw on:**
 
-- **a reader is any model-server model that reports vision, plus an installed local
-  PaddleOCR or EasyOCR worker.** Pass 1 sends an image, so a text-only model is not a
+- **a reader is any model-server model that reports vision.** Pass 1 sends an image, so a text-only model is not a
   candidate; nothing else is excluded. A fields-only round has no reader at all.
 - **an extractor is the reading model itself, or a model that is not an OCR fine-tune** — the
   same rule the server enforces, so a plan never contains a round it would refuse.
@@ -1603,10 +1497,6 @@ python randomtest.py http://localhost:5000 --contest --documents 2
 python randomtest.py http://localhost:5000 --strategy uniform --rounds 10
 ```
 
-```bash
-python randomtest.py http://localhost:5000 --engine library --scope ocr
-```
-
 ### Stopping a run
 
 **Stop** drops every round that has not started and ends the one in flight. It is a request
@@ -1624,13 +1514,6 @@ The round that was cut short is logged with status `cancelled` and no accuracy s
 transcript is a record of what happened, not a measurement — and rounds that finished before
 the stop keep their rows and their scores.
 
-`--engine llm|library|both` chooses which engine's readers may be drawn, and **`both` is
-the default** — a sweep across the two is exactly the comparison the shared run log exists
-for. **The pane draws from both too**: vision models and installed OCR libraries share one
-pool, and the reader chips narrow it, which is the finer control. Either way the *extractor*
-pool is never narrowed: pass 2 runs on the model server under both engines. Asking for an
-engine that has nothing installed is refused by name rather than coming back as "no model
-reports vision".
 
 ## Stress test
 
@@ -1722,15 +1605,15 @@ to run first. The **Fields** cell marks an updated row.
 |---|---|
 | `timestamp` | local time, seconds resolution |
 | `file`, `file_size_mb`, `pages`, `detail`, `source` | what was read, and how it got in (`upload`/`folder`/`case`) |
-| `server`, `backend`, `model` | which endpoint and model actually ran it; local readers record `local`, `paddleocr` or `easyocr`, and their recognizer |
+| `server`, `backend`, `model` | which endpoint and model actually ran it. Rows read by the removed local readers say `local`, `paddleocr` or `easyocr`, and their recognizer |
 | `seconds`, `prefill_seconds`, `decode_seconds` | runtime, split into prompt processing and generation. The card shows the split under the total, because the two move for different reasons — prefill scales with pixels, decode with output length |
 | `tokens`, `tokens_per_second` | OCR output tokens; the rate is decode-only |
 | `extract_seconds`, `extract_tokens` | pass 2 |
 | `extract_mode` | `single` or `agentic` — the shape pass 2 ran in, taken from the result, so a mode switched mid-batch still labels each row correctly. Blank on a run that never extracted |
 | `extract_steps` | the agentic steps this row's extraction ran, where it ran only some of them (`POST /api/extract` with `steps`). Blank on every ordinary run — a full walk names no steps here. A row that names steps was measuring one step: its tier counts are out of the keys that step owns, and `field_acc` is blank because a part of the form is not scored against the whole of it |
-| `ocr_profile` | `typhoon`, `dots`, `paddle`, or `easyocr` — the pass-1 shape/reader that read the page, taken from the pages themselves. Blank on rows written before profiles existed, and on `run_type=extract` rows, which read no page |
-| `ocr_engine` | What read the page: `llm` (a model server over HTTP) or `library` (PaddleOCR or EasyOCR in this machine's own processes). Blank on a row that read no page. **Not the same question as the `pipeline` filter**, which is which *passes* a run performed (both / read / extract). Rows written before the column are derived from `backend`, which says `paddleocr` or `easyocr` on a library read and a model server's kind on every other, so the whole log is filterable and no row lands in a third bucket |
-| `ocr_lines`, `ocr_confidence`, `ocr_device`, `ocr_version`, `paddle_version`, `ocr_detector`, `easyocr_version`, `torch_version`, `ocr_languages` | Local-reader provenance: line count, mean confidence (0–1), device, detector and engine/runtime versions. Reader-specific cells are blank for the other engine and all are blank for model-server reads; token/prefill/decode columns are blank because local OCR is not generative |
+| `ocr_profile` | `typhoon` or `dots` (`paddle`/`easyocr` on rows from the removed local readers) — the pass-1 shape/reader that read the page, taken from the pages themselves. Blank on rows written before profiles existed, and on `run_type=extract` rows, which read no page |
+| `ocr_engine` | What read the page: `llm` (a model server over HTTP), or `library` on rows read by PaddleOCR or EasyOCR before those readers were removed on 2026-10-05. Blank on a row that read no page. **Not the same question as the `pipeline` filter**, which is which *passes* a run performed (both / read / extract). Rows written before the column are derived from `backend`, which says `paddleocr` or `easyocr` on a library read and a model server's kind on every other, so the whole log is filterable and no row lands in a third bucket |
+| `ocr_lines`, `ocr_confidence`, `ocr_device`, `ocr_version`, `paddle_version`, `ocr_detector`, `easyocr_version`, `torch_version`, `ocr_languages` | Provenance of the removed local readers: line count, mean confidence (0–1), device, detector and runtime versions. Kept so older rows keep their meaning; blank on every new row |
 | `grounded_pct`, `ungrounded`, `fields_missing` | share of extracted values found in the transcript, how many were not, and how many fields the document does not state |
 | `field_acc`, `field_expected` | pass 2 scored against `solution/<id>.fields.json`: the share of the values that came back correct, and how many values that was. Blank on every document without a field truth file, so it does not read down the column like `grounded_pct` — read the accuracy beside its own `field_expected`, because 100% of three keys and 100% of thirteen are the same cell and not the same claim |
 | `other_fields`, `other_distinct` | how many entries came back under `other_fields` — everything the page states that the document type's own field set does not cover — and how many of them were **distinct**. A count only; the labels are the model's own wording and stay out of the file, like the transcript. The pair is the point: 104 against 5 is a loop, 12 against 12 is a document. Blank where nothing was extracted, `0` where the extraction ran and named none |
@@ -2973,24 +2856,6 @@ server's last request ends. `409` while a random test or another stress test is 
 values) and `vllm` (every `vllm:*` series, summed over labels). `409` unless the server is vLLM;
 `?server=extract` asks about the extraction model's server.
 
-`GET /api/ocr/engine` — which reading pipeline is selected and what each one offers.
-Answers with the same body as `/api/ocr/reader`: `engine` (`llm` or `library`), `engines`
-(each with its `readers`), `selected`, and a `readers` list carrying an `engine` per entry.
-`?probe=1` verifies the local runtimes.
-
-`POST /api/ocr/engine` — `{"engine":"library"}` switches pipeline and picks a reader inside
-it, preferring PaddleOCR and stepping over one that is not installed. Add `"reader":"easyocr"`
-to name the one you want; a reader that does not belong to the engine is `400`. The reply is
-the whole status, so a caller repaints from what was **accepted** rather than from what it
-asked for.
-
-`GET /api/ocr/reader` — the selected OCR reader and availability for `server`,
-`paddle`, and `easyocr`. Add `?probe=1` to import the isolated local runtimes and verify them.
-
-`POST /api/ocr/reader` — `{"reader":"easyocr","probe":true}` selects a reader
-and optionally verifies it. Any read request may override the process default by sending
-multipart field `reader=server|paddle|easyocr`.
-
 `GET /api/ocr/profile` — the pass-1 profile in force and the ones on offer:
 `{"profile":"typhoon","profiles":[{"id","label","note","system","reply"}, ...]}`.
 
@@ -3016,8 +2881,7 @@ a batch split across the switch still says which rule wrote each row. What it ca
 back: a score this floor stopped being taken is not in the log, which is why the run-log card
 keeps a floor of its own.
 
-`POST /api/ocr/stream` — multipart form, fields `image`, `detail`, and optional
-`reader=server|paddle|easyocr`
+`POST /api/ocr/stream` — multipart form, fields `image` and `detail`
 (`original`/`medium`/`low`; the old four names are accepted and mapped). Returns NDJSON:
 
 ```
@@ -3146,10 +3010,6 @@ still never parses `.env` itself.
 | `segment.py` | How many documents are in one file, and which pages are which |
 | `tables.py` | The item table of a document, read out of its transcript and repaired, and whether it is a master table |
 | `runlog.py` | The CSV run log |
-| `paddle_runtime.py` | Interpreter discovery, serialization, lifecycle, timeouts, and cancellation for the optional Paddle worker |
-| `paddle_worker.py` | Isolated long-lived PaddleOCR JSON-lines worker and coordinate decoding |
-| `easy_runtime.py` | Interpreter discovery, serialization, lifecycle, timeouts, and cancellation for the optional EasyOCR worker |
-| `easy_worker.py` | Isolated long-lived EasyOCR JSON-lines worker and coordinate decoding |
 | `stress.py` | The stress test's dataset draw, 100+ page file builder, `/metrics` reader and report |
 | `compare.py` | CLI benchmark runner |
 | `package.py` | Builds the deployable zip |
