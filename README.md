@@ -98,10 +98,23 @@ rebuild it for the target.
 
 ### Windows offline install
 
-`wheelhouse-windows/` is a separate bundle for **Windows x64 and standard CPython
-3.13**, including PDF and HEIC/HEIF support. It contains 16 wheels plus a pinned
-package list and SHA-256 manifest. Optional PaddleOCR/EasyOCR dependencies and
-model weights are not included.
+Separate bundles are available for **Windows x64 and standard CPython**, including
+PDF and HEIC/HEIF support. Each contains 16 wheels, a pinned package list, and a
+SHA-256 manifest. Optional PaddleOCR/EasyOCR dependencies and model weights are
+not included.
+
+| Python target | Bundle and installation instructions | Size |
+|---|---|---|
+| 3.12.10 | [`wheelhouse-windows-python-3.12.10/`](wheelhouse-windows-python-3.12.10/README.md) | 33.7 MiB |
+| 3.13.x | [`wheelhouse-windows/`](wheelhouse-windows/README.md) | 33.7 MiB |
+| 3.14.8 | [`wheelhouse-windows-python-3.14.8/`](wheelhouse-windows-python-3.14.8/README.md) | 31.0 MiB |
+
+The 3.14 bundle uses **pillow-heif 1.1.0** because the original `<1.0` requirement
+has no compatible Windows cp314 wheel. Install with that folder's
+`requirements-lock.txt`; the root `requirements.txt` conflicts with this override.
+Other package versions match the 3.13 bundle. Target tags, dependency metadata,
+and offline pip resolution were checked for 3.12/3.14; execution on those Python
+versions has not been tested because the build machine only has Python 3.13.
 
 From the project directory, with Python 3.13 x64 installed:
 
