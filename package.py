@@ -43,6 +43,7 @@ FILES = [
     "backends.py",
     "grounding.py",
     "fieldscore.py",
+    "fixscore.py",
     "blame.py",
     "paddle_runtime.py",
     "paddle_worker.py",
@@ -51,6 +52,7 @@ FILES = [
     "runlog.py",
     "scoring.py",
     "segment.py",
+    "tables.py",
     "verify.py",
     "normalise.py",
     "validate.py",
@@ -86,6 +88,9 @@ FIXTURES = [
     # not the extraction.
     ("solution", "*.fields.json"),
     ("solution", "manifest.json"),
+    # Table ground truth: every ruled table, clean, with what was stamped,
+    # stuck or written in its frame listed under it. For the table fix agent.
+    ("solution/tables", "*.md"),
 ]
 
 

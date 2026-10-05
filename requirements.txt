@@ -1,4 +1,4 @@
-# Python 3.11+ (developed and tested on 3.13).
+# Python 3.9+ (developed on 3.13; the deployment server and wheelhouse/ are 3.9).
 #
 # Upper bounds are deliberate: this is pinned to major versions so that a
 # deployment installed six months from now gets what was tested, not whatever

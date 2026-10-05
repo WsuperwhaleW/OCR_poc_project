@@ -66,6 +66,7 @@
           "total_wht_amount"
         ]
       },
+      "is_master_table": false,
       "document_type": [
         "ใบกำกับภาษี/ใบส่งของ",
         "TAX INVOICE/DELIVERY ORDER",
@@ -149,6 +150,7 @@
           "total_wht_amount"
         ]
       },
+      "is_master_table": false,
       "_note": [
         "po_gr_rtv_number repeats document_number, and that is deliberate: this",
         "document IS the purchase order, and R250001589 is printed under",
@@ -234,6 +236,7 @@
           "total_wht_amount"
         ]
       },
+      "is_master_table": false,
       "_note": [
         "An internal stock movement: it prices nothing, so all three totals are",
         "empty, and it names the customer by code without a tax ID or a branch.",

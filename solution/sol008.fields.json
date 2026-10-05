@@ -19,6 +19,7 @@
       "po_gr_rtv_number"
     ]
   },
+  "is_master_table": false,
   "document_type": [
     "ใบลดหนี้ (Credit Note)",
     "ใบลดหนี้",

@@ -173,8 +173,21 @@ class RunLogTests(unittest.TestCase):
 
     def test_the_column_is_at_the_end(self):
         """Appended, like every column before it: inserting mid-file re-labels
-        every value to the right of it."""
-        self.assertEqual(runlog.COLUMNS[-1], "pages_total")
+        every value to the right of it.
+
+        It was the LAST column when this was written. Columns appended since
+        come after it, which is the same property seen from the other side --
+        so what is pinned is that nothing older than it has moved behind it."""
+        columns = runlog.COLUMNS
+        self.assertEqual(columns[columns.index("pages_total") - 1], "field_blame")
+        self.assertEqual(columns[columns.index("pages_total") + 1:],
+                         ["item_tables", "master_tables", "table_rows",
+                          "table_realigned", "table_misaligned",
+                          "table_cells_ok", "table_cells",
+                          "master_ok", "master_scored", "extract_server",
+                          "fix_moved", "fix_strays", "fix_stray_removals",
+                          "fix_removals", "fix_values_removed",
+                          "fix_cells_read", "fix_cells_agent", "fix_cells"])
 
     def test_a_failed_status_still_wins(self):
         self.assertTrue(runlog._incomplete(

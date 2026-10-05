@@ -187,7 +187,7 @@ def current_loop_guard(app):
         return None
 
 
-def select_server(app, url, model):
+def select_server(app, url, model, extract_url=None):
     """Point the running app at a server, and at one of its models.
 
     Uses the same endpoint the page's picker uses, so the CLI can never select
@@ -214,7 +214,12 @@ def select_server(app, url, model):
         raise RuntimeError(f"HTTP {res.status_code} from {app}/api/servers")
     body = res.json()
     server, extract = body["server"], body.get("extract") or {}
-    for payload in ([{"url": url}] if url else []) + ([{"model": model}] if model else []):
+    payloads = (([{"url": url}] if url else [])
+                + ([{"model": model}] if model else [])
+                # "" is a real choice here -- back to the reading server -- so
+                # it is sent whenever the flag was given at all.
+                + ([{"extract_url": extract_url}] if extract_url is not None else []))
+    for payload in payloads:
         if "model" in payload:
             payload = {"model": resolve_model(server, payload["model"])}
         res = requests.post(f"{app}/api/servers", json=payload, timeout=60)
@@ -255,6 +260,10 @@ def main():
     ap.add_argument("--server", default=None,
                     help="switch the app to this model server first, e.g. "
                          "http://127.0.0.1:11434")
+    ap.add_argument("--extract-server", default=None,
+                    help="send pass 2 (extraction) to this server instead of "
+                         "the reading one, e.g. http://gpu-box:8000; '' puts it "
+                         "back on the reading server")
     ap.add_argument("--profile", default=None,
                     help="pass-1 shape for this run: typhoon|dots "
                          "(default: the app's). Sets the OCR prompt and whether "
@@ -295,7 +304,8 @@ def main():
             + (f"  {reader_info.get('device')}" if reader_info.get("device") else ""))
     if calls_model:
         try:
-            server, extract = select_server(app, args.server, args.model)
+            server, extract = select_server(app, args.server, args.model,
+                                            args.extract_server)
             profile = ((select_profile(app, args.profile) if args.profile
                         else current_profile(app)) if args.reader == "server" else None)
             guard = ((select_loop_guard(app, args.loop_guard == "on")
@@ -313,11 +323,15 @@ def main():
             # header stays as short as it was -- and never left unsaid when they
             # do, because pass-2 figures taken on two different models under one
             # `--model` are not comparable.
-            + ("" if extract.get("same_as_reading", True)
+            + (f"  extracting on {extract.get('url')}"
+               + (f" with {extract.get('model')}" if extract.get("model") else "")
+               if extract.get("separate")
+               else "" if extract.get("same_as_reading", True)
                else f"  extracting with {extract.get('model')}"))
         if not server.get("available"):
             say(f"  warning: {server.get('reason') or 'not available'}", sys.stderr)
-    elif args.server or args.model or args.profile or args.loop_guard:
+    elif (args.server or args.model or args.profile or args.loop_guard
+          or args.extract_server is not None):
         say("--server/--model/--profile/--loop-guard ignored: this run makes no "
             "model call.", sys.stderr)
 
@@ -374,6 +388,14 @@ def main():
         r = (scoring.evaluate(case, actual, ignore_tables=not args.keep_tables)
              if score_text else {"case": cid, "pdf": case["pdf"], "diff": []})
         results.append(r)
+        # The item table is a function of the transcript -- `tables.py` reads it
+        # out in Python -- so it is reported with pass 1 and needs neither an
+        # extraction nor a model. A saved read is enough, which is what lets
+        # `--no-run` say something about it.
+        try:
+            r["tables"] = fieldscore.transcript_tables(cid, actual)
+        except Exception as err:     # never worth the rest of the report
+            r["tables"] = {"tables": [], "score": None, "error": str(err)}
 
         # ---- pass 2 -------------------------------------------------------
         if fields:
@@ -496,6 +518,10 @@ def main():
                 say(f"  chars: {r['expected_chars'] - r['matched_chars']} missed "
                     f"of {r['expected_chars']}, "
                     f"{r['invented_chars']} invented (not charged)")
+        for line in fieldscore.format_table_report(
+                (r.get("tables") or {}).get("tables"),
+                (r.get("tables") or {}).get("score")):
+            say(line)
         if fields:
             if r.get("fields_note"):
                 say(f" {r['fields_note'].strip()}")
@@ -557,6 +583,38 @@ def main():
             # column rose with it has not necessarily read anything better.
             say("  (invented = transcript the page does not print; costs no "
                 "points by design)")
+        # The item tables, one line per case. Beside the transcript score and
+        # apart from the field score: the table is read out of the transcript in
+        # Python, so a wrong cell here is the read's.
+        tabled = [r for r in results if (r.get("tables") or {}).get("score")]
+        if tabled:
+            say("")
+            say(f"  {'case':10} {'tables':>7} {'master':>7} {'rows':>6} "
+                f"{'cells':>12} {'flag':>8}")
+            cells_ok = cells = flag_ok = flag_n = 0
+            for r in tabled:
+                score = r["tables"]["score"]
+                found = [t for t in r["tables"]["tables"] if t]
+                ok = (score.get("counts") or {}).get("correct", 0)
+                expected = score.get("expected") or 0
+                if "master_scored" in score:
+                    scored_n, right = score["master_scored"], score.get("master_correct", 0)
+                else:
+                    status = (score.get("master") or {}).get("status")
+                    scored_n = 0 if status in (None, "unchecked") else 1
+                    right = 1 if status == "correct" else 0
+                cells_ok, cells = cells_ok + ok, cells + expected
+                flag_ok, flag_n = flag_ok + right, flag_n + scored_n
+                say(f"  {r['case']:10} {len(found):7} "
+                    f"{sum(1 for t in found if t.get('is_master_table') is True):7} "
+                    f"{sum(len(t['rows']) for t in found):6} "
+                    f"{(str(ok) + '/' + str(expected)):>12} "
+                    f"{(str(right) + '/' + str(scored_n)) if scored_n else '-':>8}")
+            say(f"  {'TOTAL':10} {'':7} {'':7} {'':6} "
+                f"{(str(cells_ok) + '/' + str(cells)):>12} "
+                f"{(str(flag_ok) + '/' + str(flag_n)) if flag_n else '-':>8}")
+            say("  (cells = table cells read correctly of those the page prints; "
+                "flag = is_master_table against the truth file)")
         if fields:
             scored = [r for r in results
                       if r.get("fields") and not r["fields"].get("error")]

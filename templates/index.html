@@ -292,6 +292,51 @@
      documents, page by page as the walk goes, with each group's pages on hand
      to check. */
   #grouping { display: none; }
+  /* The Table tab: the item table step by step. Who changed a cell is a colour,
+     one per hand -- the read (grey), the AI agents (violet), the code (teal) and
+     the ground truth (green) -- named for the job rather than the hue, and
+     aliased onto the blame tokens so both themes come for free. */
+  #tableview { display: none; }
+  :root { --by-read: var(--muted); --by-agent: var(--blame-extract);
+          --by-code: var(--blame-read); --by-truth: var(--ok); }
+  .tv-head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px;
+             margin: 4px 0 8px; }
+  .tv-head h3 { margin: 0; font-size: .95rem; }
+  .tv-head .spacer { flex: 1; }
+  .tv-sw { font-size: .78rem; color: var(--muted); display: flex; gap: 12px; align-items: center; }
+  .tv-sw label { display: inline-flex; gap: 4px; align-items: center; cursor: pointer; }
+  .tv-who { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
+            gap: 10px; margin: 6px 0 14px; }
+  .tv-who > div { border: 1px solid var(--border); border-top: 3px solid var(--by);
+                  border-radius: 8px; padding: 8px 11px; font-size: .8rem; }
+  .tv-who h4 { margin: 0 0 5px; font-size: .78rem; text-transform: uppercase;
+               letter-spacing: .06em; color: var(--by); }
+  .tv-who ul { margin: 0; padding-left: 16px; }
+  .tv-who li { margin: 2px 0; }
+  .tv-who .none { color: var(--muted); }
+  .tv-who q { font-family: ui-monospace, Consolas, monospace; font-size: .76rem; }
+  .tv-steps { display: flex; flex-wrap: wrap; gap: 6px; margin: 4px 0 10px; }
+  .tv-steps button { border-left: 4px solid var(--by); text-align: left; padding: 5px 10px;
+                     font-size: .8rem; line-height: 1.25; }
+  .tv-steps button small { display: block; color: var(--muted); font-size: .7rem; }
+  .tv-steps button.on { background: var(--accent-soft); box-shadow: inset 0 0 0 1px var(--accent); }
+  .tv-steps .arrow { align-self: center; color: var(--muted); }
+  .tv-what { font-size: .78rem; color: var(--muted); margin: 0 0 8px; }
+  #tableview td.tv-ch { box-shadow: inset 3px 0 0 var(--by);
+                        background: color-mix(in srgb, var(--by) 14%, transparent); }
+  #tableview td .was { display: block; color: var(--muted); font-size: .74rem;
+                       text-decoration: line-through; }
+  #tableview tr.tv-before td { color: var(--muted); font-size: .74rem; padding-top: 2px;
+                               text-decoration: line-through; border-top-style: dashed; }
+  #tableview tr.tv-before td span { text-decoration: none; display: inline-block;
+                                    margin-right: 6px; font-weight: 600; }
+  #tableview tr.tv-before td b { font-weight: 400; opacity: .6; }
+  #tableview tr.tv-gone td { color: var(--muted); text-decoration: line-through; opacity: .7; }
+  #tableview tr.tv-missed td { border-style: dashed; }
+  .tv-side { display: flex; flex-wrap: wrap; gap: 14px; }
+  .tv-side > div { flex: 1 1 340px; min-width: 0; overflow-x: auto; }
+  .tv-side h4 { margin: 0 0 6px; font-size: .78rem; color: var(--by);
+                text-transform: uppercase; letter-spacing: .06em; }
   .grp-head { display: flex; gap: 12px; align-items: baseline; flex-wrap: wrap;
               margin: 4px 0 6px; font-size: .9rem; }
   .grp-head .muted-inline { font-size: .8rem; }
@@ -482,12 +527,12 @@
   .truth { font-size: .78rem; color: var(--muted); margin-top: 2px; }
   .truth b { color: var(--text); font-weight: 600; }
   .truth i { font-style: normal; opacity: .8; }
-  #fields td.sc-wrong, #fields td.sc-missed, #fields td.sc-spurious { color: var(--danger); }
-  #fields td.sc-partial { color: var(--warn); }
-  #fields td .truth { display: block; }
+  :is(#fields, #tableview) td.sc-wrong, :is(#fields, #tableview) td.sc-missed, :is(#fields, #tableview) td.sc-spurious { color: var(--danger); }
+  :is(#fields, #tableview) td.sc-partial { color: var(--warn); }
+  :is(#fields, #tableview) td .truth { display: block; }
   /* A row the page prints and the extraction never returned. Dashed, because
      nothing in it came from the model -- it is the truth file talking. */
-  #fields tr.row-missed td { border-style: dashed; color: var(--danger); opacity: .8; }
+  :is(#fields, #tableview) tr.row-missed td { border-style: dashed; color: var(--danger); opacity: .8; }
   .ground-note { font-size: .8rem; border-radius: 8px; padding: 9px 12px; margin: 0 0 4px;
                  border: 1px solid var(--border); background: var(--accent-soft); }
   .ground-note.bad { border-color: var(--danger); background: rgba(255,107,107,.1); }
@@ -496,15 +541,36 @@
   .ground-note code { background: var(--code-bg); padding: 1px 5px; border-radius: 4px; }
   .fld-sec { font-size: .78rem; text-transform: uppercase; letter-spacing: .07em;
              color: var(--muted); margin: 22px 0 8px; }
-  #fields table { width: 100%; border-collapse: collapse; font-size: .82rem; }
-  #fields th, #fields td { border: 1px solid var(--border); padding: 6px 9px; text-align: left; }
-  #fields th { background: var(--accent-soft); font-weight: 600; }
-  #fields td.num { text-align: right; font-variant-numeric: tabular-nums; }
+  :is(#fields, #tableview) table { width: 100%; border-collapse: collapse; font-size: .82rem; }
+  :is(#fields, #tableview) th, :is(#fields, #tableview) td { border: 1px solid var(--border); padding: 6px 9px; text-align: left; }
+  :is(#fields, #tableview) th { background: var(--accent-soft); font-weight: 600; }
+  :is(#fields, #tableview) td.num { text-align: right; font-variant-numeric: tabular-nums; }
   /* The one column on this tab that is NOT on the page: the derived WHT
      rate. Muted, because every other cell beside it is text the document
      printed and grounding vouched for, and a computed figure sitting in
      the same weight would read as one of them. */
   #fields td.derived { color: var(--muted); }
+  /* The item table: read out of the transcript, so every cell is the read's.
+     The chip says what KIND of table it is, which is the one judgement on it;
+     green is not used, because neither answer is the good one. */
+  .tbl-kind { font-size: .68rem; font-weight: 700; letter-spacing: .02em;
+              padding: .1rem .4rem; border-radius: 4px; margin-left: .5rem;
+              text-transform: none; font-family: ui-monospace, Consolas, monospace;
+              vertical-align: .06rem; }
+  .tbl-kind.master { background: var(--accent-soft); color: var(--text);
+                     box-shadow: inset 0 0 0 1px var(--accent); }
+  .tbl-kind.items { background: var(--tint); color: var(--muted); }
+  .tbl-kind.unsure { background: rgba(217,164,65,.18); color: var(--warn); }
+  /* A row the read cut into the wrong number of cells. Blue where it has been
+     put back under its headings -- nothing is wrong with it now, and a reader
+     should still be able to see that the cuts are not the read's own -- and
+     amber where nothing could settle it and it is drawn as read. */
+  :is(#fields, #tableview) tr.row-recut td:first-child { box-shadow: inset 3px 0 0 var(--info); }
+  :is(#fields, #tableview) tr.row-ragged td:first-child { box-shadow: inset 3px 0 0 var(--warn); }
+  :is(#fields, #tableview) tr.row-ragged td { color: var(--warn); }
+  .tbl-note { font-size: .78rem; color: var(--muted); margin: 6px 0 0; }
+  .tbl-note summary { cursor: pointer; }
+  .tbl-note table { margin-top: 6px; opacity: .85; }
   /* The document strip: one button per document a split file was read as.
      Drawn ONLY where there is more than one -- a strip of one button over an
      ordinary receipt would be a control that says nothing and a claim that
@@ -1371,15 +1437,30 @@ follows your desktop; Light is the one to pick for projecting or screenshotting.
              transcript onto a form. A model can be good at one and bad at the
              other, and on this project's own fixtures the best extractor cannot
              read a page at all. -->
-        <label class="field" id="extractModelField" style="flex:1;min-width:200px;display:none">
-          Model &middot; extracts fields
-          <select id="extractModelSel"></select>
-        </label>
       </div>
       <div class="row" id="customRow" style="display:none">
         <input id="endpointCustom" type="text" placeholder="http://127.0.0.1:8081" style="flex:1">
         <button id="endpointUse" class="ghost-sm">Use</button>
       </div>
+      <!-- Pass 2 may run on a server of its own (2026-10-01): page images go to
+           the server above, extraction to this one. "Same as the reading
+           server" is the one-URL setup -- local llama-server or Ollama -- and
+           the default. Any OpenAI-compatible server works on either side. -->
+      <div class="row">
+        <label class="field" style="flex:1;min-width:200px">
+          Extraction server
+          <select id="extractEndpointSel"></select>
+        </label>
+        <label class="field" id="extractModelField" style="flex:1;min-width:200px;display:none">
+          Model &middot; extracts fields
+          <select id="extractModelSel"></select>
+        </label>
+      </div>
+      <div class="row" id="extractCustomRow" style="display:none">
+        <input id="extractEndpointCustom" type="text" placeholder="http://gpu-box:8000" style="flex:1">
+        <button id="extractEndpointUse" class="ghost-sm">Use</button>
+      </div>
+      <p class="note" id="extractServerNote"></p>
 
       <div class="serverbar">
         <span class="dot" id="dot"></span>
@@ -1850,6 +1931,12 @@ follows your desktop; Light is the one to pick for projecting or screenshotting.
             Model &middot; reads the page
             <select id="fxModel"></select>
           </label>
+        </div>
+        <div class="row">
+          <label class="field" style="flex:1;min-width:200px">
+            Extraction server
+            <select id="fxExtractEndpoint"></select>
+          </label>
           <label class="field" id="fxExtractField" style="flex:1;min-width:200px;display:none">
             Model &middot; extracts fields
             <select id="fxExtract"></select>
@@ -1946,6 +2033,8 @@ follows your desktop; Light is the one to pick for projecting or screenshotting.
           <button id="tabAccuracy" disabled><b>3</b> Accuracy</button>
           <span class="flow-arrow">›</span>
           <button id="tabFields" disabled><b>4</b> Fields</button>
+          <span class="flow-arrow">›</span>
+          <button id="tabTable" disabled title="The item table step by step: what the read cut, what the AI agents changed, what the code fixed, and what the ground truth says it should be"><b>5</b> Table</button>
           <button id="copy" disabled style="margin-left:10px">Copy</button>
         </div>
         <button id="tabRawOut" class="ghost-sm" style="margin-left:auto"
@@ -1987,6 +2076,8 @@ follows your desktop; Light is the one to pick for projecting or screenshotting.
       </div>
 
       <div id="grouping"></div>
+
+      <div id="tableview"></div>
 
       <div id="fields">
         <div id="pipeline" class="pipe"></div>
@@ -2242,6 +2333,14 @@ const meta = document.getElementById('meta');
 const metaTrunc = document.getElementById('metaTrunc');
 const statsEl = document.getElementById('stats');
 const groupingEl = document.getElementById('grouping');
+const tableViewEl = document.getElementById('tableview');
+const tabTable = document.getElementById('tabTable');
+/* Whether each table agent runs on the next extraction, as the server last
+   said -- painted from its replies, never from what was clicked. */
+let TABLE_AGENTS = {{ table_agents|tojson }};
+/* Which Table-tab view is shown (null = the default), and the table_agent
+   events of the run in flight. Up here so nothing reaches them early. */
+let tvStage = null, tableLive = null;
 const tabGroup = document.getElementById('tabGroup');
 /* The page grouping of the run in progress, built from its `segmenting` /
    `segment_page` / `segmented` events. Outside the render because the view is
@@ -2265,6 +2364,12 @@ const ocrProfileHelp = document.getElementById('ocrProfileHelp');
 const loopGuardRow = document.getElementById('loopGuardRow');
 let server = {{ server | tojson }};
 let extractInfo = {{ extract | tojson }};
+const extractEndpointSel = document.getElementById('extractEndpointSel');
+const fxExtractEndpoint = document.getElementById('fxExtractEndpoint');
+const extractCustomRow = document.getElementById('extractCustomRow');
+const extractEndpointCustom = document.getElementById('extractEndpointCustom');
+const extractEndpointUse = document.getElementById('extractEndpointUse');
+const extractServerNote = document.getElementById('extractServerNote');
 let readerState = {{ reader | tojson }};
 let pageStats = [], ticker = null, runStart = 0, liveTokens = 0, curPage = -1;
 const tabRendered = document.getElementById('tabRendered');
@@ -2313,6 +2418,9 @@ function setExtracted(result) {
     extractSteps = extracted.steps || null;
     runningDoc = null;
   }
+  tvStage = null;
+  if (!result || result.pending) tableLive = null;
+  paintTableTab();
 }
 function showDocument(index) {
   const docs = (extractedFile && extractedFile.documents) || null;
@@ -2326,6 +2434,7 @@ function showDocument(index) {
   extractSteps = extracted.steps || null;
   paintFields();
   if (tabAccuracy.classList.contains('on')) paintAccuracy();
+  if (curMode === 'table') paintTableView();
 }
 /* The Fields-only pane: pass 2 against a fixture's hand-written transcript.
    Every one of these is absent when no case has ground truth, so everything
@@ -2586,6 +2695,8 @@ function showTab(mode) {
   fieldsEl.style.display = mode === 'fields' ? 'block' : 'none';
   layoutEl.style.display = mode === 'layout' ? 'block' : 'none';
   groupingEl.style.display = mode === 'grouping' ? 'block' : 'none';
+  tableViewEl.style.display = mode === 'table' ? 'block' : 'none';
+  tabTable.classList.toggle('on', mode === 'table');
   tabGroup.setAttribute('aria-pressed', mode === 'grouping');
   tabGroup.classList.toggle('on', mode === 'grouping');
   tabLayout.setAttribute('aria-pressed', mode === 'layout');
@@ -2593,7 +2704,7 @@ function showTab(mode) {
   rawoutEl.style.display = mode === 'rawout' ? 'block' : 'none';
   tabRawOut.setAttribute('aria-pressed', mode === 'rawout');
   tabRawOut.classList.toggle('on', mode === 'rawout');
-  statsEl.style.display = ['accuracy', 'fields', 'layout', 'rawout', 'grouping'].includes(mode) ? 'none' : '';
+  statsEl.style.display = ['accuracy', 'fields', 'layout', 'rawout', 'grouping', 'table'].includes(mode) ? 'none' : '';
   tabRendered.classList.toggle('on', mode === 'rendered');
   tabRaw.classList.toggle('on', mode === 'raw');
   tabAccuracy.classList.toggle('on', mode === 'accuracy');
@@ -2603,11 +2714,13 @@ function showTab(mode) {
   if (mode === 'layout') paintLayout();
   if (mode === 'rawout') paintRawOut();
   if (mode === 'grouping') paintGrouping();
+  if (mode === 'table') paintTableView();
 }
 tabRendered.addEventListener('click', () => showTab('rendered'));
 tabRaw.addEventListener('click', () => showTab('raw'));
 tabAccuracy.addEventListener('click', () => { if (!tabAccuracy.disabled) showTab('accuracy'); });
 tabFields.addEventListener('click', () => { if (!tabFields.disabled) showTab('fields'); });
+tabTable.addEventListener('click', () => { if (!tabTable.disabled) showTab('table'); });
 
 /* ---------- raw output: the reply before anything touched it ----------------
    Three steps stand between what the model said and what the Markdown tab shows
@@ -3861,9 +3974,29 @@ function stepEvent(msg) {
     if (!extractSteps) extractSteps = [];
     const i = msg.step - 1;
     extractSteps[i] = Object.assign({}, extractSteps[i] || {}, msg);
+  } else if (msg.event === 'table_agent') {
+    /* The item table's two agents, as they run. Kept per agent so the Table tab
+       can say which one is working; the finished result replaces all of it. */
+    tableLive = Object.assign({}, tableLive || {}, { [msg.agent]: msg });
+    if (msg.status === 'running') {
+      pagebar.innerHTML = '<span class="spin"></span> Item table'
+        + (msg.document ? ' (document ' + msg.document + ')' : '') + ' — '
+        + (msg.agent === 'fix' ? 'fix agent checking ' + (msg.rows || 0) + ' rows'
+           : msg.agent === 'concat' ? 'concat agent: are the other ' + (msg.offered || 0)
+             + ' tables part of this one?'
+           : 'identify agent: master table or item list?')
+        + (msg.model ? ' · ' + esc(msg.model) : '') + '…'
+        + ' <button type="button" class="ghost-sm" data-go="table">View</button>';
+      pagebar.dataset.table = '1';
+    } else if (msg.agent === 'identify' && pagebar.dataset.table) {
+      // The last table event: the line it put up comes down, on every stream.
+      pagebar.textContent = ''; delete pagebar.dataset.table;
+    }
+    paintTableTab();
   } else {
     return false;
   }
+  if (curMode === 'table') paintTableView();
   if (tabFields.classList.contains('on')) paintFields();
   if (curMode === 'grouping') scheduleGrouping();
   return true;
@@ -4639,7 +4772,16 @@ function paintFieldBody() {
        filed as it stands. Absent rather than zero where no requirement
        covers the type: nothing is demanded, so nothing can be missing. */
     + (vc && vc.mandatory_absent
-       ? ` · ${vc.mandatory_absent} required missing` : '');
+       ? ` · ${vc.mandatory_absent} required missing` : '')
+    /* What KIND of table the document rules, where it rules one. On this line
+       because it is a fact about the document rather than about a value: a
+       master table says the rows below are other documents, each with items of
+       its own somewhere else. */
+    + (extracted.item_table && Array.isArray(extracted.item_table.rows)
+       ? ` · ${extracted.item_table.is_master_table === true ? 'master table'
+             : extracted.item_table.is_master_table === false ? 'item table'
+             : 'table'} (${extracted.item_table.rows.length} row`
+         + `${extracted.item_table.rows.length === 1 ? '' : 's'})` : '');
   /* Which rules a document is held to is a property of its TYPE, not of the
      schema -- an invoice's number is checked for a duplicate and a credit
      note's against the document it credits -- so the check count is unreadable
@@ -4876,6 +5018,19 @@ function paintFieldBody() {
     }
   }
 
+  // The item table has its own tab now; one line here says it exists.
+  if (extracted && 'item_table' in extracted) {
+    const it = extracted.item_table;
+    html += '<div class="fld-sec">Item table</div><p class="tbl-note">'
+      + (it && Array.isArray(it.rows)
+         ? it.rows.length + ' row' + (it.rows.length === 1 ? '' : 's') + ', '
+           + (it.is_master_table === true ? 'a master table' : it.is_master_table === false
+              ? 'an item list' : 'kind not determined')
+         : 'none found')
+      + ' — see the <a href="#" data-go="table">Table</a> tab for what the read cut, '
+      + 'what the agents and the code changed, and the ground truth.</p>';
+  }
+
   // Paired with its original index for the same reason as the line items above.
   const other = (Array.isArray(f.other_fields) ? f.other_fields : [])
     .map((o, i) => [o, i]).filter(([o]) => o && (o.label || o.value));
@@ -4914,6 +5069,660 @@ function paintFieldBody() {
 
   fldBody.innerHTML = html;
 }
+
+/* THE ITEM TABLE (2026-09-30). Read out of the transcript in Python -- no model
+   wrote a cell of it -- and classified there too: `is_master_table` is true
+   where the rows are other DOCUMENTS (a receipt settling twelve invoices, a
+   billing note) and false where they are goods or services.
+
+   Drawn with the document's OWN headings, because that is the whole of what
+   fixed it: the old eight-key row made the model smear values across columns
+   the page never ruled.
+
+   Three states for the section, and the difference between the last two is the
+   one worth drawing: the table, "this document has none", and nothing at all
+   where it was not looked for (the key is absent from the result -- the type
+   rules a table of its own, or the setting is off). */
+function itemTableHtml(x, onTableTab) {
+  if (!x || !('item_table' in x)) return '';
+  const t = x.item_table;
+  if (!t || t.error || !Array.isArray(t.rows)) {
+    return '<div class="fld-sec">Item table</div><p class="ground-note">'
+      + (t && t.error ? esc(t.error)
+         : 'No item table was found in the transcript of this document.')
+      + '</p>';
+  }
+  const cols = t.columns || [];
+  const ragged = new Set(t.misaligned || []);
+  const recut = new Set(t.realigned || []);
+  const kind = t.is_master_table === true ? ['master', 'is_master_table: true']
+             : t.is_master_table === false ? ['items', 'is_master_table: false']
+             : ['unsure', 'is_master_table: not determined'];
+  // Marks against the ground truth, where the case has one. Keyed by the
+  // RETURNED row and column, which the server works out: rows are paired by
+  // content, and the two tables need not be the same width.
+  const marks = {}, missed = {};
+  const sc = x.table_score && Array.isArray(x.table_score.rows) ? x.table_score : null;
+  (sc ? sc.rows : []).forEach(r => {
+    const m = /^item_table\[(\d+)\]/.exec(r.path || '');
+    if (!m) return;
+    if (r.row === null || r.row === undefined) {
+      (missed[m[1]] = missed[m[1]] || []).push(r);
+    } else if (r.column !== null && r.column !== undefined) {
+      marks[r.row + ':' + r.column] = r;
+    }
+  });
+  const missedRows = Object.keys(missed).map(k => missed[k]);
+  const width = Math.max(cols.length, ...t.rows.map(r => r.length), 1);
+  const heads = [];
+  for (let i = 0; i < width; i++) heads.push(cols[i] || '');
+
+  let html = '<div class="fld-sec">Item table (' + t.rows.length + ' row'
+    + (t.rows.length === 1 ? '' : 's')
+    + (missedRows.length ? ', ' + missedRows.length + ' not returned' : '') + ')'
+    + '<span class="tbl-kind ' + kind[0] + '" title="' + esc(t.master_why || '')
+    + '">' + kind[1] + '</span></div>'
+    // Why, in the words of the code that decided it. One sentence and not two:
+    // the chip has already said which answer it is.
+    + '<p class="tbl-note">' + esc((t.master_why || '').replace(/^./, c => c.toUpperCase()))
+    + '.</p>'
+    + '<div style="overflow-x:auto"><table><tr>'
+    + heads.map(h => '<th>' + (h ? esc(h) : '<span style="color:var(--muted)">—</span>')
+        + '</th>').join('') + '</tr>'
+    + t.rows.map((row, i) => {
+        const cls = ragged.has(i) ? 'row-ragged' : recut.has(i) ? 'row-recut' : '';
+        const why = ragged.has(i)
+          ? 'The read cut this row into the wrong number of cells and nothing '
+            + 'could settle where the cuts belong, so it is shown as read.'
+          : recut.has(i)
+          ? 'The read cut this row into the wrong number of cells. It has been '
+            + 'put back under the headings; every character is the read’s own.'
+          : '';
+        const cells = [];
+        for (let c = 0; c < Math.max(width, row.length); c++) {
+          const v = row[c] || '';
+          const num = /^[\d.,\-() ]+$/.test(v) && v.trim() !== '';
+          const mark = marks[i + ':' + c];
+          const off = mark && !SCORE_OK.has(mark.status);
+          cells.push('<td class="' + (num ? 'num' : '')
+            + (off ? ' sc-' + mark.status : '') + '"'
+            + (off ? ' title="' + esc(SCORE_TAG[mark.status][1]) + '"' : '') + '>'
+            + esc(v)
+            + (off && mark.status !== 'spurious'
+                ? '<div class="truth">' + esc(String(mark.expected)) + '</div>' : '')
+            + '</td>');
+        }
+        return '<tr' + (cls ? ' class="' + cls + '" title="' + esc(why) + '"' : '')
+          + '>' + cells.join('') + '</tr>';
+      }).join('')
+    // Rows the page prints and the read did not return, from the ground truth.
+    // Dashed, so nothing in them can be taken for the read.
+    + missedRows.map(cellsOf => '<tr class="row-missed">' + heads.map((h, c) => {
+        const hit = cellsOf.find(r => r.column === c
+          || (r.column === null && r.heading === h));
+        return '<td>' + esc(String((hit || {}).expected || ''))
+          + (c === 0 ? '<span class="fld-tag missing" title="the ground truth '
+              + 'prints this row and the read did not return it">not returned'
+              + '</span>' : '') + '</td>';
+      }).join('') + '</tr>').join('')
+    + '</table></div>';
+
+  // What was done to the table as read, and what was taken out of it. Said,
+  // because a table that quietly lost six rows reads as a short table.
+  const notes = [];
+  if (t.pages && t.pages.length) notes.push('page' + (t.pages.length === 1 ? ' ' : 's ')
+    + t.pages.join(', '));
+  notes.push('read from the ' + esc(t.source || 'transcript'));
+  (t.repairs || []).forEach(r => notes.push(esc(r)));
+  if (ragged.size) notes.push('<span style="color:var(--warn)">' + ragged.size + ' row'
+    + (ragged.size === 1 ? '' : 's') + ' still cut wrongly, shown as read</span>');
+  html += '<p class="tbl-note">' + notes.join(' · ') + '</p>';
+  html += tableAgentsHtml(t, onTableTab);
+  if (sc && sc.expected) {
+    const m = sc.master || {};
+    html += '<p class="tbl-note">Against the ground truth: <b>'
+      + (sc.counts.correct || 0) + ' of ' + sc.expected + '</b> cells correct, '
+      + sc.rows_matched + ' of ' + sc.rows_expected + ' rows matched'
+      + (m.status && m.status !== 'unchecked'
+          ? '; <code>is_master_table</code> <b>' + esc(m.status) + '</b> (the truth '
+            + 'file says ' + esc(String(m.expected)) + ')' : '')
+      + '. Not part of the field score above: no requirement makes a row of this '
+      + 'table Mandatory, and a wrong cell here is the read, not the extraction.</p>';
+  }
+  if ((t.dropped || []).length) {
+    html += '<details class="tbl-note"><summary>' + t.dropped.length + ' row'
+      + (t.dropped.length === 1 ? '' : 's') + ' of the table that '
+      + (t.dropped.length === 1 ? 'is not an item' : 'are not items')
+      + ' — totals, section headings, notes</summary><table>'
+      + t.dropped.map(d => '<tr><td style="color:var(--muted)">' + esc(d.why) + '</td>'
+          + (d.cells || []).map(c => '<td>' + esc(c) + '</td>').join('') + '</tr>')
+        .join('') + '</table></details>';
+  }
+  return html;
+}
+
+/* What the two table agents did. Each was sent the table and nothing else, and
+   the code checked each answer, so the line says what the agent said AND what
+   the code took -- an agent that was overruled reads differently from one that
+   was believed. Silent where neither ran. */
+function tableAgentsHtml(t, compact) {
+  const f = t.fix_agent, d = t.identify_agent;
+  if (!f && !d) return '';
+  const rowList = a => a.map(i => i + 1).join(', ');
+  const lines = [];
+  if (f) {
+    let s = '<b>Fix agent</b>' + (f.model ? ' (' + esc(f.model) + ')' : '') + ': ';
+    const moved = f.removed || [], refused = (f.refusals || []).slice();
+    if (f.skipped && !f.asked) s += esc(f.skipped) + ' — the cells were settled by code alone';
+    else if (f.error) s += 'no usable answer (' + esc(f.error) + ') — nothing removed';
+    else {
+      const ln = f.lines || {};
+      const ls = (ln.stray || []).length + (ln.stray_before || []).length;
+      const lo = (ln.own || []).length + (ln.own_before || []).length;
+      const said = [];
+      if (ls) said.push(ls + ' line' + (ls === 1 ? '' : 's') + ' around the table stray');
+      if (lo) said.push(lo + ' line' + (lo === 1 ? '' : 's') + ' outside the rows the table’s own');
+      if (moved.length) said.push(moved.length + ' piece' + (moved.length === 1 ? '' : 's')
+        + ' of stray text taken out of cells');
+      s += said.length ? said.join('; ') : 'found nothing in or around the table that does not belong';
+      ((ln.refusals) || []).forEach(r => refused.push({ entry: { text: r.text }, why: r.why }));
+    }
+    if ((f.rows_emptied || []).length) s += '; ' + f.rows_emptied.length + ' row'
+      + (f.rows_emptied.length === 1 ? ' was' : 's were') + ' nothing but that text and left the table';
+    if (refused.length) s += ' · <span style="color:var(--warn)">' + refused.length
+      + ' not taken: ' + refused.map(r => '“' + esc(String((r.entry || {}).text || ''))
+        + '” (' + esc(r.why) + ')').join('; ') + '</span>';
+    lines.push(s + '.');
+  }
+  if (d) {
+    let s = '<b>Identify agent</b>' + (d.model ? ' (' + esc(d.model) + ')' : '') + ': ';
+    if (d.error) s += 'no answer (' + esc(d.error) + ')';
+    else if (d.answer === null) s += 'no usable answer';
+    else s += 'said <code>' + d.answer + '</code>'
+      + (d.column ? ', naming column ' + d.column : '');
+    if (d.refused) s += ' — <span style="color:var(--warn)">not taken: '
+      + esc(d.refused) + '</span>';
+    s += '. The answer above is the ' + (t.master_from === 'model' ? 'agent'
+      : 'Python rule') + '’s';
+    if (t.master_from === 'model' && t.master_rules !== t.is_master_table) {
+      s += '; the rule says <code>' + (t.master_rules === null ? 'not determined'
+        : t.master_rules) + '</code> (' + esc(t.master_rules_why || '') + ')';
+    }
+    lines.push(s + '.');
+  }
+  const asks = [];
+  if (f && f.prompt) asks.push(['fix', f.prompt, f.raw]);
+  if (t.recut && t.recut.prompt) asks.push(['re-cut', t.recut.prompt, t.recut.raw]);
+  if (d && d.prompt) asks.push(['identify', d.prompt, d.raw]);
+  // The text the fix agent took out, as plain text: it was printed on the
+  // page, so it is kept and shown -- where it was read from, and nothing more.
+  const out = t.outside_text || [], foot = t.footer || [];
+  const pre = a => '<pre style="white-space:pre-wrap;margin:4px 0">'
+    + a.map(o => esc(o.text)).join(String.fromCharCode(10)) + '</pre>';
+  const where = o => (o.where ? esc(o.where) : 'row ' + (o.row + 1)
+    + (o.heading ? ', ' + esc(o.heading) : '')) + (o.page ? ', page ' + o.page : '');
+  // The table's own lines the read had put after it: its totals, a note.
+  const footer = foot.length ? '<div class="tbl-note"><b>Part of the table, read '
+    + 'outside its rows:</b>' + pre(foot) + '<span style="color:var(--muted)">'
+    + foot.map(where).join(' · ') + '</span></div>' : '';
+  const plain = out.length ? '<div class="tbl-note"><b>Not part of the table — a stamp, '
+    + 'a barcode, handwriting — kept as plain text:</b>' + pre(out)
+    + '<span style="color:var(--muted)">' + out.map(where).join(' · ') + '</span></div>' : '';
+  return (compact ? '' : '<p class="tbl-note">' + lines.join('<br>') + '</p>') + footer + plain
+    + (asks.length ? '<details class="tbl-note"><summary>What the agents were sent, '
+      + 'and what they answered</summary>' + asks.map(a => '<div><b>' + a[0]
+        + '</b><pre style="white-space:pre-wrap;max-height:16em;overflow:auto;font-size:12px">' + esc(a[1]) + '</pre><pre style="white-space:pre-wrap;max-height:16em;overflow:auto;font-size:12px">'
+        + esc(a[2] || '(no reply)') + '</pre></div>').join('') + '</details>' : '');
+}
+
+/* ---------- the Table tab --------------------------------------------------
+   The item table step by step. The server snapshots it after every step
+   (`item_table.stages`) and says who took each one: the read, the fix agent's
+   cleaning, the code's re-cut, the model's re-cut. A cell is marked in the
+   colour of the step that changed it, with what it was before, so "what did the
+   AI do" and "what did the code do" are two colours rather than one paragraph.
+   The ground truth is `table_score.truth_table` -- the same parser run over
+   `solution/<id>.md`, so it is in exactly the shape a perfect read would be. */
+const TV_STAGE = {
+  read:    ['As read', 'read', 'The rows exactly as the OCR read cut them -- after the '
+            + 'structural repairs only (spans expanded, a two-row heading merged, '
+            + 'totals and notes taken out of the items).'],
+  concat:  ['Pieces joined', 'agent', 'The read had cut this table into pieces -- its '
+            + 'totals, or rows continued under other headings, came out as tables of '
+            + 'their own. A piece holding one of the table’s column totals is joined by the code; '
+            + 'for the rest the concat agent named which belong to it, and the code '
+            + 'joined them, placing every cell by what it is; a totals line is kept as a '
+            + 'totals line, not as an item.'],
+  clean:   ['AI agent cleaned', 'agent', 'The fix agent named text in a cell that is '
+            + 'not table data -- a stamp, a barcode, handwriting -- and the code took it '
+            + 'out where it found it in that cell and was allowed to. Nothing it took '
+            + 'out is dropped: it is listed under the final table as plain text.'],
+  realign: ['Code re-cut', 'code', 'Python put rows cut into the wrong cells back '
+            + 'under their headings, by what each cell is -- an amount under a money '
+            + 'heading, a number under a reference. No character changed.'],
+  recut:   ['AI model re-cut', 'agent', 'For the rows Python could not settle, the '
+            + 'model said which column each cell belongs under; the code checked the '
+            + 'answer against the cells and did the cutting itself, so no character '
+            + 'of the reply reaches the table.'],
+};
+function hasItemTable(r) {
+  if (!r) return false;
+  if (r.pending) return true;
+  return ('item_table' in r) || (r.documents || []).some(d => d && 'item_table' in d);
+}
+function paintTableTab() {
+  const on = hasItemTable(extractedFile) || !!tableLive;
+  tabTable.disabled = !on;
+  if (!on && curMode === 'table') showTab('raw');
+}
+/* Which cells changed between two snapshots. Rows are compared by position --
+   every step keeps the row order -- except where the agent emptied a row and it
+   left the table, which `removed_rows` says. A row whose column count changed
+   was re-cut whole, so every cell of it is marked and the old row is its title. */
+function tvDiff(prev, cur) {
+  const out = {};
+  if (!prev || !cur) return out;
+  let prows = prev.rows;
+  const gone = new Set(cur.removed_rows || []);
+  if (gone.size) prows = prows.filter((_, i) => !gone.has(i));
+  const sameCols = prev.columns.length === cur.columns.length;
+  cur.rows.forEach((row, i) => {
+    const was = prows[i] || [];
+    if (JSON.stringify(was) === JSON.stringify(row)) return;
+    const cells = new Set();
+    const whole = !sameCols || was.length !== row.length;
+    row.forEach((v, c) => { if (whole || (v || '') !== (was[c] || '')) cells.add(c); });
+    out[i] = { cells, was, whole };
+  });
+  return out;
+}
+function tvCount(diff) {
+  return Object.values(diff).reduce((a, d) => a + d.cells.size, 0);
+}
+function tvTable(columns, rows, opts) {
+  opts = opts || {};
+  const diff = opts.diff || {}, by = opts.by || 'read';
+  const bad = new Set(opts.misaligned || []), missed = new Set(opts.missed || []);
+  const width = Math.max(columns.length, ...rows.map(r => r.length), 1);
+  let h = '<div style="overflow-x:auto"><table><tr>';
+  for (let c = 0; c < width; c++) {
+    h += '<th>' + (columns[c] ? esc(columns[c]) : '<span style="color:var(--muted)">—</span>') + '</th>';
+  }
+  h += '</tr>';
+  rows.forEach((row, i) => {
+    const d = diff[i];
+    const cls = [bad.has(i) ? 'row-ragged' : '', missed.has(i) ? 'tv-missed' : ''].join(' ').trim();
+    const title = d && d.whole ? 'before: ' + d.was.map(x => x || '·').join(' | ')
+      : missed.has(i) ? 'the read did not return this row'
+      : bad.has(i) ? 'still cut into the wrong number of cells' : '';
+    h += '<tr' + (cls ? ' class="' + cls + '"' : '') + (title ? ' title="' + esc(title) + '"' : '') + '>';
+    for (let c = 0; c < Math.max(width, row.length); c++) {
+      const v = row[c] || '';
+      const ch = d && d.cells.has(c);
+      const num = /^[\d.,\-() ]+$/.test(v) && v.trim() !== '';
+      h += '<td class="' + (num ? 'num' : '') + (ch ? ' tv-ch' : '') + '"'
+        + (ch ? ' style="--by:var(--by-' + by + ')"' : '') + '>' + esc(v)
+        + (ch && !d.whole && (d.was[c] || '') !== v
+           ? '<span class="was">' + (d.was[c] ? esc(d.was[c]) : 'empty') + '</span>' : '')
+        + '</td>';
+    }
+    h += '</tr>';
+    /* A row re-cut whole has no cell-to-cell "before"; the row as it was is
+       drawn under it, struck, so the move is visible without hovering. */
+    if (d && d.whole && d.was.length) {
+      h += '<tr class="tv-before"><td colspan="' + Math.max(width, row.length)
+        + '"><span>before</span> ' + d.was.map(x => esc(x || '·')).join(' <b>|</b> ')
+        + '</td></tr>';
+    }
+  });
+  (opts.gone || []).forEach(row => {
+    h += '<tr class="tv-gone" title="taken out of the table by the fix agent: nothing '
+      + 'in it was table data">' + row.map(v => '<td>' + esc(v || '') + '</td>').join('')
+      + '</tr>';
+  });
+  return h + '</table></div>';
+}
+/* Who did what, one card per hand. Counts and the pieces themselves; the
+   tables below show where. */
+function tvCards(t, stages, sc) {
+  const f = t.fix_agent, d = t.identify_agent, rc = t.recut, cc = t.concat;
+  const li = a => a.length ? '<ul>' + a.map(x => '<li>' + x + '</li>').join('') + '</ul>'
+                           : '<p class="none">nothing</p>';
+  const q = x => '<q>' + esc(String(x || '')) + '</q>';
+  const ai = [], code = [], over = [];
+  if (cc) {
+    const head = 'Concat agent' + (cc.model ? ' (' + esc(cc.model) + ')' : '')
+      + (cc.seconds ? ', ' + cc.seconds + 's' : '');
+    if (cc.skipped && !cc.asked) ai.push(head + ': not asked — ' + esc(cc.skipped));
+    else if (cc.error) ai.push(head + ': no usable answer — ' + esc(cc.error));
+    else ai.push(head + ': ' + (cc.joined || []).length + ' of ' + (cc.offered || 0)
+      + ' other table' + (cc.offered === 1 ? '' : 's') + ' joined'
+      + ((cc.joined || []).length ? ' (' + (cc.rows_added || 0) + ' row'
+         + (cc.rows_added === 1 ? '' : 's') + ', ' + (cc.dropped_added || 0)
+         + ' totals or notes)' : ''));
+    (cc.refusals || []).forEach(r => over.push('refused joining table T' + r.number
+      + ' — ' + esc(r.why)));
+  }
+  if (f) {
+    const head = 'Fix agent' + (f.model ? ' (' + esc(f.model) + ')' : '')
+      + (f.seconds ? ', ' + f.seconds + 's' : '');
+    if (f.skipped && !f.asked) ai.push(head + ': not asked — ' + esc(f.skipped));
+    else if (f.error) ai.push(head + ': no usable answer — ' + esc(f.error));
+    else {
+      const ln = f.lines || {};
+      const moved = f.removed || [];
+      const n = k => (ln[k] || []).length;
+      const lines = (count, side, what) => ai.push(count + ' line' + (count === 1 ? '' : 's')
+        + ' ' + side + ' the table called ' + what);
+      ai.push(head + ': ' + (moved.length || n('stray') || n('own') || n('stray_before')
+        || n('own_before') ? 'see below' : 'found nothing that does not belong'));
+      moved.forEach(m => ai.push('took ' + q(m.text) + ' out of row ' + (m.row + 1)
+        + (m.heading ? ', ' + esc(m.heading) : '')));
+      if (n('stray_before')) lines(n('stray_before'), 'before', 'stray (stamp, barcode, handwriting)');
+      if (n('own_before')) lines(n('own_before'), 'before', 'the table’s own (headings or a row it cut off)');
+      if (n('stray')) lines(n('stray'), 'after', 'stray (stamp, barcode, handwriting)');
+      if (n('own')) lines(n('own'), 'after', 'the table’s own (totals, a note)');
+      (f.refusals || []).forEach(r => over.push('refused the fix agent’s '
+        + q((r.entry || {}).text) + ' — ' + esc(r.why)));
+      ((ln.refusals) || []).forEach(r => over.push('refused moving line ' + q(r.text)
+        + ' — ' + esc(r.why)));
+    }
+  } else {
+    ai.push('Fix agent: off');
+  }
+  if (rc && (rc.asked || rc.skipped || rc.error)) {
+    if (rc.skipped) ai.push('Model re-cut: not asked — ' + esc(rc.skipped));
+    else if (rc.error) ai.push('Model re-cut: no usable answer — ' + esc(rc.error));
+    else ai.push('Model re-cut' + (rc.model ? ' (' + esc(rc.model) + ')' : '') + ': asked about '
+      + rc.asked + ' row' + (rc.asked === 1 ? '' : 's') + ', ' + rc.taken + ' taken');
+    (rc.refusals || []).forEach(r => over.push('refused the model’s cut of row '
+      + (r.row + 1) + ' — ' + esc(r.why)));
+  }
+  if (d) {
+    let s = 'Identify agent' + (d.model ? ' (' + esc(d.model) + ')' : '') + ': ';
+    if (d.error) s += 'no answer — ' + esc(d.error);
+    else if (d.answer === null || d.answer === undefined) s += 'no usable answer';
+    else s += 'said <code>is_master_table: ' + d.answer + '</code>'
+      + (d.column ? ', column ' + d.column : '') + (d.taken ? ' — taken' : '');
+    ai.push(s);
+    if (d.refused) over.push('refused the identify agent — ' + esc(d.refused));
+  } else {
+    ai.push('Identify agent: off');
+  }
+  // The code's own repairs, in its own words. The ones the agents caused are
+  // already in the AI card.
+  // `sort_tail` and `remove_text` write their own repair lines, and those are
+  // the fix agent's work -- already in the AI card.
+  (t.repairs || []).filter(r => !/model said|did not belong|plain text|kept with it/.test(r))
+    .forEach(r => code.push(esc(r)));
+  const realign = stages.find(x => x.stage === 'realign');
+  const prev = realign ? stages[stages.indexOf(realign) - 1] : null;
+  if (realign && prev) {
+    const n = Object.keys(tvDiff(prev, realign)).length;
+    if (n && !code.some(x => /put back under the headings/.test(x))) {
+      code.push(n + ' row' + (n === 1 ? '' : 's') + ' re-cut under the headings');
+    }
+  }
+  code.push(...over.map(x => '<span style="color:var(--warn)">' + x + '</span>'));
+  (t.misaligned || []).length && code.push('<span style="color:var(--warn)">'
+    + t.misaligned.length + ' row' + (t.misaligned.length === 1 ? '' : 's')
+    + ' still cut wrongly — shown as read</span>');
+  let res = [];
+  if (sc && sc.expected) {
+    res.push('<b>' + (sc.counts.correct || 0) + ' of ' + sc.expected + '</b> cells correct');
+    res.push(sc.rows_matched + ' of ' + sc.rows_expected + ' rows matched');
+    const m = sc.master || {};
+    if (m.status && m.status !== 'unchecked') res.push('<code>is_master_table</code> '
+      + esc(m.status) + ' (sol says ' + esc(String(m.expected)) + ')');
+  } else if (sc && sc.truth_table === undefined && sc.expected === 0) {
+    res.push('sol rules no item table on this document');
+  } else {
+    res.push('<span class="none">no ground truth for this document</span>');
+  }
+  return '<div class="tv-who">'
+    + '<div style="--by:var(--by-agent)"><h4>AI agents</h4>' + li(ai) + '</div>'
+    + '<div style="--by:var(--by-code)"><h4>Code</h4>' + li(code) + '</div>'
+    + '<div style="--by:var(--by-truth)"><h4>Against sol</h4>' + li(res) + '</div>'
+    + '</div>';
+}
+/* The fix agent's own score (`fix_score`, from fixscore.py against
+   solution/tables/<id>.md). Drawn apart from the table score on purpose: it says
+   whether the agent's decisions were right -- what it moved out, what it kept --
+   and never feeds the cells-correct figure above it. */
+function fixScoreHtml(fs) {
+  if (!fs) return '';
+  if (fs.error) return '<div class="fld-sec">Fix agent score</div><p class="tbl-note">'
+    + esc(fs.error) + '</p>';
+  const st = fs.strays || {}, rm = fs.removals || {}, own = fs.own_lines || {};
+  const cells = fs.cells, agent = fs.agent || {};
+  const pct = v => v === null || v === undefined ? '–' : v.toFixed(1) + '%';
+  const sign = v => v === null || v === undefined ? '–' : (v > 0 ? '+' : '') + v;
+  const lines = [], bad = [];
+  if (!agent.asked) lines.push('<span class="none">The fix agent was not asked'
+    + (agent.skipped ? ' — ' + esc(agent.skipped) : '') + '; everything below is what '
+    + 'was left as read.</span>');
+  lines.push('<b>Strays found: ' + pct(st.recall) + '</b> — moved ' + (st.moved || 0)
+    + ' of ' + (st.scored || 0) + ' stamp, barcode or handwriting lines it was shown'
+    + (st.left_in_table ? '; <span style="color:var(--danger)">' + st.left_in_table
+       + ' still in the table</span>' : '')
+    + (st.missed ? '; ' + st.missed + ' left as page text' : '')
+    + (st.not_read ? ' · ' + st.not_read + ' the read never produced (not counted)' : '')
+    + (st.not_shown ? ' · ' + st.not_shown + ' outside the lines the agent was shown (not counted)' : '')
+    + (st.marks ? ' · ' + st.marks + ' mark' + (st.marks === 1 ? '' : 's') + ' with no text' : ''));
+  lines.push('<b>Removals right: ' + pct(rm.precision) + '</b> — ' + (rm.stray || 0) + ' of '
+    + (rm.total || 0) + ' moved out were stray'
+    + (rm.page_text ? '; ' + rm.page_text + ' were ordinary page text' : '')
+    + (rm.real_value ? '; <span style="color:var(--danger)">' + rm.real_value
+       + ' were values the clean table holds</span>' : ''));
+  if (own.total) lines.push('<b>Table’s own lines:</b> ' + own.table + ' of ' + own.total
+    + ' named the table’s are in the clean table');
+  const tot = fs.totals || {}, cc = fs.concat || {};
+  if (tot.expected) lines.push('<b>Totals held:</b> ' + (tot.in_table || 0) + ' of ' + tot.expected
+    + ' of the table’s totals rows are part of the returned table');
+  if (cc.offered) lines.push('<b>Joined:</b> ' + (cc.joined || 0) + ' of ' + cc.offered
+    + ' other table' + (cc.offered === 1 ? '' : 's') + ' the read made'
+    + (cc.by_sum ? ', ' + cc.by_sum + ' by a column total' : '')
+    + (cc.joined ? ' (' + (cc.rows_added || 0) + ' rows, ' + (cc.dropped_added || 0)
+       + ' totals or notes)' : ''));
+  (tot.missing || []).forEach(m => bad.push('<li>totals row not in the table: <q>'
+    + esc(m) + '</q></li>'));
+  if (cells) lines.push('<b>Cells:</b> ' + cells.read + ' correct as read → '
+    + (cells.after_agent === null ? '–' : cells.after_agent) + ' after the agent → '
+    + cells.final + ' final, of ' + cells.expected + ' (agent ' + sign(cells.agent_delta)
+    + ', all repairs ' + sign(cells.final_delta) + ')');
+  (st.items || []).forEach(i => {
+    if (i.status === 'left_in_table' || i.status === 'missed') bad.push(
+      '<li>' + (i.status === 'left_in_table' ? 'still in the table' : 'not moved')
+      + ' — ' + esc(i.kind) + ': <q>' + esc(i.text) + '</q></li>');
+  });
+  (rm.items || []).forEach(i => {
+    if (i.status !== 'stray') bad.push('<li>' + (i.status === 'real_value'
+      ? '<span style="color:var(--danger)">a real value taken out</span>'
+      : 'page text called stray') + ': <q>' + esc(i.text) + '</q>'
+      + (i.where ? ' (' + esc(i.where) + ')' : '') + '</li>');
+  });
+  (own.items || []).forEach(i => {
+    if (i.status !== 'table') bad.push('<li>named the table’s own, and is not: <q>'
+      + esc(i.text) + '</q></li>');
+  });
+  return '<div class="fld-sec" title="Scored against solution/tables. Separate from '
+    + 'the table score above: this measures the fix agent’s decisions only.">'
+    + 'Fix agent score <span class="tbl-note" style="margin:0">— separate from the '
+    + 'table score</span></div><p class="tbl-note">' + lines.join('<br>') + '</p>'
+    + (bad.length ? '<ul class="tbl-note">' + bad.join('') + '</ul>' : '');
+}
+function tvSwitches() {
+  const a = TABLE_AGENTS || {};
+  return '<span class="tv-sw" title="Whether each agent runs on the NEXT extraction. '
+    + 'Off is the code alone: the table is still read and re-cut by Python, and '
+    + 'the master-table answer is the Python rule.">'
+    + '<label><input type="checkbox" data-agent="concat"' + (a.concat ? ' checked' : '')
+    + '> concat agent</label>'
+    + '<label><input type="checkbox" data-agent="fix"' + (a.fix ? ' checked' : '')
+    + '> fix agent</label><label><input type="checkbox" data-agent="identify"'
+    + (a.identify ? ' checked' : '') + '> identify agent</label>'
+    + '<span>(next run)</span></span>';
+}
+function paintTableView() {
+  if (curMode !== 'table') return;
+  const strip = docStrip();
+  if (!extracted || extracted.pending) {
+    const L = tableLive || {};
+    const line = (k, name) => {
+      const e = L[k];
+      if (!e) return '<li class="none">' + name + ': waiting</li>';
+      if (e.status === 'running') return '<li><span class="spin"></span> ' + name
+        + ' running' + (e.model ? ' · ' + esc(e.model) : '') + '…</li>';
+      if (e.status === 'off') return '<li>' + name + ': off</li>';
+      if (e.status === 'skipped') return '<li>' + name + ': nothing to join — the read '
+        + 'made no other table after this one</li>';
+      if (e.status === 'none') return '<li>' + name + ': no item table in this document</li>';
+      return '<li>' + name + ': done' + (e.seconds ? ' in ' + e.seconds + 's' : '')
+        + (k === 'fix' && e.asked ? ' · ' + (e.removed || 0) + ' taken out of cells, '
+           + (e.stray_lines || 0) + ' stray lines' : '')
+        + (k === 'concat' && e.asked ? ' · ' + (e.joined || 0) + ' of ' + (e.offered || 0)
+           + ' other tables joined' : '')
+        + (k === 'identify' && e.is_master_table !== undefined
+           ? ' · is_master_table: ' + e.is_master_table + ' (' + esc(e.master_from || '') + ')' : '')
+        + (e.refused ? ' · <span style="color:var(--warn)">refused: ' + esc(e.refused) + '</span>' : '')
+        + '</li>';
+    };
+    tableViewEl.innerHTML = '<div class="tv-head"><h3>Item table</h3><span class="spacer"></span>'
+      + tvSwitches() + '</div>'
+      + (tableLive ? '<ul class="tbl-note">' + line('read', 'Reading the table')
+           + line('concat', 'Concat agent') + line('fix', 'Fix agent') + line('identify', 'Identify agent') + '</ul>'
+         : '<p class="tbl-note">Waiting for the extraction to reach the table…</p>');
+    return;
+  }
+  const x = extracted;
+  if (!('item_table' in x)) {
+    tableViewEl.innerHTML = strip + '<div class="tv-head"><h3>Item table</h3>'
+      + '<span class="spacer"></span>' + tvSwitches() + '</div><p class="tbl-note">'
+      + 'This document was not looked at for an item table — its type rules a table '
+      + 'of its own (a withholding certificate’s income rows are on the Fields tab), '
+      + 'or table extraction is off.</p>';
+    return;
+  }
+  const t = x.item_table;
+  const sc = x.table_score && !x.table_score.error ? x.table_score : null;
+  const truth = sc && sc.truth_table ? sc.truth_table : null;
+  if (!t || t.error || !Array.isArray(t.rows)) {
+    tableViewEl.innerHTML = strip + '<div class="tv-head"><h3>Item table</h3><span class="spacer"></span>'
+      + tvSwitches() + '</div><p class="tbl-note">' + (t && t.error ? esc(t.error)
+        : 'No item table was found in the transcript of this document.') + '</p>'
+      + (truth ? '<div class="fld-sec">What sol says it should be</div>'
+         + tvTable(truth.columns, truth.rows) : '');
+    return;
+  }
+  const stages = (t.stages || []).filter(st => TV_STAGE[st.stage]);
+  const kind = t.is_master_table === true ? ['master', 'is_master_table: true']
+             : t.is_master_table === false ? ['items', 'is_master_table: false']
+             : ['unsure', 'is_master_table: not determined'];
+  let html = strip + '<div class="tv-head"><h3>Item table · ' + t.rows.length + ' row'
+    + (t.rows.length === 1 ? '' : 's') + '</h3><span class="tbl-kind ' + kind[0]
+    + '" title="' + esc(t.master_why || '') + '">' + kind[1] + '</span>'
+    + '<span class="tbl-note" style="margin:0">answered by the '
+    + (t.master_from === 'model' ? 'identify agent' : 'Python rule') + '</span>'
+    + '<span class="spacer"></span>' + tvSwitches() + '</div>';
+  html += tvCards(t, stages, sc) + fixScoreHtml(x.fix_score);
+
+  // The steps, each with how many cells it changed.
+  const views = [];
+  stages.forEach((st, i) => {
+    const prev = i ? stages[i - 1] : null;
+    const diff = tvDiff(prev, st);
+    const n = tvCount(diff), gone = (st.removed_rows || []).length;
+    const meta = TV_STAGE[st.stage];
+    const notAsked = st.stage === 'recut' && !st.asked;
+    const label = i === 0 ? st.rows.length + ' rows' + (st.misaligned.length
+        ? ', ' + st.misaligned.length + ' cut wrongly' : '')
+      : notAsked ? 'not asked' : (n || gone ? n + ' cell' + (n === 1 ? '' : 's') + ' changed'
+        + (gone ? ', ' + gone + ' row' + (gone === 1 ? '' : 's') + ' out' : '') : 'no change');
+    const joinedNote = st.stage === 'concat' && t.concat && label === 'no change'
+      && t.concat.dropped_added ? t.concat.dropped_added + ' totals or notes joined' : '';
+    views.push({ key: st.stage, title: (i + 1) + ' ' + meta[0], by: st.by || meta[1],
+                 label: joinedNote || label,
+                 changed: n + gone, st, prev, diff });
+  });
+  if (truth) {
+    views.push({ key: 'truth', title: 'Ground truth (sol)', by: 'truth',
+                 label: truth.rows.length + ' rows · ' + truth.columns.length + ' columns' });
+    views.push({ key: 'side', title: 'Final vs sol', by: 'truth', label: 'side by side' });
+  }
+  let pick = tvStage && views.find(v => v.key === tvStage);
+  if (!pick) pick = views.find(v => v.key === 'side')
+    || views.slice().reverse().find(v => v.changed) || views[views.length - 1];
+  if (views.length) {
+    html += '<div class="fld-sec">Step by step</div><div class="tv-steps">'
+      + views.map((v, i) => (i && v.key === 'truth' ? '<span class="arrow">|</span>'
+          : i && v.key !== 'side' ? '<span class="arrow">›</span>' : '')
+          + '<button type="button" data-tv="' + v.key + '" style="--by:var(--by-' + v.by + ')"'
+          + (v === pick ? ' class="on"' : '') + '>' + esc(v.title) + '<small>' + esc(v.label)
+          + '</small></button>').join('') + '</div>';
+    if (pick.st) {
+      const st = pick.st;
+      const goneRows = pick.prev && (st.removed_rows || []).length
+        ? st.removed_rows.map(i => pick.prev.rows[i] || []) : [];
+      html += '<p class="tv-what">' + esc(TV_STAGE[st.stage][2])
+        + (pick.prev ? ' Marked cells are what this step changed, with the cell before '
+           + 'it struck through underneath.' : '') + '</p>'
+        + tvTable(st.columns, st.rows, { diff: pick.diff, by: pick.by,
+                                          misaligned: st.misaligned, gone: goneRows });
+    } else if (pick.key === 'truth') {
+      html += '<p class="tv-what">The item table of <b>solution/' + esc(sc.case || '')
+        + '.md</b>, read by the same code that reads a model’s transcript — so this is '
+        + 'exactly what a perfect read would come back as. sol says <code>is_master_table: '
+        + esc(String((sc.master || {}).expected)) + '</code>.</p>'
+        + tvTable(truth.columns, truth.rows, { missed: tvMissedTruth(sc) });
+    } else {
+      const last = stages[stages.length - 1] || { columns: t.columns, rows: t.rows };
+      html += '<p class="tv-what">The table this run returned beside the one sol says '
+        + 'the page prints. Dashed rows in sol are rows the read did not return.</p>'
+        + '<div class="tv-side"><div><h4 style="--by:var(--by-agent);color:var(--text)">Final</h4>'
+        + tvTable(t.columns, t.rows, { misaligned: t.misaligned }) + '</div>'
+        + '<div><h4 style="--by:var(--by-truth)">sol</h4>'
+        + tvTable(truth.columns, truth.rows, { missed: tvMissedTruth(sc) }) + '</div></div>';
+    }
+  }
+  html += '<div class="fld-sec">Final table, marked against sol</div>'
+    + itemTableHtml(x, true).replace(/^<div class="fld-sec">[\s\S]*?<\/div>/, '');
+  tableViewEl.innerHTML = html;
+}
+/* The truth rows the read never returned, by their index in the truth table. */
+function tvMissedTruth(sc) {
+  const out = new Set();
+  ((sc && sc.rows) || []).forEach(r => {
+    const m = /^item_table\[(\d+)\]/.exec(r.path || '');
+    if (m && (r.row === null || r.row === undefined)) out.add(Number(m[1]));
+  });
+  return [...out];
+}
+tableViewEl.addEventListener('click', ev => {
+  const doc = ev.target.closest('.docs button');
+  if (doc) { showDocument(Number(doc.dataset.doc)); paintTableView(); return; }
+  const b = ev.target.closest('[data-tv]');
+  if (b) { tvStage = b.dataset.tv; paintTableView(); }
+});
+document.addEventListener('click', ev => {
+  const go = ev.target.closest('[data-go="table"]');
+  if (!go) return;
+  ev.preventDefault();
+  if (!tabTable.disabled) showTab('table');
+});
+tableViewEl.addEventListener('change', async ev => {
+  const box = ev.target.closest('[data-agent]');
+  if (!box) return;
+  box.disabled = true;
+  try {
+    const res = await fetch('/api/table-agents', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ [box.dataset.agent]: box.checked })
+    });
+    const body = await res.json();
+    if (typeof body.fix === 'boolean') TABLE_AGENTS = body;
+  } catch (err) { /* leave it as the server last said */ }
+  paintTableView();
+});
 
 /* NDJSON rather than a plain POST: agentic mode is a request per step, and a
    button that sits silent for two minutes is indistinguishable from one that has
@@ -9747,11 +10556,20 @@ function paintReader() {
      because on a library run it is only pass 2. Saying so is not decoration: a
      library run whose extraction failed would otherwise read as a library
      failure, and the fix is in a different place. */
-  serverGroupHead.textContent = local ? 'Model server · field extraction'
-                                      : 'Model server · reads and extracts';
+  /* With a separate extraction server the two passes are on two boxes, and
+     the heading must not claim this one does both. */
+  const split = !!(extractInfo && extractInfo.separate);
+  serverGroupHead.textContent = local
+    ? (split ? 'Model servers · field extraction' : 'Model server · field extraction')
+    : (split ? 'Model servers · reads, then extracts elsewhere'
+             : 'Model server · reads and extracts');
   serverGroupNote.textContent = local
     ? 'The library above reads the page. Mapping that transcript onto a form is '
-      + 'a text task no OCR library does, so pass 2 still runs here.'
+      + 'a text task no OCR library does, so pass 2 still runs on a model server'
+      + (split ? ' -- the extraction server below.' : ' -- this one.')
+    : split
+    ? 'The model server reads each prepared page image; the extraction server '
+      + 'below maps that transcript onto the form.'
     : 'This server reads each prepared page image and then extracts the fields '
       + 'from its own transcript.';
   modelRole.textContent = local ? 'Model · extracts fields'
@@ -9860,17 +10678,60 @@ function addUrlOption(sel, url) {
 function paintExtractPicker(sel, field, ex) {
   if (!sel || !field) return;
   const choices = (ex && ex.choices) || [];
-  // Nothing to choose between when the endpoint serves one model: the picker
-  // would offer "same as reading model" and that same model under two names.
-  field.style.display = choices.length > 1 || (ex && !ex.same_as_reading)
+  /* On a server of its own there is no reading model to share, so the empty
+     choice means that server's default instead -- named, so it is visible
+     which model "default" is. */
+  const separate = !!(ex && ex.separate);
+  field.style.display = choices.length > 1 || (ex && !ex.same_as_reading && !separate)
     ? 'flex' : 'none';
   if (field.style.display === 'none') return;
-  sel.innerHTML = '<option value="">same as reading model'
-    + (server.model ? ' (' + esc(server.model) + ')' : '') + '</option>'
+  sel.innerHTML = (separate
+      ? '<option value="">server default'
+        + (ex.model && !ex.chosen ? ' (' + esc(ex.model) + ')' : '') + '</option>'
+      : '<option value="">same as reading model'
+        + (server.model ? ' (' + esc(server.model) + ')' : '') + '</option>')
     + choices.map(name => '<option value="' + esc(name) + '"'
         + (name === (ex.chosen || '') ? ' selected' : '') + '>' + esc(name)
-        + (name === server.model ? ' · also reading' : '') + '</option>').join('');
+        + (name === server.model && !separate ? ' · also reading' : '')
+        + '</option>').join('');
   sel.value = (ex && ex.chosen) || '';
+}
+
+/* The extraction SERVER: "same as reading server" (the one-URL setup), every
+   configured endpoint, and "Other address…". Painted from the reading picker's
+   own list so the two cannot offer different servers, plus whatever pass 2 is
+   pointed at now. The value is the CHOICE (`configured`), never the resolved
+   URL: "the reading server" and "this URL, which happens to be the reading
+   server" are different choices, and only the first follows the reader. */
+function paintExtractEndpoint(sel) {
+  if (!sel) return;
+  const ex = extractInfo || {};
+  const urls = [...endpointSel.options].map(o => o.value)
+    .filter(v => v && v !== '__custom__');
+  if (ex.configured && !urls.includes(ex.configured)) urls.push(ex.configured);
+  const want = ex.configured || '';
+  sel.innerHTML = '<option value="">same as reading server</option>'
+    + urls.map(u => '<option value="' + esc(u) + '">' + esc(u) + '</option>').join('')
+    + (sel === extractEndpointSel ? '<option value="__custom__">Other address…</option>' : '');
+  sel.value = want;
+}
+function paintExtractServerNote() {
+  if (!extractServerNote) return;
+  const ex = extractInfo || {};
+  if (!ex.separate) {
+    extractServerNote.textContent = ex.configured
+      ? 'The extraction server is the reading server right now, so both passes go to '
+        + (ex.url || '') + '.'
+      : '';
+    extractServerNote.classList.remove('err');
+    return;
+  }
+  extractServerNote.textContent = ex.available
+    ? 'Fields are extracted on ' + (ex.kind || 'server') + ' ' + ex.url
+      + (ex.model ? ' · ' + ex.model : '') + ' · page images still go to '
+      + (server.url || 'the reading server') + '.'
+    : '⚠ Extraction server ' + ex.url + ': ' + (ex.reason || 'not reachable.');
+  extractServerNote.classList.toggle('err', !ex.available);
 }
 
 function paintModelPicker(sel, field, models) {
@@ -9900,6 +10761,9 @@ function paintEndpoint() {
   paintModelPicker(fxModel, fxModelField, models);
   paintExtractPicker(extractModelSel, extractModelField, extractInfo);
   paintExtractPicker(fxExtract, fxExtractField, extractInfo);
+  paintExtractEndpoint(extractEndpointSel);
+  paintExtractEndpoint(fxExtractEndpoint);
+  paintExtractServerNote();
   // The random test's locks are painted from the same two lists, so a model that
   // stops being served stops being lockable at the same moment.
   if (typeof rtPaintLocks === 'function') rtPaintLocks();
@@ -9924,12 +10788,15 @@ function setServerNote(msg, bad) {
 /* `extractModel` is a tri-state and the distinction matters: undefined means
    "leave it alone", '' means "same as the reading model", and a name means that
    model. Sent as a JSON null-vs-string, which the route reads the same way. */
-async function switchServer(url, model, extractModel) {
+async function switchServer(url, model, extractModel, extractUrl) {
   setServerNote('Switching…');
   runBtn.disabled = true;
   try {
     const body = { url: url || '', model: model || '' };
     if (extractModel !== undefined) body.extract_model = extractModel;
+    // Same tri-state: undefined leaves pass 2's server alone, '' puts it back on
+    // the reading server, a URL gives it one of its own.
+    if (extractUrl !== undefined) body.extract_url = extractUrl;
     const res = await fetch('/api/servers', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body)
@@ -9960,10 +10827,14 @@ async function switchServer(url, model, extractModel) {
       + (server.model ? ' · ' + server.model : '')
       // Named only when the two passes differ, so the usual one-model line stays
       // as short as it was.
-      + (extractInfo.same_as_reading ? ''
+      + (extractInfo.separate
+         ? ' · extracting on ' + extractInfo.url
+           + (extractInfo.model ? ' with ' + extractInfo.model : '')
+         : extractInfo.same_as_reading ? ''
          : ' · extracting with ' + extractInfo.model)
       + (stopped.length ? ' · stopped ' + stopped.join(', ') + ' to free the GPU' : ''));
     customRow.style.display = 'none';
+    if (extractCustomRow) extractCustomRow.style.display = 'none';
     paintEndpoint();
     paintServer();
   } catch (err) {
@@ -9994,6 +10865,25 @@ if (fxModel) fxModel.addEventListener('change', () => switchServer(null, fxModel
 for (const sel of [extractModelSel, fxExtract]) {
   if (sel) sel.addEventListener('change', () => switchServer(null, null, sel.value));
 }
+for (const sel of [extractEndpointSel, fxExtractEndpoint]) {
+  if (!sel) continue;
+  sel.addEventListener('change', () => {
+    if (sel.value === '__custom__') {
+      extractCustomRow.style.display = 'flex';
+      extractEndpointCustom.focus();
+      return;
+    }
+    if (extractCustomRow) extractCustomRow.style.display = 'none';
+    switchServer(null, null, undefined, sel.value);
+  });
+}
+if (extractEndpointUse) extractEndpointUse.addEventListener('click', () => {
+  const url = extractEndpointCustom.value.trim();
+  if (url) switchServer(null, null, undefined, url);
+});
+if (extractEndpointCustom) extractEndpointCustom.addEventListener('keydown', e => {
+  if (e.key === 'Enter') { e.preventDefault(); extractEndpointUse.click(); }
+});
 
 function paintServer() {
   const reading = selectedReader();
@@ -10586,6 +11476,8 @@ async function startRead(opts) {
           tabFields.disabled = false;
           pagebar.innerHTML = '<span class="spin"></span> Extracting fields…';
           if (tabFields.classList.contains('on')) paintFields();
+        } else if (msg.event === 'table_agent') {
+          stepEvent(msg);
         } else if (msg.event === 'segmented' || msg.event === 'document'
                    || msg.event === 'document_done' || msg.event === 'segmenting'
                    || msg.event === 'segment_page') {
@@ -10767,9 +11659,17 @@ function paintFieldsOnly() {
   // pane is for. Hence `text_available`; this read `available` until 2026-08-20,
   // which greyed the button out for every text-only model while the comment
   // above claimed otherwise.
-  const ok = !!server.text_available;
+  // Where pass 2 has a server of its own, THAT is the one this pane needs: it
+  // reads no page, so the reading server being down is not its problem.
+  const ex = extractInfo || {};
+  const sep = !!ex.separate;
+  const ok = sep ? !!ex.available : !!server.text_available;
   fxDot.className = 'dot ' + (ok ? 'ok' : 'bad');
-  fxServerText.textContent = ok
+  fxServerText.textContent = sep
+    ? (ok ? (ex.model || ex.kind || 'server') + ' · ' + (ex.kind || '')
+            + ' · extraction server ' + ex.url
+          : (ex.reason || 'No extraction server at ' + ex.url))
+    : ok
     ? (server.model || server.kind || 'server') + ' · ' + (server.kind || '')
       + ' · text only, no image'
     : 'No model server at ' + server.url;

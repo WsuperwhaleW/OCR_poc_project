@@ -126,7 +126,10 @@ def decode_result(result, width: int, height: int) -> list[dict]:
     scores = result["rec_scores"]
     polygons = result["rec_polys"]
     lines = []
-    for text, raw_score, raw_polygon in zip(texts, scores, polygons, strict=True):
+    # zip(strict=True) is 3.10+; the server runs 3.9.
+    if not len(texts) == len(scores) == len(polygons):
+        raise ValueError("PaddleOCR returned texts, scores and polygons of different lengths")
+    for text, raw_score, raw_polygon in zip(texts, scores, polygons):
         score = float(raw_score)
         pixels = [[float(x), float(y)] for x, y in raw_polygon]
         if len(pixels) < 4 or not math.isfinite(score) or not 0 <= score <= 1:

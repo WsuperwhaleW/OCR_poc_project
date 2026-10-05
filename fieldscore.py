@@ -61,6 +61,7 @@ from pathlib import Path
 import config
 import grounding
 import prompts
+import tables
 import verify
 
 SOLUTION = config.SOLUTION_DIR
@@ -116,7 +117,7 @@ STATUS_MEANING = {
 
 # Keys of the truth file that are configuration rather than a value to score.
 _CONFIG_KEYS = ("other_fields", "table_columns", "score_table", "line_items",
-                "income_items")
+                "income_items", "is_master_table")
 
 # Column heading -> schema key, tried in this order and each key taken by the
 # LEFTMOST column that claims it. The order is the whole of the mapping's
@@ -164,39 +165,12 @@ _MONEY_CELLS = ("amount", "unit_price", "vat", "withholding_tax", "net_amount")
 _TOTAL_ROW = re.compile(r"^\s*(?:total|sub\s*-?\s*total|grand\s*total|less|"
                         r"รวม|ยอดรวม|ยอดสุทธิ|จำนวนเงินรวม|บวก|หัก)", re.I)
 
-_PIPE_SPLIT = re.compile(r"(?<!\\)\|")
-_RULE_CELL = re.compile(r"^:?-{2,}:?$")
-
-
-def _cells(line: str) -> list:
-    """One Markdown table row as its cells, outer pipes and escapes removed."""
-    parts = _PIPE_SPLIT.split(line.strip())
-    if parts and not parts[0].strip():
-        parts = parts[1:]
-    if parts and not parts[-1].strip():
-        parts = parts[:-1]
-    return [re.sub(r"<br\s*/?>", " ", cell).replace("\\|", "|").strip()
-            for cell in parts]
-
-
-def _tables(text: str) -> list:
-    """Every Markdown pipe table in a document, as (header cells, row cell lists)."""
-    found = []
-    lines = text.splitlines()
-    index = 0
-    while index < len(lines):
-        if not lines[index].lstrip().startswith("|"):
-            index += 1
-            continue
-        block = []
-        while index < len(lines) and lines[index].lstrip().startswith("|"):
-            block.append(lines[index])
-            index += 1
-        if len(block) >= 3:
-            rule = _cells(block[1])
-            if rule and all(_RULE_CELL.match(c) for c in rule if c):
-                found.append((_cells(block[0]), [_cells(ln) for ln in block[2:]]))
-    return found
+# One reader of a Markdown pipe table, shared with `tables.py`, which takes the
+# same syntax out of a transcript. They lived here until 2026-09-30; a second
+# copy would eventually disagree with the first about what a cell is, and the
+# two would then be scoring a table against a different reading of itself.
+_cells = tables.pipe_cells
+_tables = tables.pipe_tables
 
 
 def _map_headers(headers, overrides=None) -> dict:
@@ -629,7 +603,21 @@ def load_truth(case_id: str, pages=None) -> dict:
                 entries.append({"label": label, "value": stated})
             others = entries
 
+    # Whether this document's item table is a list of OTHER DOCUMENTS rather than
+    # of items -- a person's reading, and the only thing about the item table
+    # this file holds. The rows themselves are in the .md and are read from it
+    # (`table_truth`), for the reason the charges table always was.
+    #
+    # Three states like every other key here: true, false, and null or absent
+    # for "not checked" -- which is also the honest answer for a document that
+    # rules no item table at all.
+    master = raw.get("is_master_table")
+    if master is not None and not isinstance(master, bool):
+        warnings.append("is_master_table: expected true, false or null -- ignored")
+        master = None
+
     return {"scalars": scalars, "other_fields": others,
+            "is_master_table": master,
             # None where the file states none, so "this document rules no income
             # table" and "nobody has transcribed it yet" stay distinguishable --
             # the same reason `other_fields` is None rather than [].
@@ -705,6 +693,19 @@ README_LINES = [
         "  \"table_columns\": { \"จำนวนเงินรับ\": \"amount\" }",
         "score_table: set false to leave the table out of the score entirely.",
         "",
+        "is_master_table: what KIND of table the document's item table is.",
+        "  true   its rows are OTHER DOCUMENTS -- each identified by an invoice",
+        "         number or another reference, with that document's figures: a",
+        "         receipt settling several invoices, a billing note, a payment",
+        "         schedule.",
+        "  false  its rows are items -- goods or services. A list of goods that",
+        "         cites a document on each row is still a list of goods.",
+        "  null   not checked, or the document rules no item table at all.",
+        "The rows themselves are read from the .md, like the line items above;",
+        "this one flag is the only thing about the item table written here,",
+        "because it is a person's reading of the table and cannot be derived",
+        "without marking the rule against itself.",
+        "",
         "other_fields: null means not scored. A list means these labels and",
         "values are what the page prints outside the schema. Scored and",
         "reported separately -- the labels are the model's own wording, so they",
@@ -741,6 +742,8 @@ def skeleton(case_id: str, pdf: str = "", kind: str = "") -> str:
         "other_fields": None,
         "table_columns": None,
         "score_table": True,
+        # Not checked until a person says which it is.
+        "is_master_table": None,
     }
     return json.dumps(body, ensure_ascii=False, indent=2) + "\n"
 
@@ -1430,6 +1433,310 @@ def pool(scores) -> dict:
 # --------------------------------------------------------------------------
 # reporting
 # --------------------------------------------------------------------------
+
+# --------------------------------------------------------------------------
+# the item table (2026-09-30)
+# --------------------------------------------------------------------------
+#
+# Scored BESIDE the field score and never inside it. No requirement makes a row
+# of this table Mandatory, so it has no place in a headline that is the
+# requirement's Mandatory set -- the standing `other_fields` has, for a
+# different reason with the same shape. And it measures a different thing: the
+# table is read out of the transcript in Python (`tables.py`), so a wrong cell
+# here is the READ's, or a repair's, and never the extraction model's.
+
+def _document_text(case_id: str, pages=None) -> str:
+    """The ground-truth transcript of one document of a case, page markers kept.
+
+    `pages` picks the document out of a file holding several; without it the
+    whole file is the document. The markers are rebuilt rather than sliced out
+    of the text, so a table's rows still say which page they came off.
+    """
+    path = ground_truth_path(case_id)
+    if path is None:
+        return ""
+    text = path.read_text("utf-8")
+    if not pages:
+        return text
+    import segment
+    every = segment.split_pages(text)
+    return "\n".join("--- page %d ---\n%s" % (n, every[n - 1])
+                     for n in pages if 0 < n <= len(every))
+
+
+def table_truth(case_id: str, pages=None) -> dict:
+    """What a document's item table should come back as.
+
+    {"table": the item table of the ground-truth transcript, or None,
+     "is_master_table": what a person recorded in the truth file, or None}
+
+    **The rows are derived from the .md by the same code that reads them out of
+    a model's transcript**, which is the rule the charges table has always
+    followed and for the same reason: the .md is already a hand-checked
+    transcription of those rows, and a second copy typed into JSON would
+    disagree with it eventually. It also means the truth can never be in a
+    shape the extractor could not have produced.
+
+    **The flag is NOT derived.** `tables.classify` would give the same answer
+    for the truth and for a perfect read by construction, so marking it against
+    itself would measure nothing; what it is marked against is a person saying
+    which tables list documents. None where nobody has said.
+    """
+    table = tables.item_table(_document_text(case_id, pages))
+    expected = None
+    path = truth_path(case_id)
+    if path.exists():
+        try:
+            raw = json.loads(path.read_text("utf-8"))
+            block = _pick_document(raw, pages, []) if isinstance(raw, dict) else {}
+            if isinstance(block.get("is_master_table"), bool):
+                expected = block["is_master_table"]
+        except (json.JSONDecodeError, OSError):
+            pass
+    return {"table": table, "is_master_table": expected}
+
+
+def _map_columns(truth_columns, actual_columns) -> dict:
+    """truth column index -> the returned column that answers it.
+
+    Positional where the two tables are the same width, which is nearly always
+    and is the robust reading: a read that garbled a heading still put its cells
+    in the right column, and matching on the garbled wording would lose a column
+    the read got entirely right. By heading only where the widths differ, so a
+    table that lost or gained a column still has the others marked.
+    """
+    if len(truth_columns) == len(actual_columns):
+        return {i: i for i in range(len(truth_columns))}
+    import difflib
+    pairs = []
+    for i, want in enumerate(truth_columns):
+        for j, got in enumerate(actual_columns):
+            a, b = grounding.squash(want), grounding.squash(got)
+            if a and b:
+                ratio = difflib.SequenceMatcher(None, a, b, autojunk=False).ratio()
+                if ratio >= 0.6:
+                    pairs.append((ratio, -abs(i - j), i, j))
+    pairs.sort(reverse=True)
+    mapped, taken = {}, set()
+    for _, _, i, j in pairs:
+        if i not in mapped and j not in taken:
+            mapped[i] = j
+            taken.add(j)
+    return mapped
+
+
+def score_table(truth: dict, actual: dict, expected_master=None) -> dict:
+    """One document's item table against the table its page prints.
+
+    `truth` and `actual` are tables as `tables.item_table` returns them, either
+    of which may be None: a page that rules no item table, or a read that
+    produced none.
+
+    Rows are paired by content and cells judged one by one, by the functions the
+    field score uses -- `_pair_rows`, `judge` -- so a dropped row costs the cells
+    it printed and a cell is "the same" on exactly the terms a field is.
+
+    `master` is the one verdict here that is a person's: `is_master_table`
+    against the truth file's. `undetermined` is a returned table the classifier
+    could not place, and is not a correct answer.
+    """
+    truth_cols = list((truth or {}).get("columns") or [])
+    actual_cols = list((actual or {}).get("columns") or [])
+    mapping = _map_columns(truth_cols, actual_cols) if truth and actual else {}
+    keys = ["c%d" % i for i in range(len(truth_cols))]
+
+    truth_rows = [{keys[i]: (row[i] if i < len(row) else "") for i in range(len(keys))}
+                  for row in (truth or {}).get("rows") or []]
+    actual_rows = []
+    for row in (actual or {}).get("rows") or []:
+        actual_rows.append({keys[i]: (row[j] if j < len(row) else "")
+                            for i, j in mapping.items()})
+    if truth:
+        result = _score_items(truth_rows, actual_rows, field="item_table", shape=keys)
+        # Where each judged cell sits in the RETURNED table, and under which
+        # printed heading. The path names the truth's own column, and the two
+        # tables need not be the same width -- so without this nothing holding
+        # the returned rows can put a verdict on the cell it is about.
+        for row in result["rows"]:
+            index = int(row["path"].rsplit(".c", 1)[1])
+            row["column"] = mapping.get(index)
+            row["heading"] = truth_cols[index]
+    else:
+        # The page rules no item table. Nothing to be right about; what the read
+        # returned anyway is counted and kept out of every rate.
+        result = _tally([])
+        result.update(rows=[], rows_expected=0, rows_matched=0, rows_missed=0,
+                      rows_returned=len((actual or {}).get("rows") or []),
+                      rows_spurious=len((actual or {}).get("rows") or []),
+                      spurious_cells=sum(1 for r in (actual or {}).get("rows") or []
+                                         for c in r if not grounding.is_blank(c)),
+                      in_order=True)
+    got = (actual or {}).get("is_master_table")
+    if expected_master is None:
+        status = "unchecked"
+    elif not actual:
+        status = "missed"
+    elif got is None:
+        status = "undetermined"
+    else:
+        status = "correct" if got == expected_master else "wrong"
+    result.update(
+        columns=truth_cols,
+        columns_expected=len(truth_cols),
+        columns_returned=len(actual_cols),
+        columns_matched=len(mapping),
+        table_expected=bool(truth),
+        table_returned=bool(actual),
+        misaligned=len((actual or {}).get("misaligned") or []),
+        master={"expected": expected_master, "actual": got, "status": status},
+    )
+    return result
+
+
+def evaluate_table(case_id: str, actual, pages=None):
+    """`score_table` for a benchmark case, or None where there is nothing to say.
+
+    None -- not a score of zero -- where the page rules no item table, nobody
+    recorded a flag for it and the read returned none: three absences agreeing
+    is not a measurement.
+    """
+    try:
+        truth = table_truth(case_id, pages)
+    except Exception as err:        # pragma: no cover - a score is never worth a 500
+        return {"error": f"table scoring failed: {err}"}
+    if not truth["table"] and truth["is_master_table"] is None and not actual:
+        return None
+    result = score_table(truth["table"], actual, truth["is_master_table"])
+    # What the table SHOULD come back as, for the page to draw beside the one
+    # that did. Columns and rows only: the rest of the truth's table is the
+    # parser's working, and nothing reads it.
+    if truth["table"]:
+        result["truth_table"] = {"columns": list(truth["table"]["columns"]),
+                                 "rows": [list(r) for r in truth["table"]["rows"]]}
+    result["case"] = case_id
+    if pages:
+        result["pages"] = list(pages)
+    return result
+
+
+def transcript_tables(case_id: str, text: str) -> dict:
+    """Every document of a case: its item table read from a transcript, scored.
+
+    {"tables": [the table or None, one per document], "score": pooled or None}
+
+    **The pages come from the manifest, not from the read**, the rule
+    `scoring.score_documents` follows and for its reason: asking `segment` here
+    would make a table's score depend on whether that run's segmentation agreed,
+    which is two things to be wrong at once.
+
+    Needs no extraction and no model: the table is a function of the transcript,
+    so `compare.py --no-run` can report it off a saved read.
+    """
+    import scoring
+    import segment
+    case = scoring.cases_index().get(case_id) or {}
+    documents = case.get("documents") or []
+    pages = segment.split_pages(text or "")
+    found, scores = [], []
+    for entry in (documents if len(documents) > 1 else [None]):
+        numbers = list(entry["pages"]) if entry else None
+        # A type that rules a table of its own -- a withholding certificate's
+        # income rows -- is not looked at, exactly as the app does not look.
+        if prompts.items_for_types((entry or case).get("doc_types") or []):
+            continue
+        body = (text if numbers is None else
+                "\n".join("--- page %d ---\n%s" % (n, pages[n - 1])
+                          for n in numbers if 0 < n <= len(pages)))
+        table = tables.item_table(body)
+        found.append(table)
+        scores.append(evaluate_table(case_id, table, numbers))
+    return {"tables": found, "score": pool_tables(scores)}
+
+
+def format_table_report(found, score) -> list:
+    """The item-table line(s) of a report, for one case."""
+    found = [t for t in (found or []) if isinstance(t, dict) and "rows" in t]
+    lines = []
+    if not found and not score:
+        return lines
+    rows = sum(len(t.get("rows") or []) for t in found)
+    masters = sum(1 for t in found if t.get("is_master_table") is True)
+    unsure = sum(1 for t in found if t.get("is_master_table") is None)
+    fixed = sum(len(t.get("realigned") or []) for t in found)
+    bad = sum(len(t.get("misaligned") or []) for t in found)
+    if len(found) == 1:
+        kind = ("master table (a list of other documents)" if masters
+                else "could not be classified" if unsure else "item list")
+        head = "%d row%s, %s" % (rows, "" if rows == 1 else "s", kind)
+    else:
+        head = "%d table%s, %d row%s, %d master table%s" % (
+            len(found), "" if len(found) == 1 else "s", rows,
+            "" if rows == 1 else "s", masters, "" if masters == 1 else "s")
+    if fixed:
+        head += ", %d row%s re-cut to fit the headings" % (fixed, "" if fixed == 1 else "s")
+    if bad:
+        head += ", %d row%s still misaligned" % (bad, "" if bad == 1 else "s")
+    lines.append("  item table           " + head)
+    if isinstance(score, dict) and "counts" in score:
+        parts = []
+        if score.get("expected"):
+            parts.append("cells %d of %d correct (%s)" % (
+                score["counts"].get("correct", 0), score["expected"],
+                pct(score.get("accuracy"))))
+            parts.append("rows %d of %d matched" % (
+                score.get("rows_matched") or 0, score.get("rows_expected") or 0))
+        if "master_scored" in score:
+            if score["master_scored"]:
+                parts.append("is_master_table %d of %d correct" % (
+                    score.get("master_correct") or 0, score["master_scored"]))
+        else:
+            master = score.get("master") or {}
+            if master.get("status") not in (None, "unchecked"):
+                parts.append("is_master_table %s (truth says %s)" % (
+                    master["status"], str(master.get("expected")).lower()))
+        if parts:
+            lines.append("                       " + "; ".join(parts))
+    for table in found if len(found) == 1 else []:
+        if table.get("master_why"):
+            lines.append("                       why: " + table["master_why"])
+    return lines
+
+
+def pool_tables(scores) -> dict:
+    """Several documents' table scores as one for the file. Counts are summed.
+
+    One score is handed back untouched. The rate follows from the pooled counts
+    here -- unlike the field headline there is no per-document mean, because a
+    file of seven tables of one to thirteen rows has no sensible "average
+    table", and the counts are what a reader can check.
+    """
+    scores = [s for s in (scores or []) if isinstance(s, dict) and "counts" in s]
+    if not scores:
+        return None
+    if len(scores) == 1:
+        return scores[0]
+    counts = {}
+    for one in scores:
+        for name, value in (one.get("counts") or {}).items():
+            counts[name] = counts.get(name, 0) + value
+    expected = sum(one.get("expected") or 0 for one in scores)
+    returned = sum(one.get("returned") or 0 for one in scores)
+    checked = [one["master"] for one in scores
+               if (one.get("master") or {}).get("status") not in (None, "unchecked")]
+    out = {"counts": counts, "expected": expected, "returned": returned,
+           **_rates(counts, expected, returned)}
+    for name in ("rows_expected", "rows_returned", "rows_matched", "rows_missed",
+                 "rows_spurious", "spurious_cells", "misaligned"):
+        out[name] = sum(one.get(name) or 0 for one in scores)
+    out["documents"] = len(scores)
+    out["master_scored"] = len(checked)
+    out["master_correct"] = sum(1 for m in checked if m["status"] == "correct")
+    out["per_document"] = [
+        {"pages": one.get("pages") or [], "expected": one.get("expected") or 0,
+         "accuracy": one.get("accuracy"), "master": one.get("master")}
+        for one in scores]
+    return out
+
 
 def pct(value):
     """A rate as a percentage, or n/a when nothing was scored.

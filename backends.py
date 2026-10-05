@@ -92,6 +92,23 @@ _chosen = {}
 # for the first (typhoon, 42.4% on the form) is near the bottom of the second.
 # Splitting the choice is what lets both be picked on their own evidence.
 _extract_chosen = {}
+# The endpoint pass 2 runs on, or None meaning "the reading endpoint" -- the
+# one-URL setup every measurement in CLAUDE.md was taken under, and still the
+# default (2026-10-01). Set, extraction and every other text request (classify,
+# segment, the table agents) go there while page images keep going to `_active`.
+#
+# **Stored literally, and "separate" is decided against `_active` at the time of
+# asking** (`extract_separate`). Picking the extraction server as the reading
+# server as well collapses back to one URL without forgetting the choice, so
+# moving the reader away again puts extraction back where it was put.
+#
+# `_extract_chosen` stays keyed by the URL the extraction model LIVES on, so in
+# the one-URL setup it means exactly what it always did.
+_extract_url = clean_url(settings.EXTRACT_URL) or None
+if _extract_url and _extract_url not in _endpoints:
+    # Listed so the picker can show it. `overview` probes every listed endpoint,
+    # and this one is in use, so the probe is not wasted.
+    _endpoints.append(_extract_url)
 _cache = {}
 
 
@@ -556,7 +573,11 @@ def autoselect(force: bool = True) -> dict:
     """
     global _active
     active = active_url()
-    order = [active] + [u for u in candidates() if u != active]
+    # A configured extraction server is not a reading candidate: somebody split
+    # the two on purpose, and a dead OCR server must not quietly move page reads
+    # onto the box that was set aside for pass 2.
+    order = [active] + [u for u in candidates()
+                        if u != active and u != _extract_url]
     order = order[:max(1, settings.AUTO_SELECT_MAX_CANDIDATES)]
     tried = []
     for url in order:
@@ -726,17 +747,148 @@ def select(url: str = None, model: str = None, unload: bool = True) -> dict:
     stopped = []
     if unload and settings.OLLAMA_UNLOAD_ON_SWITCH:
         if was != url:
-            stopped += free_gpu(was)
-        stopped += free_gpu(url, keep=[info["model"], extract_status(url)["model"]])
+            stopped += free_gpu(was, keep=_in_use(was))
+        stopped += free_gpu(url, keep=_in_use(url))
         for name in stopped:
             config.say(f"[ollama] stopped {name} to free the GPU")
     return {**info, "unloaded": stopped}
 
 
-def extract_model(url: str = None) -> str:
-    """The model pass 2 is set to run on, or None meaning the reading model."""
+def _in_use(url: str) -> list:
+    """The models this process still needs resident at `url`.
+
+    The reading model where `url` is the reading endpoint, the extraction model
+    where it is the extraction endpoint -- both, in the one-URL setup, which is
+    exactly the keep list `select` always used. With two endpoints, leaving the
+    reading server must not evict the extractor off the other box.
+    """
+    url = clean_url(url)
+    keep = []
+    if url == active_url():
+        keep.append(status(url)["model"])
+    ex = extract_status()
+    if ex["url"] == url:
+        keep.append(ex["model"])
+    return [k for k in keep if k]
+
+
+def extract_url() -> str:
+    """The endpoint pass 2 runs on: the separate one if set, else the reader's."""
     with _lock:
-        url = clean_url(url) if url else _active
+        return _extract_url or _active
+
+
+def extract_separate() -> bool:
+    """True where pass 2 goes to a different URL from the page images."""
+    with _lock:
+        return bool(_extract_url) and _extract_url != _active
+
+
+def configured_extract_url() -> str:
+    """What was chosen for pass 2, "" meaning "same as the reading server".
+
+    Distinct from `extract_url`, which resolves "" to the reading URL: the
+    picker has to show the CHOICE, and "the reading server, which is also this
+    URL" is a different choice from "this URL".
+    """
+    with _lock:
+        return _extract_url or ""
+
+
+def select_extract_url(url: str = None, unload: bool = True) -> dict:
+    """Point pass 2 at its own endpoint. Empty or None means the reading one.
+
+    Any server kind this module can probe is accepted -- vLLM, a generic
+    OpenAI-compatible server, llama-server or Ollama -- because every request
+    builder downstream already reads its kind and URL off the status dict it is
+    handed. Nothing about the reading side changes.
+
+    The extraction model is NOT carried across: a name chosen on one server is
+    rarely served by another, so the new endpoint starts on its own default
+    (see `_extract_model_on`) unless a choice was already recorded for it.
+    """
+    global _extract_url
+    url = clean_url(url) if url else None
+    old = extract_url()
+    with _lock:
+        if url and url not in _endpoints:
+            _endpoints.append(url)
+        _extract_url = url
+    info = extract_status(force=True)
+    stopped = []
+    if unload and settings.OLLAMA_UNLOAD_ON_SWITCH and old != info["url"]:
+        stopped = free_gpu(old, keep=_in_use(old))
+        for name in stopped:
+            config.say(f"[ollama] stopped {name} to free the GPU")
+    return {**info, "unloaded": stopped}
+
+
+def _extract_model_on(url: str, info: dict):
+    """The model a SEPARATE extraction endpoint should be asked for.
+
+    The explicit choice in the server's own spelling where it still serves it,
+    otherwise the first model that is not an OCR fine-tune, otherwise whatever
+    the server names first. No ranking here: the run log's best extractor is
+    written down ONCE, by `autoselect_models` at startup, for the same reason
+    the one-URL default is -- a default re-derived per request would move under
+    a session as the log grew.
+
+    llama-server serves the one model it was started with, so it is that.
+    """
+    names = [m["name"] for m in info.get("models") or []]
+    chosen = _extract_chosen.get(url)
+    if chosen:
+        served = next((n for n in names if _same_model(chosen, n)), None)
+        return served or chosen
+    if info.get("kind") == "llama.cpp":
+        return info.get("model")
+    general = next((n for n in names if not is_ocr_model(n)), None)
+    return general or info.get("model") or (names[0] if names else None)
+
+
+def _separate_status(url: str, force: bool = False) -> dict:
+    """`status`'s shape for an extraction endpoint that reads no page.
+
+    Vision is irrelevant -- pass 2 sends text -- so `available` and
+    `text_available` are the same claim here: reachable, and a model to ask.
+    """
+    info = probe(url, force=force)
+    model = _extract_model_on(url, info)
+    names = [m["name"] for m in info["models"]]
+    reason = info["reason"]
+    ok = bool(info["reachable"] and model)
+    if info["reachable"] and not model:
+        reason = reason or f"The extraction server at {url} serves no model."
+    elif ok and names and not any(_same_model(model, n) for n in names):
+        ok = False
+        reason = (f"{model} is not served by the extraction server {url}. "
+                  "Pick another extraction model.")
+    return {
+        "available": ok,
+        "text_available": ok,
+        "text_reason": reason,
+        "vision": False,
+        "vision_known": False,
+        "kind": info["kind"],
+        "model": model,
+        "models": info["models"],
+        "slots": info["slots"],
+        "url": url,
+        "reason": reason,
+        "num_ctx": num_ctx(),
+        "separate": True,
+    }
+
+
+def extract_model(url: str = None) -> str:
+    """The model pass 2 is set to run on, or None meaning the default.
+
+    The default is the reading model in the one-URL setup and the extraction
+    server's own default where pass 2 has an endpoint of its own. `url` is the
+    endpoint the extraction model lives on, defaulting to `extract_url()`.
+    """
+    url = clean_url(url) if url else extract_url()
+    with _lock:
         return _extract_chosen.get(url)
 
 
@@ -771,7 +923,15 @@ def extract_status(url: str = None, force: bool = False) -> dict:
     Returns the reading model's status untouched when no separate extraction
     model is set, which is the normal case and the one every measurement in this
     project was taken under.
+
+    **Where pass 2 has an endpoint of its own** (`select_extract_url`, or
+    `EXTRACT_URL`), the status is that endpoint's, and its `url` is what
+    `structured_request` sends to -- which is the whole of what moves every text
+    request off the reading server. `url` here names the READING endpoint and is
+    only honoured in the one-URL setup.
     """
+    if (url is None or clean_url(url) == active_url()) and extract_separate():
+        return _separate_status(extract_url(), force=force)
     info = status(url, force=force)
     chosen = extract_model(url)
     if not chosen or _same_model(chosen, info["model"]):
@@ -812,7 +972,23 @@ def autoselect_models(url: str = None) -> dict:
     """
     info = status(url)
     picked = {"reading": info["model"], "extract": ""}
-    if not settings.AUTO_BEST_MODEL or not info["model"]:
+    if not settings.AUTO_BEST_MODEL:
+        return picked
+    if url is None and extract_separate():
+        # Pass 2 has its own server: rank ITS models, and write the winner down
+        # against that URL so it is a choice from here on, like the one-URL case.
+        ex_url = extract_url()
+        ex = probe(ex_url)
+        best = best_served(
+            "extract", ex["models"],
+            lambda m: (not is_ocr_model(m["name"])
+                       or _same_model(m["name"], info["model"])))
+        if best and not _extract_chosen.get(ex_url):
+            with _lock:
+                _extract_chosen[ex_url] = best
+            picked["extract"] = best
+        return picked
+    if not info["model"]:
         return picked
     best = best_extractor(info)
     if best:
@@ -837,11 +1013,10 @@ def select_extract(model: str, url: str = None, unload: bool = True) -> dict:
     reading model itself is still allowed, because that is the one-model setup
     every baseline in this project was measured under.
     """
-    with _lock:
-        url = clean_url(url) if url else _active
+    url = clean_url(url) if url else extract_url()
     chosen = (model or "").strip()
     if chosen:
-        reading = status(url)["model"]
+        reading = status()["model"]
         if is_ocr_model(chosen) and not _same_model(chosen, reading):
             raise ValueError(
                 f"{chosen} is an OCR model, and {reading or 'the reading model'} "
@@ -854,10 +1029,10 @@ def select_extract(model: str, url: str = None, unload: bool = True) -> dict:
             _extract_chosen[url] = chosen
         else:
             _extract_chosen.pop(url, None)
-    info = extract_status(url)
+    info = extract_status()
     stopped = []
     if unload and settings.OLLAMA_UNLOAD_ON_SWITCH:
-        stopped = free_gpu(url, keep=[status(url)["model"], info["model"]])
+        stopped = free_gpu(url, keep=_in_use(url))
         for name in stopped:
             config.say(f"[ollama] stopped {name} to free the GPU")
     return {**info, "unloaded": stopped}
@@ -866,6 +1041,7 @@ def select_extract(model: str, url: str = None, unload: bool = True) -> dict:
 def overview(force: bool = False) -> dict:
     """Every configured endpoint plus the active one, for the picker."""
     active = active_url()
+    ex_url = extract_url()
     listed = []
     for url in endpoints():
         info = probe(url, force=force)
@@ -875,9 +1051,11 @@ def overview(force: bool = False) -> dict:
             "reachable": info["reachable"],
             "models": [m["name"] for m in info["models"]],
             "active": url == active,
+            "extract": url == ex_url,
         })
     server = status(force=force)
-    extract = extract_status(active)
+    extract = extract_status(force=force)
+    separate = extract_separate()
     return {
         "endpoints": listed,
         "active": active,
@@ -886,12 +1064,20 @@ def overview(force: bool = False) -> dict:
         # chosen for it. The page needs the second list because the refusal in
         # `select_extract` should be visible before it is triggered, not after.
         "extract": {
+            # Where pass 2 goes. `configured` is the CHOICE ("" = same as the
+            # reading server); `url` is what that resolves to now.
+            "url": extract["url"],
+            "configured": configured_extract_url(),
+            "separate": separate,
+            "kind": extract["kind"],
             "model": extract["model"],
-            "chosen": extract_model(active) or "",
+            "chosen": extract_model() or "",
             "available": extract["text_available"],
             "reason": extract["text_reason"],
-            "same_as_reading": not extract_model(active),
-            "choices": [m["name"] for m in server["models"]
+            # "Same as the reading model" only exists where both passes share a
+            # server -- across two servers there is no reading model to share.
+            "same_as_reading": not separate and not extract_model(),
+            "choices": [m["name"] for m in extract["models"]
                         if not is_ocr_model(m["name"])
                         or _same_model(m["name"], server["model"])],
         },
@@ -1075,9 +1261,11 @@ def structured_request(messages: list, schema: dict, max_tokens: int,
         # rather than only for models known to do it.
         if settings.OLLAMA_REASONING_EFFORT == "none":
             body["think"] = False
-        return f"{active_url()}/api/chat", body
+        return f"{info.get('url') or active_url()}/api/chat", body
 
-    return f"{active_url()}/v1/chat/completions", {
+    # The URL off the status dict, not `active_url()`: pass 2 may have an
+    # endpoint of its own, and the caller hands over that endpoint's status.
+    return f"{info.get('url') or active_url()}/v1/chat/completions", {
         "messages": messages,
         "max_tokens": max_tokens,
         "temperature": 0,

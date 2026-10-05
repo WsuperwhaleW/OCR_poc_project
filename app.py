@@ -34,6 +34,7 @@ import blame
 import config
 import easy_runtime
 import fieldscore
+import fixscore
 import grounding
 import machine
 import normalise
@@ -44,6 +45,7 @@ import runlog
 import scoring
 import segment
 import stress
+import tables
 import validate
 import verify
 
@@ -106,6 +108,16 @@ from settings import (
     SEGMENT_CHAT_MAX_ASKS,
     SEGMENT_MAX_TOKENS,
     SEGMENT_WITH_MODEL,
+    TABLE_EXTRACT,
+    TABLE_CONCAT_AGENT,
+    TABLE_FIX_AGENT,
+    TABLE_CONTEXT_SHARE,
+    TABLE_FIX_MAX_ROWS,
+    TABLE_IDENTIFY_AGENT,
+    TABLE_IDENTIFY_MAX_ROWS,
+    TABLE_RECUT_MAX_ROWS,
+    TABLE_RECUT_MAX_TOKENS,
+    TABLE_RECUT_WITH_MODEL,
     TYPE_FRAMING_AGENTIC,
     TYPE_FRAMING_BULLETS,
     TYPE_FRAMING_SINGLE,
@@ -679,7 +691,7 @@ def image_data_uri(image: Image.Image) -> str:
     return "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode()
 
 
-def stream_page(image: Image.Image, stats: dict | None = None,
+def stream_page(image: Image.Image, stats: dict = None,
                 profile: str = None, cancel=None):
     """Stream tokens for one page from llama-server.
 
@@ -2022,6 +2034,10 @@ def _extract_once(text: str, status: dict, schema, form: dict) -> dict:
         "tokens": tokens,
         "model": status["model"],
         "backend": status["kind"],
+        # Which server answered. Pass 2 may have an endpoint of its own
+        # (`backends.select_extract_url`), and a run is attributed to the server
+        # that ran it, never to the one selected afterwards.
+        "url": status.get("url") or "",
         # Which shape produced this. On screen and in the run log, because the two
         # cost very different amounts of wall clock and fill the schema in
         # different ways -- a row without it cannot be compared with one beside it.
@@ -2549,6 +2565,10 @@ def _extract_agentic(text: str, status: dict, form: dict, only=None):
         "tokens": total_tokens,
         "model": status["model"],
         "backend": status["kind"],
+        # Which server answered. Pass 2 may have an endpoint of its own
+        # (`backends.select_extract_url`), and a run is attributed to the server
+        # that ran it, never to the one selected afterwards.
+        "url": status.get("url") or "",
         "mode": "agentic",
         "steps": steps,
         # Present only when this run was restricted to part of the step table, so
@@ -2647,6 +2667,32 @@ def set_loop_guard(on: bool) -> bool:
     with _loop_guard_lock:
         _loop_guard = bool(on)
     return _loop_guard
+
+
+# The two table agents, switchable from the page (2026-10-01). Process state like
+# the loop guard, and stored IN the module globals `TABLE_FIX_AGENT` /
+# `TABLE_IDENTIFY_AGENT` rather than beside them, so there is one value the code
+# reads and the tests patch -- two copies of one switch would disagree after the
+# first flip. Each document reads both once, at the start of its table.
+_table_agents_lock = threading.Lock()
+
+
+def table_agents() -> dict:
+    with _table_agents_lock:
+        return {"concat": bool(TABLE_CONCAT_AGENT), "fix": bool(TABLE_FIX_AGENT),
+                "identify": bool(TABLE_IDENTIFY_AGENT), "table": bool(TABLE_EXTRACT)}
+
+
+def set_table_agents(fix=None, identify=None, concat=None) -> dict:
+    global TABLE_FIX_AGENT, TABLE_IDENTIFY_AGENT, TABLE_CONCAT_AGENT
+    with _table_agents_lock:
+        if fix is not None:
+            TABLE_FIX_AGENT = bool(fix)
+        if identify is not None:
+            TABLE_IDENTIFY_AGENT = bool(identify)
+        if concat is not None:
+            TABLE_CONCAT_AGENT = bool(concat)
+    return table_agents()
 
 
 # The transcript score a read has to reach before the extraction taken from it is
@@ -2783,6 +2829,645 @@ def set_extract_mode(mode: str) -> str:
     return mode
 
 
+def _recut_message(table: dict) -> str:
+    """The one request the item table can cost: which column is each cell under.
+
+    It carries the TABLE and not the document -- the headings, the rows that fit
+    (as the pattern to follow) and the rows that do not, one cell to a line.
+    Which two cells of six are one value is a question about that row; the rest
+    of the page is context for a different question and would be prefill spent
+    on nothing.
+    """
+    columns = table["columns"]
+    bad = list(table["misaligned"])
+    good = [i for i in range(len(table["rows"])) if i not in set(bad)][:4]
+    examples = "\n".join(
+        "%d. %s" % (n, " | ".join("%d: %s" % (c, cell or "(empty)")
+                                  for c, cell in enumerate(table["rows"][i], 1)))
+        for n, i in enumerate(good, 1))
+    cells = [tables.filled_cells(table["rows"][i]) for i in bad]
+    rows = "\n".join(
+        "Row %d -- %d cells:\n%s" % (
+            n, len(row),
+            "\n".join("  c%d: %s" % (c, cell) for c, cell in enumerate(row, 1)))
+        for n, row in enumerate(cells, 1))
+    # Every cell named, so the reply cannot be the right shape without placing
+    # each one. `0` is a placeholder and not a column.
+    skeleton = "{ \"rows\": [\n%s\n] }" % ",\n".join(
+        "  { %s }" % ", ".join('"c%d": 0' % c for c in range(1, len(row) + 1))
+        for row in cells)
+    return prompts.TABLE_RECUT_PROMPT.format(
+        count=len(columns),
+        headings="\n".join("%d. %s" % (n, heading or "(no heading printed)")
+                           for n, heading in enumerate(columns, 1)),
+        examples=(prompts.TABLE_RECUT_EXAMPLES.format(rows=examples)
+                  if good else ""),
+        rows=rows, skeleton=skeleton)
+
+
+def _recut_answers(answer, table: dict) -> list:
+    """The reply as one list of column numbers per misaligned row.
+
+    The reply names each cell; this puts them back in cell order. A row the
+    reply left a cell out of comes back as None, which `tables.recut` refuses --
+    a missing answer is not an answer of "no column".
+    """
+    rows = answer.get("rows") if isinstance(answer, dict) else None
+    if not isinstance(rows, list):
+        return []
+    out = []
+    for position, index in enumerate(table["misaligned"]):
+        entry = rows[position] if position < len(rows) else None
+        count = len(tables.filled_cells(table["rows"][index]))
+        if isinstance(entry, dict):
+            picked = [entry.get("c%d" % c) for c in range(1, count + 1)]
+            out.append(picked if len(entry) == count else None)
+        elif isinstance(entry, list):
+            out.append(entry)
+        else:
+            out.append(None)
+    return out
+
+
+def _recut_with_model(table: dict, status: dict, check: bool = False) -> dict:
+    """Ask the extraction model which column each cell of a misfit row is under.
+
+    Asked ONLY where `tables.py` found rows that do not fit their headings, and
+    what comes back is column NUMBERS: `tables.recut` does the cutting. No
+    character of the reply reaches the table, so this can move a cell boundary
+    and can do nothing else -- it cannot correct, drop or invent a value -- and
+    an answer that is the wrong shape costs that row its repair and nothing
+    more.
+
+    Never raises. The table is a measurement beside the extraction, and a failed
+    repair leaves it exactly as Python read it, flagged.
+    """
+    bad = list(table.get("misaligned") or [])
+    if not bad or not TABLE_RECUT_WITH_MODEL:
+        return table
+    if table.get("headings_lost"):
+        # Nothing to cut the rows TO: the read kept no headings.
+        table["recut"] = {"asked": 0, "taken": 0, "refused": 0,
+                          "skipped": "the table has no headings to fit rows to"}
+        return table
+    if len(bad) > TABLE_RECUT_MAX_ROWS:
+        table["recut"] = {"asked": 0, "taken": 0, "refused": 0,
+                          "skipped": "%d rows do not fit, over the %d one request "
+                                     "carries" % (len(bad), TABLE_RECUT_MAX_ROWS)}
+        return table
+    message = _recut_message(table)
+    cells = sum(len(tables.filled_cells(table["rows"][i])) for i in bad)
+    started = time.time()
+    try:
+        # A few tokens per cell: the reply is numbers, not the rows again.
+        raw, _, tokens = _chat(message,
+                               min(TABLE_RECUT_MAX_TOKENS, 120 + 10 * cells),
+                               status)
+        answer = json.loads(_first_json_object(strip_fence(raw)) or raw)
+    except Exception as err:
+        table["recut"] = {"asked": len(bad), "taken": 0, "refused": len(bad),
+                          "error": str(err)[:200]}
+        return table
+    # `check` -- the fix agent's path -- lets the code refuse a cut the cells
+    # contradict: on sol007 at 2 MP both gemma4:e4b and qwen3.5:9b answered with
+    # the shifted layout as read, words under Amount.
+    table = tables.recut(table, _recut_answers(answer, table), check=check)
+    table["recut"].update(seconds=round(time.time() - started, 2),
+                          tokens=tokens or 0, model=status.get("model") or "",
+                          prompt=message, raw=raw)
+    return table
+
+
+def _table_headings(columns) -> str:
+    return "\n".join("%d. %s" % (n, heading or "(no heading printed)")
+                     for n, heading in enumerate(columns, 1))
+
+
+def _table_rows_text(table: dict, indexes) -> str:
+    """Rows as `Row N: 1: cell | 2: cell`, numbered by their place in the table,
+    so a reply naming Row 4 names the same row the code means by index 3."""
+    return "\n".join(
+        "Row %d: %s" % (i + 1, " | ".join(
+            "%d: %s" % (c, (cell or "").strip() or "(empty)")
+            for c, cell in enumerate(table["rows"][i], 1)))
+        for i in indexes)
+
+
+def _as_bool(value):
+    """True/False, or None. `"true"` and `"false"` count: gemma4:e4b answers the
+    identify question with the JSON literal on one call and the same word in
+    quotes on the next, and the word is not in doubt. Anything else is not an
+    answer -- "yes", 1, null."""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str) and value.strip().lower() in ("true", "false"):
+        return value.strip().lower() == "true"
+    return None
+
+
+def _as_int(value):
+    """A whole number, or None. `"3"` counts, for the reason `_as_bool` gives;
+    a bool does not, though Python calls it an int."""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str) and value.strip().isdigit():
+        return int(value.strip())
+    return None
+
+
+def _table_cells_text(table: dict) -> str:
+    """Every filled cell on a line of its own, named by row and column.
+
+    For the fix agent, which QUOTES cells. On the compact `1: cell | 2: cell`
+    line gemma4:e4b quoted the column prefixes themselves -- `1:`, `2:` -- on
+    six of 32 real tables, and once a paragraph of the prompt (2026-10-01).
+    A line per cell leaves nothing on it to quote but the cell.
+    """
+    columns = table["columns"]
+    out = []
+    for i, row in enumerate(table["rows"], 1):
+        out.append("Row %d" % i)
+        for c, cell in enumerate(row, 1):
+            if (cell or "").strip():
+                heading = columns[c - 1] if c - 1 < len(columns) else ""
+                out.append("  row %d, column %d (%s): %s"
+                           % (i, c, heading or "no heading", cell.strip()))
+    return chr(10).join(out)
+
+
+def _agent_reply(raw: str):
+    """A reply's JSON object, or a ValueError naming what came back instead."""
+    answer = json.loads(_first_json_object(strip_fence(raw)) or raw)
+    if not isinstance(answer, dict):
+        raise ValueError("the reply was not a JSON object")
+    return answer
+
+
+def _frame_note(table: dict) -> str:
+    """What the code knows about where the table's frame ends, for the fix agent.
+
+    `TABLE_FRAME_NOTE` where it found the totals line after some other line --
+    something was read inside the frame; `TABLE_AFTER_FRAME_NOTE` where the
+    table was read with its totals already in it and none follows; else ""."""
+    tail = table.get("tail") or []
+    at = tables.totals_line(tail)
+    if at is None and tail and any(d.get("why") == "totals row"
+                                   for d in table.get("dropped") or []):
+        return prompts.TABLE_AFTER_FRAME_NOTE
+    if not at:
+        return ""
+    return prompts.TABLE_FRAME_NOTE.format(
+        totals=at + 1, inside="L1" if at == 1 else "L1 to L%d" % at,
+        were="was" if at == 1 else "were")
+
+
+def _table_fix_agent(table: dict, status: dict, snap=None) -> dict:
+    """Agent 1: take what does not belong in the table out of it, then fix the cuts.
+
+    One request carrying the TABLE and the part of its page around it -- every
+    row, cell by cell under its numbered headings, and `TABLE_CONTEXT_SHARE` of
+    the page's lines before it and after it (`TABLE_CLEAN_PROMPT`). The reply QUOTES
+    text in a cell that is not part of the table's data: a rubber stamp's or a
+    seal's words, a QR code's or a logo's description, a handwritten note, stray
+    text from elsewhere on the page.
+
+    **The code does the removing, and the code can refuse.** `tables.remove_text`
+    looks for the quote in THAT cell and cuts the cell's own characters out, so
+    a quote the model reworded is simply not found; `tables.removal_refused`
+    keeps an amount under a money heading and a whole cell that is the kind of
+    value its heading asks for. What is removed is not dropped -- it is kept as
+    plain text, under `outside_text`.
+
+    Then the cell boundaries, exactly as with the agent off: `realign` by what
+    each cell is, and the column question (`_recut_with_model`, with
+    `check_cut`) for a row that leaves unsettled. Taking a stamp's word out of a
+    row is very often what lets the row fit its headings again, which is why
+    the cleaning comes first.
+
+    Never raises: a failed request leaves the table to the code, and says so.
+    """
+    record = {"asked": False, "removed": [], "refusals": [], "rows_emptied": [],
+              "model": status.get("model") or "", "prompt": "", "raw": "",
+              "seconds": 0.0, "tokens": 0}
+    table["fix_agent"] = record
+
+    def then_cuts(table):
+        table = tables.reclassify(tables.realign(table))
+        if snap:
+            snap("realign", "code", table)
+        table = _recut_with_model(table, status, check=True)
+        if snap:
+            snap("recut", "model", table)
+        return table
+
+    columns = table["columns"]
+    if table.get("headings_lost") or len(columns) < 2 or not table["rows"]:
+        record["skipped"] = ("the table has no headings to judge a cell by"
+                             if table["rows"] else "the table has no rows")
+        return then_cuts(table)
+    if len(table["rows"]) > TABLE_FIX_MAX_ROWS:
+        record["skipped"] = ("%d rows, over the %d one request carries"
+                             % (len(table["rows"]), TABLE_FIX_MAX_ROWS))
+        return then_cuts(table)
+    message = prompts.TABLE_CLEAN_PROMPT.format(
+        count=len(columns), headings=_table_headings(columns),
+        rows=_table_cells_text(table),
+        before=chr(10).join("B%d %s" % (n, line) for n, line
+                            in enumerate(table.get("context_before") or [], 1))
+        or "(none)",
+        lines=chr(10).join("L%d %s" % (n, line)
+                           for n, line in enumerate(table.get("tail") or [], 1))
+        or "(none)",
+        frame=_frame_note(table))
+    record.update(asked=True, prompt=message)
+    started = time.time()
+    try:
+        cells = sum(len(tables.filled_cells(r)) for r in table["rows"])
+        raw, _, tokens = _chat(message, min(TABLE_RECUT_MAX_TOKENS,
+                                            160 + 12 * cells), status)
+        record.update(raw=raw, tokens=tokens or 0)
+        answer = _agent_reply(raw)
+        entries = answer.get("remove")
+        if entries is None:
+            entries = []
+        if not isinstance(entries, list):
+            raise ValueError("the reply's remove was not a list")
+    except Exception as err:
+        record["error"] = str(err)[:200]
+        record["seconds"] = round(time.time() - started, 2)
+        return then_cuts(table)
+    # A placeholder entry copied from the instructions -- row 0, or empty text --
+    # is not an answer and is not reported as a refusal either.
+    entries = [e for e in entries
+               if not (isinstance(e, dict) and not str(e.get("text") or "").strip())]
+    # The lines after the table first: they are numbered against the tail as
+    # it was sent, and nothing below changes it.
+    table = tables.sort_tail(table, answer.get("stray_lines"),
+                             answer.get("table_lines"))
+    record["lines"] = table.pop("tail_sorted", {})
+    table = tables.remove_text(table, entries)
+    done = table.pop("removal", {})
+    record.update(removed=done.get("removed", []), refusals=done.get("refusals", []),
+                  rows_emptied=done.get("rows_emptied", []),
+                  seconds=round(time.time() - started, 2))
+    if snap:
+        snap("clean", "agent", table, removed_rows=list(done.get("rows_emptied", [])))
+    return then_cuts(table)
+
+
+def _table_concat_agent(table: dict, status: dict, snap=None) -> dict:
+    """Agent 0: which of the read's other tables are pieces of this one.
+
+    Shown the item table's headings and last rows, and every other table the
+    read made of the document after it (`tables.concat_parts`). The reply is
+    table NUMBERS; `tables.concat` does the joining, placing each cell by what it
+    is and filing a totals line as a totals line. A number that names no table
+    is ignored, and a table whose rows cannot be placed is refused and named.
+    Never raises: a failed request leaves the table as the read cut it.
+    """
+    parts = tables.concat_parts(table)
+    record = {"asked": False, "offered": len(parts), "joined": [], "refusals": [],
+              "by_sum": [], "model": status.get("model") or "", "prompt": "",
+              "raw": "", "seconds": 0.0, "tokens": 0}
+    table["concat"] = record
+    if not parts:
+        record["skipped"] = "the read made no other table after this one"
+        return table
+    # The code first: a piece holding one of the table's column totals is its
+    # totals block, by arithmetic. Joined without asking; the model is asked
+    # only about what that leaves.
+    by_sum = tables.sum_parts(table)
+    if by_sum:
+        table = tables.concat(table, by_sum, totals=by_sum)
+        done = table.pop("concat_done", {})
+        record.update(by_sum=done.get("joined", []), joined=list(done.get("joined", [])),
+                      refusals=list(done.get("refusals", [])),
+                      rows_added=done.get("rows_added", 0),
+                      dropped_added=done.get("dropped_added", 0))
+        parts = [p for p in parts if p["number"] not in by_sum]
+        if not parts:
+            record["skipped"] = "every other table holds a column total -- joined by the code"
+            if snap:
+                snap("concat", "code", table)
+            return table
+    shown = lambda cells: " | ".join(c for c in cells if c) or "(blank)"
+    others = "\n".join(
+        "T%d (page %s)\n%s" % (p["number"], p.get("page"),
+                               "\n".join("  " + shown(r)
+                                         for r in p["rows"][:tables.CONCAT_SHOW_ROWS]))
+        for p in parts)
+    message = prompts.TABLE_CONCAT_PROMPT.format(
+        count=len(table["columns"]), headings=_table_headings(table["columns"]),
+        last_rows="\n".join(shown(r) for r in table["rows"][-3:]) or "(no rows)",
+        others=others)
+    record.update(asked=True, prompt=message)
+    started = time.time()
+    try:
+        raw, _, tokens = _chat(message, 120, status)
+        record.update(raw=raw, tokens=tokens or 0)
+        answer = _agent_reply(raw)
+        picks = answer.get("same_table")
+        if picks is None:
+            picks = []
+        if not isinstance(picks, list):
+            raise ValueError("the reply's same_table was not a list")
+    except Exception as err:
+        record["error"] = str(err)[:200]
+        record["seconds"] = round(time.time() - started, 2)
+        return table
+    numbers = []
+    for n in picks:
+        if isinstance(n, str) and n.strip().upper().lstrip("T").isdigit():
+            n = int(n.strip().upper().lstrip("T"))
+        if isinstance(n, int) and not isinstance(n, bool):
+            numbers.append(n)
+    offered = {p["number"] for p in parts}
+    table = tables.concat(table, [n for n in numbers if n in offered])
+    done = table.pop("concat_done", {})
+    record.update(joined=record["joined"] + done.get("joined", []),
+                  refusals=record["refusals"] + done.get("refusals", []),
+                  rows_added=record.get("rows_added", 0) + done.get("rows_added", 0),
+                  dropped_added=record.get("dropped_added", 0) + done.get("dropped_added", 0),
+                  seconds=round(time.time() - started, 2))
+    if snap:
+        snap("concat", "agent", table)
+    return table
+
+
+def _identify_fields(fields) -> str:
+    """The few extracted values the identify agent is shown, one per line."""
+    if not isinstance(fields, dict):
+        return ""
+    lines = ["  %s: %s" % (label, str(fields[key]).strip())
+             for key, label in prompts.TABLE_IDENTIFY_FIELDS
+             if isinstance(fields.get(key), (str, int, float))
+             and str(fields[key]).strip() not in ("", "-")]
+    return ("Values read from this document:\n%s\n" % "\n".join(lines)
+            if lines else "")
+
+
+def _table_identify_agent(table: dict, form: dict, fields, status: dict) -> dict:
+    """Agent 2: master table or item list, from the table and nothing else.
+
+    Sent the table (its headings and up to `TABLE_IDENTIFY_MAX_ROWS` rows), the
+    document's type and a few values the extraction read -- never the page.
+    The reply is `is_master_table` and the NUMBER of the column holding the
+    other documents' numbers, and code checks the claim:
+
+      * a `true` is taken only where `tables.reference_column_ok` passes the
+        column it names -- a heading that does not say it is something else, and
+        cells filled on most rows. A master table without a filled reference
+        column is not one, and a model saying so is not evidence that it is.
+      * a `false` is taken as given: there is nothing printed for it to point at.
+
+    The Python rule's answer is kept beside it as `master_rules`, and answers
+    instead wherever the agent is off, fails, or is refused -- `master_from`
+    says which. Never raises.
+    """
+    table["master_rules"] = table.get("is_master_table")
+    table["master_rules_why"] = table.get("master_why")
+    table["master_from"] = "rules"
+    if not TABLE_IDENTIFY_AGENT or not table.get("rows"):
+        return table
+    columns = table["columns"]
+    bad = set(table.get("misaligned") or [])
+    shown = [i for i in range(len(table["rows"])) if i not in bad] \
+        or list(range(len(table["rows"])))
+    shown = shown[:TABLE_IDENTIFY_MAX_ROWS]
+    codes = form.get("doc_types") or []
+    message = prompts.TABLE_IDENTIFY_PROMPT.format(
+        doc_type=prompts.type_phrase(codes) or "not known",
+        fields=_identify_fields(fields), count=len(columns),
+        headings=_table_headings(columns), shown=len(shown),
+        total=len(table["rows"]), rows=_table_rows_text(table, shown))
+    record = {"answer": None, "column": None, "taken": False,
+              "model": status.get("model") or "", "prompt": message, "raw": "",
+              "seconds": 0.0, "tokens": 0}
+    table["identify_agent"] = record
+    started = time.time()
+    try:
+        raw, _, tokens = _chat(message, 120, status)
+        record.update(raw=raw, tokens=tokens or 0)
+        answer = _agent_reply(raw)
+    except Exception as err:
+        record["error"] = str(err)[:200]
+        record["seconds"] = round(time.time() - started, 2)
+        return table
+    record["seconds"] = round(time.time() - started, 2)
+    verdict = _as_bool(answer.get("is_master_table"))
+    column = _as_int(answer.get("reference_column"))
+    record.update(answer=verdict if isinstance(verdict, bool) else None,
+                  column=column)
+    if not isinstance(verdict, bool):
+        record["refused"] = "the reply did not say true or false"
+        return table
+    named = (columns[column - 1] or "column %d" % column) \
+        if column and 1 <= column <= len(columns) else ""
+    if verdict:
+        why = tables.reference_column_ok(table, column - 1 if column else -1)
+        if why:
+            record["refused"] = ("it said master table, naming column %s, and %s"
+                                 % (column if column is not None else "none", why))
+            return table
+        table["reference_columns"] = [named]
+        table["master_why"] = (
+            "the model read each row as another document, identified under %s; "
+            "the code checked that column is filled on most rows" % named)
+    else:
+        table["master_why"] = (
+            "the model read the rows as goods or services, not as other documents"
+            + (" (it named %s as the column citing a document)" % named
+               if named else ""))
+    table["is_master_table"] = verdict
+    table["master_from"] = "model"
+    record["taken"] = True
+    return table
+
+
+def _item_table(text: str, form: dict, status: dict, pages=None,
+                fields=None):
+    """`_item_table_stream` for a caller with nowhere to show progress."""
+    return _drain(_item_table_stream(text, form, status, pages, fields))
+
+
+def _agent_brief(record) -> dict:
+    """What one table agent did, small enough for a progress event.
+
+    The page draws a stage box and a progress line from this while the run is
+    still going; the full record -- the prompt, the reply, every refusal --
+    rides on the finished table, and copying it into every event would put the
+    prompt on the wire twice.
+    """
+    if not isinstance(record, dict):
+        return {}
+    brief = {"model": record.get("model") or "",
+             "seconds": record.get("seconds") or 0.0}
+    for key in ("skipped", "error", "refused"):
+        if record.get(key):
+            brief[key] = str(record[key])[:160]
+    if "removed" in record:
+        lines = record.get("lines") or {}
+        brief.update(asked=bool(record.get("asked")),
+                     removed=len(record.get("removed") or []),
+                     refused_n=len(record.get("refusals") or [])
+                     + len(lines.get("refusals") or []),
+                     stray_lines=len(lines.get("stray") or [])
+                     + len(lines.get("stray_before") or []),
+                     table_lines=len(lines.get("own") or [])
+                     + len(lines.get("own_before") or []))
+    if "answer" in record:
+        brief.update(answer=record.get("answer"), column=record.get("column"),
+                     taken=bool(record.get("taken")))
+    if "offered" in record:
+        brief.update(asked=bool(record.get("asked")), offered=record.get("offered", 0),
+                     joined=len(record.get("joined") or []),
+                     rows_added=record.get("rows_added", 0),
+                     dropped_added=record.get("dropped_added", 0))
+    return brief
+
+
+def _item_table_stream(text: str, form: dict, status: dict, pages=None,
+                       fields=None, document=None):
+    """The document's item table and whether it lists items or other documents.
+
+    Read out of the transcript in Python -- see `tables.py`, whose docstring is
+    where the reasoning lives. No pass-2 prompt is involved and no field is
+    touched, so this can be on for every run without moving a field score.
+
+    A generator since 2026-10-01, so the page can say which table agent is
+    running: `table_agent` events, one `running` and one `done` (or `off`) per
+    agent, plus a `read` event for the table itself. `_item_table` drains it for
+    a caller with nowhere to show progress, and returns exactly what this does.
+
+    Returns the table, None where the document rules none, or `...` -- the
+    sentinel for "not looked for", which is a different statement from "looked
+    and found none" and must not read as it:
+
+      * `TABLE_EXTRACT` is off, or
+      * the document's type rules a table of its own. A withholding certificate
+        has `income_items`, asked for by its requirement in its own four
+        cells; the same rows a second time under another name would be two
+        answers to one question.
+
+    `pages` is where this document sits in its FILE. One page of a pack arrives
+    here as bare text with no page marker in it, so the table would call it
+    page 1 whichever page of the file it was; a document of several pages
+    carries its own markers and needs no help.
+    """
+    if not TABLE_EXTRACT or form.get("items"):
+        return ...
+    tag = {"document": document} if document else {}
+
+    def event(agent, state, **extra):
+        return {"event": "table_agent", "agent": agent, "status": state,
+                **tag, **extra}
+
+    # Read once: a switch flipped from the page mid-run takes effect on the next
+    # document, not between the two halves of this one.
+    fix_on, identify_on = TABLE_FIX_AGENT, TABLE_IDENTIFY_AGENT
+    concat_on = TABLE_CONCAT_AGENT
+    # The table after every step, so the Table tab can say what each one
+    # changed and who made the change: the read, the fix agent's cleaning, the
+    # code's re-cut, the model's re-cut. Copies -- every step edits in place.
+    stages = []
+
+    def snap(stage, by, t, **extra):
+        stages.append({"stage": stage, "by": by,
+                       "columns": list(t.get("columns") or []),
+                       "rows": [list(r) for r in t.get("rows") or []],
+                       "misaligned": list(t.get("misaligned") or []),
+                       **({"asked": bool((t.get("recut") or {}).get("asked"))}
+                          if stage == "recut" else {}),
+                       **extra})
+
+    try:
+        # The rows as the read cut them, structural repairs only. With the fix
+        # agent off, `realign` then runs exactly as `item_table(text)` would
+        # have run it -- `reclassify(realign(...))`, the same two calls.
+        table = tables.item_table(text, align=False,
+                                  context_share=TABLE_CONTEXT_SHARE)
+        if table is None:
+            yield event("read", "none")
+            return None
+        snap("read", "read", table)
+        yield event("read", "done", rows=len(table["rows"]),
+                    columns=len(table["columns"]))
+        # Agent 0 first: the fix agent should see the whole table, and the page
+        # after the whole table.
+        if concat_on and table.get("_others"):
+            yield event("concat", "running", offered=len(table["_others"]),
+                        model=status.get("model") or "")
+            table = _table_concat_agent(table, status, snap)
+            yield event("concat", "done", **_agent_brief(table.get("concat")))
+        else:
+            yield event("concat", "off" if not concat_on else "skipped")
+        if fix_on:
+            yield event("fix", "running", rows=len(table["rows"]),
+                        model=status.get("model") or "")
+            table = _table_fix_agent(table, status, snap)
+            yield event("fix", "done", **_agent_brief(table.get("fix_agent")))
+        else:
+            yield event("fix", "off")
+            table = tables.reclassify(tables.realign(table))
+            snap("realign", "code", table)
+            table = _recut_with_model(table, status)
+            snap("recut", "model", table)
+        # Agent 2 last, on the table as it now stands.
+        asking = identify_on and bool(table.get("rows"))
+        if asking:
+            yield event("identify", "running", model=status.get("model") or "")
+        table = _table_identify_agent(table, form, fields, status)
+        yield event("identify", "done" if asking else "off",
+                    is_master_table=table.get("is_master_table"),
+                    master_from=table.get("master_from"),
+                    **_agent_brief(table.get("identify_agent")))
+        table["stages"] = stages
+        table = tables.public(table)
+        if pages and len(pages) == 1:
+            page = pages[0]
+            table["pages"] = [page]
+            table["row_pages"] = [page] * len(table["rows"])
+            for entry in table.get("dropped") or []:
+                entry["page"] = page
+        return table
+    except Exception as err:  # pragma: no cover - never worth an extraction
+        yield event("read", "error", error=str(err)[:200])
+        return {"error": f"table extraction failed: {err}"}
+
+
+def _score_item_table(result: dict, case_id: str, pages=None, text: str = "") -> dict:
+    """Attach the table's own score, where the case has ground truth for it.
+
+    Beside `field_score` and never inside it: no requirement makes a row of this
+    table Mandatory, so it has no place in a headline that is the requirement's
+    Mandatory set, and it measures the read rather than the extraction.
+    """
+    if not (case_id and isinstance(result, dict) and "item_table" in result):
+        return result
+    try:
+        actual = result["item_table"]
+        if isinstance(actual, dict) and actual.get("error"):
+            actual = None
+        score = fieldscore.evaluate_table(case_id, actual, pages)
+        if score:
+            result["table_score"] = score
+    except Exception as err:  # pragma: no cover - a score is never worth a 500
+        result["table_score"] = {"error": f"table scoring failed: {err}"}
+    # The fix agent's own score, against `solution/tables/<id>.md` -- a key of
+    # its own and never folded into `table_score` or `field_score`: it says
+    # whether the agent's decisions were right, which neither of those can.
+    try:
+        actual = result.get("item_table")
+        fixed = fixscore.score(case_id, actual, text) if isinstance(actual, dict) else None
+        if fixed:
+            result["fix_score"] = fixed
+    except Exception as err:  # pragma: no cover - a score is never worth a 500
+        result["fix_score"] = {"error": f"fix-agent scoring failed: {err}"}
+    return result
+
+
 def extract_fields_stream(text: str, mode: str = None, case_id: str = None,
                           steps=None, doc_type: str = None, pages=None,
                           truth_fed: bool = False):
@@ -2898,6 +3583,18 @@ def _extract_document(text: str, mode: str, case_id: str, steps, doc_type,
             return {"error": "steps only apply to agentic extraction."}
         result = _extract_single(text, status, form)
     result = _validate_fields(result, form, text, mode)
+    # The item table, read out of the same transcript. Attached whether or not
+    # the extraction itself produced fields -- the table does not depend on it --
+    # and skipped for a run restricted to some steps, which asked a narrower
+    # question than "what does this document say".
+    if isinstance(result, dict) and not steps:
+        table = yield from _item_table_stream(
+            text, form, status, (record or {}).get("pages"), result.get("fields"),
+            (record or {}).get("document"))
+        if table is not ...:
+            result["item_table"] = table
+            result = _score_item_table(result, case_id,
+                                       (record or {}).get("pages"), text)
     return _score_fields(result, case_id, form,
                          (record or {}).get("pages"), text, truth_fed)
 
@@ -3004,6 +3701,8 @@ def _merge_documents(documents, records, mode: str, failed: int) -> dict:
         "tokens": sum(result.get("tokens") or 0 for result in documents),
         "model": next((result.get("model") for result in documents
                        if result.get("model")), ""),
+        "url": next((result.get("url") for result in documents
+                     if result.get("url")), ""),
         "partial": any(result.get("partial") for result in documents),
         "grounding": _merge_grounding(documents),
         # Every document's attribution as one for the file, paths prefixed with
@@ -3019,6 +3718,16 @@ def _merge_documents(documents, records, mode: str, failed: int) -> dict:
     }
     if scored:
         merged["field_score"] = _merge_field_scores(scored, len(documents))
+    # The item tables stay on their documents, like the fields: seven documents
+    # rule seven tables and one merged table would be a table nobody printed.
+    # What IS a file-level fact is the score over all of them.
+    tabled = fieldscore.pool_tables([result.get("table_score")
+                                     for result in documents])
+    if tabled:
+        merged["table_score"] = tabled
+    fixed = fixscore.pool([result.get("fix_score") for result in documents])
+    if fixed:
+        merged["fix_score"] = fixed
     if failed and failed == len(documents):
         # Every document failed, so the run failed. Reported as an error rather
         # than as a result with nothing in it, which is the same rule the
@@ -3358,7 +4067,7 @@ def layout_blocks(raw: str) -> list:
     return out
 
 
-def finish_page(raw: str, stats: dict | None = None, profile: str = None) -> str:
+def finish_page(raw: str, stats: dict = None, profile: str = None) -> str:
     """One page's raw reply -> its transcript, with the boxes kept on `stats`.
 
     Called wherever a page finishes -- the streaming endpoint, the blocking one
@@ -3395,7 +4104,7 @@ def read_reply(raw: str, profile: str = None) -> str:
     return normalise_output(strip_fence(raw))
 
 
-def read_page(image: Image.Image, stats: dict | None = None,
+def read_page(image: Image.Image, stats: dict = None,
               profile: str = None, cancel=None) -> str:
     """Blocking full-page read.
 
@@ -3935,7 +4644,9 @@ def log_extract(result: dict, job_id: str = None, context: dict = None):
         # it.
         "model": result.get("model") or backends.extract_status()["model"] or "",
         "backend": result.get("backend") or "",
-        "url": backends.active_url(),
+        # No page was read, so the row's server is the one that EXTRACTED --
+        # which is a different box from the reader's where pass 2 has its own.
+        "url": result.get("url") or backends.extract_url(),
         "extracted": result,
         # Enough for the `case` column to name the document; the accuracy scores
         # belong to the read that produced the transcript, not to this row.
@@ -4059,6 +4770,7 @@ def index():
         # not: the page prints the cap rather than repeating a number, for the
         # same reason the read floor below is sent instead of hardcoded.
         loop_guard=loop_guard(),
+        table_agents=table_agents(),
         max_new_tokens=MAX_NEW_TOKENS,
         # When a field score is worth writing, for every path that reads a page.
         # Sent rather than hardcoded in the template: it is a setting, it moves
@@ -4132,7 +4844,11 @@ def servers_select():
     # Present and empty means "same as the reading model", which is a real
     # choice and not a missing field -- hence the sentinel rather than "".
     extract = body.get("extract_model")
-    if not url and not model and extract is None:
+    # The extraction SERVER (2026-10-01): absent leaves it alone, "" puts pass 2
+    # back on the reading server, a URL gives it a server of its own. Same
+    # null-vs-string sentinel as `extract_model`, for the same reason.
+    extract_url = body.get("extract_url")
+    if not url and not model and extract is None and extract_url is None:
         return jsonify(error="Give a url, a model, or both."), 400
 
     running = sweeps_running()
@@ -4140,6 +4856,14 @@ def servers_select():
         return jsonify(error=f"A run is in flight on {backends.active_url()}. "
                              "Wait for it or stop it before switching "
                              "server."), 409
+    # The same rule for pass 2's server: a sweep half-extracted on one box and
+    # half on another would be logged as if one had done it.
+    if (running and extract_url is not None
+            and (backends.clean_url(extract_url) or "")
+            != backends.configured_extract_url()):
+        return jsonify(error=f"A run is in flight extracting on "
+                             f"{backends.extract_url()}. Wait for it or stop it "
+                             "before switching the extraction server."), 409
 
     try:
         # Unloading is vetoed while a sweep is running. A model-only switch is
@@ -4150,6 +4874,10 @@ def servers_select():
             server = backends.select(url or None, model or None, unload=not running)
         else:
             server = backends.status()
+        # The extraction server before the extraction model, so a model named in
+        # the same request is looked up on the server it is about to run on.
+        if extract_url is not None:
+            backends.select_extract_url(extract_url, unload=not running)
         # After the reading model, never before: the refusal in `select_extract`
         # is stated against whatever is reading the page, so it has to be asked
         # about the choice this request is making, not the one it replaced.
@@ -4712,6 +5440,30 @@ def loop_guard_set():
     return jsonify(loop_guard=set_loop_guard(on), max_tokens=MAX_NEW_TOKENS)
 
 
+@app.get("/api/table-agents")
+def table_agents_get():
+    """Whether the two table agents run on the next extraction."""
+    return jsonify(**table_agents())
+
+
+@app.post("/api/table-agents")
+def table_agents_set():
+    """Turn either table agent on or off for every extraction this process runs next.
+
+    Not refused during a sweep, for the loop guard's reason: every table records
+    what each agent did on it (`fix_agent`, `identify_agent`, `master_from`), so a
+    batch split across the switch still says which table ran under which rule.
+    """
+    body = request.get_json(silent=True) or {}
+    fix, identify, concat = body.get("fix"), body.get("identify"), body.get("concat")
+    for name, value in (("fix", fix), ("identify", identify), ("concat", concat)):
+        if value is not None and not isinstance(value, bool):
+            return jsonify(error=f"{name} must be true or false."), 400
+    if fix is None and identify is None and concat is None:
+        return jsonify(error="send concat, fix and/or identify."), 400
+    return jsonify(**set_table_agents(fix, identify, concat))
+
+
 @app.get("/api/ocr/read-floor")
 def read_floor_get():
     """The transcript score a read must reach for its fields to be scored."""
@@ -4920,11 +5672,16 @@ def _random_pools(engine=None):
     if easy_runtime.configured_status().get("available"):
         local.append("local:easyocr")
     models = llama_status()["models"]
+    # Where pass 2 has a server of its own, the extractors are ITS models -- a
+    # name drawn from the reading server would not be served where it is sent.
+    extract_models = (backends.extract_status()["models"]
+                      if backends.extract_separate() else None)
     if engine == "library":
         models = []
     elif engine == "llm":
         local = []
-    return randomtest.pools(models, cases, local_readers=local)
+    return randomtest.pools(models, cases, local_readers=local,
+                            extract_models=extract_models)
 
 
 def _random_plan(body: dict) -> dict:
@@ -5191,8 +5948,13 @@ def _run_round(round_: dict, cancel=None) -> dict:
     """
     scope = round_.get("scope", randomtest.DEFAULT_SCOPE)
     if scope == "fields":
-        backends.select(None, round_["extractor"], unload=True)
-        backends.select_extract("", unload=False)
+        if backends.extract_separate():
+            # Pass 2 has its own server, so the drawn model is chosen THERE; the
+            # reading server is not touched by a round that reads no page.
+            backends.select_extract(round_["extractor"], unload=True)
+        else:
+            backends.select(None, round_["extractor"], unload=True)
+            backends.select_extract("", unload=False)
         set_extract_mode(round_["mode"])
         return _extract_case(round_["case"], round_["mode"])
 
@@ -6158,6 +6920,9 @@ def _environment(rows: list) -> dict:
             # Only where pass 2 runs on a different model -- blank reads as "the
             # same as the reading model", the rule the CSV column follows.
             "extract_model": extract_model or None,
+            # Likewise only where pass 2 has a server of its own.
+            "extract_url": (backends.extract_url()
+                            if backends.extract_separate() else None),
             "slots": (info or {}).get("slots"),
             "reachable": (info or {}).get("reachable"),
             # Not from the probe: it is what this process sends, and it is true
@@ -6517,6 +7282,11 @@ def preflight():
     # has to work the pickers to get the build this log says is the best one.
     # After this they are an ordinary choice, which is what keeps every other
     # meaning on the page intact; see `backends.autoselect_models`.
+    if backends.extract_separate():
+        ex = backends.extract_status(force=True)
+        say(f"[ocr] extraction server: {ex['kind'] or 'server'} {ex['url']} "
+            f"model={ex['model']} available={ex['text_available']}"
+            + (f" -- {ex['text_reason']}" if ex["text_reason"] else ""))
     picked = backends.autoselect_models()
     # Named only where pass 2 is not running on the reading model, so the usual
     # one-model line stays as short as it was.

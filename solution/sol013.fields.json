@@ -37,6 +37,7 @@
       "total_wht_amount"
     ]
   },
+  "is_master_table": false,
   "document_type": [
     "ต้นฉบับใบกำกับภาษี",
     "ORIGINAL TAX INVOICE"

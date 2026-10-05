@@ -58,6 +58,7 @@
           "po_gr_rtv_number"
         ]
       },
+      "is_master_table": false,
       "document_type": "ใบลดหนี้/ใบกำกับภาษี",
       "document_number": "24AA001251200008",
       "issue_date": "01/12/2025",
@@ -107,6 +108,7 @@
           "po_gr_rtv_number"
         ]
       },
+      "is_master_table": false,
       "document_type": "ใบลดหนี้/ใบกำกับภาษี",
       "document_number": "24AA001251200001",
       "issue_date": "01/12/2025",
@@ -156,6 +158,7 @@
           "po_gr_rtv_number"
         ]
       },
+      "is_master_table": false,
       "document_type": "ใบลดหนี้/ใบกำกับภาษี",
       "document_number": "24AA001251200002",
       "issue_date": "01/12/2025",
@@ -204,6 +207,7 @@
           "po_gr_rtv_number"
         ]
       },
+      "is_master_table": false,
       "_note": [
         "Same customer and branch as the document before it, a different",
         "credit reason and a different number."

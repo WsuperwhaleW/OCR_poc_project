@@ -158,15 +158,23 @@ def profile_for(model: str) -> str:
     return local or backends.profile_for_model(model)
 
 
-def pools(models: list, cases: list, local_readers: list = None) -> dict:
+def pools(models: list, cases: list, local_readers: list = None,
+          extract_models: list = None) -> dict:
     """What a plan may choose from, given what the endpoint actually serves.
 
     `models` is `status()["models"]` -- dicts with `name` and `vision`. `cases`
     is the ground-truth document ids. Returns empty lists rather than raising:
     the caller has a better error to give than this does, and an empty pool is a
     perfectly ordinary state for an endpoint that is not running yet.
+
+    `extract_models` is pass 2's own server's list, where it has one
+    (`backends.select_extract_url`); None is the one-URL setup, where both
+    passes draw from `models`. "" stays in the extractor pool either way and
+    means that server's default model.
     """
     named = [m for m in (models or []) if m.get("name")]
+    text = (named if extract_models is None
+            else [m for m in extract_models if m.get("name")])
     return {
         # `vision is not False` rather than `is True`: a server that did not say
         # is worth attempting, which is the same call `backends.status` makes.
@@ -179,7 +187,7 @@ def pools(models: list, cases: list, local_readers: list = None) -> dict:
         # "" is "same as the reading model", and it is in the pool rather than
         # special-cased so that the one-model setup -- the one every measurement
         # in this project was taken under -- is part of what gets tested.
-        "extractors": [""] + [m["name"] for m in named
+        "extractors": [""] + [m["name"] for m in text
                               if not backends.is_ocr_model(m["name"])],
         # A fields-only round reads no page, so EVERY served model is a
         # candidate: vision is irrelevant to a text pass, and an OCR fine-tune
@@ -187,7 +195,7 @@ def pools(models: list, cases: list, local_readers: list = None) -> dict:
         # that never reads does not have. That is the same one-model shape the
         # Fields pane measures under, and it is how the pass-2 sweep scored
         # typhoon and both dots builds on the form at all.
-        "text_models": [m["name"] for m in named],
+        "text_models": [m["name"] for m in text],
         "cases": list(cases or []),
     }
 

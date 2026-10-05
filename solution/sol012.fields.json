@@ -123,6 +123,7 @@
           "total_wht_amount"
         ]
       },
+      "is_master_table": true,
       "document_type": "ใบนัดจ่าย",
       "document_number": "SPS2509000092",
       "issue_date": "",

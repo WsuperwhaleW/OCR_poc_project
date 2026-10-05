@@ -42,6 +42,7 @@
           "po_gr_rtv_number"
         ]
       },
+      "is_master_table": false,
       "document_type": [
         "Credit Note ใบลดหนี้",
         "Credit Note",
@@ -106,6 +107,7 @@
           "total_wht_amount"
         ]
       },
+      "is_master_table": false,
       "document_type": "ใบส่งคืนสินค้า/RTV Ship Credit",
       "document_number": "008032509200035",
       "issue_date": "09/09/2025",

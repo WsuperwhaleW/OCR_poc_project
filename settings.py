@@ -257,6 +257,17 @@ OLLAMA_UNLOAD_ON_SWITCH = config.env_bool("OLLAMA_UNLOAD_ON_SWITCH", True)
 # which is the rule this project already has about the model server. It stops at
 # the first endpoint that answers, so the usual case is one probe.
 AUTO_SELECT_SERVER = config.env_bool("AUTO_SELECT_SERVER", True)
+
+# A SECOND endpoint for pass 2 (2026-10-01, at the user's request: *connect to 2
+# URLs, one for OCR and another for extraction, via the OpenAI-compatible API, and
+# keep the old one-URL setup for local / Ollama*). Unset -- the default -- is that
+# one-URL setup: both passes go to the active endpoint, exactly as every
+# measurement in CLAUDE.md was taken. Set, pass 2 (extraction, the classify and
+# segment questions, the table agents) goes here instead, while the page images
+# keep going to the reading endpoint. Any server kind this app can probe works on
+# either side -- vLLM, llama-server, Ollama or a generic OpenAI-compatible one.
+# Switchable at runtime from the page's "Extraction server" picker.
+EXTRACT_URL = config.env_str("EXTRACT_URL", "", allow_empty=True)
 # How many candidates a single auto-select is willing to probe. Each dead one is
 # ~3 s of connect timeouts, and the list is the constants plus every server in
 # the log, which grows without bound on a machine that has moved endpoints
@@ -556,6 +567,76 @@ CLASSIFY_MAX_TOKENS = config.env_int("CLASSIFY_MAX_TOKENS", 160, minimum=32)
 # ten-page document to ask one question about its first inch is prefill spent on
 # nothing.
 CLASSIFY_MAX_CHARS = config.env_int("CLASSIFY_MAX_CHARS", 4000, minimum=200)
+
+# --------------------------------------------------------------------------
+# the item table (2026-09-30)
+# --------------------------------------------------------------------------
+
+# Read each document's item table out of its transcript and say whether it is a
+# list of items or a list of other documents (`is_master_table`). See `tables.py`.
+#
+# **It costs pass 2 nothing and moves none of its numbers**: the table is parsed
+# in Python from text pass 1 already produced, no prompt changes, and the field
+# score never reads it. Off returns results exactly as they were before it
+# existed -- no `item_table` key at all -- which is the shape to use for
+# comparing against a build that predates it.
+TABLE_EXTRACT = config.env_bool("TABLE_EXTRACT", True)
+# Ask the extraction model to re-cut rows that do not fit the table's headings.
+# ONE request per document, and only where there is such a row -- a table the
+# read produced as a proper grid is never sent anywhere.
+#
+# Safe to leave on because of what the answer IS, not because of who gives it:
+# the model is asked which column each cell belongs under, and `tables.recut`
+# does the cutting. No character of the reply reaches the table, so the model
+# moves a cell boundary and can do nothing else. Off keeps such rows as read,
+# flagged `misaligned`, and `is_master_table` stays undetermined where no row
+# lines up at all.
+TABLE_RECUT_WITH_MODEL = config.env_bool("TABLE_RECUT_WITH_MODEL", True)
+# The most rows one re-cut request carries. A table with more misaligned rows
+# than this is not a table with a few bad cuts, it is a read that did not
+# produce a grid, and the honest report is the flag rather than a long request.
+TABLE_RECUT_MAX_ROWS = config.env_int("TABLE_RECUT_MAX_ROWS", 40, minimum=1)
+# The reply is one small number per cell, so it is sized from the cell count
+# and this is only the ceiling.
+TABLE_RECUT_MAX_TOKENS = config.env_int("TABLE_RECUT_MAX_TOKENS", 1200, minimum=64)
+
+# The two table AGENTS (2026-10-01, at the user's request). Each is sent the
+# TABLE -- never the document -- and neither answer reaches the table as text.
+#
+# The fix agent quotes text in the table's cells that does not belong there --
+# a stamp's words, a QR code's description, stray text -- and the code takes it
+# out where the quote is found in that cell, keeping it as plain text
+# (`outside_text`). `tables.removal_refused` keeps amounts, dates, document
+# numbers and anything too short to be stray. The cell boundaries are then
+# settled exactly as with it off: `realign`, then the column question.
+TABLE_FIX_AGENT = config.env_bool("TABLE_FIX_AGENT", True)
+# The concat agent (2026-10-01, at the user's request: *merge the table into one
+# if there is one table in the document*). An OCR read often cuts one printed
+# table into pieces -- its totals block, or rows continued under headings it
+# garbled, come out as tables of their own. The model is shown the item table and
+# the other tables after it and names which are parts of it; the code joins them
+# (`tables.concat`). It runs before the fix agent, so the fix agent sees the whole
+# table and the page after it.
+TABLE_CONCAT_AGENT = config.env_bool("TABLE_CONCAT_AGENT", True)
+# The identify agent decides `is_master_table` from the table, the document's
+# type and a few extracted values. A `true` is taken only where the column it
+# names is a filled reference column (`tables.reference_column_ok`); otherwise,
+# and when it is off or fails, the Python rule answers. The rule's answer is kept
+# beside the agent's as `master_rules`, so a disagreement is visible.
+TABLE_IDENTIFY_AGENT = config.env_bool("TABLE_IDENTIFY_AGENT", True)
+# The longest table the fix agent reads in one request. Past this the table is
+# not sent and Python repairs it alone, and the result says so.
+TABLE_FIX_MAX_ROWS = config.env_int("TABLE_FIX_MAX_ROWS", 60, minimum=1)
+# What share of the page's lines the fix agent is shown on EACH side of the
+# table -- 0.2 is 20% before and 20% after, a page's lines counting every line
+# of text and every row of every table on it (`tables.context_window`).
+# 2026-10-01, at the user's request: a table the read cut short leaves its
+# headings above it or its totals below it, sometimes as a second small table.
+TABLE_CONTEXT_SHARE = config.env_float("TABLE_CONTEXT_SHARE", 0.2,
+                                       minimum=0.0, maximum=1.0)
+# How many rows the identify agent is shown. Telling documents from goods does
+# not need every row, and the first dozen are the cheapest evidence there is.
+TABLE_IDENTIFY_MAX_ROWS = config.env_int("TABLE_IDENTIFY_MAX_ROWS", 12, minimum=1)
 
 # --------------------------------------------------------------------------
 # stage 0b: how many DOCUMENTS are in the file (2026-09-08)

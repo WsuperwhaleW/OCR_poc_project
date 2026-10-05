@@ -20,6 +20,7 @@
       "cheque_number"
     ]
   },
+  "is_master_table": false,
   "inv_rtv_cnr_number": "215/10736",
   "seller_tax_id": "0-5454-54545-54-5",
   "seller_branch": "สำนักงานใหญ่",

@@ -430,6 +430,72 @@ COLUMNS = [
     # **Blank is not zero**: a re-extraction read no page, and every row
     # written before the column has no answer rather than the answer 0.
     "pages_total",
+    # The item table (2026-09-30, at the user's request: *fix table and also
+    # extract table ... identify item table -> real item list or ref number
+    # list ... is_master_table*). Read out of the transcript in Python by
+    # `tables.py`, so these describe the READ's table and what was done to it --
+    # no extraction model produces a cell of it.
+    #
+    # All counts, so one rule covers a file of one document and a file of seven:
+    #
+    #   item_tables     documents an item table was found in
+    #   master_tables   of those, how many are a list of OTHER DOCUMENTS rather
+    #                   than of items -- `is_master_table: true`
+    #   table_rows      item rows, summed over the documents
+    #   table_realigned rows that were cut into the wrong number of cells and
+    #                   were put back under their headings (every character the
+    #                   read's; only the cuts moved)
+    #   table_misaligned rows still cut wrongly, kept as read and flagged
+    #
+    # **Blank is not zero.** Blank is "the table was not looked for" -- pass 2
+    # did not run, `TABLE_EXTRACT` is off, the document's type rules a table of
+    # its own, or the row predates the columns. 0 in `item_tables` is a finding:
+    # it was looked for and the document has none.
+    "item_tables",
+    "master_tables",
+    "table_rows",
+    "table_realigned",
+    "table_misaligned",
+    # The table against the one the page prints, where the case has ground
+    # truth: cells correct out of cells the truth table states, and the
+    # is_master_table flag against a person's. Written as pairs or not at all,
+    # the rule every correctness figure in this file follows. Kept OUT of
+    # `field_acc`: no requirement makes a row Mandatory, and a wrong cell here
+    # is the read's, not the extractor's.
+    "table_cells_ok",
+    "table_cells",
+    "master_ok",
+    "master_scored",
+    # The server pass 2 ran on, written ONLY where it is not `server` -- the
+    # same exception rule `extract_model` follows, so blank reads as "the same
+    # box that read the page" and every row written before this column (one
+    # URL for both passes, 2026-10-01) stays true. A run is attributed to the
+    # server that ran it, and with two endpoints one URL no longer says that.
+    "extract_server",
+    # The table FIX AGENT's own score (2026-10-01, at the user's request: *build
+    # the scorer for the fix agent, separate from the main score*), against
+    # `solution/tables/<id>.md` by `fixscore.py`. Kept apart from `table_cells`
+    # and `field_acc`: it says whether the agent's decisions were right, not
+    # whether the table or the fields are. Pairs, or blank -- blank where the
+    # case has no table truth file or no table was returned.
+    #
+    #   fix_moved / fix_strays          stamps, barcodes, handwriting in the
+    #                                   table's frame that the read produced, and
+    #                                   how many the agent moved out (recall)
+    #   fix_stray_removals / fix_removals  what the agent moved out, and how
+    #                                   much of it really was stray (precision)
+    #   fix_values_removed              of those, values the clean table holds
+    #   fix_cells_read / fix_cells_agent / fix_cells  the clean table's cells
+    #                                   correct before and after the agent, of
+    #                                   how many
+    "fix_moved",
+    "fix_strays",
+    "fix_stray_removals",
+    "fix_removals",
+    "fix_values_removed",
+    "fix_cells_read",
+    "fix_cells_agent",
+    "fix_cells",
 ]
 
 # The value the run was actually made with, taken from `settings` rather than
@@ -565,6 +631,8 @@ def _pct(value):
 # writes these cells onto a row `record` wrote: two spellings of the same figures
 # would drift, and a row half-described by one extraction and half by another is
 # not a measurement of either.
+FIX_COLUMNS = ("fix_moved", "fix_strays", "fix_stray_removals", "fix_removals",
+               "fix_values_removed", "fix_cells_read", "fix_cells_agent", "fix_cells")
 EXTRACT_COLUMNS = ("extract_seconds", "extract_tokens", "extract_mode",
                    "extract_steps", "other_fields",
                    "grounded_pct", "ungrounded", "fields_missing",
@@ -575,7 +643,11 @@ EXTRACT_COLUMNS = ("extract_seconds", "extract_tokens", "extract_mode",
                    "extract_model", "doc_types", "doc_type_from",
                    "field_verdicts", "documents",
                    "blame_ocr", "blame_extract", "blame_unknown",
-                   "field_blame")
+                   "field_blame",
+                   "item_tables", "master_tables", "table_rows",
+                   "table_realigned", "table_misaligned",
+                   "table_cells_ok", "table_cells", "master_ok", "master_scored",
+                   "extract_server") + FIX_COLUMNS
 
 _TIERS = ("p1_present", "p1_absent", "p2_present", "p2_absent",
           "p3_present", "p3_absent")
@@ -623,6 +695,12 @@ def _extract_cells(summary: dict) -> dict:
                              and extracted.get("model") != (summary or {}).get("model"))
                          else "",
         "extract_steps": ",".join(extracted.get("steps_only") or []),
+        # Like `extract_model`: written only where it differs from the reading
+        # server, so the one-URL setup leaves it blank.
+        "extract_server": (extracted.get("url") or "")
+                          if (extracted.get("url")
+                              and extracted.get("url") != (summary or {}).get("url"))
+                          else "",
         # Blank rather than 0 where nothing was extracted at all, the same rule
         # the tiers follow below: an extraction that never ran did not name zero
         # extra fields, it named none because it never answered.
@@ -661,6 +739,8 @@ def _extract_cells(summary: dict) -> dict:
                        else extracted.get("field_score")),
         # Deliberately NOT gated on `fields_unscored` -- see the columns.
         **_blame_cells(extracted.get("blame")),
+        **_table_cells([extracted], extracted.get("table_score")),
+        **_fix_cells(extracted.get("fix_score")),
     }
 
 
@@ -688,7 +768,8 @@ def _document_cells(summary: dict, extracted: dict, documents: list) -> dict:
     a file as badly extracted for holding documents nobody has written an answer
     sheet for.
     """
-    per = [_extract_cells({"extracted": one, "model": (summary or {}).get("model")})
+    per = [_extract_cells({"extracted": one, "model": (summary or {}).get("model"),
+                           "url": (summary or {}).get("url")})
            for one in documents if isinstance(one, dict)]
 
     def total(name):
@@ -697,7 +778,8 @@ def _document_cells(summary: dict, extracted: dict, documents: list) -> dict:
 
     whole = _extract_cells({"extracted": {k: v for k, v in extracted.items()
                                           if k != "documents"},
-                            "model": (summary or {}).get("model")})
+                            "model": (summary or {}).get("model"),
+                            "url": (summary or {}).get("url")})
     whole.update({name: total(name) for name in
                   ("other_fields", "other_distinct", "ungrounded",
                    "fields_missing") + _TIERS})
@@ -707,7 +789,72 @@ def _document_cells(summary: dict, extracted: dict, documents: list) -> dict:
     looped = [cell["extract_looped"] for cell in per if not _blank(cell["extract_looped"])]
     whole["extract_looped"] = (1 if any(looped) else 0) if looped else ""
     whole["documents"] = len(documents)
+    # Counted over the documents themselves: each rules its own table, and the
+    # merged result deliberately carries none.
+    whole.update(_table_cells([one for one in documents if isinstance(one, dict)],
+                              extracted.get("table_score")))
+    whole.update(_fix_cells(extracted.get("fix_score")))
     return whole
+
+
+def _fix_cells(score) -> dict:
+    """The fix agent's score as counts. See the columns. Blank where there is none."""
+    out = {name: "" for name in FIX_COLUMNS}
+    if not isinstance(score, dict) or "strays" not in score:
+        return out
+    strays, removals = score.get("strays") or {}, score.get("removals") or {}
+    if strays.get("scored"):
+        out.update(fix_moved=strays.get("moved", 0), fix_strays=strays["scored"])
+    if removals.get("total"):
+        out.update(fix_stray_removals=removals.get("stray", 0),
+                   fix_removals=removals["total"],
+                   fix_values_removed=removals.get("real_value", 0))
+    cells = score.get("cells") or {}
+    if cells.get("expected"):
+        out.update(fix_cells_read=cells.get("read", ""), fix_cells=cells["expected"],
+                   fix_cells_agent="" if cells.get("after_agent") is None
+                   else cells["after_agent"])
+    return out
+
+
+_TABLE = ("item_tables", "master_tables", "table_rows", "table_realigned",
+          "table_misaligned")
+_TABLE_SCORE = ("table_cells_ok", "table_cells", "master_ok", "master_scored")
+
+
+def _table_cells(documents: list, score: dict = None) -> dict:
+    """The item-table half of a row. See the columns for what each counts.
+
+    `documents` is every document result of the run -- one for an ordinary file
+    -- and only those that LOOKED for a table are counted: the key is absent
+    from a result where it was not looked for, present and None where it was
+    looked for and the document rules none. Those are different statements and
+    the first writes blanks.
+    """
+    looked = [d for d in documents if isinstance(d, dict) and "item_table" in d]
+    out = {name: "" for name in _TABLE + _TABLE_SCORE}
+    if looked:
+        found = [d["item_table"] for d in looked
+                 if isinstance(d["item_table"], dict) and "rows" in d["item_table"]]
+        out.update(
+            item_tables=len(found),
+            master_tables=sum(1 for t in found if t.get("is_master_table") is True),
+            table_rows=sum(len(t.get("rows") or []) for t in found),
+            table_realigned=sum(len(t.get("realigned") or []) for t in found),
+            table_misaligned=sum(len(t.get("misaligned") or []) for t in found))
+    if isinstance(score, dict) and "counts" in score:
+        if score.get("expected"):
+            out["table_cells_ok"] = (score.get("counts") or {}).get("correct", 0)
+            out["table_cells"] = score["expected"]
+        if "master_scored" in score:           # a file of several, pooled
+            scored, ok = score["master_scored"], score.get("master_correct", 0)
+        else:
+            status = (score.get("master") or {}).get("status")
+            scored = 0 if status in (None, "unchecked") else 1
+            ok = 1 if status == "correct" else 0
+        if scored:
+            out["master_ok"], out["master_scored"] = ok, scored
+    return out
 
 
 def _field_cells(score: dict) -> dict:
@@ -1182,6 +1329,12 @@ def update_extract(key: dict, summary: dict) -> dict:
                 return {"updated": False, "before": before, "after": after}
 
             target.update(cells)
+            # `extract_server` was worked out against the re-extraction's own
+            # server, which is the one that extracted -- so it read blank. On
+            # the READ row the comparison is with the server that read the page.
+            ex_url = (summary.get("extracted") or {}).get("url") or ""
+            target["extract_server"] = (ex_url if ex_url and ex_url != target.get("server")
+                                        else "")
             # The one column the two passes share. Its transcript scores are
             # the READ's and this summary never touched a page, so only the
             # field third is replaced -- see `merge_doc_scores`.

@@ -39,7 +39,7 @@ page while it runs.
 
 | | |
 |---|---|
-| Python | 3.11 or newer |
+| Python | 3.9 or newer |
 | OCR reader | llama.cpp/Ollama with a vision model, or optional local PaddleOCR/EasyOCR environments below |
 
 The model server's own installation, tuning and choice of model are not documented here.
@@ -176,7 +176,7 @@ only the active EasyOCR subprocess; the following request starts a clean worker.
 PyPI installs from disk. Same venv steps; only the install line changes:
 
 ```bash
-python3.11 -m venv .venv
+python3.9 -m venv .venv
 source .venv/bin/activate
 python -m pip install --no-index --find-links wheelhouse -r requirements.txt
 ```
@@ -185,16 +185,16 @@ python -m pip install --no-index --find-links wheelhouse -r requirements.txt
 `wheelhouse/` or fails immediately and says which package was missing — rather than
 hanging on a network timeout on a box that has no network.
 
-**The bundled wheels are built for Linux x86_64 on CPython 3.11.** Eleven of the sixteen
+**The bundled wheels are built for Linux x86_64 on CPython 3.9** (the deployment server's version). Eleven of the sixteen
 are pure Python and install anywhere; the other five are compiled and are not portable:
 
 | Wheel | Runs on |
 |---|---|
-| `pillow`, `pillow_heif`, `markupsafe`, `charset_normalizer` | Linux x86_64, CPython **3.11 only** |
+| `pillow`, `pillow_heif`, `markupsafe`, `charset_normalizer` | Linux x86_64, CPython **3.9 only** |
 | `pymupdf` | Linux x86_64, CPython 3.9 or newer (`abi3`) |
 
-So the general "Python 3.11 or newer" in [step 1](#1-what-you-need-first) narrows to
-**exactly 3.11** on this path — a 3.12 or 3.13 venv rejects the cp311 wheels, as does
+So the general "Python 3.9 or newer" in [step 1](#1-what-you-need-first) narrows to
+**exactly 3.9** on this path — a 3.10+ venv rejects the cp39 wheels, as does
 Windows or arm64. pip reports `No matching distribution found` and names the package. That
 means the wheelhouse is wrong for the machine, not that the requirement is unavailable;
 rebuild it for the target.
@@ -204,7 +204,7 @@ rebuild it for the target.
 Run this on a machine that **does** have internet, then copy the folder to the target:
 
 ```bash
-python -m pip download -r requirements.txt -d wheelhouse --only-binary=:all: --platform manylinux2014_x86_64 --python-version 3.11
+python -m pip download -r requirements.txt -d wheelhouse --only-binary=:all: --platform manylinux2014_x86_64 --python-version 3.9
 ```
 
 `--platform` and `--python-version` describe the **target** machine, not the one running
@@ -343,6 +343,7 @@ The ones that matter for a deployment:
 | `PORT` | `5000` | Port to bind. |
 | `LLAMA_URL` | `http://127.0.0.1:8080` | Where the model server is listening. |
 | `OCR_ENDPOINTS` | *(unset)* | Comma-separated list offered in the server picker. |
+| `EXTRACT_URL` | *(unset)* | A second server for field extraction (and the other text requests: classification, segmentation, the table agents). Unset, both passes use the reading server — the one-URL setup for local llama-server or Ollama. Set, page images go to the reading server and extraction goes here. Any OpenAI-compatible server works. Changeable in the page's **Extraction server** picker. |
 | `AUTO_SELECT_SERVER` | `1` | Probe the configured endpoints and the ones the run log has runs against at startup, and select the first that answers. `0` starts on the first in the list whether or not anything is listening there. |
 | `AUTO_SELECT_MAX_CANDIDATES` | `8` | How many endpoints one auto-select will probe. A dead port costs a pair of connect timeouts. |
 | `AUTO_BEST_MODEL` | `1` | Select each pass's model at startup: the one the run log ranks first for that pass. Both stay changeable in the pickers. `0` starts both passes on the reading model — the one-model setup every figure in `CLAUDE.md` was measured under. |
@@ -1143,6 +1144,11 @@ encode it. The scores are unaffected. For readable diffs:
 set PYTHONIOENCODING=utf-8
 ```
 
+`compare.py` also prints each case's **item table** under the transcript scores — rows, whether
+it is a master table, cells correct against the table in the `.md`, and `is_master_table`
+against the truth file — and a table of them in the summary. It is read from the transcript,
+so `--no-run` reports it off a saved read.
+
 **The scores are only as good as `solution/*.md`.** Those files are one person's reading of
 the rendered pages — correct them where you disagree. `sol003` is a handwritten scan and its
 handwritten values in particular deserve a second look.
@@ -1706,6 +1712,10 @@ to run first. The **Fields** cell marks an updated row.
 | `status`, `error` | `ok` / `partial` / `truncated` / `looped` / `cancelled` / `error` |
 | `run_type` | `ocr` for a document read, `extract` for a re-extraction of a transcript already read. Blank on rows written before the column existed |
 | `extract_updated` | set when a later, better re-extraction replaced this row's pass-2 columns, so `timestamp` no longer says when they were measured. Blank on the normal case |
+| `item_tables`, `master_tables`, `table_rows` | the item tables of the run, as counts so one file of seven documents and a file of one read the same way: documents an item table was found in, how many of those are master tables (`is_master_table: true`), and their item rows. **Blank** where the table was not looked for; `0` in `item_tables` means it was looked for and the document has none |
+| `table_realigned`, `table_misaligned` | rows that were cut into the wrong number of cells and were put back under their headings, and rows still cut wrongly and kept as read |
+| `table_cells_ok`, `table_cells` | table cells read correctly, out of the cells the ground-truth table states. A pair, blank where the case has no ground truth. Not part of `field_acc` |
+| `master_ok`, `master_scored` | `is_master_table` right, out of the documents whose truth file records one |
 
 Coverage is not correctness. `p1_present` counts what came back filled, not what came back
 right — read it beside `p1_correct` where the document has a field truth file, and beside
@@ -2381,6 +2391,175 @@ A credit note legitimately post-dates the invoice it corrects, which is why the 
 rule does not run on one. `Cheque No.` has no validation rule in the requirement and gets
 none: a field with nothing to check is not a field that passes, it simply is not checked.
 
+### The item table, and whether it is a master table
+
+Every document's **item table** is returned with its fields, as `item_table`, and drawn on the
+**Fields** tab under them. It is read out of the transcript by `tables.py` with the document's
+own column headings, so a table of four columns comes back as four columns. Three **table
+agents** — requests to the extraction model — then work on it, in this order. None is sent the
+whole document: the concat agent gets the other tables, the identify agent the table alone,
+the fix agent the table and the part of its page around it:
+
+| agent | is sent | answers | the code then |
+|---|---|---|---|
+| **concat** | the item table's headings and last rows, and every other table the read made after it, numbered T1, T2 … with their page and rows | which of those are part of the item table (`{"same_table": ["T2"]}`) | first, **without asking**, joins any table holding one of the item table's column totals — that is its totals block, by arithmetic — and asks only about the rest. Joins each named table: totals, notes and the amount in words become the table's last rows (under `dropped`, with the reason), item rows join `rows`. Each cell goes under the heading its kind belongs to (figures right-aligned, words under the description). Refuses a table with a row wider than the item table, and one whose item rows do not line up with the columns or carry no figure under a money heading. A separate header box (PO No., salesman) is not part of the item table and is left alone |
+| **fix** | every filled cell, one to a line, named by row, column and heading; and a window of the table's page on each side of it -- `TABLE_CONTEXT_SHARE` (20%) of the page's lines before the table, labelled B, and after it, labelled L, a page's lines counting every line of text and every row of every table on it (a neighbouring table is written out row by row, cells joined by `|`). Never past the page. Where the code finds it, which L line is the table's totals line | which L lines are **stray** (a stamp, a pasted slip, a barcode or its code, handwriting stuck in the table's frame) and which B or L lines are **the table's own** (headings or a row read above it, its totals or notes read below it — a table the read cut short); and any stray text inside a cell, quoted exactly | stray lines go to `outside_text` as plain text, the table's own lines to `footer`, each saying whether it was read before or after the table. Refuses calling a B line stray (it is above the frame), and calling a line stray that holds an amount, spells an amount out in words, or opens with a note label. For a cell, finds the quote in that cell and cuts the cell's own characters out, refusing anything that is or holds an amount, a date or a document number, a bare number or dash, anything under 3 characters, and emptying a cell where the row's figures would be left with no words. Then settles the cell boundaries as before |
+| **identify** | the headings, up to 12 rows, the document type and a few extracted values (its own number, date, references, totals) | `is_master_table` and the column holding the other documents' numbers | takes a `true` only where that column is a filled reference column; otherwise the Python rule answers |
+
+Nothing the fix agent sorts is dropped. On the Fields tab the table's own lines are listed
+under it as **Part of the table, read outside its rows**, and the stray ones as **Not part of
+the table — a stamp, a barcode, handwriting — kept as plain text**, with where each was read.
+A row that was nothing but stray text leaves the table. What the concat agent did rides on the
+table as `concat` — `offered`, `by_sum` (joined by the code), `joined`, `refusals`,
+`rows_added`, `dropped_added`, and the prompt and reply where it was asked — and on the
+**Table** tab as the step **Pieces joined**, coloured by whichever joined them, the code or
+the agent. What each agent was sent and answered rides on the table as `fix_agent` and
+`identify_agent`, and on the Fields tab under the table. `master_from` says whether the
+`is_master_table` shown came from the agent (`model`) or the rule (`rules`); the rule's own
+answer is always kept as `master_rules`.
+
+```json
+"item_table": {
+  "is_master_table": true,
+  "master_why": "each row is identified by another document (เลขที่ใบแจ้งหนี้) and ...",
+  "columns": ["ลำดับ", "เลขที่ใบแจ้งหนี้", "ใบแจ้งหนี้ลงวันที่", "รายการ", "..."],
+  "rows": [["1", "510210009577", "2026-01-31", "Service Charge ...", "84,984.90", "84,984.90"]],
+  "row_pages": [1],
+  "reference_columns": ["เลขที่ใบแจ้งหนี้"],
+  "item_columns": [],
+  "dropped": [{"why": "totals row", "cells": ["...", "472,473.42"], "page": 1}],
+  "realigned": [], "misaligned": [],
+  "repairs": ["5 rows taken out of the items: totals row"],
+  "pages": [1, 2], "tables_found": 2, "source": "transcript"
+}
+```
+
+**`is_master_table`** says what kind of table it is:
+
+| value | the rows are | for example |
+|---|---|---|
+| `true` | **other documents** — each row is identified by an invoice number, a tax invoice number or another reference, and its figures are that document's | a receipt settling twelve invoices, a billing note, a payment schedule |
+| `false` | **items** — goods or services | an invoice's charges, a credit note's returned goods |
+| `null` | not determined | the read kept no column headings, or no row lines up with them |
+
+A table is a master table when it rules a reference column that is filled in **and** rules no
+unit-price or product-code column. A list of goods that cites a document on each row is still
+a list of goods. `master_why` gives the reason in words, `reference_columns` the headings that
+name another document and `item_columns` the ones only a list of goods rules.
+
+**What is done to the table as read**, all of it reported in `repairs`:
+
+- `colspan` and `rowspan` cells are expanded, and a heading printed over two rows becomes one
+  heading per column.
+- Totals, section headings and notes ruled as rows are taken out of `rows` and kept under
+  `dropped`, each with the reason.
+- A table continued over several pages is joined where the pages reprint the same headings.
+- A row cut into the wrong number of cells is put back under its headings where the cells
+  settle it — an amount belongs under a money heading. Those rows are listed in `realigned`.
+  **Every character is the read's own; only the cell boundaries move.**
+- A row nothing could settle stays as read and is listed in `misaligned`. With the fix agent
+  off and `TABLE_RECUT_WITH_MODEL` on, the extraction model is asked once which column each
+  cell of such a row belongs under; it answers with column numbers and the app does the
+  cutting.
+
+On the page, a re-cut row carries a blue edge, a row still cut wrongly an amber one, and the
+rows taken out are listed under the table.
+
+**`item_table` is `null`** where the document rules no item table, and **absent** where it
+was not looked for: `TABLE_EXTRACT=0`, a run restricted to some agentic steps, or a document
+whose type rules a table of its own (a WHT certificate returns `income_items` instead).
+
+For a benchmark case the table is scored as `table_score`, beside `field_score` and never
+inside it: cells against the table in `solution/<id>.md`, and `is_master_table` against the
+`is_master_table` key of `solution/<id>.fields.json`.
+
+| Setting | Default | |
+|---|---|---|
+| `TABLE_EXTRACT` | `1` | read the item table out of each document's transcript. `0` returns results with no `item_table` key |
+| `TABLE_RECUT_WITH_MODEL` | `1` | ask the extraction model which column each cell of a misaligned row belongs under. `0` leaves such rows flagged |
+| `TABLE_RECUT_MAX_ROWS` | `40` | most misaligned rows one such request carries; a table with more is left flagged |
+| `TABLE_RECUT_MAX_TOKENS` | `1200` | ceiling on that reply |
+| `TABLE_CONCAT_AGENT` | `1` | the concat agent. `0` joins nothing: the item table is the one table the read made, as before |
+| `TABLE_FIX_AGENT` | `1` | the fix agent. `0` takes nothing out of the cells; the cell boundaries are repaired the same way either way |
+| `TABLE_IDENTIFY_AGENT` | `1` | the identify agent. `0` decides `is_master_table` by the Python rule alone |
+| `TABLE_FIX_MAX_ROWS` | `60` | the longest table the fix agent is sent; a longer one is repaired by code alone |
+| `TABLE_CONTEXT_SHARE` | `0.2` | the share of the table's page the fix agent is shown on each side of it (at least 3 lines) |
+| `TABLE_IDENTIFY_MAX_ROWS` | `12` | how many rows the identify agent is shown |
+
+#### Table ground truth: `solution/tables/<id>.md`
+
+One file per benchmark case, holding every ruled table on its pages **as it should read after
+the fix agent has done its job**: the table clean, and under it whatever was stamped, stuck or
+written inside its frame. It is separate from `solution/<id>.md`, which is unchanged and is
+still what the transcript is scored against.
+
+```
+## Table 1 — page 1
+
+| heading | heading |
+| --- | --- |
+| cell | cell |
+
+### Stray: barcode sticker — empty rows, under the VAT and W/T columns
+
+*A01$TX*
+
+### Stray: handwriting — empty rows, under the barcode
+
+10260202364
+```
+
+- **`## Table N — page P`** opens a table; N counts from 1 through the file, P is the page of
+  the file it is printed on. **`## Table N — pages A-B`** is one table printed across pages A
+  to B.
+- **The table** is a pipe table with the page's own headings. A heading printed over two rows
+  is one heading per column. **A document's item table and its totals are ONE table**, even
+  where the page prints the totals as a separate grid or the read cut them off: totals, the
+  amount in words and the notes of the table's foot are its last rows. A separate header box
+  (PO No., salesman) stays a table of its own. Nothing stamped or written onto the page is in
+  a cell.
+- **`### Stray: <kind> — <where>`** follows each table, one per thing found in its frame, with
+  its text under it (`(… no text)` for a mark or a picture with none). `### Stray: none` where
+  the frame holds nothing. Kinds used: barcode sticker, rubber stamp, pasted slip,
+  handwriting, image, mark.
+- Only ruled data tables are included: item tables, totals grids, reference rows. Signature
+  boxes, customer/address boxes and single-value boxes are not.
+
+#### The fix agent's score: `fix_score`
+
+Scored by `fixscore.py` against `solution/tables/<id>.md`, and **kept apart from every other
+score**: it is its own key on the result (`fix_score`, beside `table_score` and
+`field_score`, never inside them), its own run-log columns, and its own block on the
+**Table** tab. It measures the agent's decisions only.
+
+| figure | what it counts |
+|---|---|
+| strays: recall | stamp, barcode and handwriting lines in the table's frame (or in another table on the same page) that the read produced, and how many the agent moved out. Lines the read never produced are listed as `not read` and not counted |
+| removals: precision | what the agent moved out, and how much of it was stray. The rest is `page text` (ordinary text it mislabelled) or `real value` (a value the clean table holds) |
+| own lines | lines the agent said are the table's own, and how many are in a truth table on that page |
+| cells | the clean table's cells correct as read, after the agent, and at the end |
+| totals held | the truth table's totals and foot rows, and how many the run kept with the table (as rows, as rows taken out of the items, or as the table's own lines). The rest are listed as missing |
+| joined | what the concat agent was offered, joined (and how many of those by a column total) |
+
+Run log: `fix_moved` / `fix_strays`, `fix_stray_removals` / `fix_removals`,
+`fix_values_removed`, `fix_cells_read` / `fix_cells_agent` / `fix_cells`. Blank where the case
+has no table truth file or no table came back.
+
+On its own, without the app's run log:
+
+```bash
+python fixscore.py
+```
+
+```bash
+python fixscore.py sol001 sol005 --model gemma4:e4b
+```
+
+It runs the concat and fix agents on each saved read (`solution/out/<id>.txt`;
+`--from-truth` uses `solution/<id>.md`), prints the score per case and for all cases, and
+`--json FILE` writes every score. `--no-concat` runs the fix agent alone, so the two can be
+compared. A withholding certificate is not looked at, as in the app.
+
 ### How many documents are in the file
 
 **One upload is not one document.** A multi-page file can hold several documents of several
@@ -2838,8 +3017,9 @@ everything else, which is most documents.
 | `POST /api/preview` | the prepared page **before** any read, so the Detail can be seen rather than guessed at. Multipart, taking the same `image` / `case` / `file` field as `/api/ocr` plus `detail` and an optional `page` (0-based). Answers with the PNG; `X-Preview-Pages`, `X-Preview-Detail` (as resolved), `X-Preview-Width`/`-Height` and `X-Preview-Source-Width`/`-Height` carry the numbers. No model server needed, and nothing is cached or logged |
 | `GET /api/health` | active server status (reachable, kind, model, vision) and whether the PDF/HEIF decoders are available |
 | `GET /api/servers` | every configured endpoint, what each one is, and which is active. `?probe=1` bypasses the status cache |
-| `POST /api/servers` | `{"url": "...", "model": "..."}`, either field optional. 409 while a random test is running |
+| `POST /api/servers` | `{"url": "...", "model": "...", "extract_url": "...", "extract_model": "..."}`, every field optional. `extract_url` gives extraction its own server (`""` = same as the reading server); `extract_model` picks the model on whichever server extracts. 409 while a random test is running and the reading or extraction server would change |
 | `POST /api/context` | set the Ollama context window for subsequent requests |
+| `GET` · `POST /api/table-agents` | read or switch the three table agents for the next document. Body `{"concat": true, "fix": true, "identify": false}`, every key optional; answers with all three |
 | `GET /api/cases` · `GET /api/files` | benchmark cases, and readable documents in `mockOcr/`. Each case says `doc_types` (a list — a document is often more than one) and `field_truth`: whether it has a `solution/<id>.fields.json`, and so whether an extraction of it can be scored |
 | `GET /api/truth/<case>` | the hand-written ground truth for one case, verbatim, plus the case's pdf, kind and page count. 404 for an id that is not a case |
 | `POST /api/match` | look up the ground-truth case for a file by name or sha256 |
@@ -2887,7 +3067,7 @@ runs anywhere. Then install from it instead:
 ```bash
 unzip thai-ocr-<date>.zip && cd thai-ocr-<date>
 cp -r /path/to/wheelhouse .
-python3.11 -m venv .venv && source .venv/bin/activate
+python3.9 -m venv .venv && source .venv/bin/activate
 pip install --no-index --find-links wheelhouse -r requirements.txt
 python app.py
 ```
@@ -2929,6 +3109,7 @@ still never parses `.env` itself.
 | `normalise.py` | Derives the normalised values from what pass 2 copied — standard document type, branch codes, tax-ID digits, the reference list |
 | `scoring.py` | Ground-truth lookup and accuracy scoring, shared by page and CLI |
 | `segment.py` | How many documents are in one file, and which pages are which |
+| `tables.py` | The item table of a document, read out of its transcript and repaired, and whether it is a master table |
 | `runlog.py` | The CSV run log |
 | `paddle_runtime.py` | Interpreter discovery, serialization, lifecycle, timeouts, and cancellation for the optional Paddle worker |
 | `paddle_worker.py` | Isolated long-lived PaddleOCR JSON-lines worker and coordinate decoding |

@@ -20,6 +20,7 @@
       "cheque_number"
     ]
   },
+  "is_master_table": true,
   "inv_rtv_cnr_number": "",
   "seller_tax_id": "1447778880084",
   "seller_branch": "สาขาที่: 00009",

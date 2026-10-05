@@ -19,6 +19,7 @@
       "po_gr_rtv_number"
     ]
   },
+  "is_master_table": false,
   "document_type": "ใบลดหนี้",
   "document_number": "CN99231000427",
   "issue_date": "14/12/2023",

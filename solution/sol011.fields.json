@@ -20,6 +20,7 @@
       "cheque_number"
     ]
   },
+  "is_master_table": false,
   "inv_rtv_cnr_number": "",
   "seller_tax_id": "0-1055-49155-88-9",
   "seller_branch": [

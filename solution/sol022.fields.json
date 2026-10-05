@@ -63,6 +63,7 @@
           "total_wht_amount"
         ]
       },
+      "is_master_table": false,
       "document_type": [
         "ต้นฉบับใบกำกับภาษี/ใบส่งของ/บริการ",
         "ORIGINAL TAX INVOICE/DELIVERY ORDER/SERVICE",
@@ -131,6 +132,7 @@
           "cheque_number"
         ]
       },
+      "is_master_table": false,
       "_note": [
         "inv_rtv_cnr_number is the number under เลขที่ใบกำกับ -- a tax invoice",
         "label, and the tax invoice this receipt settles is page 1, which prints",
@@ -196,6 +198,7 @@
           "total_wht_amount"
         ]
       },
+      "is_master_table": false,
       "document_type": [
         "ต้นฉบับใบกำกับภาษี/ใบส่งของ/บริการ",
         "ORIGINAL TAX INVOICE/DELIVERY ORDER/SERVICE",
@@ -264,6 +267,7 @@
           "cheque_number"
         ]
       },
+      "is_master_table": false,
       "inv_rtv_cnr_number": "NW-726050173",
       "seller_tax_id": "0105537191594",
       "seller_branch": "สำนักงานใหญ่",

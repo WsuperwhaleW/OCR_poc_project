@@ -568,6 +568,274 @@ SEGMENT_CHAT_ASK = """Page {number}:
 Is page {number} part of the same document? Answer with the JSON object."""
 
 
+# Asked ONLY where `tables.py` found rows that do not fit the table's own
+# headings -- five headings and six cells, a row one cell short (2026-09-30).
+# Every other table is read out of the transcript in Python and no model sees it.
+#
+# **It asks which COLUMN each cell belongs under, and for nothing else.** The
+# answer is column numbers; `tables.recut` does the joining. So nothing this
+# prompt gets back is ever copied onto the page -- a model cannot correct a
+# digit, drop a value or invent one through it, because no character of its
+# reply reaches the table.
+#
+# Two earlier shapes were measured on sol007 with `gemma4:e4b` and both failed,
+# each in a way worth knowing:
+#
+#   * asked for the rows WRITTEN OUT again, re-cut, it returned them exactly as
+#     read, six cells and all. Asked to rewrite, it copied.
+#   * asked for a bare LIST of column numbers per row, it answered 1, 2, 3, 4, 5
+#     for every row -- five numbers for six cells. It numbered the columns
+#     instead of placing the cells.
+#
+# So every cell has a NAME and the skeleton lists every name: the reply cannot
+# be the right shape without saying something about each cell.
+#
+# The message carries the table and not the document: which two cells of six
+# are one value is a question about that row, and the rest of the page is
+# context for a different question.
+#
+# No value is written in quotes anywhere in it, the standing rule for a prompt
+# that asks for JSON: a quoted illustration reads as something to emit.
+TABLE_RECUT_PROMPT = """Below is one table from a scanned Thai/English business document, as an OCR program
+read it. The program cut some of its rows into the wrong number of cells: one value split
+across two cells, or an empty cell left out so the cells after it slid sideways.
+
+The table has {count} columns. Their headings, numbered in order:
+{headings}
+{examples}
+The rows that were cut wrongly. Each cell the program read is on a line of its own, with a
+name:
+{rows}
+
+For every cell of every row above, say which column it belongs under.
+
+Return ONLY this JSON object, with every 0 replaced by a column number. No prose and no
+code fence:
+
+{skeleton}
+
+- Keep every name exactly as it is written above and answer ALL of them: every cell of
+  every row gets a number, and a row of six cells gets six numbers.
+- A column number is one of 1 to {count}, from the headings above. 0 is not an answer.
+- The cells stay in the order they were read, so along a row the numbers never go down.
+- Two cells next to each other that are really ONE value -- a code and the number that
+  follows it, a label cut in two -- belong under the SAME column: give them the same number.
+- A column the row has nothing for is simply skipped: no cell gets its number.
+- Decide each cell by what its heading asks for: an amount goes under a heading for money, a
+  document or reference number under a heading for one, words under a heading for a
+  description."""
+
+# The well-formed rows of the same table, shown so the pattern is visible. Left
+# out entirely where there are none -- every row of sol007 is cut wrongly -- and
+# an empty "for comparison" heading would be a caption over nothing.
+TABLE_RECUT_EXAMPLES = """
+Rows of the same table that were read correctly, cell by cell under their columns, for
+comparison only:
+{rows}
+"""
+
+
+# --------------------------------------------------------------------------
+# the two table agents (2026-10-01)
+# --------------------------------------------------------------------------
+#
+# At the user's request: *1 agent for table fix (see if the table needs fix or
+# not, if needed fix it then use code to extract) / another agent for the table
+# identify (only send the table, doc type and some other field, not the whole
+# doc)*.
+#
+# Both are sent the TABLE and never the document. Which cell is under which
+# heading, what does not belong in a cell, and whether the rows are goods or
+# other documents, are questions
+# about the rows; the rest of the page is prefill spent on a different
+# question -- and on a long document, most of the request.
+#
+# Neither answer reaches the table as text. The fix agent QUOTES text that does
+# not belong and `tables.remove_text` cuts the cell's own characters out where
+# the quote is found. The identify agent says true or false and NAMES a
+# column; `tables.reference_column_ok` refuses a true it cannot point at.
+
+# Agent 1, the fix agent: what in the table and around it does NOT belong to it.
+# Changed the same day, at the user's request: *table fix will focus on the
+# content of the rows and columns -- some data in the table may come from an
+# inserted stamp / QR code or random text that does not belong there; the fix
+# agent removes those parts and places them in plain text*.
+#
+# Then, the same day, after the user pointed at sol001, sol005, sol009 and
+# sol011: the stray things sit in the EMPTY SPACE of the table's frame, and the
+# OCR model writes them as lines AFTER the table, between its last item row and
+# its own totals -- which it also writes as loose lines. So the agent is shown
+# those lines too (`tables.table_tail`) and says, by NUMBER, which are stray and
+# which are the table's own; the code moves them.
+#
+# Then (2026-10-01, later): *sometimes the table got cut or the total got cut*.
+# The agent is shown a window of the PAGE around the table -- 20% of the page's
+# lines before it and 20% after (`tables.context_window`) -- with any table the
+# read ruled there written out row by row, so a totals block the read cut into
+# a second small table, or headings it read as loose lines above the table, are
+# in front of it. Lines are labelled B (before) and L (after).
+#
+# For a cell it QUOTES the stray text and the code does the removing: `tables.remove_text`
+# finds the quote in that cell and cuts the cell's own characters out, so a quote
+# the model reworded is not found and nothing happens. Cell boundaries are left
+# to the code (`realign`), which on sol007 at 2 MP did that job where both models
+# asked the column question got it wrong.
+#
+# sol021 sells a "Barcode Scanner 2D/Support QR Code": the one table in the corpus
+# whose real values name a QR code, and the reason the last rule is there.
+TABLE_CLEAN_PROMPT = """Below is one table from a scanned Thai/English business document as an OCR program
+read it, with the lines the program read just before it and just after it on the same page.
+
+On the page the table is a ruled frame. Inside that frame, below the item rows, there is
+often empty space, and things get stamped, stuck or written there: a rubber stamp or a
+pasted slip with its own text, a barcode with its code printed under it, a QR code, a tick,
+a handwritten number. They are not part of the table. The OCR program often ends the table
+at the last item row, so that everything below it inside the frame -- the stray things AND
+the table's own totals and notes -- comes out as separate lines after it. The program can
+also cut the table short at either end: its headings or first row may come out as lines
+before it, and its last rows or its totals as lines after it, or as a second small table
+(shown below with its cells joined by |). Sometimes stray text lands inside a cell instead.
+
+The lines read just before the table, labelled B:
+{before}
+
+The table has {count} columns. Their headings, numbered in order:
+{headings}
+
+Every cell that has something in it, one to a line, named by its row and its column:
+{rows}
+
+The lines read just after the table, labelled L:
+{lines}
+{frame}
+Return ONLY this JSON object, with each null replaced by your answer. No prose and no code
+fence:
+
+{{"stray_lines": null, "table_lines": null, "remove": null}}
+
+- stray_lines: the labels (like L3) of the lines after the table that are stray -- a
+  stamp's or a slip's text, a barcode or its code, a QR code, a description of a picture, a
+  handwritten mark -- anything stamped, stuck or written onto the page rather than printed as
+  the table. Only L lines: the B lines are above the table's frame, not inside it.
+- table_lines: the labels (like B2 or L3) of the lines that are the table's own content the
+  program read outside it -- its headings or a row read above it, its totals, a note line, a
+  row it left out below it.
+- A line that is neither -- ordinary page text, like the names, addresses and dates of the
+  document's header before the table, or the amount in words, a signature or payment terms
+  after it -- goes in neither list.
+- remove: stray text INSIDE a cell, a list with one entry per piece, each an object with
+  three keys: row and column (the numbers that name the cell above) and text (the stray
+  text, copied exactly from after the colon). An empty list when no cell holds any.
+- When a cell holds a real value AND stray text, give only the stray text.
+- Never take out a real value from a cell. A description of goods or services, an amount, a
+  date, a quantity or a document number stays -- even when it names a QR code, a barcode or
+  a stamp as the thing that was sold. Everything written about an item is part of its row:
+  a code, a lot or serial number, a warranty, a period, a unit, a note about that item.
+- When in doubt, leave a cell as it is and leave a line out of both lists.
+- You cannot change or correct any text here, only say which text is which."""
+
+# The concat agent: is the read's next table part of this one? It answers with
+# table NUMBERS only; `tables.concat` does the joining and places every cell by
+# what it is, so no character of the reply reaches the table.
+TABLE_CONCAT_PROMPT = """Below is the item table of one scanned Thai/English business document as an OCR program
+read it, and the other tables the program read after it in the same document.
+
+An OCR program often cuts one printed table into pieces: the totals block at the foot of
+the table, the amount in words, or more of its rows continued on the next page, come out as
+a separate table.
+
+The item table has {count} columns. Their headings, numbered in order:
+{headings}
+
+Its last rows, cells joined by |:
+{last_rows}
+
+The other tables, numbered, cells joined by |:
+{others}
+
+Return ONLY this JSON object, with the null replaced by your answer. No prose and no code
+fence:
+
+{{"same_table": null}}
+
+- same_table: the numbers of the other tables that are part of the item table -- its totals,
+  its tax lines, its amount in words, or more of its rows. An empty list when none is.
+- A table that is a different block of the page is NOT part of it: the document's header
+  (customer, reference numbers, salesman, due date), a payment slip or payment details, a
+  signature box, a list of bank accounts.
+- You cannot change any text, only say which tables belong together."""
+
+# What the code found about where the table's frame ends, put in front of the
+# fix agent as a fact. `tables.totals_line` decides it; the agent still decides
+# what each line is.
+TABLE_FRAME_NOTE = """
+L{totals} is the table's totals line. So {inside} {were} read from INSIDE the table's
+frame, between its last row and its totals. On a printed form that space is empty: what was
+read there was stamped, stuck or written onto the page, and is stray -- unless it is a note
+line the table itself prints.
+"""
+
+# The other fact the code can establish: the table was read WITH its totals, so
+# what follows it is past the frame. On sol009 as typhoon reads it, gemma4:e4b
+# called the amount in words and the signature lines stray without this.
+TABLE_AFTER_FRAME_NOTE = """
+The table's own totals were read inside the table above, so the lines after it come from
+below its frame: ordinary page text, not stray, unless a line is plainly a stamp, a
+barcode or a handwritten mark.
+"""
+
+# Agent 2: master table or item list. The document type and a few values read
+# from the document are context the TABLE cannot give -- a receipt's own number
+# beside a column of other numbers is the clearest evidence there is that those
+# are other documents. The rest of the page is not sent.
+TABLE_IDENTIFY_PROMPT = """Below is the item table of one scanned Thai/English business document, with what kind of
+document it is and a few of the values read from it. Only the table is shown, not the page.
+
+The document is: {doc_type}
+{fields}
+The table has {count} columns. Their headings, numbered in order:
+{headings}
+
+{shown} of its {total} rows, each cell after the number of its column:
+{rows}
+
+Decide which of these two kinds of table it is:
+
+- A MASTER TABLE lists OTHER DOCUMENTS. Each row stands for another document -- an invoice,
+  a tax invoice, a credit note, a reference document -- and is identified by that document's
+  number, and its figures are that document's. The rows of a receipt that settles several
+  invoices, a billing note, a payment schedule, a remittance advice.
+- An ITEM LIST lists goods or services: what was sold, returned or charged, usually with a
+  quantity, a unit price or a product code. A row of an item list can still mention another
+  document: returned goods that each cite the invoice they came off are an item list.
+
+Return ONLY this JSON object, with each null replaced by your answer. No prose and no code
+fence:
+
+{{"is_master_table": null, "reference_column": null}}
+
+- is_master_table is true for a master table and false for an item list.
+- reference_column is the number of the column that holds the other documents' numbers, one
+  of 1 to {count} from the headings above, or 0 where the table has no such column. A master
+  table always has one.
+- Judge by what the rows ARE, not by the kind of document alone: a receipt can carry either
+  kind of table."""
+
+# The values the identify agent is shown beside the table, in this order, where
+# the extraction filled them. The document's OWN number is the point: beside a
+# column of other numbers it says which number is this document and which are
+# not. Totals show what the rows add up to.
+TABLE_IDENTIFY_FIELDS = (
+    ("document_number", "this document's own number"),
+    ("issue_date", "this document's date"),
+    ("po_gr_rtv_number", "purchase order / goods receipt / return number"),
+    ("inv_rtv_cnr_number", "the document this one settles"),
+    ("subtotal", "total before VAT"),
+    ("vat_total", "VAT"),
+    ("amount_incl_vat", "total including VAT"),
+)
+
+
 def classify_vocabulary():
     """The code list `CLASSIFY_PROMPT` offers, one line each."""
     return "\n".join("  %s -- %s" % (code, TYPE_NAMES[code])
@@ -2358,8 +2626,26 @@ def _selftest():
     assert SEGMENT_CHAT_KEPT.format(number=2, why="why", digest="x")
     assert SEGMENT_CHAT_ASK.format(number=2, digest="x")
     assert CLASSIFY_PROMPT.format(vocabulary=classify_vocabulary())
+    recut = TABLE_RECUT_PROMPT.format(
+        count=2, headings="1. a\n2. b", rows="Row 1:\n  c1: x",
+        skeleton='{ "rows": [ { "c1": 0 } ] }',
+        examples=TABLE_RECUT_EXAMPLES.format(rows="1. p | q"))
+    assert '{ "rows": [ { "c1": 0 } ] }' in recut
+    assert '{"same_table": null}' in TABLE_CONCAT_PROMPT.format(
+        count=2, headings="1. a", last_rows="x | y", others="T1 (page 1)")
+    assert '{"stray_lines": null, "table_lines": null, "remove": null}' in \
+        TABLE_CLEAN_PROMPT.format(count=2, headings="1. a", rows="row 1, column 1: x",
+                                  before="B1 y", lines="L1 x", frame="")
+    assert "L3 is the table" in TABLE_FRAME_NOTE.format(totals=3, inside="L1 to L2",
+                                                         were="were")
+    assert '{"is_master_table": null, "reference_column": null}' in         TABLE_IDENTIFY_PROMPT.format(doc_type="a receipt", fields="", count=2,
+                                     headings="1. a", shown=1, total=1,
+                                     rows="Row 1: 1: x")
 
     for name, text in (("classify", CLASSIFY_PROMPT),
+                       ("table clean", TABLE_CLEAN_PROMPT),
+                       ("table concat", TABLE_CONCAT_PROMPT),
+                       ("table identify", TABLE_IDENTIFY_PROMPT),
                        ("segment", SEGMENT_PROMPT),
                        ("segment chat", SEGMENT_CHAT_PROMPT)):
         low = text.lower()

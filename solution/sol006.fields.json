@@ -20,6 +20,7 @@
       "po_gr_rtv_number"
     ]
   },
+  "is_master_table": false,
   "document_type": [
     "ใบลดหนี้/ใบกำกับภาษี Credit Note/Tax Invoice",
     "ใบลดหนี้/ใบกำกับภาษี",

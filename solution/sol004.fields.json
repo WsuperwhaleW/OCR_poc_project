@@ -20,6 +20,7 @@
       "cheque_number"
     ]
   },
+  "is_master_table": true,
   "inv_rtv_cnr_number": "",
   "seller_tax_id": "0101111000111",
   "seller_branch": "สาขา: 01065",

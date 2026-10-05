@@ -60,6 +60,7 @@
           "total_wht_amount"
         ]
       },
+      "is_master_table": true,
       "document_type": "ใบวางบิล",
       "document_number": "BI4001001",
       "issue_date": "20/11/68",
@@ -120,6 +121,7 @@
           "cheque_number"
         ]
       },
+      "is_master_table": true,
       "inv_rtv_cnr_number": "",
       "seller_tax_id": "0105533353335",
       "seller_branch": "",
@@ -177,6 +179,7 @@
           "total_wht_amount"
         ]
       },
+      "is_master_table": true,
       "document_type": "ใบนัดจ่าย",
       "document_number": "",
       "issue_date": "",
@@ -253,6 +256,7 @@
           "total_wht_amount"
         ]
       },
+      "is_master_table": true,
       "document_type": "ใบวางบิล",
       "document_number": "BI0004014",
       "issue_date": "13/01/69",
@@ -329,6 +333,7 @@
           "total_wht_amount"
         ]
       },
+      "is_master_table": true,
       "document_type": "ใบนัดจ่าย",
       "document_number": "",
       "issue_date": "",
@@ -484,6 +489,7 @@
           "total_wht_amount"
         ]
       },
+      "is_master_table": true,
       "document_type": "Pre- PAYMENT ADVICE",
       "document_number": "2603250778622885",
       "issue_date": "20 March 2026",
