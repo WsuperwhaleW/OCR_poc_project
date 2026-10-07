@@ -301,6 +301,25 @@ SERVER_TIMING = config.env_bool("SERVER_TIMING", True)
 # calling it unattributed. The stream can close a moment before the server's
 # stats logger has run, so the after-snapshot is retried within this budget.
 SERVER_TIMING_WAIT = config.env_float("SERVER_TIMING_WAIT", 1.0, minimum=0.0)
+
+# The live /metrics monitor (2026-10-06). vLLM does not report VRAM, so the
+# monitor reads it from a GPU exporter scraped beside it -- DCGM
+# (DCGM_FI_DEV_FB_*) or nvidia_gpu_exporter (nvidia_smi_memory_*_bytes). Blank
+# falls back to series the vLLM scrape itself carries, then to this machine's
+# nvidia-smi when the model server is on this machine. The page can override it.
+MONITOR_GPU_URL = config.env_str("MONITOR_GPU_URL", "", allow_empty=True)
+# The shortest gap between two /metrics scrapes the monitor will make of one
+# server. A call inside it gets the last reading back (`cached`), so every tab
+# and every client watching costs one scrape per gap between them, and the
+# page never asks more often than this however its box is set. vLLM's
+# counters move per engine step, so a reading more often than this is mostly
+# the same figures again.
+MONITOR_MIN_INTERVAL = config.env_float("MONITOR_MIN_INTERVAL", 2.0, minimum=0.0, maximum=60.0)
+# While the server is idle (nothing running or waiting, no tokens since the
+# last reading) the page doubles its gap after each idle reading, up to this
+# many seconds, and drops back to the box's value at the first sign of work.
+# A failed reading backs off the same way. 0 turns the backoff off.
+MONITOR_IDLE_MAX = config.env_float("MONITOR_IDLE_MAX", 30.0, minimum=0.0, maximum=600.0)
 # How many candidates a single auto-select is willing to probe. Each dead one is
 # ~3 s of connect timeouts, and the list is the constants plus every server in
 # the log, which grows without bound on a machine that has moved endpoints
@@ -405,6 +424,93 @@ DRY_PENALTY_FALLBACK = 8192
 # leaving DRY above as the only loop defence.
 REPETITION_PENALTY = config.env_float("REPETITION_PENALTY", 1.1, minimum=1.0)
 
+# vLLM gets the penalties OLLAMA ACTUALLY APPLIES to the same model, rather than
+# the ones this app sends -- set 2026-10-06 at the user's request, after the vLLM
+# server looped where the same model on Ollama did not.
+#
+# The two were never running the same sampler. Ollama's /v1 drops every penalty
+# in the request (measured: repeat_penalty 5.0 changed nothing there), so what it
+# runs is the served model's Modelfile, or failing that its own default --
+# repeat_penalty 1.1 over the last 64 tokens. vLLM honours the request as sent.
+# Read off the Modelfiles on this machine (~/.ollama/models, 2026-10-06):
+#
+#   typhoon-ocr1.5-3b   repeat_penalty 1.2, temperature 0.1
+#   qwen3.5:9b          presence_penalty 1.5, temperature 1, top_k 20, top_p 0.95
+#   gemma4:e4b          temperature 1, top_k 64, top_p 0.95   (no penalty: default 1.1)
+#   dots.mocr           stop strings only                     (no penalty: default 1.1)
+#
+# Only the PENALTIES are mirrored. temperature / top_k / top_p in a Modelfile are
+# overridden by the request's greedy settings on Ollama too, so both servers
+# decode greedily already; copying them would make vLLM sample where Ollama does
+# not. What cannot be mirrored: Ollama's repeat window (64 tokens) -- vLLM's
+# repetition_penalty has no window and counts the prompt as well as the reply.
+#
+# Matched on a substring of the served model name, lower-cased, first hit wins;
+# anything unmatched gets Ollama's default. A VLLM_* override below replaces the
+# table's value for every model. VLLM_MATCH_OLLAMA=0 sends vLLM exactly what
+# every other backend gets (REPETITION_PENALTY, no presence penalty).
+VLLM_MATCH_OLLAMA = config.env_bool("VLLM_MATCH_OLLAMA", True)
+OLLAMA_DEFAULT_REPEAT_PENALTY = 1.1
+VLLM_SAMPLER_BY_MODEL = (
+    ("typhoon", {"repetition_penalty": 1.2}),
+    ("qwen", {"repetition_penalty": OLLAMA_DEFAULT_REPEAT_PENALTY,
+              "presence_penalty": 1.5}),
+)
+# Blank = use the table. presence/frequency follow OpenAI's -2..2.
+VLLM_REPETITION_PENALTY = config.env_float("VLLM_REPETITION_PENALTY", None,
+                                           minimum=1.0)
+VLLM_PRESENCE_PENALTY = config.env_float("VLLM_PRESENCE_PENALTY", None,
+                                         minimum=-2.0, maximum=2.0)
+VLLM_FREQUENCY_PENALTY = config.env_float("VLLM_FREQUENCY_PENALTY", None,
+                                          minimum=-2.0, maximum=2.0)
+
+
+def vllm_sampler(model: str = "") -> dict:
+    """The penalty fields a vLLM request carries for `model`.
+
+    Merged after `sampler_extras`, so `repetition_penalty` here replaces the
+    shared one. Empty when VLLM_MATCH_OLLAMA is off and nothing is overridden.
+    """
+    fields = {}
+    if VLLM_MATCH_OLLAMA:
+        name = (model or "").lower()
+        fields = {"repetition_penalty": OLLAMA_DEFAULT_REPEAT_PENALTY}
+        for needle, values in VLLM_SAMPLER_BY_MODEL:
+            if needle in name:
+                fields = dict(values)
+                break
+    for key, value in (("repetition_penalty", VLLM_REPETITION_PENALTY),
+                       ("presence_penalty", VLLM_PRESENCE_PENALTY),
+                       ("frequency_penalty", VLLM_FREQUENCY_PENALTY)):
+        if value is not None:
+            fields[key] = value
+    return fields
+
+
+# --- Pass-1 (OCR) sampling ----------------------------------------------------
+# Pass 1 was fully greedy (temperature 0, top_k 1, top_p 1) and every baseline in
+# CLAUDE.md was taken that way. Typhoon's own recommended values are temperature
+# 0.1 and top_p 0.6, which is what ships now, at the user's request.
+#
+# Two consequences worth knowing:
+#   * top_k 1 would make temperature and top_p moot (one candidate is always the
+#     argmax), so OCR_TOP_K defaults to 0 = the field is omitted and the server's
+#     own top_k applies. Set OCR_TOP_K=1 with OCR_TEMPERATURE=0 to get greedy back.
+#   * A read is no longer byte-for-byte reproducible, so a one-point difference
+#     between two reads is no longer proof of anything. Pass 2 is untouched and
+#     stays greedy; Ollama's /v1 honours temperature and top_p and drops top_k.
+OCR_TEMPERATURE = config.env_float("OCR_TEMPERATURE", 0.1, minimum=0.0, maximum=2.0)
+OCR_TOP_P = config.env_float("OCR_TOP_P", 0.6, minimum=0.01, maximum=1.0)
+OCR_TOP_K = config.env_int("OCR_TOP_K", 0, minimum=0)
+
+
+def ocr_sampling() -> dict:
+    """The decoding fields of a pass-1 request (min_p is pinned off by the caller)."""
+    fields = {"temperature": OCR_TEMPERATURE, "top_p": OCR_TOP_P}
+    if OCR_TOP_K > 0:
+        fields["top_k"] = OCR_TOP_K
+    return fields
+
 
 def sampler_extras(n_ctx: int = 0):
     """Sampling controls beyond the greedy core.
@@ -501,6 +607,15 @@ LOOP_COUNTER_MIN_LINE = 160
 # every token because the scan is O(tail^2).
 LOOP_CHECK_EVERY = 24
 
+# The live read sends its tokens to the browser at most once per this many
+# milliseconds, as one batched `token` event carrying the pieces' text and count.
+# One event per token is one NDJSON line, one JSON parse and one DOM update per
+# token -- 150 a second on a fast GPU -- for text nobody reads faster than a few
+# times a second. The first piece of a page is sent at once so time to first
+# token still shows; what is left is sent before `page_done`. 0 sends every token.
+# Display only: the transcript, the timings and the loop guard never see it.
+STREAM_FLUSH_MS = config.env_int("STREAM_FLUSH_MS", 100, minimum=0, maximum=2000)
+
 # The same test applied to a failed extraction reply, with a much wider window:
 # an extraction loop repeats a whole clause inside one JSON string, so the
 # repeating unit is long and a 600-character tail cannot hold enough repeats of
@@ -511,6 +626,24 @@ EXTRACT_LOOP_MIN_REPEATS = 3
 # a loop rather than a parse failure. A genuine document never lists the same
 # description three times over.
 EXTRACT_REPEAT_THRESHOLD = 3
+# Cut off a pass-2 request that starts looping, on vLLM. Every pass-2 request
+# there is STREAMED, its tail tested as it arrives, and the connection closed the
+# moment it cycles -- vLLM aborts a request whose client has gone, so the slot
+# and its KV cache are freed instead of being held to the token cap (up to 4096
+# tokens per request) on a shared server. What came back before the cut is kept
+# and salvaged exactly as a reply that ran to the cap would be. vLLM only
+# (`backends.serves_metrics`): every llama.cpp and Ollama measurement in this
+# project was taken on the non-streaming request, and that is what they still
+# get. Also needs the page's loop guard on -- one switch for "stop a repeat".
+EXTRACT_LOOP_ABORT = config.env_bool("EXTRACT_LOOP_ABORT", True)
+# The list half of that test: the last few `other_fields` entries repeating as a
+# whole sequence, three times running, over at least this many characters. NOT
+# "one entry seen three times" -- measured 2026-10-06 on 453 real gemma4:e4b
+# replies, that cut 6 of the 13 long enough to test and every one was sound: the
+# model writes table rows into `other_fields` under their column heading, so a
+# heading repeats once per row. The longest legitimate repeated run seen was
+# 3 x 1 entry over 184 characters; a loop repeats until the cap.
+EXTRACT_CYCLE_MIN_CHARS = config.env_int("EXTRACT_CYCLE_MIN_CHARS", 800, minimum=200)
 
 # --------------------------------------------------------------------------
 # pass 2

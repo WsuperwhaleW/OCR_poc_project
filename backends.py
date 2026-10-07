@@ -1346,6 +1346,12 @@ def request_extras(info: dict = None) -> dict:
         extras = {"model": info["model"]} if info.get("model") else {}
         if settings.OLLAMA_REASONING_EFFORT == "none":
             extras["chat_template_kwargs"] = {"enable_thinking": False}
+        # vLLM runs the penalties it is sent; Ollama runs the Modelfile's. This
+        # makes the two the same sampler for the same model. Merged last by every
+        # caller, so it replaces sampler_extras' repetition_penalty. vLLM only --
+        # a generic OpenAI server is not assumed to take these fields.
+        if info["kind"] == "vllm":
+            extras.update(settings.vllm_sampler(info.get("model")))
         return extras
     extras = {"n_ctx": chosen} if chosen > 0 else {}
     # llama-server serves thinking models too (qwen3.6-35b-a3b, 2026-09-23) and

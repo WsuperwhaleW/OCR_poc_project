@@ -57,6 +57,7 @@ FILES = [
     "ocrflag.py",
     "randomtest.py",
     "stress.py",
+    "monitor.py",
     "package.py",
 ]
 

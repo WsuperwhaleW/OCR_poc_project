@@ -36,6 +36,7 @@ import fieldscore
 import fixscore
 import grounding
 import machine
+import monitor
 import normalise
 import prompts
 import randomtest
@@ -82,6 +83,9 @@ from prompts import (
 )
 from settings import (
     OCR_PROFILE,
+    MONITOR_GPU_URL,
+    MONITOR_IDLE_MAX,
+    MONITOR_MIN_INTERVAL,
     ACCEPTED_SUFFIXES,
     AGENTIC_EXTRACT,
     AUTO_SELECT_SERVER,
@@ -124,10 +128,13 @@ from settings import (
     TYPE_FRAMING_SINGLE,
     EXTRACT_MAX_TOKENS,
     EXTRACT_REPEAT_THRESHOLD,
+    EXTRACT_LOOP_ABORT,
+    EXTRACT_CYCLE_MIN_CHARS,
     EXTRACT_SCHEMA,
     GEN_CONNECT_TIMEOUT,
     GEN_TIMEOUT,
     LOOP_CHECK_EVERY,
+    STREAM_FLUSH_MS,
     LOOP_COUNTER_MAX_UNIT,
     LOOP_COUNTER_MIN_LINE,
     LOOP_COUNTER_MIN_REPEATS,
@@ -148,6 +155,7 @@ from settings import (
     TRIM_MARGINS,
     TRIM_PAD,
     TRIM_TOLERANCE,
+    ocr_sampling,
     sampler_extras,
 )
 
@@ -635,12 +643,10 @@ def stream_page(image: Image.Image, stats: dict = None,
         "messages": backends.system_prefix(status, spec["system"])
                     + [{"role": "user", "content": content}],
         "max_tokens": MAX_NEW_TOKENS,
-        # Fully deterministic decoding. temperature 0 should already force greedy,
-        # but llama-server's defaults (top_k 40, top_p 0.95, min_p 0.05) are pinned
-        # explicitly so transcription can never drift between runs.
-        "temperature": 0,
-        "top_k": 1,
-        "top_p": 1.0,
+        # Typhoon's recommended temperature 0.1 / top_p 0.6 by default (see
+        # settings.ocr_sampling); OCR_TEMPERATURE=0 + OCR_TOP_K=1 is greedy again.
+        # min_p stays pinned off so llama-server's default 0.05 cannot apply.
+        **ocr_sampling(),
         "min_p": 0.0,
         **sampler_extras(backends.num_ctx()),
         "stream": True,
@@ -785,7 +791,12 @@ def _timed_post(url: str, payload: dict, status: dict):
     -- which is how an extraction's classify, step, agent and table requests are
     summed without threading a clock through each of them. A request that fails
     or answers non-200 is not timed: the server did no work worth measuring.
+
+    On vLLM the request is streamed instead, so a reply that starts looping can
+    be cut off (`_streamed_post`); the caller gets the same shape either way.
     """
+    if _guards_extraction(url, payload, status):
+        return _streamed_post(url, payload, status)
     clock = servertime.Clock(status)
     res = requests.post(url, json=payload, timeout=GEN_TIMEOUT)
     if res.status_code == 200:
@@ -795,6 +806,157 @@ def _timed_post(url: str, payload: dict, status: dict):
             pass
         clock.finish()
     return res
+
+
+# Pass-2 requests this process cut off for looping, since it started. Read by the
+# live monitor, which shows the server's own abort count beside it.
+_loop_aborts = {"count": 0, "tokens": 0, "last": None}
+_loop_aborts_lock = threading.Lock()
+
+
+def loop_aborts() -> dict:
+    with _loop_aborts_lock:
+        return dict(_loop_aborts)
+
+
+def _guards_extraction(url: str, payload: dict, status: dict) -> bool:
+    """Is this pass-2 request one to stream and cut off if it loops?
+
+    vLLM only, on the server's own statement (`serves_metrics`): a vLLM request
+    whose client hangs up is aborted server-side, which is what makes cutting it
+    worth anything, and no measurement in this project was taken there. Only the
+    OpenAI-compatible endpoint -- the one shape vLLM is sent.
+    """
+    return bool(EXTRACT_LOOP_ABORT and loop_guard()
+                and backends.serves_metrics(status)
+                and url.endswith("/v1/chat/completions")
+                and not payload.get("stream"))
+
+
+_ENTRY = re.compile(r'\{\s*"label"\s*:\s*"((?:[^"\\]|\\.)*)"\s*,'
+                    r'\s*"value"\s*:\s*"((?:[^"\\]|\\.)*)"\s*\}')
+
+
+def _entries_cycling(text: str, max_unit: int = 12) -> bool:
+    """True when the reply is ENDING in a repeated sequence of list entries.
+
+    The last k entries (1 <= k <= 12, label and value both) equal the k before
+    them, three times running, over at least `EXTRACT_CYCLE_MIN_CHARS`. Anchored
+    at the end because that is where a loop is while it streams.
+
+    Deliberately not `_repeated_list` ("one entry three times, anywhere"). That
+    is a fine diagnosis of a reply that has already failed and a bad reason to
+    cut a live one: the model writes table rows into `other_fields` under their
+    column heading, so a heading -- even a heading with the same value, three
+    charge rows sharing one billing period -- repeats once per row.
+    """
+    found = list(_ENTRY.finditer(text))
+    entries = [m.groups() for m in found]
+    n = len(entries)
+    for k in range(1, max_unit + 1):
+        if n < 3 * k:
+            break
+        unit = entries[n - k:]
+        reps = 1
+        while n >= (reps + 1) * k and entries[n - (reps + 1) * k:n - reps * k] == unit:
+            reps += 1
+        if reps >= 3 and found[-1].end() - found[n - reps * k].start() >= EXTRACT_CYCLE_MIN_CHARS:
+            return True
+    return False
+
+
+def extraction_looping(text: str) -> bool:
+    """The test a streamed pass-2 reply is cut off on.
+
+    Two halves: the wide extraction window of `looks_repetitive` -- the test
+    `_why_unparsable` already diagnoses a finished reply with -- and a sequence of
+    list entries cycling at the end (`_entries_cycling`), which catches the
+    `other_fields` loop the window cannot hold. Not tried before the reply is as
+    long as the window: a short reply cannot hold enough of either to be a loop.
+
+    A false cut is not free -- entries after it are lost -- so both halves are
+    the strict kind. Measured on 453 real replies, 13 of them long enough to be
+    tested: none is cut.
+    """
+    if len(text) < EXTRACT_LOOP_TAIL_CHARS:
+        return False
+    return (looks_repetitive(text, tail_chars=EXTRACT_LOOP_TAIL_CHARS,
+                             min_repeats=EXTRACT_LOOP_MIN_REPEATS)
+            or _entries_cycling(text))
+
+
+class _Reply:
+    """A finished reply assembled from a stream, in the non-streaming shape, so
+    every caller of `_timed_post` reads one shape whichever way it was fetched."""
+
+    def __init__(self, status_code: int, body: dict = None, text: str = ""):
+        self.status_code = status_code
+        self._body = body
+        self.text = text
+
+    def json(self):
+        if self._body is None:
+            raise ValueError("no JSON body")
+        return self._body
+
+
+def _streamed_post(url: str, payload: dict, status: dict):
+    """One pass-2 request, streamed, and closed the moment it starts cycling.
+
+    Closing the connection is the whole of the termination: vLLM aborts a request
+    whose client has gone and frees its slot and KV cache. What arrived before the
+    cut is returned as a reply that stopped at its cap (`finish_reason: length`),
+    so the callers' salvage and diagnosis run exactly as on a loop that ran to the
+    cap -- `_why_unparsable` names it a loop -- and the body carries
+    `loop_aborted` for anything that wants to know it was cut rather than run out.
+    """
+    body = dict(payload, stream=True, stream_options={"include_usage": True})
+    clock = servertime.Clock(status)
+    collected, pieces, usage, finish, looped = [], 0, {}, None, False
+    with requests.post(url, json=body, stream=True, timeout=GEN_TIMEOUT) as res:
+        if res.status_code != 200:
+            return _Reply(res.status_code, text=res.text)
+        for raw in res.iter_lines():
+            if not raw:
+                continue
+            line = raw.decode("utf-8", errors="replace")
+            if not line.startswith("data:"):
+                continue
+            chunk = line[5:].strip()
+            if chunk == "[DONE]":
+                break
+            try:
+                obj = json.loads(chunk)
+            except json.JSONDecodeError:
+                continue
+            if obj.get("usage"):
+                usage = obj["usage"]
+            choice = (obj.get("choices") or [{}])[0]
+            if choice.get("finish_reason"):
+                finish = choice["finish_reason"]
+            piece = (choice.get("delta") or {}).get("content")
+            if piece:
+                collected.append(piece)
+                pieces += 1
+                if (pieces % LOOP_CHECK_EVERY == 0
+                        and extraction_looping("".join(collected))):
+                    looped = True
+                    break
+    # Leaving the `with` closed the connection; on a break that is the abort.
+    text = "".join(collected)
+    reply = {"choices": [{"message": {"content": text},
+                          "finish_reason": "length" if looped else finish}],
+             "usage": usage or {"completion_tokens": pieces}}
+    if looped:
+        reply["loop_aborted"] = True
+        with _loop_aborts_lock:
+            _loop_aborts["count"] += 1
+            _loop_aborts["tokens"] += pieces
+            _loop_aborts["last"] = time.time()
+        config.say(f"[extract] cut off a looping reply from {status.get('model')} after "
+            f"~{pieces} tokens; vLLM aborts it and frees the slot")
+    clock.finish()
+    return _Reply(200, reply, text)
 
 
 def _first_json_object(text: str):
@@ -6339,6 +6501,129 @@ def stress_metrics():
                    vllm={k: v for k, v in sorted(now.items()) if k.startswith("vllm:")})
 
 
+# --------------------------------------------------------------------------
+# The live /metrics monitor (2026-10-06)
+#
+# One scrape per call, and the page calls it on a timer while the monitor is
+# open. That is a poll, which this project refuses for llama.cpp -- `/slots`
+# there shares the inference queue -- and it is allowed here for the reason the
+# stress test samples `/metrics` mid-run: vLLM serves it from its own HTTP
+# handler. So the gate is the same one: `backends.serves_metrics`, the server's
+# own statement that it is vLLM. Anything else is refused and nothing is sent.
+#
+# The server is looked up with `backends.known`, never `status`: a status call
+# re-probes `/v1/models` whenever its 3 s cache has expired, which at a 2 s poll
+# would be a second request per tick for nothing the monitor shows.
+# --------------------------------------------------------------------------
+
+MONITOR_TIMEOUT = (1.5, 4)
+_smi_cache = {"at": 0.0, "value": None}
+# The last /monitor answer per (vLLM url, exporter url), and the lock that
+# makes two calls landing together share one scrape rather than race to two.
+_monitor_cache = {}
+_monitor_lock = threading.Lock()
+
+
+def _local_gpu():
+    """This machine's GPU memory from `nvidia-smi`, cached a second, or None."""
+    now = time.monotonic()
+    if now - _smi_cache["at"] < 1.0:
+        return _smi_cache["value"]
+    text = machine._run(["nvidia-smi", "--query-gpu=memory.used,memory.total",
+                         "--format=csv,noheader,nounits"])
+    _smi_cache.update(at=now, value=monitor.parse_smi(text))
+    return _smi_cache["value"]
+
+
+def _monitor_target():
+    """The vLLM server to watch: the reading server, else the extraction one."""
+    urls = [backends.active_url()]
+    if backends.extract_separate():
+        urls.append(backends.extract_url())
+    seen = None
+    for url in urls:
+        info = backends.known(url) or backends.status(url)
+        seen = seen or info
+        if backends.serves_metrics(info):
+            return info, None
+    kinds = ", ".join(f"{(backends.known(u) or {}).get('kind') or 'unknown'} at {u}"
+                      for u in urls)
+    return seen, f"{kinds}: not vLLM, so /metrics is not requested."
+
+
+def _vram(samples, url, gpu_url):
+    """`(gpu dict or None, why not)` -- exporter, the vLLM scrape, or nvidia-smi."""
+    if gpu_url:
+        try:
+            res = requests.get(gpu_url, timeout=MONITOR_TIMEOUT)
+            if res.status_code != 200:
+                return None, f"{gpu_url} answered HTTP {res.status_code}"
+            found = monitor.gpu_memory(monitor.parse_samples(res.text))
+            return found, (None if found else
+                           f"{gpu_url} carries no DCGM or nvidia_gpu_exporter memory series")
+        except Exception as err:                    # noqa: BLE001
+            return None, f"could not read {gpu_url}: {err}"[:200]
+    found = monitor.gpu_memory(samples)
+    if found:
+        return found, None
+    if monitor.is_local(url):
+        found = _local_gpu()
+        return found, None if found else "nvidia-smi did not answer on this machine"
+    return None, ("Only the vLLM port is reachable, and vLLM's /metrics does not "
+                  "report the card's memory. A GPU exporter URL fills this in "
+                  "where one can be reached.")
+
+
+@app.get("/api/monitor")
+def monitor_now():
+    """One live reading of the vLLM server: KV cache, VRAM, queue, throughput.
+
+    `gpu=` names a GPU exporter's /metrics URL for VRAM, overriding
+    `MONITOR_GPU_URL`. Rates are since this process last scraped the same
+    server (`monitor.observe`), so the first call of a session has none.
+    """
+    info, refused = _monitor_target()
+    if refused:
+        return jsonify(error=refused, kind=(info or {}).get("kind"),
+                       url=(info or {}).get("url")), 409
+    url = info["url"]
+    gpu_url = (request.args.get("gpu") or "").strip() or MONITOR_GPU_URL
+    key = (url, gpu_url)
+    with _monitor_lock:
+        hit = _monitor_cache.get(key)
+        now = time.monotonic()
+        if hit and now - hit[0] < MONITOR_MIN_INTERVAL:
+            return jsonify(**hit[1], cached=True, age=round(now - hit[0], 2),
+                           min_interval=MONITOR_MIN_INTERVAL, idle_max=MONITOR_IDLE_MAX)
+        body, code = _monitor_scrape(info, url, gpu_url)
+        if code == 200:
+            _monitor_cache[key] = (time.monotonic(), body)
+    return jsonify(**body, cached=False, age=0.0, min_interval=MONITOR_MIN_INTERVAL,
+                   idle_max=MONITOR_IDLE_MAX), code
+
+
+def _monitor_scrape(info, url, gpu_url):
+    """One real /metrics read: `(body, status)`. Failures are never cached."""
+    try:
+        res = requests.get(f"{url}/metrics", timeout=MONITOR_TIMEOUT)
+    except Exception as err:                        # noqa: BLE001
+        return dict(error=f"Could not read {url}/metrics: {err}"[:300], url=url), 502
+    if res.status_code != 200:
+        return dict(error=f"{url}/metrics answered HTTP {res.status_code}",
+                    url=url), 502
+    samples = monitor.parse_samples(res.text)
+    snap = monitor.snapshot(samples)
+    gpu, gpu_why = _vram(samples, url, gpu_url)
+    return dict(url=url, kind=info.get("kind"), model=info.get("model"),
+                at=time.time(), snapshot=snap,
+                rates=monitor.observe(url, snap),
+                lifetime_hit_rate=monitor.lifetime_hit_rate(snap),
+                gpu=gpu, gpu_reason=gpu_why, gpu_url=gpu_url or "",
+                loop_aborts=loop_aborts(),
+                loop_abort_on=bool(EXTRACT_LOOP_ABORT and loop_guard())), 200
+
+
+
 @app.post("/api/ocr")
 def ocr():
     """Blocking read. Convenient for scripts; the page uses /api/ocr/stream."""
@@ -6372,6 +6657,36 @@ def ocr():
     return jsonify(text=text, pages=page_texts, **payload)
 
 
+def batch_tokens(pieces, interval: float):
+    """Coalesce streamed pieces into lists sent no more often than `interval` s.
+
+    The first piece goes out alone and at once, so time to first token is still
+    visible; the rest wait until `interval` has passed since the last batch, and
+    whatever is pending goes out when the stream ends -- or fails, before the
+    error propagates, so the text on screen is everything that was read. It can
+    only flush when a piece arrives: a generator has no timer, and a stalled
+    stream has nothing new to show anyway. interval <= 0 is one piece a batch.
+    """
+    if interval <= 0:
+        for piece in pieces:
+            yield [piece]
+        return
+    pending, last = [], None
+    try:
+        for piece in pieces:
+            pending.append(piece)
+            now = time.perf_counter()
+            if last is None or now - last >= interval:
+                yield pending
+                pending, last = [], now
+    except Exception:
+        if pending:
+            yield pending
+        raise
+    if pending:
+        yield pending
+
+
 @app.post("/api/ocr/stream")
 def ocr_stream():
     """NDJSON stream, so a slow read shows partial text instead of hanging."""
@@ -6399,9 +6714,11 @@ def ocr_stream():
                     }
                 ) + "\n"
                 parts, stats = [], {}
-                for chunk in stream_page(page, stats):
-                    parts.append(chunk)
-                    yield json.dumps({"event": "token", "text": chunk}) + "\n"
+                for batch in batch_tokens(stream_page(page, stats),
+                                          STREAM_FLUSH_MS / 1000):
+                    parts.extend(batch)
+                    yield json.dumps({"event": "token", "text": "".join(batch),
+                                      "n": len(batch)}) + "\n"
                 collected.append(finish_page("".join(parts), stats))
                 all_stats.append(stats)
                 yield json.dumps({"event": "page_done", "page": index, **stats}) + "\n"

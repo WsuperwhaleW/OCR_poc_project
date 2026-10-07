@@ -316,6 +316,9 @@ The ones that matter for a deployment:
 | `EXTRACT_SCHEMA` | `1` | Whether a field-extraction reply that cannot be parsed is asked again with decoding constrained to the field schema. The first request is unconstrained either way. `0` turns the retry off, so an unusable reply is reported instead. |
 | `OLLAMA_REPEAT_PENALTY` | `1.1` | Repetition penalty on the constrained retry above. Ollama only, and the only place this app sets one above `1.0`. `1.0` turns it off. |
 | `REPETITION_PENALTY` | `1.1` | Flat repetition penalty on every read and extraction request, sent as both `repeat_penalty` (llama.cpp) and `repetition_penalty` (vLLM and other OpenAI-compatible servers). Ollama's `/v1` drops both. `1.0` turns it off. |
+| `OCR_TEMPERATURE` / `OCR_TOP_P` / `OCR_TOP_K` | `0.1` / `0.6` / `0` | Sampling for the page read (pass 1 only; extraction stays greedy). `OCR_TOP_K=0` omits `top_k` so the server's own applies. Reads are no longer byte-for-byte reproducible; `OCR_TEMPERATURE=0` with `OCR_TOP_K=1` restores greedy. Ollama's `/v1` honours temperature and top_p and drops top_k. |
+| `VLLM_MATCH_OLLAMA` | `1` | On a vLLM server, send the penalties Ollama applies to the same model instead of `REPETITION_PENALTY`: names containing `typhoon` get `repetition_penalty 1.2`, `qwen` get `repetition_penalty 1.1` and `presence_penalty 1.5`, anything else `repetition_penalty 1.1`. vLLM only. `0` sends vLLM what every other server gets. |
+| `VLLM_REPETITION_PENALTY` / `VLLM_PRESENCE_PENALTY` / `VLLM_FREQUENCY_PENALTY` | blank | Replace the table's value for every model on vLLM. Blank uses the table. |
 | `OLLAMA_UNLOAD_ON_SWITCH` | `1` | Stop the models Ollama is holding when you switch model or server, freeing the GPU for the new one. Ollama only. `0` leaves them loaded until their `keep_alive` expires. |
 | `OCR_LOG_DIR` | `./logs` | The only directory written to. Point it elsewhere to mount the app directory read-only. |
 | `OCR_MOCK_DIR` | `./mockOcr` | Source documents for the folder picker. Absent ⇒ upload-only. |
@@ -471,6 +474,20 @@ raising the token cap does not help.
 Set the starting state with `LOOP_GUARD` (`1`/`0`). Like the profile, switching it applies to
 the whole process and takes effect on the next page read; a page already streaming finishes
 under the rule it started with, and the run log's `status` says which.
+
+The live transcript reaches the browser in batches, at most one `token` event every
+`STREAM_FLUSH_MS` milliseconds (default 100; `0` sends every token). It changes only how often
+the page updates -- the transcript, the timings and the loop guard are the same either way.
+
+**On a vLLM server the same checkbox also covers field extraction.** Every extraction request
+to vLLM — the single prompt, each agentic step, the classify and segment questions and the
+table agents — is streamed, and the moment a reply starts repeating the app closes the
+connection. vLLM aborts a request whose client has gone, so the loop stops using the server's
+slot and KV cache at once instead of running to its token cap while other requests wait. What
+arrived before the cut is kept and handled exactly like a reply that ran to the cap: the parts
+that finished are salvaged and the extraction is reported as a loop. The console prints a line
+for each cut, and the live monitor counts them. `EXTRACT_LOOP_ABORT=0` turns this off and sends
+vLLM the ordinary non-streaming request; llama-server and Ollama always get that.
 
 ### Score fields only above (the read floor)
 
@@ -1608,6 +1625,52 @@ run, including generation tokens per second as the server counts them.
 
 On llama-server, Ollama or any other server both controls are disabled and **nothing is
 requested** — the route refuses with `409` as well.
+
+### Live monitor
+
+**Start live monitor** (same box, vLLM only) reads `/metrics` every few seconds — 2 by default,
+set beside the button — whether or not a stress test is running, and shows it at the top of the
+Stress test card with a line of the recent readings under each figure.
+
+The polling is throttled at both ends. The server scrapes one vLLM at most once per
+`MONITOR_MIN_INTERVAL` seconds (default 2) and hands the last reading to any call inside that
+gap, so several open tabs cost one scrape; the page never asks more often than that, whatever
+the box says. While the server is idle (nothing running or waiting, no tokens since the last
+reading) or a reading fails, the page doubles its gap after each such reading, up to
+`MONITOR_IDLE_MAX` seconds (default 30; `0` turns this off), and goes back to the box's value at
+the first sign of work. The header says when it has slowed down.
+
+The tiles:
+
+| Tile | From |
+|---|---|
+| **KV cache free** | `vllm:kv_cache_usage_perc` (averaged over engines), and in tokens where the server exports `vllm:cache_config_info` (block count × block size). Preemptions in the last interval are named under it |
+| **VRAM** | not in vLLM's `/metrics` — see below |
+| **Running (concurrent)** | `vllm:num_requests_running` |
+| **Waiting** | `vllm:num_requests_waiting`, amber when anything is queued |
+| **Generation tok/s**, **Prompt tok/s** | the change in `vllm:generation_tokens_total` / `prompt_tokens_total` since the previous reading |
+| **Requests/s (finished)** | the change in `vllm:request_success_total`. Under it: requests **received** per second (finished plus however much the backlog grew), how the finished ones ended — `stop`, `length` (ran to the token cap, where an uncut loop ends) or `abort` (the client hung up) — and how many looping extraction requests this app cut off since it started |
+| **Prefix cache hit** | hits over lookups in the last interval, with the rate since the server started |
+
+Rates need two readings, so the first shows `—`. The monitor pauses while the browser tab is
+hidden and reads again as soon as it is visible.
+
+**VRAM.** vLLM does not report the card's memory. **If only the vLLM port is reachable** —
+a server on AWS or another host you cannot log in to — the tile shows **VRAM held by vLLM**
+instead: the share of the card vLLM reserved at start-up (`--gpu-memory-utilization`, read off
+`vllm:cache_config_info`). That share does not move while the server runs; the memory that
+fills and empties under load is the KV cache, in the tile beside it. If you can reach a GPU
+exporter, put its `/metrics` URL in
+**VRAM from a GPU exporter** — a DCGM exporter (`:9400`) or nvidia_gpu_exporter (`:9835`) on the
+GPU box — and it is read on every tick; the URL is remembered in this browser, and
+`MONITOR_GPU_URL` sets a default. Blank, the monitor uses those series if the vLLM scrape itself
+carries them, then this machine's `nvidia-smi` when the model server runs on this machine, and
+otherwise shows VRAM as unknown with the reason. Remember that vLLM reserves most of the card at
+start-up (`--gpu-memory-utilization`), so VRAM free stays low and steady; **KV cache free** is the
+figure that moves with load.
+
+Where the reading server is not vLLM but a separate extraction server is, the monitor watches the
+extraction server.
 
 ### Stopping a stress test
 
@@ -2925,6 +2988,19 @@ server's last request ends. `409` while a random test or another stress test is 
 values) and `vllm` (every `vllm:*` series, summed over labels). `409` unless the server is vLLM;
 `?server=extract` asks about the extraction model's server.
 
+`GET /api/monitor` — one live reading for the monitor: `snapshot` (running, waiting, KV cache
+used and free as fractions and tokens, lifetime counters), `rates` (generation and prompt tokens
+per second, requests and preemptions per second, prefix-cache hit rate — over the time since this
+process last read the same server; `null` on the first reading), `lifetime_hit_rate`, and `gpu`
+(`used_mb`, `free_mb`, `total_mb`, `gpus`, `source`) or `gpu_reason`. `snapshot.reserved_share`
+is vLLM's `gpu_memory_utilization`; `rates` also carries `requests_per_s` (finished),
+`arrivals_per_s` and `finished_by_reason`; `loop_aborts` counts the looping extraction requests
+this process cut off, and `loop_abort_on` says whether the cut-off is in force. `?gpu=<url>` names a GPU
+exporter, overriding `MONITOR_GPU_URL`. `409` unless the reading server — or, failing that, a
+separate extraction server — is vLLM; nothing is requested then. `cached` is true where the
+reading is the one taken less than `min_interval` (`MONITOR_MIN_INTERVAL`) seconds ago, `age` its
+age; `idle_max` is the page's backoff ceiling. A failed scrape is never cached.
+
 `GET /api/ocr/profile` — the pass-1 profile in force and the ones on offer:
 `{"profile":"typhoon","profiles":[{"id","label","note","system","reply"}, ...]}`.
 
@@ -3080,6 +3156,7 @@ still never parses `.env` itself.
 | `tables.py` | The item table of a document, read out of its transcript and repaired, and whether it is a master table |
 | `runlog.py` | The CSV run log |
 | `stress.py` | The stress test's dataset draw, 100+ page file builder, `/metrics` reader and report |
+| `monitor.py` | The live monitor's reading of vLLM `/metrics` and a GPU exporter: KV cache, queue, throughput, cache hits, VRAM |
 | `compare.py` | CLI benchmark runner |
 | `package.py` | Builds the deployable zip |
 | `templates/index.html` | The whole UI, in one file |
