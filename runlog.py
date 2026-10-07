@@ -501,11 +501,10 @@ COLUMNS = [
     # the time tracked is not accurate -- use /metrics on vLLM and subtract*).
     # See servertime.py.
     #
-    #   server_seconds   what the server says the read took, over the pages it
-    #                    gave a figure for
-    #   network_seconds  the app's clock minus that, over the same pages: the
-    #                    hops to and from the server (plus, on llama.cpp, its
-    #                    queue -- `timings` is compute only)
+    #   server_seconds   the server's own end-to-end latency for the read, over
+    #                    the pages it gave a figure for
+    #   network_seconds  RETIRED 2026-10-07 -- it was the app's clock minus
+    #                    that. Written blank since; the phases are at the end
     #   server_timing    which source: `vllm /metrics`, `llama.cpp timings`,
     #                    `ollama`
     #   extract_*        the same for every model request pass 2 made --
@@ -515,9 +514,14 @@ COLUMNS = [
     # sends none) or "it could not be attributed" (a /metrics change spanning
     # concurrent requests), and every row written before these columns.
     "server_seconds",
+    # RETIRED 2026-10-07 (the app's clock minus the server's). Written blank
+    # from then on; kept because three rows already carry it.
     "network_seconds",
     "server_timing",
     "extract_server_seconds",
+    # RETIRED 2026-10-07: written blank from then on. Kept in the list
+    # because a column name is a file format and rows from 2026-10-05/06
+    # carry values here -- see the server phase columns at the end.
     "extract_network_seconds",
     "extract_server_timing",
     # How many agentic steps were sent at once (2026-10-05): on vLLM they go
@@ -525,7 +529,63 @@ COLUMNS = [
     # rather than a sum of one-at-a-time requests. Blank on a sequential run --
     # every row before this column, and every llama.cpp and Ollama run.
     "extract_parallel",
+    # The server's own figures split by phase (2026-10-07, at the user's
+    # request: *report the time for prefill and decode and server latency
+    # separately -- I will add them myself; I want the raw GPU speed*). Each is
+    # the server's own figure, never derived from the app's clock: vLLM's
+    # /metrics histograms, llama.cpp's `timings`, Ollama's native durations.
+    # `server_seconds` above is the server's end-to-end latency. A phase is
+    # summed over a read's pages (or pass 2's requests) only where every one of
+    # them reported it -- llama.cpp has no queue figure -- otherwise blank.
+    "server_queue_seconds",
+    "server_prefill_seconds",
+    "server_decode_seconds",
+    "extract_server_queue_seconds",
+    "extract_server_prefill_seconds",
+    "extract_server_decode_seconds",
+    # Tokens and rates beside the phases (2026-10-07, at the user's request:
+    # *add prefill and decode tokens per second, and be aware of the image
+    # sending to the server*). See servertime.py for every source.
+    #
+    #   server_prompt_tokens     every prompt token, image tokens included
+    #   server_cached_tokens     of those, served from the prefix cache
+    #   server_prefill_tokens    computed in prefill (prompt - cached); blank
+    #                            where the cached count cannot be known
+    #   server_generated_tokens  generated
+    #   server_decode_tokens     generated in the decode phase (vLLM: generated
+    #                            - 1 per request, its prefill samples the first)
+    #   server_prefill_tps       prefill tokens / server_prefill_seconds
+    #   server_decode_tps        decode tokens / server_decode_seconds
+    #   image_bytes              the read's base64 PNG payload, summed over its
+    #                            pages -- uploading and decoding it on the server
+    #                            are in no phase above
+    #
+    # Rates are recomputed from summed tokens and seconds, never averaged.
+    "server_prompt_tokens",
+    "server_cached_tokens",
+    "server_prefill_tokens",
+    "server_generated_tokens",
+    "server_decode_tokens",
+    "server_prefill_tps",
+    "server_decode_tps",
+    "image_bytes",
+    "extract_server_prompt_tokens",
+    "extract_server_cached_tokens",
+    "extract_server_prefill_tokens",
+    "extract_server_generated_tokens",
+    "extract_server_decode_tokens",
+    "extract_server_prefill_tps",
+    "extract_server_decode_tps",
 ]
+
+# servertime.FIELDS, spelled out: this module cannot import servertime (it
+# imports backends, which imports this). tests/test_servertime.py pins the two.
+_SERVER_FIELDS = ("server_seconds", "server_queue_seconds",
+                  "server_prefill_seconds", "server_decode_seconds",
+                  "server_prompt_tokens", "server_cached_tokens",
+                  "server_prefill_tokens", "server_generated_tokens",
+                  "server_decode_tokens", "server_prefill_tps",
+                  "server_decode_tps")
 
 # The value the run was actually made with, taken from `settings` rather than
 # re-read here: two independent reads of one environment variable can disagree
@@ -678,7 +738,15 @@ EXTRACT_COLUMNS = ("extract_seconds", "extract_tokens", "extract_mode",
                    "table_cells_ok", "table_cells", "master_ok", "master_scored",
                    "extract_server", "extract_server_seconds",
                    "extract_network_seconds",
-                   "extract_server_timing", "extract_parallel") + FIX_COLUMNS
+                   "extract_server_timing", "extract_parallel",
+                   "extract_server_queue_seconds",
+                   "extract_server_prefill_seconds",
+                   "extract_server_decode_seconds",
+                   "extract_server_prompt_tokens", "extract_server_cached_tokens",
+                   "extract_server_prefill_tokens",
+                   "extract_server_generated_tokens",
+                   "extract_server_decode_tokens", "extract_server_prefill_tps",
+                   "extract_server_decode_tps") + FIX_COLUMNS
 
 _TIERS = ("p1_present", "p1_absent", "p2_present", "p2_absent",
           "p3_present", "p3_absent")
@@ -782,11 +850,16 @@ def _server_time_cells(served) -> dict:
     served = served if isinstance(served, dict) else {}
     seconds = served.get("server_seconds")
     return {
-        "extract_server_seconds": "" if seconds is None else seconds,
-        "extract_network_seconds": ("" if served.get("network_seconds") is None
-                                    else served["network_seconds"]),
+        **{f"extract_{name}": _blank_none(served.get(name))
+           for name in _SERVER_FIELDS},
+        "extract_network_seconds": "",      # retired 2026-10-07
         "extract_server_timing": served.get("source", "") if seconds is not None else "",
     }
+
+
+def _blank_none(value):
+    """A server figure as a cell: blank where the server gave none."""
+    return "" if value is None else value
 
 
 def _document_cells(summary: dict, extracted: dict, documents: list) -> dict:
@@ -1261,10 +1334,9 @@ def record(summary: dict, source: dict = None, extras: dict = None) -> dict:
         "decode_seconds": summary.get("decode_seconds", ""),
         "tokens": summary.get("tokens", ""),
         "tokens_per_second": summary.get("tokens_per_second", ""),
-        "server_seconds": ("" if summary.get("server_seconds") is None
-                           else summary["server_seconds"]),
-        "network_seconds": ("" if summary.get("network_seconds") is None
-                            else summary["network_seconds"]),
+        **{name: _blank_none(summary.get(name)) for name in _SERVER_FIELDS},
+        "image_bytes": _blank_none(summary.get("image_bytes")),
+        "network_seconds": "",              # retired 2026-10-07
         "server_timing": summary.get("server_timing") or "",
         **_extract_cells(summary),
         "case": truth.get("case", ""),

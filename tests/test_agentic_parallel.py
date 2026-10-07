@@ -87,8 +87,11 @@ class ConcurrentRunTests(unittest.TestCase):
     def test_steps_are_in_flight_together_on_vllm(self):
         # A barrier every step must reach before any can return: a sequential
         # walk would break it on the first step.
+        # With the prefix warm-up off: it holds the other steps back until step
+        # 1 is prefilled on purpose (tests/test_vllm_optimise.py pins that).
         barrier = threading.Barrier(len(self.table))
-        result, events = _run(VLLM, _fake_ask(barrier))
+        with mock.patch.object(app, "VLLM_PREFIX_WARMUP", False):
+            result, events = _run(VLLM, _fake_ask(barrier))
         self.assertNotIn("error", result)
         self.assertEqual(result["parallel"], len(self.table))
         self.assertEqual(events[0]["parallel"], len(self.table))
@@ -156,8 +159,7 @@ class BatchTimingTests(unittest.TestCase):
         self.assertEqual(tally["requests"], 3)
         self.assertEqual(tally["attributed"], 3)
         self.assertAlmostEqual(tally["server_seconds"], 3.0)
-        self.assertAlmostEqual(tally["client_seconds"], 4.5)
-        self.assertAlmostEqual(tally["network_seconds"], 1.5)
+        self.assertNotIn("network_seconds", tally)
         self.assertEqual(tally["source"], "vllm /metrics")
 
     def test_other_traffic_leaves_it_unattributed(self):

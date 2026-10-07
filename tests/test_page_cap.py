@@ -190,7 +190,21 @@ class RunLogTests(unittest.TestCase):
                           "fix_cells_read", "fix_cells_agent", "fix_cells",
                           "server_seconds", "network_seconds", "server_timing",
                           "extract_server_seconds", "extract_network_seconds",
-                          "extract_server_timing", "extract_parallel"])
+                          "extract_server_timing", "extract_parallel",
+                          "server_queue_seconds", "server_prefill_seconds",
+                          "server_decode_seconds", "extract_server_queue_seconds",
+                          "extract_server_prefill_seconds",
+                          "extract_server_decode_seconds", "server_prompt_tokens", "server_cached_tokens",
+                          "server_prefill_tokens", "server_generated_tokens",
+                          "server_decode_tokens", "server_prefill_tps",
+                          "server_decode_tps", "image_bytes",
+                          "extract_server_prompt_tokens",
+                          "extract_server_cached_tokens",
+                          "extract_server_prefill_tokens",
+                          "extract_server_generated_tokens",
+                          "extract_server_decode_tokens",
+                          "extract_server_prefill_tps",
+                          "extract_server_decode_tps"])
 
     def test_a_failed_status_still_wins(self):
         self.assertTrue(runlog._incomplete(

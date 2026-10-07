@@ -298,7 +298,8 @@ def _probe_openai(url):
     refusing one that would have worked.
     """
     try:
-        res = requests.get(f"{url}/v1/models", timeout=PROBE_TIMEOUT)
+        res = http_get(f"{url}/v1/models", {"kind": "openai"},
+                       timeout=PROBE_TIMEOUT)
         if res.status_code != 200:
             return None
         body = res.json()
@@ -377,6 +378,102 @@ def parallel_ok(info: dict) -> bool:
     queues them behind `OLLAMA_NUM_PARALLEL`, so there they would only wait.
     """
     return bool(info and info.get("kind") == "vllm" and info.get("reachable", True))
+
+
+_POOLED_KINDS = ("vllm", "openai")
+_session = None
+_session_lock = threading.Lock()
+
+
+def _live_transport() -> bool:
+    """Are `requests.post`/`get` the real ones? A test that patches either is
+    stubbing the model server, and must go on seeing every request -- so pooling,
+    which sends through a Session the patch cannot reach, is off while it does."""
+    return (requests.post, requests.get) == runlog._REAL_HTTP
+
+
+def _pooled(info: dict) -> bool:
+    return bool(settings.HTTP_KEEPALIVE and info
+                and info.get("kind") in _POOLED_KINDS and _live_transport())
+
+
+def _http_session():
+    """The one keep-alive Session for vLLM / OpenAI-compatible servers.
+
+    `requests.post` builds a Session per call and closes it, so every request
+    paid a TCP (and TLS) handshake -- three per pass-2 request on vLLM, with the
+    two /metrics snapshots. Thread-safe for sending; the pool is sized above the
+    agentic step count and a stress run's concurrency (`HTTP_POOL_SIZE`).
+    A streamed response closed before its body is read closes its connection
+    rather than returning it, which is what makes cutting off a looping reply
+    still abort it on the server.
+    """
+    global _session
+    with _session_lock:
+        if _session is None:
+            session = requests.Session()
+            adapter = requests.adapters.HTTPAdapter(
+                pool_connections=8, pool_maxsize=settings.HTTP_POOL_SIZE)
+            session.mount("http://", adapter)
+            session.mount("https://", adapter)
+            _session = session
+        return _session
+
+
+def http_post(url: str, info: dict = None, **kwargs):
+    """`requests.post`, on the pooled connection when `info` is vLLM/OpenAI."""
+    if _pooled(info):
+        return _http_session().post(url, **kwargs)
+    return requests.post(url, **kwargs)
+
+
+def http_get(url: str, info: dict = None, **kwargs):
+    """`requests.get`, on the pooled connection when `info` is vLLM/OpenAI."""
+    if _pooled(info):
+        return _http_session().get(url, **kwargs)
+    return requests.get(url, **kwargs)
+
+
+TOKENIZE_TIMEOUT = (5, 30)
+
+
+def count_prompt(info: dict, payload: dict):
+    """(prompt tokens, model window) for a chat payload, from vLLM's /tokenize.
+
+    vLLM renders the chat template exactly as it will for the real request, so
+    the count is the one the server checks `max_tokens` against. The template
+    switches the request carries (`enable_thinking`) are passed along because
+    they change the rendering. (None, None) where the server cannot say.
+    """
+    if not (info and info.get("kind") == "vllm" and info.get("url")):
+        return None, None
+    body = {"messages": payload.get("messages") or [],
+            "add_generation_prompt": True}
+    if payload.get("model") or info.get("model"):
+        body["model"] = payload.get("model") or info.get("model")
+    if payload.get("chat_template_kwargs"):
+        body["chat_template_kwargs"] = payload["chat_template_kwargs"]
+    try:
+        res = http_post(f"{info['url']}/tokenize", info, json=body,
+                        timeout=TOKENIZE_TIMEOUT)
+        if res.status_code != 200:
+            return None, None
+        reply = res.json()
+    except Exception:
+        return None, None
+    count = reply.get("count")
+    window = reply.get("max_model_len") or model_window(info)
+    if not isinstance(count, int):
+        return None, None
+    return count, window if isinstance(window, int) else None
+
+
+def model_window(info: dict):
+    """The served model's `max_model_len`, as `/v1/models` reported it, or None."""
+    for model in (info or {}).get("models") or []:
+        if model.get("name") == info.get("model"):
+            return model.get("max_model_len")
+    return None
 
 
 def known(url: str = None) -> dict:

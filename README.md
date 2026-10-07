@@ -307,7 +307,7 @@ The ones that matter for a deployment:
 | `OCR_ENDPOINTS` | *(unset)* | Comma-separated list offered in the server picker. |
 | `EXTRACT_URL` | *(unset)* | A second server for field extraction (and the other text requests: classification, segmentation, the table agents). Unset, both passes use the reading server — the one-URL setup for local llama-server or Ollama. Set, page images go to the reading server and extraction goes here. Any OpenAI-compatible server works. Changeable in the page's **Extraction server** picker. |
 | `SERVER_KINDS` | *(unset)* | Pin servers to an inference engine: comma-separated `url=kind`, kind one of `llama.cpp`, `ollama`, `vllm`, `openai` — e.g. `http://gpu-box:8000=vllm`. A pinned server is probed with that engine's endpoint only (`/props`, `/api/tags` or `/v1/models`), so it never answers 404 to another engine's probe, and only a `vllm` server is ever asked `/metrics`. Unpinned servers are detected (**Auto**), which remembers what it found; **Re-check** detects again. Also settable per server in the page's **Server type** picker. |
-| `SERVER_TIMING` | `1` | Time every model request on the **server** as well as in the app, and log the difference as hop time (`network_seconds`). vLLM: `/metrics` read before and after each request (two extra GETs), the change in `vllm:e2e_request_latency_seconds`. llama.cpp: its `timings` block (compute only, its queue not included). Ollama: native `/api/chat` durations; `/v1` sends none, so most Ollama requests have no server time. A `/metrics` change that spans concurrent requests is left blank. `0` asks nothing extra. |
+| `SERVER_TIMING` | `1` | Record the **server's own** time for each model request, split by phase: prefill, decode, queue and end-to-end latency. Nothing is derived from the app's clock. vLLM: `/metrics` read before and after each request (two extra GETs), the change in `vllm:request_prefill_time_seconds`, `request_decode_time_seconds`, `request_queue_time_seconds` and `e2e_request_latency_seconds`. llama.cpp: its `timings` block (no queue figure). Ollama: native `/api/chat` durations; `/v1` sends none, so most Ollama requests have no server time. A `/metrics` change that spans concurrent requests is left blank. `0` asks nothing extra. |
 | `SERVER_TIMING_WAIT` | `1.0` | Seconds to wait for vLLM to record a just-finished request before leaving it blank. |
 | `AUTO_SELECT_SERVER` | `1` | Probe the configured endpoints and the ones the run log has runs against at startup, and select the first that answers. `0` starts on the first in the list whether or not anything is listening there. |
 | `AUTO_SELECT_MAX_CANDIDATES` | `8` | How many endpoints one auto-select will probe. A dead port costs a pair of connect timeouts. |
@@ -332,6 +332,12 @@ The ones that matter for a deployment:
 | `AGENTIC_RETRIES` | `1` | How many times an agentic step may be re-asked after returning a value that is not in the transcript. `0` turns the retry off. |
 | `AGENTIC_PARALLEL` | `1` | On a **vLLM** extraction server, send the agentic steps at once instead of one after another. Ignored on llama.cpp, Ollama and a generic OpenAI server. `0` turns it off. |
 | `AGENTIC_PARALLEL_MAX` | `0` | The most steps in flight at once when the above applies. `0` = every step of the form. |
+| `VLLM_PREFIX_WARMUP` | `1` | When the agentic steps go out at once on vLLM, send step 1 first and the rest once its first token arrives, so they reuse its prefix in vLLM's cache. `0` sends them all at once. |
+| `VLLM_PREFIX_WARMUP_WAIT` | `60` | The longest the other steps wait for step 1's first token, in seconds. |
+| `HTTP_KEEPALIVE` | `1` | Reuse connections to a vLLM / OpenAI-compatible server instead of opening one per request. `0` opens one per request. Not used for llama.cpp or Ollama. |
+| `HTTP_POOL_SIZE` | `64` | Connections kept open per server. Keep it above the agentic step count and the stress test's concurrency. |
+| `VLLM_FIT_MAX_TOKENS` | `1` | When vLLM answers HTTP 400 because the prompt plus `max_tokens` is longer than the model's window, count the prompt with vLLM's `/tokenize`, lower `max_tokens` to fit and ask once more (extraction requests only). `0` lets the 400 stand. |
+| `VLLM_FIT_MIN_TOKENS` | `128` | The smallest `max_tokens` worth retrying with; with less room than this the 400 stands. |
 
 ## Security
 
@@ -2572,24 +2578,53 @@ Run log: `fix_moved` / `fix_strays`, `fix_stray_removals` / `fix_removals`,
 `fix_values_removed`, `fix_cells_read` / `fix_cells_agent` / `fix_cells`. Blank where the case
 has no table truth file or no table came back.
 
-### Server time and hop time
+### Server time, tokens and speed
 
-Every clock in the app is its own: it includes the network between the app and the model
-server. Each request is also timed by the server (see `SERVER_TIMING`), and the page shows
-`server Xs + hops Ys` on the result line and the Fields status line, plus **Server** and
-**Hops** columns in the page table. Run-log columns:
+Every clock in the app is its own and includes the network between the app and the model
+server. Each request is also timed by the server (see `SERVER_TIMING`), and its figures are
+reported as they came, with nothing derived from the app's clock: the result line and the
+Fields status line read `server prefill Xs (N tok, R tok/s), decode Ys (N tok, R tok/s), queue
+Zs, latency Ws (source) · image sent S`, and the page table has **Image sent**, **Server
+prefill**, **Prefill tok/s**, **Server decode**, **Decode tok/s**, **Server queue** and
+**Server latency** columns. Run-log columns:
 
 | column | meaning |
 |---|---|
-| `server_seconds` / `network_seconds` / `server_timing` | the read: what the server says it took over the pages it timed, the app's clock minus that over the same pages, and the source (`vllm /metrics`, `llama.cpp timings`, `ollama`) |
-| `extract_server_seconds` / `extract_network_seconds` / `extract_server_timing` | the same summed over **every** model request pass 2 made — classify, segment, the steps or the single request, and the table agents. So `extract_server_seconds` can exceed `extract_seconds`, which counts the extraction requests only |
+| `server_prefill_seconds` | prompt processing on the server (the vision encoder and the prompt), over the pages it timed |
+| `server_decode_seconds` | token generation on the server |
+| `server_queue_seconds` | time the requests waited in the server's queue (vLLM only) |
+| `server_seconds` | the server's end-to-end latency (vLLM: arrival to last token, queue and image decoding included; llama.cpp: prefill + decode) |
+| `server_prompt_tokens` | every prompt token, **image tokens included**, cached or not |
+| `server_cached_tokens` | of those, the tokens served from the prefix cache |
+| `server_prefill_tokens` | the tokens actually computed in prefill (prompt - cached). Blank where the cached count cannot be known |
+| `server_generated_tokens` | tokens generated |
+| `server_decode_tokens` | tokens generated in the decode phase (vLLM: one fewer per request -- its prefill samples the first) |
+| `server_prefill_tps` | `server_prefill_tokens` / `server_prefill_seconds` |
+| `server_decode_tps` | `server_decode_tokens` / `server_decode_seconds` |
+| `image_bytes` | the read's base64 PNG payload, summed over its pages |
+| `server_timing` | the source: `vllm /metrics`, `llama.cpp timings`, `ollama` |
+| `extract_server_*` | the same, summed over **every** model request pass 2 made -- classify, segment, the steps or the single request, and the table agents. So it can exceed `extract_seconds`, which counts the extraction requests only |
+| `network_seconds`, `extract_network_seconds` | retired; written blank. Rows from before the change carry the app's clock minus `server_seconds` |
 
-Blank means the server gave no figure, or a vLLM `/metrics` change covered more than one
-request (concurrent traffic) and could not be attributed.
+Where the tokens come from: the reply's own `usage` on vLLM (cached tokens from
+`usage.prompt_tokens_details`, which vLLM sends with `--enable-prompt-tokens-details`;
+otherwise from the change in `vllm:prefix_cache_hits`, taken only when nothing else was
+running or waiting); llama.cpp's `timings` (`prompt_n`, `cache_n`, `predicted_n`); Ollama's
+native `prompt_eval_count` / `eval_count`. Rates over several pages or requests are the summed
+tokens over the summed seconds, never an average of rates.
+
+**The image.** A page is sent as a base64 PNG inside the JSON body. Uploading it, and the server
+decoding and resizing it, are in no phase: on vLLM they fall inside `server_seconds` and outside
+queue, prefill and decode. The vision encoder runs in prefill and the image's tokens are in the
+prompt tokens, so a read's prefill rate includes the image.
+
+A figure is blank where the server gave none, where a vLLM `/metrics` change covered more
+than one request (concurrent traffic) and could not be attributed, or -- for a total -- where
+not every page or request reported it.
 
 Agentic steps sent at once are timed as **one batch**: a single `/metrics` snapshot before the
 first and after the last, attributed where the request count moved by exactly the number of
-steps -- the server's summed time against the summed client time of those requests.
+steps -- the server's summed latency and phases for those requests.
 
 `extract_parallel` is how many agentic steps were in flight at once, blank on a sequential run.
 Where it is set, `extract_seconds` is a wall clock over a batch and is not comparable with a

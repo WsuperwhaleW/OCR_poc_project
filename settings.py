@@ -279,20 +279,21 @@ EXTRACT_URL = config.env_str("EXTRACT_URL", "", allow_empty=True)
 # /v1/models -- the 404s a vLLM or Ollama server sees in its log. Also settable
 # per server from the page's "Server type" picker.
 SERVER_KINDS = config.env_str("SERVER_KINDS", "", allow_empty=True)
-# Server-side timing (2026-10-05, at the user's request: *the app on the server
-# takes time to hop to the model server, so the time tracked in the app is not
-# accurate -- use /metrics on vLLM to get the time and subtract it*). Every
-# model request is also timed by the SERVER, and the gap between that and the
-# app's own clock is recorded as hop time (`network_seconds`). The source is the
-# server's own statement of how long it worked:
+# Server-side timing (2026-10-05, at the user's request; narrowed 2026-10-07:
+# *report the time for prefill and decode and server latency separately -- I
+# will add them myself; I want the raw GPU speed*). Every model request is also
+# timed by the SERVER, and its own figures are recorded as they came, one per
+# phase -- `server_prefill_seconds`, `server_decode_seconds`,
+# `server_queue_seconds` and `server_seconds` (its end-to-end latency). Nothing
+# is derived from the app's clock. Sources:
 #   vLLM       /metrics, read before and after the request -- the change in
-#              `vllm:e2e_request_latency_seconds` (arrival to finish, queue
-#              included). Two extra GETs per request, vLLM only.
-#   llama.cpp  the `timings` block it already sends (prompt_ms + predicted_ms;
-#              compute only, the server's queue is NOT in it).
-#   Ollama     `total_duration` on the native /api/chat reply (the schema-
-#              constrained extraction request); /v1 sends nothing, so a read
-#              on Ollama has no server time.
+#              `vllm:request_{prefill,decode,queue}_time_seconds` and
+#              `vllm:e2e_request_latency_seconds`. Two extra GETs per request,
+#              vLLM only.
+#   llama.cpp  the `timings` block it already sends (prompt_ms, predicted_ms;
+#              no queue figure, and latency = prefill + decode).
+#   Ollama     prompt_eval / eval / total_duration on the native /api/chat
+#              reply; /v1 sends nothing, so a read on Ollama has no server time.
 # Under concurrency a /metrics difference covers more than one request and
 # cannot be attributed, so it is left blank rather than guessed. 0 asks nothing
 # extra of any server.
@@ -989,6 +990,38 @@ AGENTIC_PARALLEL = config.env_bool("AGENTIC_PARALLEL", True)
 # The most steps in flight at once when `AGENTIC_PARALLEL` applies. 0 = every
 # step of the form at once (7-9 on a typed form, 17 unclassified).
 AGENTIC_PARALLEL_MAX = config.env_int("AGENTIC_PARALLEL_MAX", 0, minimum=0, maximum=64)
+
+# Hold the first agentic step back until its prefill is done, THEN send the rest,
+# when the steps go out at once (above). Added 2026-10-07 at the user's request
+# (*use vLLM's endpoints to optimise the requests*). Every step opens with the
+# same block and the same transcript; sent together, vLLM schedules them in one
+# step and prefills that prefix once per request, because its prefix cache only
+# serves blocks already computed. Sent after the first token of step 1, the other
+# steps find the prefix cached. Costs one prefill of wall clock where the cache is
+# off. 0 sends every step at once, as on 2026-10-05.
+VLLM_PREFIX_WARMUP = config.env_bool("VLLM_PREFIX_WARMUP", True)
+# The longest the other steps wait for step 1's first token, in seconds. Step 1
+# failing releases them at once; this only bounds a server that never answers.
+VLLM_PREFIX_WARMUP_WAIT = config.env_float("VLLM_PREFIX_WARMUP_WAIT", 60.0, minimum=0.0)
+
+# One pooled keep-alive connection set for requests to a vLLM / OpenAI-compatible
+# server (2026-10-07). `requests.post` opens a new TCP (and TLS) connection per
+# call, and a pass-2 request on vLLM is three calls -- /metrics, the chat, /metrics
+# -- so a remote server paid three handshakes per request. 0 restores one
+# connection per call. llama.cpp and Ollama are not affected either way.
+HTTP_KEEPALIVE = config.env_bool("HTTP_KEEPALIVE", True)
+# Connections kept per host. Above the agentic step count and a stress run's
+# concurrency, or urllib3 drops the extra connections after each use.
+HTTP_POOL_SIZE = config.env_int("HTTP_POOL_SIZE", 64, minimum=1, maximum=1024)
+
+# On a vLLM HTTP 400 saying the prompt plus max_tokens is longer than the model's
+# window, count the prompt with vLLM's /tokenize, lower max_tokens to what fits,
+# and ask once more (2026-10-07). Text requests only (pass 2). Nothing is sent on
+# a request that fits. 0 lets the 400 stand.
+VLLM_FIT_MAX_TOKENS = config.env_bool("VLLM_FIT_MAX_TOKENS", True)
+# The smallest reply worth retrying for; a window with less room than this left
+# after the prompt keeps the server's 400.
+VLLM_FIT_MIN_TOKENS = config.env_int("VLLM_FIT_MIN_TOKENS", 128, minimum=1)
 
 # The lowest character accuracy a transcript may score and still have the fields
 # extracted from it SCORED. Below it -- and on a read that looped, was cut off,

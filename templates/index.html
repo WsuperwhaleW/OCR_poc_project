@@ -4767,7 +4767,7 @@ function paintFieldBody() {
   const srvT = (extractedFile || extracted).server_time;
   fldStatus.textContent = `${modeLabel(extracted)} · ${extracted.seconds}s · `
     + `${extracted.tokens} tokens · ${extracted.model || ''}`
-    + (srvT ? serverTimeText(srvT.server_seconds, srvT.network_seconds, srvT.source)
+    + (srvT ? serverTimeText(srvT, srvT.source)
        + (srvT.server_seconds !== null && srvT.attributed < srvT.requests
           ? ` [${srvT.attributed} of ${srvT.requests} requests timed]` : '') : '')
     + (docTypes.length ? ` · ${docTypes.join(' + ').replace(/_/g, ' ').toLowerCase()}` : '')
@@ -10895,36 +10895,81 @@ function startTicker() {
 }
 function stopTicker() { clearInterval(ticker); ticker = null; }
 
-/* The model server's own time beside the app's (servertime.py). Every other
-   clock on this page is the app's, so on a deployment several network hops from
-   the model server it carries the hops in it; `server` is what the server says
-   it worked, and `hops` is the app's clock minus that. Empty where the server
-   gave no figure -- Ollama's /v1 sends none, and a vLLM /metrics change that
-   spans concurrent requests cannot be attributed to one -- because blank is not
-   a zero-second hop. */
-function serverTimeText(srv, net, src) {
-  if (srv === null || srv === undefined) return '';
-  return ` · server ${Number(srv).toFixed(2)}s + hops ${Number(net).toFixed(2)}s`
-    + (src ? ` (${src})` : '');
+/* The model server's own figures (servertime.py), as it gave them: prefill and
+   decode time with their tokens and tokens per second, queue time, and its
+   end-to-end latency. The rates are tokens over the SERVER's seconds -- prefill
+   counts the tokens actually computed (image tokens in, prefix-cache hits out),
+   decode the tokens generated in the decode phase -- so they are the GPU's raw
+   speed. A dash where the server gave no figure: Ollama's /v1 sends none,
+   llama.cpp has no queue figure, a vLLM /metrics change spanning concurrent
+   requests cannot be attributed, and a prefill rate needs the cached count. */
+const SERVER_COLS = [
+  ['server_prefill_seconds', 'Server prefill', 'secs',
+   'Prompt processing on the server: the vision encoder and the prompt'],
+  ['server_prefill_tps', 'Prefill tok/s', 'rate',
+   'Tokens computed in prefill (image tokens included, prefix-cache hits excluded) per second of server prefill'],
+  ['server_decode_seconds', 'Server decode', 'secs', 'Token generation on the server'],
+  ['server_decode_tps', 'Decode tok/s', 'rate',
+   'Tokens generated in the decode phase per second of server decode'],
+  ['server_queue_seconds', 'Server queue', 'secs',
+   'Time the request waited in the server queue before it was scheduled'],
+  ['server_seconds', 'Server latency', 'secs',
+   'The server end-to-end latency (on vLLM: arrival to last token, queue and image decoding included; on llama.cpp: prefill + decode)'],
+];
+function fmtTok(n) { return Number(n).toLocaleString('en-US'); }
+function fmtBytes(n) {
+  if (n === null || n === undefined) return '—';
+  return n >= 1048576 ? (n / 1048576).toFixed(2) + ' MB' : (n / 1024).toFixed(0) + ' KB';
 }
-function secCell(v) {
-  return v === null || v === undefined ? '—' : Number(v).toFixed(2) + 's';
+function serverTimeText(fig, src) {
+  if (!fig || fig.server_seconds === null || fig.server_seconds === undefined) return '';
+  const has = k => fig[k] !== null && fig[k] !== undefined;
+  const parts = [];
+  if (has('server_prefill_seconds')) {
+    const tok = [];
+    if (has('server_prefill_tokens')) tok.push(fmtTok(fig.server_prefill_tokens) + ' tok');
+    if (has('server_cached_tokens') && fig.server_cached_tokens)
+      tok.push(fmtTok(fig.server_cached_tokens) + ' cached');
+    if (has('server_prefill_tps')) tok.push(fmtTok(fig.server_prefill_tps) + ' tok/s');
+    parts.push(`prefill ${Number(fig.server_prefill_seconds).toFixed(2)}s`
+      + (tok.length ? ` (${tok.join(', ')})` : ''));
+  }
+  if (has('server_decode_seconds')) {
+    const tok = [];
+    if (has('server_decode_tokens')) tok.push(fmtTok(fig.server_decode_tokens) + ' tok');
+    if (has('server_decode_tps')) tok.push(fmtTok(fig.server_decode_tps) + ' tok/s');
+    parts.push(`decode ${Number(fig.server_decode_seconds).toFixed(2)}s`
+      + (tok.length ? ` (${tok.join(', ')})` : ''));
+  }
+  if (has('server_queue_seconds')) parts.push(`queue ${Number(fig.server_queue_seconds).toFixed(2)}s`);
+  parts.push(`latency ${Number(fig.server_seconds).toFixed(2)}s`);
+  return ' · server ' + parts.join(', ') + (src ? ` (${src})` : '')
+    + (has('image_bytes') ? ` · image sent ${fmtBytes(fig.image_bytes)}` : '');
+}
+function serverCell(v, kind) {
+  if (v === null || v === undefined) return '—';
+  return kind === 'rate' ? fmtTok(v) : Number(v).toFixed(2) + 's';
 }
 
 function renderStats(summary) {
   if (!pageStats.length) { statsEl.innerHTML = ''; return; }
   const timed = pageStats.some(s => s.server_seconds !== null && s.server_seconds !== undefined);
+  const sent = pageStats.some(s => s.image_bytes);
   const head = '<thead><tr><th>Page</th><th>Resolution</th><th>Tokens</th>'
     + '<th>Prefill</th><th>Decode</th><th>tok/s</th>'
-    + (timed ? '<th title="What the model server says this page took">Server</th>'
-       + '<th title="The app clock minus the server time: getting to and from the server">Hops</th>' : '')
+    + (sent ? '<th title="The page as sent: a base64 PNG in the JSON body. Uploading it and the server decoding it are in no server phase">Image sent</th>' : '')
+    + (timed ? SERVER_COLS.map(([, label, , hint]) =>
+        `<th title="${hint}">${label}</th>`).join('') : '')
     + '</tr></thead>';
+  const extra = row => (sent ? `<td>${fmtBytes(row.image_bytes)}</td>` : '')
+    + (timed ? SERVER_COLS.map(([key, , kind]) =>
+        `<td>${serverCell(row[key], kind)}</td>`).join('') : '');
   const body = pageStats.map((s, i) =>
     `<tr><td>${i + 1}</td><td>${s.resolution || '—'}</td><td>${s.new_tokens ?? 0}</td>`
     + `<td>${(s.prefill_seconds ?? 0).toFixed(1)}s</td>`
     + `<td>${(s.decode_seconds ?? 0).toFixed(1)}s</td>`
     + `<td>${(s.tokens_per_second ?? 0).toFixed(2)}</td>`
-    + (timed ? `<td>${secCell(s.server_seconds)}</td><td>${secCell(s.network_seconds)}</td>` : '')
+    + extra(s)
     + '</tr>').join('');
   const f = summary || {};
   const foot = pageStats.length > 1 || summary
@@ -10932,7 +10977,7 @@ function renderStats(summary) {
       + `<td>${f.tokens ?? ''}</td><td>${(f.prefill_seconds ?? 0).toFixed(1)}s</td>`
       + `<td>${(f.decode_seconds ?? 0).toFixed(1)}s</td>`
       + `<td>${(f.tokens_per_second ?? 0).toFixed(2)}</td>`
-      + (timed ? `<td>${secCell(f.server_seconds)}</td><td>${secCell(f.network_seconds)}</td>` : '')
+      + extra(f)
       + '</tr></tfoot>' : '';
   statsEl.innerHTML = head + '<tbody>' + body + '</tbody>' + foot;
 }
@@ -11385,7 +11430,7 @@ async function startRead(opts) {
               + `${msg.tokens} tokens · ${msg.seconds}s total `
               + `(${msg.prefill_seconds}s prefill + ${msg.decode_seconds}s decode) · `
               + `${msg.tokens_per_second} tok/s · ${msg.model}`
-              + serverTimeText(msg.server_seconds, msg.network_seconds, msg.server_timing);
+              + serverTimeText(msg, msg.server_timing);
           // A read the cap cut short is not a read of that document, and the
           // accuracy beside it is against the whole of it. Said on the meta line
           // AND on the Accuracy tab, because the two are read at different times.

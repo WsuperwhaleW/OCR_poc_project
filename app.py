@@ -91,6 +91,10 @@ from settings import (
     AUTO_SELECT_SERVER,
     AGENTIC_PARALLEL,
     AGENTIC_PARALLEL_MAX,
+    VLLM_FIT_MAX_TOKENS,
+    VLLM_FIT_MIN_TOKENS,
+    VLLM_PREFIX_WARMUP,
+    VLLM_PREFIX_WARMUP_WAIT,
     AGENTIC_RETRIES,
     DEFAULT_DETAIL,
     DETAIL_PRESETS,
@@ -630,7 +634,11 @@ def stream_page(image: Image.Image, stats: dict = None,
     # nothing is lost.
     prompt_first = PROMPT_FIRST_OLLAMA if status["kind"] == "ollama" else PROMPT_FIRST
     text_part = {"type": "text", "text": spec["prompt"]}
-    image_part = {"type": "image_url", "image_url": {"url": image_data_uri(image)}}
+    # The page goes to the server as a base64 PNG inside the JSON body. Its size
+    # is reported (`image_bytes`): uploading it, and the server decoding and
+    # resizing it, are in no server phase -- see servertime.py.
+    image_uri = image_data_uri(image)
+    image_part = {"type": "image_url", "image_url": {"url": image_uri}}
     content = [text_part, image_part] if prompt_first else [image_part, text_part]
 
     payload = {
@@ -658,14 +666,14 @@ def stream_page(image: Image.Image, stats: dict = None,
 
     # The server's own clock, beside ours. Built BEFORE `started` so the vLLM
     # before-snapshot of /metrics is not charged to this page's time. See
-    # servertime.py: the difference is the hop time between app and server.
+    # servertime.py: its prefill, decode, queue and latency, as the server gave them.
     clock = servertime.Clock(status)
     started = time.perf_counter()
     first_at = None
     timings, usage, pieces = {}, {}, 0
     collected, looped = [], False
-    with requests.post(
-        chat_url(),
+    with backends.http_post(
+        chat_url(), status,
         json=payload,
         stream=True,
         # No read timeout: this is the streaming path, where the gap between
@@ -703,7 +711,10 @@ def stream_page(image: Image.Image, stats: dict = None,
                 continue
             chunk = line[5:].strip()
             if chunk == "[DONE]":
-                break
+                # Read on to the end of the stream rather than break: a
+                # response closed with its last chunk unread closes its
+                # socket, so the keep-alive pool could never reuse it.
+                continue
             try:
                 obj = json.loads(chunk)
             except json.JSONDecodeError:
@@ -737,6 +748,7 @@ def stream_page(image: Image.Image, stats: dict = None,
         looped = True
 
     clock.timings(timings)
+    clock.usage(usage)
     served = clock.finish(finished - started)
     if stats is not None:
         total = finished - started
@@ -772,16 +784,14 @@ def stream_page(image: Image.Image, stats: dict = None,
             model=status["model"],
             backend=status["kind"],
             url=status["url"],
-            # What the SERVER says this page took, and the app's clock minus
-            # that: the time spent getting to and from it. Both None where the
-            # server gave no figure (Ollama /v1) or one that cannot be attributed
-            # (a /metrics change covering concurrent requests).
-            server_seconds=served["server_seconds"],
-            network_seconds=served["network_seconds"],
+            # What the SERVER says this page cost, phase by phase, as it came:
+            # latency, queue, prefill, decode. Nothing is derived from the app's
+            # clock. None where the server gave no figure (Ollama /v1) or one
+            # that cannot be attributed (a /metrics change spanning concurrent
+            # requests). See servertime.py.
+            **{name: served[name] for name in servertime.FIELDS},
             server_timing=served["source"],
-            **{k: served[k] for k in ("server_queue", "server_prefill",
-                                      "server_decode", "server_ttft")
-               if k in served},
+            image_bytes=len(image_uri),
         )
 
 
@@ -795,10 +805,22 @@ def _timed_post(url: str, payload: dict, status: dict):
     On vLLM the request is streamed instead, so a reply that starts looping can
     be cut off (`_streamed_post`); the caller gets the same shape either way.
     """
+    res = _post_once(url, payload, status)
+    if res.status_code == 400 and _context_overflow(res.text, status):
+        fitted = _fit_max_tokens(payload, status)
+        if fitted is not None:
+            res = _post_once(url, fitted, status)
+    return res
+
+
+def _post_once(url: str, payload: dict, status: dict):
     if _guards_extraction(url, payload, status):
         return _streamed_post(url, payload, status)
     clock = servertime.Clock(status)
-    res = requests.post(url, json=payload, timeout=GEN_TIMEOUT)
+    res = backends.http_post(url, status, json=payload, timeout=GEN_TIMEOUT)
+    # The whole reply is in, so the prefill certainly is: release anything
+    # waiting on this request's prefix being cached (see `_prefilled`).
+    _prefilled()
     if res.status_code == 200:
         try:
             clock.body(res.json())
@@ -806,6 +828,54 @@ def _timed_post(url: str, payload: dict, status: dict):
             pass
         clock.finish()
     return res
+
+
+_OVERFLOW = re.compile(r"maximum context length|max_tokens|max_completion_tokens"
+                       r"|context window", re.I)
+
+
+def _context_overflow(text: str, status: dict) -> bool:
+    """Is this vLLM 400 the prompt plus `max_tokens` not fitting the window?"""
+    return bool(VLLM_FIT_MAX_TOKENS and status and status.get("kind") == "vllm"
+                and _OVERFLOW.search(text or ""))
+
+
+def _fit_max_tokens(payload: dict, status: dict):
+    """The payload with `max_tokens` lowered to what the window has room for.
+
+    vLLM rejects a request whose prompt plus `max_tokens` is longer than
+    `--max-model-len` outright, so a long transcript with the usual 4096-token
+    cap fails before a token is generated. `/tokenize` counts the prompt with
+    the server's own template, and the request is asked once more with the room
+    that is left. The reply may then stop at the lower cap, which reads exactly
+    as any reply that ran to its cap. None where there is not room for
+    `VLLM_FIT_MIN_TOKENS`, or the server cannot count -- the 400 then stands.
+    """
+    count, window = backends.count_prompt(status, payload)
+    if count is None or window is None:
+        return None
+    room = window - count - 8          # a margin for the template's last tokens
+    asked = payload.get("max_tokens") or payload.get("max_completion_tokens") or 0
+    if room < VLLM_FIT_MIN_TOKENS or (asked and room >= asked):
+        return None
+    fitted = dict(payload, max_tokens=room)
+    if "max_completion_tokens" in fitted:
+        fitted["max_completion_tokens"] = room
+    config.say(f"[extract] prompt is {count} tokens of a {window}-token window; "
+               f"asking again with max_tokens {room} instead of {asked}")
+    return fitted
+
+
+# A callback the agentic fan-out hangs on its first step: called once, from the
+# worker thread asking that step, as soon as the server has prefilled the prompt.
+_prefill_hook = threading.local()
+
+
+def _prefilled():
+    hook = getattr(_prefill_hook, "cb", None)
+    if hook is not None:
+        _prefill_hook.cb = None
+        hook()
 
 
 # Pass-2 requests this process cut off for looping, since it started. Read by the
@@ -913,18 +983,26 @@ def _streamed_post(url: str, payload: dict, status: dict):
     body = dict(payload, stream=True, stream_options={"include_usage": True})
     clock = servertime.Clock(status)
     collected, pieces, usage, finish, looped = [], 0, {}, None, False
-    with requests.post(url, json=body, stream=True, timeout=GEN_TIMEOUT) as res:
+    with backends.http_post(url, status, json=body, stream=True,
+                            timeout=GEN_TIMEOUT) as res:
         if res.status_code != 200:
+            _prefilled()
             return _Reply(res.status_code, text=res.text)
         for raw in res.iter_lines():
             if not raw:
                 continue
+            # vLLM sends nothing until the first token exists, so the first line
+            # of the body means the prompt has been prefilled -- and cached.
+            _prefilled()
             line = raw.decode("utf-8", errors="replace")
             if not line.startswith("data:"):
                 continue
             chunk = line[5:].strip()
             if chunk == "[DONE]":
-                break
+                # Read on to the end of the stream rather than break: a
+                # response closed with its last chunk unread closes its
+                # socket, so the keep-alive pool could never reuse it.
+                continue
             try:
                 obj = json.loads(chunk)
             except json.JSONDecodeError:
@@ -955,6 +1033,7 @@ def _streamed_post(url: str, payload: dict, status: dict):
             _loop_aborts["last"] = time.time()
         config.say(f"[extract] cut off a looping reply from {status.get('model')} after "
             f"~{pieces} tokens; vLLM aborts it and frees the slot")
+    clock.usage(usage)
     clock.finish()
     return _Reply(200, reply, text)
 
@@ -2485,6 +2564,18 @@ def _agentic_parallelism(status: dict, steps: int) -> int:
     return max(1, min(cap, steps))
 
 
+def _warm_step(warmed, *args):
+    """`_run_step` for the step that warms the prefix cache: `warmed` is set as
+    soon as its first request is prefilled, and in any case once it is over, so a
+    step that fails cannot keep the others waiting."""
+    _prefill_hook.cb = warmed.set
+    try:
+        return _run_step(*args)
+    finally:
+        _prefill_hook.cb = None
+        warmed.set()
+
+
 def _run_step(step: dict, prefix: str, question: str, status: dict, source):
     """Ask one agentic step, with its grounding re-ask, and record what happened.
 
@@ -2651,10 +2742,24 @@ def _extract_agentic(text: str, status: dict, form: dict, only=None):
         batch = servertime.Batch(status)
         with ThreadPoolExecutor(max_workers=parallel,
                                 thread_name_prefix="agentic-step") as pool:
-            futures = {pool.submit(batch.run, _run_step, step, prefix,
-                                   _step_question(step, framing), status,
-                                   source): index
-                       for index, step in enumerate(table)}
+            def submit(index):
+                step = table[index]
+                return pool.submit(batch.run, _run_step, step, prefix,
+                                   _step_question(step, framing), status, source)
+
+            if VLLM_PREFIX_WARMUP:
+                # Step 1 alone first; the rest once its prefill is done, so they
+                # find the shared prefix in vLLM's cache rather than each
+                # prefilling it again in the same scheduler step.
+                warmed = threading.Event()
+                futures = {pool.submit(batch.run, _warm_step, warmed, table[0],
+                                       prefix, _step_question(table[0], framing),
+                                       status, source): 0}
+                warmed.wait(VLLM_PREFIX_WARMUP_WAIT)
+                futures.update({submit(index): index
+                                for index in range(1, len(table))})
+            else:
+                futures = {submit(index): index for index in range(len(table))}
             pending = set(futures)
             while pending:
                 finished, pending = wait(pending, return_when=FIRST_COMPLETED)
@@ -4482,10 +4587,12 @@ def summarise(all_stats, detail, started, job_id=None):
     urls = [s.get("url") for s in all_stats if s.get("url")]
     kinds = [s.get("backend") for s in all_stats if s.get("backend")]
     profiles = [s.get("ocr_profile") for s in all_stats if s.get("ocr_profile")]
-    # The pages the SERVER gave a time for. Server and hop time are summed over
-    # these alone, so a page with no server figure cannot make the hops look
-    # longer by contributing its client time with nothing to subtract.
+    # The pages the SERVER gave a time for. Each server figure is summed over
+    # these alone, and only where every one of them reported it -- a total that
+    # mixed pages with a phase and pages without would read as smaller than it is.
     served = [s for s in all_stats if s.get("server_seconds") is not None]
+    images = [s.get("image_bytes") for s in all_stats]
+
     return {
         "page_count": len(all_stats),
         **_page_coverage(job_id, len(all_stats)),
@@ -4511,10 +4618,11 @@ def summarise(all_stats, detail, started, job_id=None):
         "prefill_seconds": round(sum(s.get("prefill_seconds", 0) for s in all_stats), 2),
         "decode_seconds": round(decode, 2),
         "tokens_per_second": round(tokens / decode, 2) if decode and tokens else 0,
-        "server_seconds": (round(sum(s["server_seconds"] for s in served), 2)
-                           if served else None),
-        "network_seconds": (round(sum(s["network_seconds"] for s in served), 2)
-                            if served else None),
+        **servertime.summarise_records(served),
+        # What was uploaded: the pages' base64 PNG payloads, summed. Blank where
+        # a page did not record one.
+        "image_bytes": (sum(images) if images and all(isinstance(b, int) for b in images)
+                        else None),
         "server_timing": served[0].get("server_timing", "") if served else "",
         "server_timed_pages": len(served),
         "page_stats": all_stats,
@@ -6040,7 +6148,8 @@ class _StressLive:
 
 def _vllm_metrics(url: str) -> dict:
     """GET `/metrics` from a vLLM server, parsed. Raises on any failure."""
-    res = requests.get(f"{url}/metrics", timeout=STRESS_METRICS_TIMEOUT)
+    res = backends.http_get(f"{url}/metrics", {"kind": "vllm"},
+                            timeout=STRESS_METRICS_TIMEOUT)
     if res.status_code != 200:
         raise ValueError(f"/metrics answered HTTP {res.status_code}")
     return stress.parse_prometheus(res.text)
@@ -6605,7 +6714,8 @@ def monitor_now():
 def _monitor_scrape(info, url, gpu_url):
     """One real /metrics read: `(body, status)`. Failures are never cached."""
     try:
-        res = requests.get(f"{url}/metrics", timeout=MONITOR_TIMEOUT)
+        res = backends.http_get(f"{url}/metrics", {"kind": "vllm"},
+                                timeout=MONITOR_TIMEOUT)
     except Exception as err:                        # noqa: BLE001
         return dict(error=f"Could not read {url}/metrics: {err}"[:300], url=url), 502
     if res.status_code != 200:
