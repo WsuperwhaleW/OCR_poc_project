@@ -696,6 +696,28 @@
   .st-tip { position: absolute; top: 30px; background: var(--panel); border: 1px solid var(--border);
     border-radius: 8px; padding: 6px 9px; font-size: .76rem; pointer-events: none;
     box-shadow: 0 4px 14px rgba(0,0,0,.25); min-width: 120px; }
+  .tr-bar { flex-wrap: wrap; gap: 8px; }
+  .tr-seg button { flex: none; padding: 4px 10px; font-size: .76rem; }
+  .tr-sw-err { height: 0; width: 14px; border-top: 2px dashed var(--st-2); border-radius: 0; background: none; }
+  .tr-grid { display: grid; gap: 10px; margin-top: 10px;
+    grid-template-columns: repeat(auto-fill, minmax(270px, 1fr)); }
+  .tr-card { position: relative; border: 1px solid var(--border); border-radius: 10px;
+    padding: 8px 10px 4px; min-width: 0; }
+  .tr-card.tr-all { margin-top: 12px; }
+  .tr-name { font-size: .82rem; font-weight: 600; white-space: nowrap; overflow: hidden;
+    text-overflow: ellipsis; }
+  .tr-sub { font-size: .72rem; color: var(--muted); margin-top: 1px;
+    font-variant-numeric: tabular-nums; }
+  .tr-svg { display: block; width: 100%; height: auto; margin-top: 4px; overflow: visible; }
+  .tr-acc { fill: none; stroke: var(--st-1); stroke-width: 2; stroke-linejoin: round;
+    vector-effect: non-scaling-stroke; }
+  .tr-err { fill: none; stroke: var(--st-2); stroke-width: 2; stroke-dasharray: 5 3;
+    stroke-linejoin: round; vector-effect: non-scaling-stroke; }
+  .tr-dot-acc { fill: var(--st-1); stroke: var(--panel); stroke-width: 1.5; }
+  .tr-dot-err { fill: var(--st-2); stroke: var(--panel); stroke-width: 1.5; }
+  .tr-tip { top: 34px; z-index: 3; }
+  .tr-per { font-size: .76rem; color: var(--muted); display: inline-flex; align-items: center; gap: 6px; }
+  .tr-per input { width: 64px; }
   .mon-head { font-size: .82rem; margin-top: 12px; display: flex; align-items: center;
     gap: 6px; flex-wrap: wrap; color: var(--muted); }
   .mon-head b { color: var(--text); }
@@ -2234,6 +2256,7 @@ highlighted. Dominated by a pairing, not itself hard.">
       <button data-panel="types" title="every run grouped by the KIND of page rather than by the document or the setting: which document type is read and extracted well, and which model is best at each. Every other tab on this card averages that axis away.">Model × type</button>
       <button data-panel="analysis">Time × Doc × Accuracy</button>
       <button data-panel="error">Errors</button>
+      <button data-panel="trend" title="accuracy and error rate over TIME, one small chart per model or per document, over every run the filters match (not the recent-runs window). The code, config and server changed under the same model names, so this shows whether a model or a document got better or worse.">Trend</button>
       <button data-panel="raw">Raw data</button>
     </div>
 
@@ -2297,6 +2320,35 @@ matched.">
          most-error pairing of the two -- the last of which neither of the first
          two can be read off. From `runlog.errors`. -->
     <div class="lv-panel" id="panelError" hidden><div id="errorSum"></div></div>
+    <!-- Accuracy and error rate over time, one small chart per model or per
+         document. Over every row the filters match, deliberately NOT the
+         recent-runs window -- a trend with its history cut off has nothing to
+         trend. From `runlog.trend`. -->
+    <div class="lv-panel" id="panelTrend" hidden>
+      <div class="lv-bar tr-bar">
+        <div class="seg tr-seg" data-tr="pass">
+          <button data-v="ocr" class="on">Reading</button>
+          <button data-v="extract">Extraction</button>
+        </div>
+        <div class="seg tr-seg" data-tr="by">
+          <button data-v="models" class="on">By model</button>
+          <button data-v="cases">By document</button>
+        </div>
+        <div class="seg tr-seg" data-tr="bucket">
+          <button data-v="day">Day</button>
+          <button data-v="week" class="on">Week</button>
+          <button data-v="runs" title="group each model's (or document's) own runs in order, N at a time -- run 1-10, 11-20, ... -- whenever they happened">Runs</button>
+        </div>
+        <label class="tr-per" id="trendPerBox" hidden>runs per point
+          <input type="number" id="trendPer" min="1" max="1000" value="10"></label>
+        <span class="sp"></span>
+        <span class="st-legend">
+          <span class="st-key"><span class="st-sw st-s1"></span>Accuracy</span>
+          <span class="st-key"><span class="st-sw tr-sw-err"></span>Error rate (dashed)</span>
+        </span>
+      </div>
+      <div id="trendSum"></div>
+    </div>
     <!-- The log itself. Unfiltered on purpose, and the only place a run can be
          deleted from -- which is the one operation on this card that changes the
          file. -->
@@ -9837,12 +9889,236 @@ function paintTypes(t) {
     + 'rather than over its runs.</p>';
 }
 
+/* ---------- Trend: accuracy and error rate over time ----------
+
+   Built 2026-10-07 at the user's request. The server sends per-DAY sums
+   (`[date, runs, failed, scored, acc_sum]`, see `runlog.trend`), so a week is
+   the days added up and a mean is always acc_sum / scored over that bucket --
+   folding here cannot drift from what the server counted.
+
+   **One shared time axis across every card**, from the pass's first bucket to
+   its last, so a model that only ran last week sits at the right-hand end
+   rather than stretched across the whole width. Both lines are percentages on
+   one 0-100 axis, so there is no second scale; the error line is dashed so the
+   two are told apart without colour. A bucket where every run failed has an
+   error point and no accuracy point: a failure is counted, never scored. */
+const trendState = { pass: 'ocr', by: 'models', bucket: 'week', per: 10 };
+let trendCards = {};
+
+/* The run-number axis (2026-10-07, at the user's request: *0-10 run got 99% but
+   at 11-20 run got 95%*). The server sends every run of a series in order, one
+   value each -- -1 a failure, null finished but not scored, otherwise the score
+   -- and this cuts them into consecutive groups of `per`. Each card has its OWN
+   axis, run 1 to its last run: a model run 400 times and one run 20 times have
+   nothing in common on a time scale and less on a run scale. A short last group
+   is drawn and its tooltip says how many runs it holds. */
+function trendChunks(seq, per) {
+  const out = [];
+  for (let i = 0; i < (seq || []).length; i += per) {
+    const part = seq.slice(i, i + per);
+    let failed = 0, scored = 0, sum = 0;
+    part.forEach(v => {
+      if (v === -1) failed += 1;
+      else if (v !== null) { scored += 1; sum += v; }
+    });
+    const a = i + 1, b = i + part.length;
+    out.push({ k: a === b ? 'run ' + a : 'runs ' + a + '–' + b, t: (a + b) / 2,
+               runs: part.length, failed, scored, sum,
+               acc: scored ? sum / scored : null, err: 100 * failed / part.length });
+  }
+  return out;
+}
+
+function trendKey(day, unit) {
+  if (unit === 'day') return day;
+  const d = new Date(day + 'T00:00:00Z');
+  d.setUTCDate(d.getUTCDate() - (d.getUTCDay() + 6) % 7);   // the Monday
+  return d.toISOString().slice(0, 10);
+}
+
+function trendFold(days, unit) {
+  const m = new Map();
+  (days || []).forEach(([d, runs, failed, scored, sum]) => {
+    const k = trendKey(d, unit);
+    const c = m.get(k) || { k, runs: 0, failed: 0, scored: 0, sum: 0 };
+    c.runs += runs; c.failed += failed; c.scored += scored; c.sum += sum;
+    m.set(k, c);
+  });
+  return [...m.values()].sort((a, b) => (a.k < b.k ? -1 : 1)).map(c => ({
+    ...c, t: Date.parse(c.k + 'T00:00:00Z'),
+    acc: c.scored ? c.sum / c.scored : null,
+    err: c.runs ? 100 * c.failed / c.runs : null,
+  }));
+}
+
+function trendTotals(b) {
+  let runs = 0, failed = 0, scored = 0, sum = 0;
+  b.forEach(c => { runs += c.runs; failed += c.failed; scored += c.scored; sum += c.sum; });
+  return { runs, failed, scored, acc: scored ? sum / scored : null,
+           err: runs ? 100 * failed / runs : null };
+}
+
+function trendSvg(id, b, t0, t1, W, H, lo, hi) {
+  const L = 30, R = 10, T = 8, B = 18, iw = W - L - R, ih = H - T - B;
+  const x = t => L + (t1 > t0 ? (t - t0) / (t1 - t0) : 0.5) * iw;
+  const y = v => T + (1 - v / 100) * ih;
+  let g = '';
+  [0, 50, 100].forEach(v => {
+    g += '<line class="st-grid" x1="' + L + '" x2="' + (W - R) + '" y1="' + y(v)
+      + '" y2="' + y(v) + '"/><text class="st-axis" x="' + (L - 4) + '" y="' + (y(v) + 3)
+      + '" text-anchor="end">' + v + '%</text>';
+  });
+  g += '<text class="st-axis" x="' + L + '" y="' + (H - 4) + '">' + esc(lo) + '</text>'
+    + '<text class="st-axis" x="' + (W - R) + '" y="' + (H - 4) + '" text-anchor="end">'
+    + esc(hi) + '</text>';
+  const line = (key, cls) => {
+    const pts = b.filter(c => c[key] !== null)
+      .map(c => x(c.t).toFixed(1) + ',' + y(c[key]).toFixed(1));
+    return pts.length > 1 ? '<polyline class="' + cls + '" points="' + pts.join(' ') + '"/>' : '';
+  };
+  const dots = (key, cls) => b.filter(c => c[key] !== null).map(c =>
+    '<circle class="' + cls + '" r="3" cx="' + x(c.t).toFixed(1) + '" cy="'
+    + y(c[key]).toFixed(1) + '"/>').join('');
+  trendCards[id] = { b, x, W };
+  return '<svg class="tr-svg" data-tr-card="' + id + '" viewBox="0 0 ' + W + ' ' + H + '">'
+    + g + line('err', 'tr-err') + line('acc', 'tr-acc')
+    + dots('err', 'tr-dot-err') + dots('acc', 'tr-dot-acc')
+    + '<line class="st-cross" data-tr-cross x1="0" x2="0" y1="' + T + '" y2="' + (T + ih)
+    + '" style="display:none"/></svg>';
+}
+
+function trendCard(id, name, full, b, t0, t1, all, lo, hi) {
+  const s = trendTotals(b);
+  const pct = v => (v === null ? '—' : v.toFixed(1) + '%');
+  const sub = s.runs + ' run' + (s.runs === 1 ? '' : 's') + ' · accuracy ' + pct(s.acc)
+    + ' · errors ' + s.failed + ' (' + pct(s.err) + ')';
+  return '<div class="tr-card' + (all ? ' tr-all' : '') + '">'
+    + '<div class="tr-name" title="' + esc(full || name) + '">' + esc(name) + '</div>'
+    + '<div class="tr-sub">' + sub + '</div>'
+    + trendSvg(id, b, t0, t1, all ? 900 : 300, all ? 150 : 128, lo, hi)
+    + '<div class="st-tip tr-tip" hidden></div></div>';
+}
+
+function paintTrend(t) {
+  const host = document.getElementById('trendSum');
+  if (!host) return;
+  document.querySelectorAll('#panelTrend .tr-seg').forEach(seg => {
+    const want = trendState[seg.dataset.tr];
+    seg.querySelectorAll('button').forEach(b => b.classList.toggle('on', b.dataset.v === want));
+  });
+  document.getElementById('trendPerBox').hidden = trendState.bucket !== 'runs';
+  trendCards = {};
+  const tr = (t && t.trend) || {};
+  const pass = tr[trendState.pass] || {};
+  const unit = trendState.bucket;
+  const byRun = unit === 'runs';
+  const per = trendState.per;
+  const seq = pass.seq || {};
+  const all = byRun ? trendChunks(seq.all, per) : trendFold(pass.all, unit);
+  if (!all.length) {
+    host.innerHTML = emptyPassNote(trendState.pass, t)
+      || '<p class="note">No runs in this view.</p>';
+    return;
+  }
+  // Time: one axis shared by every card. Runs: each card its own, 1 to n.
+  const span = (b, n) => byRun
+    ? [1, Math.max(n, 2), 'run 1', 'run ' + n]
+    : [all[0].t, all[all.length - 1].t, all[0].k.slice(5), all[all.length - 1].k.slice(5)];
+  const group = pass[trendState.by] || {};
+  const isModel = trendState.by === 'models';
+  const entries = Object.keys(group).map(k => {
+    const b = byRun ? trendChunks((seq[trendState.by] || {})[k], per) : trendFold(group[k], unit);
+    return { k, b, runs: trendTotals(b).runs };
+  });
+  entries.sort((a, b) => isModel
+    ? b.runs - a.runs || (a.k < b.k ? -1 : 1)
+    : a.k.localeCompare(b.k, undefined, { numeric: true }));
+  const passName = trendState.pass === 'ocr' ? 'reading' : 'extraction';
+  const card = (id, name, full, b, big) => {
+    const [t0, t1, lo, hi] = span(b, trendTotals(b).runs);
+    return trendCard(id, name, full, b, t0, t1, big, lo, hi);
+  };
+  host.innerHTML = card('all', 'All ' + passName + ' runs', '', all, true)
+    + '<div class="tr-grid">'
+    + entries.map((e, i) => card('c' + i, isModel ? csModel(e.k) : e.k, e.k, e.b, false)).join('')
+    + '</div>'
+    + '<p class="note"><b>Every run the filters match, over its whole history</b> — '
+    + 'not the recent-runs window the other tabs use, because a trend with its past '
+    + 'cut off has nothing to show. Each point is '
+    + (byRun ? per + ' consecutive runs of that card, oldest first, whenever they '
+        + 'happened; each card has its own run axis, 1 to its last run, and a short '
+        + 'last group is drawn with the runs it has'
+        : unit === 'day' ? 'one day' : 'one week (labelled by its Monday)')
+    + ': <b>accuracy</b> is the mean over the runs in it that finished and were scored ('
+    + (trendState.pass === 'ocr' ? 'transcript character accuracy'
+        : 'required-field score, a partial counting half, under the read floor')
+    + '), and the <b>error rate</b> is the share that looped, crashed, was cut off or '
+    + 'was cancelled — a failure is counted, never scored, so a bucket where every run '
+    + 'failed has an error point and no accuracy point. A line joins the buckets that '
+    + 'have runs; a stretch of time with none is simply crossed. On Day and Week all '
+    + 'cards share one time axis. Hover a chart for the figures.</p>';
+}
+
+document.getElementById('panelTrend').addEventListener('click', ev => {
+  const btn = ev.target.closest ? ev.target.closest('.tr-seg button[data-v]') : null;
+  if (!btn) return;
+  trendState[btn.closest('.tr-seg').dataset.tr] = btn.dataset.v;
+  paintTrend(logData && logData.totals);
+});
+
+document.getElementById('trendPer').addEventListener('change', ev => {
+  const n = Math.round(Number(ev.target.value));
+  trendState.per = n >= 1 ? Math.min(n, 1000) : 10;
+  ev.target.value = trendState.per;
+  paintTrend(logData && logData.totals);
+});
+
+function trendHideTips(keep) {
+  document.querySelectorAll('#panelTrend .tr-tip').forEach(tip => {
+    if (!keep || tip.parentNode !== keep.parentNode) tip.hidden = true;
+  });
+  document.querySelectorAll('#panelTrend [data-tr-cross]').forEach(l => {
+    if (!keep || l.ownerSVGElement !== keep) l.style.display = 'none';
+  });
+}
+
+document.getElementById('panelTrend').addEventListener('mousemove', ev => {
+  const svg = ev.target.closest ? ev.target.closest('svg[data-tr-card]') : null;
+  trendHideTips(svg);
+  if (!svg) return;
+  const card = trendCards[svg.dataset.trCard];
+  if (!card || !card.b.length) return;
+  const box = svg.getBoundingClientRect();
+  const vx = (ev.clientX - box.left) * card.W / box.width;
+  let best = card.b[0];
+  card.b.forEach(c => {
+    if (Math.abs(card.x(c.t) - vx) < Math.abs(card.x(best.t) - vx)) best = c;
+  });
+  const cross = svg.querySelector('[data-tr-cross]');
+  cross.setAttribute('x1', card.x(best.t));
+  cross.setAttribute('x2', card.x(best.t));
+  cross.style.display = '';
+  const tip = svg.parentNode.querySelector('.tr-tip');
+  const label = trendState.bucket === 'week' ? 'week of ' + best.k : best.k;
+  tip.innerHTML = '<b>' + label + '</b><br>' + best.runs + ' run' + (best.runs === 1 ? '' : 's')
+    + '<br>accuracy ' + (best.acc === null ? '— (none scored)'
+        : best.acc.toFixed(1) + '% over ' + best.scored)
+    + '<br>errors ' + best.failed + ' (' + best.err.toFixed(0) + '%)';
+  tip.hidden = false;
+  const cardBox = svg.parentNode.getBoundingClientRect();
+  const px = box.left - cardBox.left + card.x(best.t) * box.width / card.W;
+  const cw = svg.parentNode.clientWidth;
+  tip.style.left = Math.max(4, Math.min(px + 10, cw - tip.offsetWidth - 4)) + 'px';
+});
+document.getElementById('panelTrend').addEventListener('mouseleave', () => trendHideTips(null));
+
 function paintLog() {
   if (!logData) return;
   const t = logData.totals || {};
   paintBests(t);
   paintStandouts(t);
   paintErrors(t);
+  paintTrend(t);
   paintCaseSummary(t);
   paintAnalysis(t);
   paintOcrSummary(t);

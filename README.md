@@ -1772,7 +1772,7 @@ does not glare on a projector.
 
 ### Reading the card: ten panels, sortable, filterable
 
-The card is ten panels, and only the last of them is the log:
+The card is eleven panels, and only the last of them is the log:
 
 | Panel | |
 |---|---|
@@ -1785,6 +1785,7 @@ The card is ten panels, and only the last of them is the log:
 | **Model × type** | the same runs grouped by the **kind** of page — which document type is read and extracted well, which model is best at each, and where a model that looks middling overall is strong on one kind of document and weak on another. A type table and a model × type grid, per pass |
 | **Time × Doc × Accuracy** | pass 1 only: read time against the document against the transcript score, with the Detail tables and the outlier list |
 | **Errors** | what is failing, ranked on the failures rather than folded into an accuracy |
+| **Trend** | accuracy and error rate over **time**, one small chart per model or per document, for either pass, by day, by week, or by **run number** (every N consecutive runs of that model or document — runs 1–10, 11–20, …; N is editable, default 10). Over every run the filters match — not the recent-runs window — so a model whose results moved as the code, config or server changed shows it |
 | **Raw data** | the rows of `logs/runs.csv` themselves — unfiltered, and the only place a run can be deleted |
 
 **Every column sorts**, including the one each table is ranked by. Click a header to sort

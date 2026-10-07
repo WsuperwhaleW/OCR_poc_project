@@ -5221,6 +5221,93 @@ def conditions(rows: list = None) -> dict:
     }
 
 
+def trend(rows: list = None) -> dict:
+    """Error rate and accuracy over TIME, per model and per document, per pass.
+
+    Built 2026-10-07 at the user's request: the code, the config and the server
+    have all been changing under the same model names, so one mean per model
+    describes a mixture of builds. This answers *is it getting better or worse*
+    rather than *how good is it*.
+
+    **Over every row the filters matched, NOT windowed.** Every other table here
+    reads each group's last `SUMMARY_RUNS`; a trend that dropped the history
+    would have nothing to trend. The chips still narrow it, like every tab.
+
+    Per day, as RE-AGGREGATABLE sums -- `[date, runs, failed, scored, acc_sum]`
+    -- so the page can fold days into weeks by adding, and a mean is always
+    `acc_sum / scored` over the runs in that bucket. Pooled over runs within a
+    bucket (not per document first): this is a trend line, low detail by request,
+    and a bucket rarely holds enough runs per document for the distinction to
+    matter.
+
+    The standing rules hold: a failure is `_incomplete` / `_extract_incomplete`
+    (a loop or a crash, never a low score), and a failure is COUNTED and never
+    SCORED. Pass-2 accuracy is `_p1_rate`, so the read floor still applies.
+    """
+    rows = read(limit=10 ** 6) if rows is None else rows
+    reads = [r for r in rows if (r.get("run_type") or "ocr") != "extract"]
+    extracts = [r for r in rows
+                if not r.get("extract_steps")
+                and ((r.get("status") or "") in _INCOMPLETE
+                     or not (_blank(r.get("p1_present"))
+                             and _blank(r.get("other_fields"))))]
+
+    def series(subset, model_of, failed, score):
+        days = {"all": {}, "models": {}, "cases": {}}
+        # And every run IN ORDER, one value each, for the run-number axis
+        # (2026-10-07: *0-10 run got 99% but 11-20 got 95%*). -1 is a failure,
+        # None a run that finished and was not scored, otherwise its score.
+        # Oldest first; `read` is newest first, so reverse before the stable
+        # sort keeps file order for two rows stamped in the same second.
+        seq = {"all": [], "models": {}, "cases": {}}
+        subset = sorted(reversed(subset), key=lambda r: r.get("timestamp") or "")
+
+        def add(bucket, key, day, bad, value):
+            cell = bucket.setdefault(key, {}).setdefault(day, [0, 0, 0, 0.0])
+            cell[0] += 1
+            if bad:
+                cell[1] += 1
+            elif value is not None:
+                cell[2] += 1
+                cell[3] += value
+
+        for r in subset:
+            day = (r.get("timestamp") or "")[:10]
+            if len(day) != 10:
+                continue
+            bad = failed(r)
+            value = None if bad else score(r)
+            add(days, "all", day, bad, value)
+            point = -1 if bad else (None if value is None else round(value, 2))
+            seq["all"].append(point)
+            model = model_of(r)
+            if model:
+                add(days["models"], model, day, bad, value)
+                seq["models"].setdefault(model, []).append(point)
+            case = r.get("case") or ""
+            if case:
+                add(days["cases"], case, day, bad, value)
+                seq["cases"].setdefault(case, []).append(point)
+
+        def flat(per_day):
+            return [[d, c[0], c[1], c[2], round(c[3], 3)]
+                    for d, c in sorted(per_day.items())]
+        return {"all": flat(days["all"]),
+                "models": {k: flat(v) for k, v in days["models"].items()},
+                "cases": {k: flat(v) for k, v in days["cases"].items()},
+                "seq": seq}
+
+    def char_score(r):
+        return _char_of(r) if _has_char(r) else None
+
+    return {
+        "ocr": series(reads, lambda r: r.get("model") or "", _incomplete, char_score),
+        "extract": series(extracts,
+                          lambda r: r.get("extract_model") or r.get("model") or "",
+                          _extract_incomplete, _p1_rate),
+    }
+
+
 def totals(rows: list = None, logged: int = None) -> dict:
     """Headline counts and every compiled table, over the most recent rows.
 
@@ -5330,6 +5417,9 @@ def totals(rows: list = None, logged: int = None) -> dict:
         # well, and which model is best at each. Every table above averages over
         # that axis by construction. See `type_models`.
         "type_models": type_models(everything),
+        # Accuracy and error rate over time, per model and per document,
+        # over every row the filters matched rather than a window. See `trend`.
+        "trend": trend(everything),
         "seconds": round(seconds, 1),
         "tokens": tokens,
         # What this is a summary OF. `logged` is the file; `window` is how many
