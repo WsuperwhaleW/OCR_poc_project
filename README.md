@@ -2614,6 +2614,33 @@ running or waiting); llama.cpp's `timings` (`prompt_n`, `cache_n`, `predicted_n`
 native `prompt_eval_count` / `eval_count`. Rates over several pages or requests are the summed
 tokens over the summed seconds, never an average of rates.
 
+### Quantisation and inference engine
+
+Four run-log columns say what each pass ran ON:
+
+| column | meaning |
+|---|---|
+| `model_quant` | the quantisation of `model`: what Ollama states for it (`/api/tags`), else the GGUF type in llama-server's model file, else what the model name says (`Q4_K_M`, `IQ3_XXS`, `AWQ`, `FP8`, ...) |
+| `inference_engine` | the reading server's kind and version: `ollama 0.32.14`, `llama.cpp b1-67a17c1`, `vllm 0.11.0` |
+| `extract_quant`, `extract_inference_engine` | the same for the model and server pass 2 ran on. Written whenever pass 2 ran |
+
+Blank means the server and the name said nothing -- a vLLM model whose name names no
+format, or a llama-server too old to report `build_info`. The version comes from
+`/props` (llama.cpp, already probed), `/api/version` (Ollama) or `/version` (vLLM), asked
+at most once every ten minutes per server and only when a run is logged.
+
+The run-log card's setting tables (pass 1 and pass 2), the Summary tab's rankings and headline
+cards, and the per-document bests show them under each setting as `quant · engine`. They are
+not part of what makes a setting: a setting whose runs were made on more than one quantisation
+or engine version lists each, most recent first (`Q8_0 / Q4_K_M`). Where no run says, the cell
+shows the backend alone.
+
+All four are also filter chips on the run-log card (**Reading quant**, **Reading engine
+version**, **Extraction quant**, **Extraction engine version**), and the same field names work
+in `POST /api/runs/query`. The reading pair is blank on a fields-only run and the extraction
+pair on a read-only one, like the two model chips; rows logged before the columns existed are
+in none of them, so keeping a chip drops those rows.
+
 **The image.** A page is sent as a base64 PNG inside the JSON body. Uploading it, and the server
 decoding and resizing it, are in no phase: on vLLM they fall inside `server_seconds` and outside
 queue, prefill and decode. The vision encoder runs in prefill and the image's tokens are in the

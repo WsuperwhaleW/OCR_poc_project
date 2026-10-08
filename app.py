@@ -4690,6 +4690,33 @@ def prepare_input(data: bytes, detail: str, case=None, source=None):
     return prepared, detail, register_job(prepared, context), case
 
 
+def _stamp_model_meta(summary) -> None:
+    """Put the quantisation and engine version on a summary and its extraction.
+
+    Here, in the one funnel every logged run goes through, for the read floor's
+    reason: stamped at each call site, it would be stamped at most of them. Each
+    pass is described by ITS OWN model and server -- pass 2 may run on a second
+    server (`extract_url`) and a second model -- and an existing value is kept,
+    so a caller that already knows is never overruled. Never raises.
+    """
+    if not isinstance(summary, dict):
+        return
+    try:
+        if summary.get("model") and not summary.get("engine"):
+            meta = backends.model_meta(summary.get("url"), summary.get("model"))
+            summary.setdefault("quant", meta["quant"])
+            summary["engine"] = meta["engine"]
+        extracted = summary.get("extracted")
+        if (isinstance(extracted, dict) and extracted.get("model")
+                and not extracted.get("engine")):
+            meta = backends.model_meta(extracted.get("url") or summary.get("url"),
+                                       extracted.get("model"))
+            extracted.setdefault("quant", meta["quant"])
+            extracted["engine"] = meta["engine"]
+    except Exception:
+        pass
+
+
 def log_run(summary: dict, source: dict, status: str = None, error=None,
             run_type: str = "ocr"):
     """Append one line to the run log. Never raises.
@@ -4710,6 +4737,7 @@ def log_run(summary: dict, source: dict, status: str = None, error=None,
         apply_read_floor(summary if isinstance(summary, dict) else {})
     except Exception:
         pass
+    _stamp_model_meta(summary)
     try:
         row = runlog.record(summary, source,
                             {"status": status, "error": str(error) if error else "",

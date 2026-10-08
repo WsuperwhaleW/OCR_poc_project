@@ -576,6 +576,24 @@ COLUMNS = [
     "extract_server_decode_tokens",
     "extract_server_prefill_tps",
     "extract_server_decode_tps",
+    # What the model was made ON (2026-10-08, at the user's request: *also
+    # collect quantize type and inference engine*). `model_quant` is the
+    # quantisation of `model` -- what Ollama states per model, else the GGUF
+    # type in llama.cpp's model file, else what the name says (Q4_K_M, IQ3_XXS,
+    # AWQ, FP8) -- and `inference_engine` is the server kind WITH its version
+    # (`ollama 0.32.14`, `vllm 0.11.0`, `llama.cpp b6123-...`), which `backend`
+    # never carried. The two `extract_` columns are the same for the model and
+    # server pass 2 ran on, and are written whenever pass 2 ran, not only where
+    # they differ: a quant is a property of a model, and comparing two rows on
+    # it should not need `extract_model` to be resolved first.
+    #
+    # **Blank is "nothing said"**, never a guess: a vLLM model whose name names
+    # no format may be served at anything, and an older llama-server has no
+    # build_info. Every row written before the columns is blank too.
+    "model_quant",
+    "inference_engine",
+    "extract_quant",
+    "extract_inference_engine",
 ]
 
 # servertime.FIELDS, spelled out: this module cannot import servertime (it
@@ -746,7 +764,8 @@ EXTRACT_COLUMNS = ("extract_seconds", "extract_tokens", "extract_mode",
                    "extract_server_prefill_tokens",
                    "extract_server_generated_tokens",
                    "extract_server_decode_tokens", "extract_server_prefill_tps",
-                   "extract_server_decode_tps") + FIX_COLUMNS
+                   "extract_server_decode_tps",
+                   "extract_quant", "extract_inference_engine") + FIX_COLUMNS
 
 _TIERS = ("p1_present", "p1_absent", "p2_present", "p2_absent",
           "p3_present", "p3_absent")
@@ -795,6 +814,10 @@ def _extract_cells(summary: dict) -> dict:
                              and extracted.get("model") != (summary or {}).get("model"))
                          else "",
         "extract_steps": ",".join(extracted.get("steps_only") or []),
+        # Stamped onto the result by `app.log_run` from the server's own
+        # statement. Blank where pass 2 never ran -- an empty result says nothing.
+        "extract_quant": extracted.get("quant") or "",
+        "extract_inference_engine": extracted.get("engine") or "",
         # Like `extract_model`: written only where it differs from the reading
         # server, so the one-URL setup leaves it blank.
         "extract_server": (extracted.get("url") or "")
@@ -1328,6 +1351,8 @@ def record(summary: dict, source: dict = None, extras: dict = None) -> dict:
         "server": summary.get("url", ""),
         "backend": summary.get("backend", ""),
         "model": summary.get("model") or "",
+        "model_quant": summary.get("quant") or "",
+        "inference_engine": summary.get("engine") or "",
         "status": extras.get("status") or _row_status(summary, error),
         "seconds": summary.get("seconds", ""),
         "prefill_seconds": summary.get("prefill_seconds", ""),
@@ -1696,6 +1721,19 @@ FILTER_FIELDS = {
     # does not offer an empty bucket and an include still excludes those rows.
     "ocr_engine": row_engine,
     "extract_mode": lambda r: r.get("extract_mode") or "",
+    # What each pass ran ON (2026-10-08). Same pass rule as the two model fields
+    # above: the reading pair is blank on a row that read no page -- whose
+    # `model_quant` is the EXTRACTOR's, the way its `model` is -- and the
+    # extraction pair is blank where pass 2 never ran. Blank on every row before
+    # the columns, so those rows are in no chip and an include drops them.
+    "model_quant": lambda r: "" if (r.get("run_type") or "ocr") == "extract"
+                             else (r.get("model_quant") or ""),
+    "inference_engine": lambda r: "" if (r.get("run_type") or "ocr") == "extract"
+                                  else (r.get("inference_engine") or ""),
+    "extract_quant": lambda r: "" if _pipeline(r) == "read"
+                               else (r.get("extract_quant") or ""),
+    "extract_inference_engine": lambda r: "" if _pipeline(r) == "read"
+                                          else (r.get("extract_inference_engine") or ""),
     "backend": lambda r: r.get("backend") or "",
     # A lambda, not the function itself: `detail_of` is defined below this
     # block and the dict is built at import. Deferring the lookup to call
@@ -2100,7 +2138,10 @@ SETTING_COLUMNS = ("model", "extract_model", "backend", "detail", "ocr_profile",
                    # What read the page. `_for_summary` fills it on every row,
                    # including the 1700 written before the column existed, so a
                    # record named here always says which engine set it.
-                   "ocr_engine")
+                   "ocr_engine",
+                   # What each pass ran ON. Blank on rows before 2026-10-08.
+                   "model_quant", "inference_engine",
+                   "extract_quant", "extract_inference_engine")
 
 
 def _setting(row: dict) -> dict:
@@ -2462,6 +2503,33 @@ EXTRACT_SETTING = ("extract_on", "backend", "extract_mode")
 
 
 
+def _built(runs, quant_of, engine_of) -> dict:
+    """What a group's runs were made ON: `{"quant", "engine"}`, for a table row.
+
+    Not part of any grouping key, deliberately: every row before 2026-10-08 is
+    blank in these columns, so keying on them would split each setting into a
+    blank half and a filled half. They are DESCRIBED instead -- the distinct
+    values the group's runs carry, most recent first, joined with ` / `, so a
+    setting re-run after `ollama pull` changed its quant says both rather than
+    whichever came first. Blank where no run of the group says.
+    """
+    def seen(pick):
+        out = []
+        # `read` returns the log newest first and every table keeps that order,
+        # so the first value met is the most recent one.
+        for run in runs:
+            value = (pick(run) or "").strip()
+            if value and value not in out:
+                out.append(value)
+        return " / ".join(out)
+    return {"quant": seen(quant_of), "engine": seen(engine_of)}
+
+
+_READ_BUILT = (lambda r: r.get("model_quant"), lambda r: r.get("inference_engine"))
+_EXTRACT_BUILT = (lambda r: r.get("extract_quant"),
+                  lambda r: r.get("extract_inference_engine"))
+
+
 def by_ocr(rows: list = None) -> list:
     """Pass 1 per setting: how well it reads a page, and where the time goes.
 
@@ -2518,6 +2586,7 @@ def by_ocr(rows: list = None) -> list:
             # can never split a group, and a key column that never separates
             # anything is one more thing to keep in step for nothing.
             "ocr_engine": row_engine(runs[0]) if runs else "",
+            **_built(runs, *_READ_BUILT),
             "runs": len(runs),
             "documents": len(cases),
             "failed": len(failed),
@@ -2750,6 +2819,7 @@ def by_extract(rows: list = None) -> list:
             "read_by": sorted({r.get("model", "") for r in runs
                                if r.get("extract_model")
                                and r.get("model") and r.get("model") != key[0]}),
+            **_built(runs, *_EXTRACT_BUILT),
             "runs": len(runs),
             "documents": len(cases),
             "scored_runs": len(scored),
@@ -4863,6 +4933,8 @@ def _pres_points(rows: list, pass_: str) -> list:
             points.append({
                 "model": model, "case": case, "detail": detail_of(row),
                 "mode": "", "failed": failed,
+                "quant": row.get("model_quant") or "",
+                "engine": row.get("inference_engine") or "",
                 "seconds": None if failed else _num(row.get("seconds"), None),
                 "value": None if failed else _num(row.get("char_accuracy"), None),
                 "tps": None if failed else _num(row.get("tokens_per_second"), None),
@@ -4898,6 +4970,8 @@ def _pres_points(rows: list, pass_: str) -> list:
             points.append({
                 "model": model, "case": case, "detail": "", "mode": mode,
                 "failed": failed,
+                "quant": row.get("extract_quant") or "",
+                "engine": row.get("extract_inference_engine") or "",
                 "seconds": None if failed else _num(row.get("extract_seconds"), None),
                 "value": None if failed else _p1_rate(row),
                 "tps": None,
@@ -4963,6 +5037,7 @@ def _pres_group(points: list, key_of) -> list:
 
         out.append({
             "key": key,
+            **_built(runs, lambda p: p.get("quant"), lambda p: p.get("engine")),
             "runs": len(runs),
             "documents": len(cases),
             "failed": len(failed),

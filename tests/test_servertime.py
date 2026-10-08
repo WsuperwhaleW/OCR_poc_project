@@ -196,7 +196,9 @@ class RunLogTests(unittest.TestCase):
                           "extract_server_generated_tokens",
                           "extract_server_decode_tokens",
                           "extract_server_prefill_tps",
-                          "extract_server_decode_tps"])
+                          "extract_server_decode_tps",
+                          "model_quant", "inference_engine",
+                          "extract_quant", "extract_inference_engine"])
         # The retired hop columns stay in the file format, written blank.
         self.assertIn("network_seconds", runlog.COLUMNS)
         self.assertIn("extract_network_seconds", runlog.COLUMNS)

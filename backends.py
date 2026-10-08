@@ -21,6 +21,7 @@ would add an HTTP round trip to each of those.
 """
 
 import os
+import re
 import threading
 import time
 
@@ -236,10 +237,14 @@ def _probe_llama(url):
         "kind": "llama.cpp",
         "reachable": True,
         "model": model,
-        "models": [{"name": model, "vision": vision}],
+        "models": [{"name": model, "vision": vision,
+                    "quant": quant_of(props.get("model_path"))}],
         "vision": vision,
         "slots": props.get("total_slots"),
         "reason": reason,
+        # What the run log calls the engine version. Newer builds only; an older
+        # one says nothing and the column stays blank rather than guessed.
+        "build": props.get("build_info") or "",
     }
 
 
@@ -265,6 +270,9 @@ def _probe_ollama(url):
             "vision": ("vision" in caps) if isinstance(caps, list) else None,
             "size_gb": round((entry.get("size") or 0) / 1024 ** 3, 2),
             "family": (entry.get("details") or {}).get("family", ""),
+            # Ollama states it per model in /api/tags, so it costs no request.
+            "quant": ((entry.get("details") or {}).get("quantization_level")
+                      or quant_of(entry.get("name") or entry.get("model"))),
         })
     models = [m for m in models if m["name"]]
 
@@ -309,7 +317,9 @@ def _probe_openai(url):
     if not isinstance(data, list):
         return None
     models = [{"name": str(m.get("id") or ""), "vision": None,
-               "max_model_len": m.get("max_model_len")}
+               "max_model_len": m.get("max_model_len"),
+               # /v1/models does not say; the name often does (-AWQ, -FP8).
+               "quant": quant_of(m.get("id"))}
               for m in data if isinstance(m, dict) and m.get("id")]
     if not models:
         return None
@@ -498,6 +508,104 @@ def known(url: str = None) -> dict:
         url = clean_url(url) if url else _active
     hit = _cache.get(url)
     return hit[1] if hit else None
+
+
+# --------------------------------------------------------------------------
+# what a run was made ON: quantisation and engine version, for the run log
+# --------------------------------------------------------------------------
+
+# A quantisation written into a model's name or file: GGUF types (Q4_K_M,
+# IQ3_XXS, Q8_0, F16, BF16) and the formats vLLM serves (AWQ, GPTQ, FP8, INT4,
+# W4A16, MXFP4, NVFP4, BNB). Bounded by non-alphanumerics on both sides, so a
+# `q4` inside a word is not one; `_` and `.` are boundaries, `Q4_K_M` is whole.
+_QUANT = re.compile(
+    r"(?<![A-Za-z0-9])("
+    r"I?Q[1-8](?:_[A-Z0-9]{1,3}){0,2}"
+    r"|BF16|F16|F32|FP16|FP32|FP8|FP4|MXFP4|NVFP4|INT4|INT8"
+    r"|AWQ|GPTQ|BNB|EXL2|W[48]A(?:8|16)"
+    r")(?![A-Za-z0-9])", re.IGNORECASE)
+
+
+def quant_of(name) -> str:
+    """The quantisation a model's name or file states, upper-cased, or ``.
+
+    The LAST match wins, because a name ends with its file type
+    (`typhoon-ocr-1.5-2b-Q8_0.gguf`). `` is "the name does not say", never a
+    guess -- a model served without a quant in its name may be anything.
+    """
+    found = _QUANT.findall(str(name or ""))
+    return found[-1].upper() if found else ""
+
+
+# url -> (when, version). An engine is not upgraded under a running process
+# often, but it is restarted; ten minutes keeps a long sweep to one request.
+_versions = {}
+VERSION_TTL = 600.0
+_VERSION_PATH = {"ollama": "/api/version", "vllm": "/version",
+                 "openai": "/version"}
+
+
+def _engine_version(url, info) -> str:
+    """The engine's own version string, or ``. Never raises.
+
+    llama.cpp states it in /props, which the probe already read; Ollama answers
+    /api/version and vLLM /version -- both from their HTTP handler, NOT the
+    inference queue, so this is not the poll the never-poll rule forbids. It is
+    asked at most once per VERSION_TTL per server, and only where a run is
+    being logged. A server that does not answer is cached as `` too, so a
+    generic OpenAI server is asked once rather than on every row.
+    """
+    kind = info.get("kind")
+    if kind == "llama.cpp":
+        return info.get("build") or ""
+    path = _VERSION_PATH.get(kind)
+    if not path or not url:
+        return ""
+    hit = _versions.get(url)
+    if hit and time.time() - hit[0] < VERSION_TTL:
+        return hit[1]
+    version = ""
+    try:
+        res = http_get(f"{url}{path}", info, timeout=PROBE_TIMEOUT)
+        if res.status_code == 200:
+            body = res.json()
+            if isinstance(body, dict):
+                version = str(body.get("version") or "")
+    except Exception:
+        version = ""
+    _versions[url] = (time.time(), version)
+    return version
+
+
+def model_meta(url: str = None, model: str = None) -> dict:
+    """`{"quant", "engine"}` for `model` on `url`, as the run log records them.
+
+    `engine` is the server kind and its version (`ollama 0.32.14`,
+    `vllm 0.11.0`, `llama.cpp b6123-...`); the kind alone where the version is
+    not known. `quant` comes from what the server says about the model (Ollama),
+    else from its file (llama.cpp's model_path), else from its name. Blank where
+    nothing says -- the standing rule, blank is not a value.
+
+    Reads the probe cache (`known`); probes only where the URL was never seen.
+    Never raises: a row missing these is better than a run whose log failed.
+    """
+    try:
+        url = clean_url(url) if url else active_url()
+        info = known(url) or {}
+        if not info and url:
+            info = probe(url)
+        kind = info.get("kind") or ""
+        entry = next((m for m in info.get("models") or []
+                      if model and m.get("name") == model), {})
+        quant = entry.get("quant") or quant_of(model)
+        if not quant and kind == "llama.cpp":
+            quant = next((m.get("quant") for m in info.get("models") or []
+                          if m.get("quant")), "")
+        version = _engine_version(url, info) if info.get("reachable") else ""
+        engine = f"{kind} {version}".strip() if kind else ""
+        return {"quant": quant or "", "engine": engine}
+    except Exception:
+        return {"quant": "", "engine": ""}
 
 
 def probe(url: str, force: bool = False) -> dict:

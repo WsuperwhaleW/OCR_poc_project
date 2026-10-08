@@ -6340,7 +6340,18 @@ function csSetting(b) {
   const two = b.extract_model && b.extract_model !== b.model;
   const models = two ? csModel(b.model) + ' → ' + csModel(b.extract_model)
                      : csModel(b.model);
-  const bits = [models, b.backend, b.detail, b.ocr_profile, b.extract_mode]
+  // What each pass ran ON, where the row says: the quantisation beside the
+  // model it belongs to, and the engine with its version in place of the bare
+  // backend. Two passes on two servers name both, in pass order.
+  const quant = two
+    ? [b.model_quant || '?', b.extract_quant || '?'].join(' → ')
+    : b.model_quant;
+  const engine = two && b.extract_inference_engine
+      && b.extract_inference_engine !== b.inference_engine
+    ? (b.inference_engine || b.backend || '?') + ' → ' + b.extract_inference_engine
+    : (b.inference_engine || b.backend);
+  const bits = [models, (two && !b.model_quant && !b.extract_quant) ? '' : quant,
+                engine, b.detail, b.ocr_profile, b.extract_mode]
     .filter(Boolean).join(' · ');
   // Which engine produced it, beside the setting rather than inside the joined
   // string: it is a category the row belongs to, not another setting to read.
@@ -7421,7 +7432,7 @@ function paintOcrSummary(t) {
   const top = settings[0];
   const cols = [
     {key: 'setting', label: 'Setting', value: e => csModel(e.model),
-     cell: e => msCell(e, [e.backend, e.detail, e.ocr_profile],
+     cell: e => msCell(e, [e.quant, e.engine || e.backend, e.detail, e.ocr_profile],
              // Reads that did not finish, or finished with nothing. Beside the
              // setting rather than under the clock, because it qualifies every
              // other number on the row: a mean taken over runs that mostly
@@ -7573,7 +7584,7 @@ function paintExtractSummary(t) {
   const top = scored ? settings[0] : null;
   const cols = [
     {key: 'setting', label: 'Setting', value: e => csModel(e.model),
-     cell: e => msCell(e, [e.backend, e.extract_mode],
+     cell: e => msCell(e, [e.quant, e.engine || e.backend, e.extract_mode],
              // Two lines, both about what the row does not otherwise say.
              //
              // `read_by` names the model that produced the transcript, where
@@ -7814,6 +7825,11 @@ function prModel(e, rank) {
     + (rank || '·') + '</span>'
     + '<span class="pr-name"><b title="' + esc(e.model || '') + '">'
     + esc(csModel(e.model)) + '</b>'
+    // What it ran ON -- quantisation and engine version -- where the runs say.
+    + ((e.quant || e.engine)
+       ? '<span class="cs-set" title="quantisation · inference engine">'
+         + [e.quant, e.engine].filter(Boolean).map(esc).join(' &middot; ') + '</span>'
+       : '')
     + '<span class="cs-set">' + e.runs + ' run(s) &middot; ' + e.documents
     + ' doc(s)</span></span>';
 }
@@ -8001,6 +8017,11 @@ function prHero(label, entry, unit, extra, badge) {
     + '<span class="pr-hero-model" title="' + esc(entry.model || '') + '">'
       + esc(csModel(entry.model)) + '</span>'
     + '<span class="pr-hero-num">' + pct.toFixed(1) + (unit || '') + '</span>'
+    + ((entry.quant || entry.engine)
+       ? '<span class="pr-hero-sub">'
+         + [entry.quant, entry.engine].filter(Boolean).map(esc).join(' &middot; ')
+         + '</span>'
+       : '')
     + '<span class="pr-hero-sub">' + (extra ? extra + ' &middot; ' : '')
       + entry.runs + ' run(s) &middot; ' + entry.documents + ' doc(s)'
       + ' &middot; <span style="color:' + presErrColour(entry.failure_rate) + '">'
@@ -8870,6 +8891,19 @@ const LV_FIELDS = [
   {field: 'extract_model', label: 'Extraction model',
    hint: 'the model that extracted the fields (pass 2) — the reading model, '
        + 'where the two passes ran on one'},
+  // What each pass ran ON. Blank on rows written before 2026-10-08, so those
+  // rows are in none of these chips and keeping one drops them.
+  {field: 'model_quant', label: 'Reading quant',
+   hint: 'the quantisation of the reading model: what Ollama states for it, the '
+       + 'GGUF type in the llama-server model file, or what the model name says. '
+       + 'Rows logged before 2026-10-08 have none'},
+  {field: 'inference_engine', label: 'Reading engine version',
+   hint: 'the server kind and version that read the page (ollama 0.32.14, '
+       + 'llama.cpp b1-67a17c1, vllm 0.11.0)'},
+  {field: 'extract_quant', label: 'Extraction quant',
+   hint: 'the quantisation of the model that extracted the fields'},
+  {field: 'extract_inference_engine', label: 'Extraction engine version',
+   hint: 'the server kind and version pass 2 ran on'},
   {field: 'extract_mode', label: 'Extraction shape',
    hint: 'single: one request for the whole form. agentic: a step per group of '
        + 'one to three fields'},
@@ -8904,6 +8938,8 @@ function lvChipLabel(field, value) {
   if (field === 'hardware' || field === 'start') return anMarkLabel(field, value);
   if (field === 'ocr_engine') return engineLabel(value);
   if (field === 'status') return LV_STATUS[value] || value || 'not recorded';
+  // As stored: `csModel` would cut a version at its last `/`.
+  if (/quant$|inference_engine$/.test(field)) return value;
   return csModel(value);
 }
 
