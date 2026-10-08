@@ -160,7 +160,9 @@ from settings import (
     TRIM_PAD,
     TRIM_TOLERANCE,
     ocr_sampling,
+    ocr_sampling_state,
     sampler_extras,
+    set_ocr_sampling,
 )
 
 from PIL import Image, ImageChops, ImageOps, ImageSequence, UnidentifiedImageError
@@ -651,8 +653,8 @@ def stream_page(image: Image.Image, stats: dict = None,
         "messages": backends.system_prefix(status, spec["system"])
                     + [{"role": "user", "content": content}],
         "max_tokens": MAX_NEW_TOKENS,
-        # Typhoon's recommended temperature 0.1 / top_p 0.6 by default (see
-        # settings.ocr_sampling); OCR_TEMPERATURE=0 + OCR_TOP_K=1 is greedy again.
+        # Greedy by default (see settings.ocr_sampling); OCR_TEMPERATURE=0.1 +
+        # OCR_TOP_P=0.6 + OCR_TOP_K=0 is typhoon's recommended setting.
         # min_p stays pinned off so llama-server's default 0.05 cannot apply.
         **ocr_sampling(),
         "min_p": 0.0,
@@ -4890,6 +4892,7 @@ def index():
         # not: the page prints the cap rather than repeating a number, for the
         # same reason the read floor below is sent instead of hardcoded.
         loop_guard=loop_guard(),
+        ocr_sampling=ocr_sampling_state(),
         table_agents=table_agents(),
         max_new_tokens=MAX_NEW_TOKENS,
         # When a field score is worth writing, for every path that reads a page.
@@ -5496,6 +5499,32 @@ def loop_guard_set():
     if not isinstance(on, bool):
         return jsonify(error="loop_guard must be true or false."), 400
     return jsonify(loop_guard=set_loop_guard(on), max_tokens=MAX_NEW_TOKENS)
+
+
+@app.get("/api/ocr/sampling")
+def ocr_sampling_get():
+    """The page-read sampler in force: temperature, top_p, top_k (0 = not sent)."""
+    return jsonify(**ocr_sampling_state())
+
+
+@app.post("/api/ocr/sampling")
+def ocr_sampling_set():
+    """Change the page-read sampler for every read this process makes next.
+
+    Pass 1 only; extraction stays greedy. Not refused during a sweep, for the loop
+    guard's reason -- except that, unlike the guard, nothing is stamped on each
+    run, so a sweep split across the change mixes samplers with no record. Said
+    on the page. `reset: true` returns to what the process started at.
+    """
+    body = request.get_json(silent=True) or {}
+    if body.get("reset") is True:
+        d = ocr_sampling_state()["defaults"]
+        body = {"temperature": d["temperature"], "top_p": d["top_p"], "top_k": d["top_k"]}
+    try:
+        state = set_ocr_sampling(body.get("temperature"), body.get("top_p"), body.get("top_k"))
+    except ValueError as err:
+        return jsonify(error=str(err)), 400
+    return jsonify(**state)
 
 
 @app.get("/api/table-agents")

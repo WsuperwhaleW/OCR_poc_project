@@ -1511,6 +1511,26 @@ follows your desktop; Light is the one to pick for projecting or screenshotting.
         </label>
       </div>
       <p class="note" id="loopGuardNote"></p>
+      <!-- The page-read sampler. One process setting; pass 1 only. -->
+      <div class="row" id="samplingRow">
+        <label class="field" style="flex:1;min-width:90px">
+          Temperature
+          <input id="sampTemp" type="number" min="0" max="2" step="0.05"
+                 value="{{ ocr_sampling.temperature }}">
+        </label>
+        <label class="field" style="flex:1;min-width:90px">
+          Top&nbsp;p
+          <input id="sampTopP" type="number" min="0.01" max="1" step="0.05"
+                 value="{{ ocr_sampling.top_p }}">
+        </label>
+        <label class="field" style="flex:1;min-width:90px">
+          Top&nbsp;k
+          <input id="sampTopK" type="number" min="0" max="1000" step="1"
+                 value="{{ ocr_sampling.top_k }}">
+        </label>
+        <button type="button" id="sampReset" class="ghost" style="align-self:flex-end">Reset</button>
+      </div>
+      <p class="note" id="samplingNote"></p>
 
         <div class="row">
         <label class="field">
@@ -3889,6 +3909,71 @@ async function setLoopGuard(on) {
 
 loopGuardChk.addEventListener('change', () => setLoopGuard(loopGuardChk.checked));
 paintLoopGuard();
+
+/* ---------- the page-read sampler -------------------------------------------
+   Temperature, top_p and top_k of the PAGE READ (pass 1); extraction stays greedy.
+   top_k 0 means the field is not sent and the server own top_k applies. One process
+   setting, painted from what the server accepted, never from what was typed. */
+const sampTemp = document.getElementById('sampTemp');
+const sampTopP = document.getElementById('sampTopP');
+const sampTopK = document.getElementById('sampTopK');
+const sampReset = document.getElementById('sampReset');
+const samplingNote = document.getElementById('samplingNote');
+let SAMPLING = {{ ocr_sampling|tojson }};
+
+function paintSampling() {
+  sampTemp.value = SAMPLING.temperature;
+  sampTopP.value = SAMPLING.top_p;
+  sampTopK.value = SAMPLING.top_k;
+  const d = SAMPLING.defaults || {};
+  const greedy = SAMPLING.temperature === 0;
+  const changed = d.temperature !== SAMPLING.temperature
+    || d.top_p !== SAMPLING.top_p || d.top_k !== SAMPLING.top_k;
+  sampReset.disabled = !changed;
+  samplingNote.innerHTML = (greedy
+      ? '<b>Greedy read</b> (temperature 0): the same page transcribes the same way '
+        + 'every time.'
+      : 'Reads are <b>not reproducible byte for byte</b> at temperature above 0, so a '
+        + 'small difference between two runs is not evidence of anything.')
+    + ' Top k <b>0</b> sends no top_k (the server own applies); top k 1 makes the other '
+    + 'two moot. Page reading only &mdash; extraction stays greedy. Takes effect on the '
+    + 'next read; a run log row does not record the sampler.'
+    + (changed ? ' Started at temperature ' + d.temperature + ', top p ' + d.top_p
+      + ', top k ' + d.top_k + '.' : '');
+}
+
+async function pushSampling(payload) {
+  let refusal = '';
+  [sampTemp, sampTopP, sampTopK, sampReset].forEach(el => { el.disabled = true; });
+  try {
+    const res = await fetch('/api/ocr/sampling', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+    const body = await res.json();
+    if (res.ok) SAMPLING = body;
+    else refusal = body.error || 'The sampler was not changed.';
+  } catch (err) { /* leave it where it was */ }
+  [sampTemp, sampTopP, sampTopK].forEach(el => { el.disabled = false; });
+  paintSampling();
+  if (refusal) samplingNote.innerHTML = '<b>Not changed:</b> ' + refusal + ' '
+    + samplingNote.innerHTML;
+}
+
+function samplingFromBoxes() {
+  return { temperature: Number(sampTemp.value), top_p: Number(sampTopP.value),
+           top_k: Number(sampTopK.value) };
+}
+/* Awaited before a read so the run uses what is on screen. Sends only a difference. */
+async function ensureSampling() {
+  const want = samplingFromBoxes();
+  if (want.temperature === SAMPLING.temperature && want.top_p === SAMPLING.top_p
+      && want.top_k === SAMPLING.top_k) return;
+  await pushSampling(want);
+}
+[sampTemp, sampTopP, sampTopK].forEach(el => el.addEventListener('change', ensureSampling));
+sampReset.addEventListener('click', () => pushSampling({ reset: true }));
+paintSampling();
 
 /* ---------- the read floor ---------------------------------------------------
    The transcript score a read has to reach before the extraction taken from it
@@ -8583,6 +8668,7 @@ async function rtStart() {
   // so it is pushed before the first one rather than whenever the box lost
   // focus.
   await pushReadFloor(rtReadFloorInp || readFloorInp);
+  await ensureSampling();
   rtNote.classList.remove('err');
   rtNote.textContent = 'Planning…';
   rtShowing(true);
@@ -11603,6 +11689,7 @@ async function startRead(opts) {
   // run used" the one the reader is looking at rather than the one that happened
   // to have landed. No-ops when they match.
   await pushReadFloor(readFloorInp);
+  await ensureSampling();
   readBusy(true); copyBtn.disabled = true;
   text = ''; pageStats = []; pageTexts = []; curPage = -1; cmpPage = 0;
   layPage = 0; laySel = null; enableLayout();

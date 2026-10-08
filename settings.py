@@ -491,18 +491,60 @@ def vllm_sampler(model: str = "") -> dict:
 # --- Pass-1 (OCR) sampling ----------------------------------------------------
 # Pass 1 was fully greedy (temperature 0, top_k 1, top_p 1) and every baseline in
 # CLAUDE.md was taken that way. Typhoon's own recommended values are temperature
-# 0.1 and top_p 0.6, which is what ships now, at the user's request.
+# 0.1 and top_p 0.6; that was the default for one day and was measured against
+# greedy on llama.cpp (CLAUDE.md, 2026-10-08): identical accuracy, twice the run-to-run
+# spread, ~20% more invented characters. Greedy is the default again.
 #
 # Two consequences worth knowing:
 #   * top_k 1 would make temperature and top_p moot (one candidate is always the
-#     argmax), so OCR_TOP_K defaults to 0 = the field is omitted and the server's
-#     own top_k applies. Set OCR_TOP_K=1 with OCR_TEMPERATURE=0 to get greedy back.
+#     argmax), so with OCR_TOP_K=0 the field is omitted and the server's
+#     own top_k applies. Greedy is OCR_TEMPERATURE=0, OCR_TOP_P=1, OCR_TOP_K=1 (default).
 #   * A read is no longer byte-for-byte reproducible, so a one-point difference
 #     between two reads is no longer proof of anything. Pass 2 is untouched and
 #     stays greedy; Ollama's /v1 honours temperature and top_p and drops top_k.
-OCR_TEMPERATURE = config.env_float("OCR_TEMPERATURE", 0.1, minimum=0.0, maximum=2.0)
-OCR_TOP_P = config.env_float("OCR_TOP_P", 0.6, minimum=0.01, maximum=1.0)
-OCR_TOP_K = config.env_int("OCR_TOP_K", 0, minimum=0)
+OCR_TEMPERATURE = config.env_float("OCR_TEMPERATURE", 0.0, minimum=0.0, maximum=2.0)
+OCR_TOP_P = config.env_float("OCR_TOP_P", 1.0, minimum=0.01, maximum=1.0)
+OCR_TOP_K = config.env_int("OCR_TOP_K", 1, minimum=0)
+# What the process started at, so the page can say what "reset" means. The three above
+# are rebound at run time by `set_ocr_sampling` (the Workspace controls).
+OCR_SAMPLING_DEFAULT = {"temperature": OCR_TEMPERATURE, "top_p": OCR_TOP_P, "top_k": OCR_TOP_K}
+
+
+def set_ocr_sampling(temperature=None, top_p=None, top_k=None) -> dict:
+    """Move the page-read sampler for everything this process reads next.
+
+    A field left None keeps its value. Out-of-range numbers are refused rather than
+    clamped: unlike the read floor, a temperature of 7 is not a sensible request
+    that merely overshoots, and silently turning it into 2 would put a different
+    sampler in force than the one on screen.
+    """
+    global OCR_TEMPERATURE, OCR_TOP_P, OCR_TOP_K
+
+    def number(name, value, low, high):
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise ValueError(f"{name} must be a number.")
+        if not low <= float(value) <= high:
+            raise ValueError(f"{name} must be between {low:g} and {high:g}.")
+        return float(value)
+
+    new_t, new_p, new_k = OCR_TEMPERATURE, OCR_TOP_P, OCR_TOP_K
+    if temperature is not None:
+        new_t = number("temperature", temperature, 0.0, 2.0)
+    if top_p is not None:
+        new_p = number("top_p", top_p, 0.01, 1.0)
+    if top_k is not None:
+        k = number("top_k", top_k, 0, 1000)
+        if k != int(k):
+            raise ValueError("top_k must be a whole number.")
+        new_k = int(k)
+    OCR_TEMPERATURE, OCR_TOP_P, OCR_TOP_K = new_t, new_p, new_k
+    return ocr_sampling_state()
+
+
+def ocr_sampling_state() -> dict:
+    """What is in force, as the page shows it (top_k 0 = not sent)."""
+    return {"temperature": OCR_TEMPERATURE, "top_p": OCR_TOP_P, "top_k": OCR_TOP_K,
+            "defaults": dict(OCR_SAMPLING_DEFAULT)}
 
 
 def ocr_sampling() -> dict:
