@@ -1615,6 +1615,20 @@ cancelled and skipped jobs are not written, and **Classify 100+ pages** never wr
 file is not a benchmark document). Still no transcript is saved and no page enters the Compare
 cache.
 
+**Problems are flagged as they happen**, not at the end. A *Problems* table appears at the top
+of the card the moment a job hits one, each row naming the job, its document (`sol0xx`, or the
+cases glued into a classification file), the stage and page, and the error itself:
+
+| Flag | When |
+|---|---|
+| **error** | a job raised — the server refused, timed out, or the reply could not be used |
+| **loop** | the reading model repeated itself and the loop guard cut the page off, or an extraction reply looped and never closed its JSON |
+| **token cap** | a page read or an extraction reply hit the token cap before it finished |
+| **partial reply** | an extraction reply was cut off and only the fields it finished were kept |
+| **stalled** | a job has had nothing back for 5 minutes (`STRESS_STALL_SECONDS`) — a hung request or a server that stopped answering; flagged once, and the job keeps running |
+
+The final report still counts errors in its *Errors* table.
+
 **What is timed is the server.** Pages are decoded, resized and encoded once before the clock
 starts; the time that took is shown as *prepare, not timed*.
 
@@ -3081,7 +3095,9 @@ can run here, and `keys` is every key in the schema in the order the prompt list
 `metrics_every`, `no_cache` (bypass the server's prompt cache) and `save_log` (one run-log
 row per measured job; ignored for `classify`). Streams NDJSON: `plan`, `preparing`, a `progress` event about once a second
 (jobs in each stage, done, live pages and tokens per second, and `server_metrics` when
-sampling), then `done` with `report`. After a Stop, `draining` events follow until the
+sampling), an `alert` the moment a job hits a problem (`kind` — `error`, `looped`,
+`truncated`, `partial` or `stalled` — with `job`, `case`, `stage`, `page` when known,
+`message`, `phase` and `elapsed`), then `done` with `report`. After a Stop, `draining` events follow until the
 server's last request ends. `409` while a random test or another stress test is running.
 
 `POST /api/stress/stop` — stop the running stress test. Same answer shape as

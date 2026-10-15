@@ -161,7 +161,7 @@ class RunTests(unittest.TestCase):
         self.assertEqual(rep["extract"]["tokens"], 500)
         self.assertEqual(events[0]["event"], "plan")
         self.assertEqual(events[0]["seed"], 4)
-        # No per-job event: the report is the whole output.
+        # A clean run sends no per-job event: only a problem gets an alert.
         self.assertFalse(any(e["event"] not in ("plan", "preparing", "progress", "done")
                              for e in events))
 
@@ -175,6 +175,56 @@ class RunTests(unittest.TestCase):
         rep = events[-1]["report"]
         self.assertEqual(rep["error_rate"], 1.0)
         self.assertEqual(rep["errors"][0]["count"], 2)
+        # Each failure is flagged as it happens, naming its document, before
+        # the report -- not only counted in it.
+        alerts = [e for e in events if e["event"] == "alert"]
+        self.assertEqual(len(alerts), 2)
+        done_at = next(i for i, e in enumerate(events) if e["event"] == "done")
+        self.assertTrue(all(events.index(a) < done_at for a in alerts))
+        for alert in alerts:
+            self.assertEqual(alert["kind"], "error")
+            self.assertIn("boom", alert["message"])
+            self.assertTrue(alert["case"].startswith("sol"))
+            self.assertEqual(alert["stage"], "extract")
+        self.assertEqual(sorted(a["job"] for a in alerts), [1, 2])
+
+    def test_a_looping_reply_is_flagged_as_a_loop_once(self):
+        status = {"text_available": True, "text_reason": None, "kind": "ollama",
+                  "url": "http://l", "model": "m"}
+        looped = {"error": "The model repeated itself while extracting and never "
+                           "closed the JSON.", "looped": True}
+        with patch.object(app.backends, "extract_status", return_value=status),              patch.object(app, "extract_fields", return_value=looped):
+            cfg = app._stress_config({"mode": "extract", "concurrency": 1, "jobs": 1,
+                                      "lock_case": "sol002"})
+            events = [json.loads(line) for line in app._stress_run(cfg, app.MultiCancel())]
+        alerts = [e for e in events if e["event"] == "alert"]
+        self.assertEqual([(a["kind"], a["case"]) for a in alerts], [("looped", "sol002")])
+        self.assertEqual(events[-1]["report"]["counts"]["error"], 1)
+
+    def test_a_looped_page_is_flagged_with_its_page(self):
+        def read(page, stats, cancel=None):
+            stats.update(looped=page == "p2", new_tokens=5)
+            return "text"
+        live = app._StressLive(1)
+        rec = {}
+        with patch.object(app, "read_page", side_effect=read):
+            app._stress_read(["p1", "p2", "p3"], app.MultiCancel(), rec, live,
+                             job=7, case="sol019")
+        flagged = [a for a in live.take_alerts() if a["kind"] == "looped"]
+        self.assertEqual([(a["job"], a["case"], a["page"]) for a in flagged],
+                         [(7, "sol019", 2)])
+        self.assertNotIn("at_page", rec)
+
+    def test_a_silent_job_is_flagged_stalled_once(self):
+        live = app._StressLive(1)
+        live.begin(3, "sol005", "ocr")
+        live._active[3]["last"] -= 1000
+        live.flag_stalled(300)
+        live.flag_stalled(300)
+        alerts = live.take_alerts()
+        self.assertEqual([(a["kind"], a["job"], a["case"]) for a in alerts],
+                         [("stalled", 3, "sol005")])
+        self.assertIn("reading", alerts[0]["message"])
 
 
 if __name__ == "__main__":

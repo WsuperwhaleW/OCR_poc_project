@@ -6251,16 +6251,74 @@ def _read_case(case_id: str, detail: str, extract: bool = True,
 # --------------------------------------------------------------------------
 
 STRESS_METRICS_TIMEOUT = (1.5, 5)
+# A job that has finished no page and no request for this long is flagged as
+# stalled, once -- a hung request or a server that stopped answering, which no
+# other alert catches because nothing comes back to look at.
+STRESS_STALL_SECONDS = 300
+_STAGE_VERB = {"ocr": "reading", "extract": "extracting", "segment": "splitting",
+               "classify": "classifying"}
 
 
 class _StressLive:
-    """What is in flight right now, by stage, for the progress events."""
+    """What is in flight right now, by stage, for the progress events.
+
+    Also the run's **alerts** (2026-10-15, at the user's request: an error or a
+    loop is flagged the moment it happens, naming the document, rather than
+    waiting for the report): a job that raised, a page or reply that looped or
+    hit the token cap, a salvaged partial reply, a job that stalled. Each is
+    queued here by the worker that saw it and sent by `_stress_phase` on its
+    next tick, so it arrives within a second.
+    """
 
     def __init__(self, queued: int):
         self._lock = threading.Lock()
         self.stages = {name: 0 for name in stress.STAGES}
         self.stages["queued"] = queued
         self.done = self.failed = self.pages = self.tokens = 0
+        self._alerts = []
+        self._active = {}        # job number -> {case, stage, last, flagged}
+
+    def flag(self, kind: str, job: int, case: str, message: str, **extra):
+        with self._lock:
+            self._alerts.append({"kind": kind, "job": job, "case": case,
+                                 "message": (message or kind)[:300],
+                                 "at": time.perf_counter(), **extra})
+
+    def take_alerts(self) -> list:
+        with self._lock:
+            out, self._alerts = self._alerts, []
+            return out
+
+    def begin(self, job: int, case: str, stage: str):
+        with self._lock:
+            self._active[job] = {"case": case, "stage": stage,
+                                 "last": time.perf_counter(), "flagged": False}
+
+    def touch(self, job: int, stage: str = None):
+        with self._lock:
+            active = self._active.get(job)
+            if active:
+                active["last"] = time.perf_counter()
+                active["stage"] = stage or active["stage"]
+
+    def end(self, job: int):
+        with self._lock:
+            self._active.pop(job, None)
+
+    def flag_stalled(self, limit: float):
+        """Flag, once each, the jobs that have been silent for `limit` seconds."""
+        now = time.perf_counter()
+        with self._lock:
+            for job, active in self._active.items():
+                if not active["flagged"] and now - active["last"] >= limit:
+                    active["flagged"] = True
+                    self._alerts.append({
+                        "kind": "stalled", "job": job, "case": active["case"],
+                        "stage": active["stage"], "at": now,
+                        "message": f"nothing back for {now - active['last']:.0f} s "
+                                   f"while {_STAGE_VERB.get(active['stage'], active['stage'])}"
+                                   " -- the request may be hung or the server "
+                                   "stopped answering"})
 
     def move(self, frm, to):
         with self._lock:
@@ -6387,23 +6445,25 @@ def _stress_pages(case_id: str, detail: str) -> tuple:
 
 
 def _stress_read(pages, cancel, rec: dict, live: _StressLive,
-                 stats_out: list = None) -> tuple:
+                 stats_out: list = None, job: int = 0, case: str = "") -> tuple:
     """Pass 1 over prepared pages. `(page_texts, looped, truncated)`.
 
     `stats_out` collects each page's stats as it starts, for a job that is
     saved to the run log -- a list the caller owns, so the pages that finished
-    before an error are still there to write.
+    before an error are still there to write. A page that looped or hit the
+    token cap is flagged as soon as it comes back, with its page number.
     """
     started = time.perf_counter()
     texts, looped, truncated = [], False, False
     ttft, page_s, page_tps, tokens = [], [], [], 0
     page_in, page_out = [], []
-    for page in pages:
+    for number, page in enumerate(pages, 1):
         if cancel.is_set():
             raise SweepCancelled("stopped")
         stats = {}
         if stats_out is not None:
             stats_out.append(stats)
+        rec["at_page"] = number            # so an error's alert names the page
         try:
             texts.append(read_page(page, stats, cancel=cancel))
         except Exception:
@@ -6412,6 +6472,13 @@ def _stress_read(pages, cancel, rec: dict, live: _StressLive,
             raise
         if cancel.is_set():
             raise SweepCancelled("stopped")
+        live.touch(job)
+        if stats.get("looped"):
+            live.flag("looped", job, case, "the reading model repeated itself and "
+                      "the loop guard cut the page off", stage="ocr", page=number)
+        elif stats.get("truncated"):
+            live.flag("truncated", job, case, "the page read hit the token cap "
+                      "before it finished", stage="ocr", page=number)
         looped = looped or bool(stats.get("looped"))
         truncated = truncated or bool(stats.get("truncated"))
         tokens += stats.get("new_tokens") or 0
@@ -6422,13 +6489,15 @@ def _stress_read(pages, cancel, rec: dict, live: _StressLive,
         if stats.get("tokens_per_second"):
             page_tps.append(stats["tokens_per_second"])
         live.page(stats.get("new_tokens") or 0)
+    rec.pop("at_page", None)
     rec.update(ocr_s=round(time.perf_counter() - started, 3), pages=len(pages),
                ocr_tokens=tokens, ttft_s=ttft, page_s=page_s, page_tps=page_tps,
                page_in=page_in, page_out=page_out)
     return texts, looped, truncated
 
 
-def _stress_classify(pack: dict, rec: dict, live: _StressLive, cancel) -> None:
+def _stress_classify(pack: dict, rec: dict, live: _StressLive, cancel,
+                     job: int = 0) -> None:
     """Group a long glued file into documents, then classify each one.
 
     Its model requests are counted as the file's EXTRACTION tokens (the user's
@@ -6436,14 +6505,15 @@ def _stress_classify(pack: dict, rec: dict, live: _StressLive, cancel) -> None:
     """
     previous = servertime.open_tally()
     try:
-        _stress_classify_body(pack, rec, live, cancel)
+        _stress_classify_body(pack, rec, live, cancel, job)
     finally:
         tally = servertime.close_tally(previous) or {}
         rec["extract_in"] = tally.get("in_tokens")
         rec["extract_out"] = tally.get("out_tokens")
 
 
-def _stress_classify_body(pack: dict, rec: dict, live: _StressLive, cancel) -> None:
+def _stress_classify_body(pack: dict, rec: dict, live: _StressLive, cancel,
+                          job: int = 0) -> None:
     status = backends.extract_status()
     started = time.perf_counter()
     asked = refused = 0
@@ -6457,11 +6527,13 @@ def _stress_classify_body(pack: dict, rec: dict, live: _StressLive, cancel) -> N
         except StopIteration as done:
             segments, _ = done.value
             break
+        live.touch(job)
         if event.get("event") == "segment_page":
             asked = event.get("asked_total", asked)
             refused = event.get("refused_total", refused)
     rec["segment_s"] = round(time.perf_counter() - started, 3)
     live.move("segment", "classify")
+    live.touch(job, "classify")
 
     started = time.perf_counter()
     expected = {tuple(sorted(doc["pages"])): doc for doc in pack["expected"]}
@@ -6471,6 +6543,7 @@ def _stress_classify_body(pack: dict, rec: dict, live: _StressLive, cancel) -> N
             raise SweepCancelled("stopped")
         codes, how = resolve_doc_types(seg.get("text") or "", status=status,
                                        pages=seg.get("page_texts"))[:2]
+        live.touch(job)
         by_model += how == "model"
         doc = expected.get(tuple(sorted(seg.get("pages") or [])))
         if doc is None:
@@ -6500,6 +6573,15 @@ def _stress_job(spec: dict, cfg: dict, prepared: dict, cancel,
              "classify": "segment"}[mode]
     live.move("queued", stage)
     began = time.perf_counter()
+    # Who the alerts name: the job's place in the queue (warm-up included) and
+    # its document -- for classification, the cases glued into its file.
+    job = spec["index"] + 1
+    if mode == "classify":
+        glued = prepared["packs"][spec["index"]].get("cases") or []
+        who = f"file of {len(glued)} docs: " + ", ".join(dict.fromkeys(glued))
+    else:
+        who = spec["case"]
+    live.begin(job, who, stage)
     # Saving to the run log (`save_log`, measured jobs only): one ordinary row
     # per job, written the way the route writes it -- `summarise` right after the
     # read, then `log_run` with the extraction on it -- and tagged with the run
@@ -6511,7 +6593,7 @@ def _stress_job(spec: dict, cfg: dict, prepared: dict, cancel,
     read_began = began
     try:
         if mode == "classify":
-            _stress_classify(prepared["packs"][spec["index"]], rec, live, cancel)
+            _stress_classify(prepared["packs"][spec["index"]], rec, live, cancel, job)
         else:
             case_id = spec["case"]
             case = scoring.cases_index()[case_id]
@@ -6520,7 +6602,7 @@ def _stress_job(spec: dict, cfg: dict, prepared: dict, cancel,
                 read_began = time.perf_counter()
                 texts, looped, truncated = _stress_read(
                     prepared["pages"][case_id], cancel, rec, live,
-                    stats_out=all_stats if log else None)
+                    stats_out=all_stats if log else None, job=job, case=who)
                 text = join_page_texts(texts) if len(texts) > 1 else texts[0]
                 try:
                     truth = scoring.evaluate(case, text)
@@ -6534,6 +6616,7 @@ def _stress_job(spec: dict, cfg: dict, prepared: dict, cancel,
                 if mode == "full":
                     live.move("ocr", "extract")
                     stage = "extract"
+                    live.touch(job, stage)
                 else:
                     text = prepared["truths"][case_id]
                 started = time.perf_counter()
@@ -6555,8 +6638,18 @@ def _stress_job(spec: dict, cfg: dict, prepared: dict, cancel,
                         log_extract(result, None, {
                             "case": case_id,
                             "source": prepared["sources"][case_id]}, extra=tag)
+                live.touch(job)
                 if result.get("error"):
+                    if result.get("looped") or result.get("truncated"):
+                        rec["alerted"] = True
+                        live.flag("looped" if result.get("looped") else "truncated",
+                                  job, who, result["error"], stage="extract")
                     raise ValueError(result["error"])
+                if result.get("partial"):
+                    live.flag("partial", job, who, result["partial"]
+                              if isinstance(result["partial"], str) else
+                              "the extraction reply was cut off; only the fields it "
+                              "finished were kept", stage="extract")
                 payload = {"truth": truth, "looped": looped,
                            "truncated": truncated, "extracted": result}
                 if mode == "full":
@@ -6582,12 +6675,19 @@ def _stress_job(spec: dict, cfg: dict, prepared: dict, cancel,
         else:
             rec["status"] = "error"
             rec["error"] = f"{type(err).__name__}: {err}"[:300]
+            if not rec.pop("alerted", False):     # a looped reply is flagged already
+                page = rec.get("at_page")
+                live.flag("error", job, who, rec["error"], stage=stage,
+                          **({"page": page} if page else {}))
             # A job that failed is saved as the failure it was. A cancelled or
             # skipped one is not: nobody let it finish, so it measured nothing.
             if log and not logged and mode != "classify":
                 _stress_log_error(mode, spec, prepared, all_stats, read_began,
                                   cfg, tag, err)
     finally:
+        live.end(job)
+        rec.pop("at_page", None)
+        rec.pop("alerted", None)
         live.move("classify" if mode == "classify" and "segment_s" in rec
                   else stage, None)
     rec["total_s"] = round(time.perf_counter() - began, 3)
@@ -6675,11 +6775,22 @@ def _stress_phase(specs: list, cfg: dict, prepared: dict, cancel, phase: str,
                for spec in specs]
     pending, timeline = set(futures), []
     last_metrics, sampled_at = {}, started
+
+    def alerts():
+        # Sent as they are seen, before the tick's progress event: the user's
+        # rule is that a failure is reported when it happens, not at the end.
+        for alert in live.take_alerts():
+            at = alert.pop("at")
+            yield json.dumps({"event": "alert", "phase": phase,
+                              "elapsed": round(at - started, 1), **alert}) + "\n"
+
     try:
         while pending and not cancel.is_set():
             _, pending = wait(pending, timeout=1.0, return_when=FIRST_COMPLETED)
             now = time.perf_counter()
             elapsed = now - started
+            live.flag_stalled(STRESS_STALL_SECONDS)
+            yield from alerts()
             snap = live.snapshot()
             stages = snap["stages"]
             timeline.append([round(elapsed, 1)] + [stages[s] for s in stress.STAGES]
@@ -6698,6 +6809,7 @@ def _stress_phase(specs: list, cfg: dict, prepared: dict, cancel, phase: str,
                 if errors:
                     event["metrics_error"] = "; ".join(errors)
             yield json.dumps(event) + "\n"
+        yield from alerts()          # the last jobs' alerts, after the last tick
     finally:
         # Queued jobs are dropped; running ones carry on and are drained by the
         # caller. Nothing here blocks on them.

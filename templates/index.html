@@ -785,6 +785,13 @@
             border-radius: 6px; padding: 1px 6px; margin-right: 6px; }
   .st-good { background: rgba(60, 200, 130, .16); color: #3cc882; }
   .st-bad { background: rgba(255, 107, 107, .14); color: var(--danger); }
+  .st-warn { background: rgba(217, 164, 65, .16); color: var(--warn); }
+  /* The stress test's live problems: one row per error, loop or stall, as it happens. */
+  .st-alerts { margin-top: 12px; border: 1px solid var(--danger); border-radius: 10px;
+               padding: 8px 10px; max-height: 320px; overflow: auto; }
+  .st-alerts h3 { margin: 0 0 6px; font-size: .85rem; color: var(--danger); }
+  .st-alerts table.queue { min-width: 0; font-size: .76rem; }
+  .st-alerts td.msg { word-break: break-word; }
   .st-box table.queue { min-width: 0; margin-top: 8px; font-size: .76rem; }
   .st-box table.queue th, .st-box table.queue td { padding: 4px 6px; }
   .st-thin { color: var(--muted); font-size: .7rem; }
@@ -1819,7 +1826,9 @@ follows your desktop; Light is the one to pick for projecting or screenshotting.
           by as many concurrent requests as you set, against the reading and
           extraction models selected in the Workspace. Documents are drawn the
           way the random test draws them. Only the final metrics and scores are
-          shown, and <b>nothing is written to the run log</b>.</p>
+          shown, and <b>nothing is written to the run log</b>. An error, a loop,
+          a read at the token cap or a stalled job is flagged the moment it
+          happens, with its document.</p>
 
         <div class="row">
           <label class="field" style="flex:1;min-width:210px">
@@ -12548,17 +12557,19 @@ paintServer();
 refreshRuns();
 
 /* ---------- stress test ----------
-   One report per run and nothing per job: the server streams a progress event
-   a second (in flight by stage, done, live throughput) and one `done` event
-   carrying the report. Nothing here writes to the run log, so nothing here
-   refreshes it. */
+   One report per run: the server streams a progress event a second (in flight
+   by stage, done, live throughput) and one `done` event carrying the report.
+   The one per-job event is `alert` -- an error, a loop, a reply at the token
+   cap, a salvaged partial reply or a stalled job, naming the document -- shown
+   the moment it arrives rather than at the end. Nothing here writes to the run
+   log, so nothing here refreshes it. */
 const stEl = id => document.getElementById(id);
 const stMode = stEl('stMode'), stRun = stEl('stRun'), stStop = stEl('stStop');
 const stStop2 = stEl('stStop2'), stClear = stEl('stClear');
 const stOut = stEl('stOut'), stNote = stEl('stNote');
 const stFetchBtn = stEl('stFetchMetrics'), stSample = stEl('stSample');
 let stAbort = null, stStopping = false;
-let stState = null;          // {plan, progress, report, metrics, draining}
+let stState = null;          // {plan, progress, report, metrics, draining, alerts}
 let stSnapshot = null;       // a manual /metrics snapshot, shown until the next run
 
 const ST_MODE_TEXT = {
@@ -12772,6 +12783,38 @@ function stMetricsTable(view, title, since) {
     + '</table>';
 }
 
+const ST_ALERT_TEXT = {
+  error: 'error', looped: 'loop', truncated: 'token cap', partial: 'partial reply',
+  stalled: 'stalled'
+};
+const ST_STAGE_TEXT = { ocr: 'reading', extract: 'extracting', segment: 'splitting',
+  classify: 'classifying' };
+
+// Newest first. Only the first rows are drawn: a run where every job fails
+// would otherwise redraw thousands of rows a second.
+function stAlertsHtml(alerts) {
+  if (!alerts.length) return '';
+  const counts = {};
+  for (const a of alerts) counts[a.kind] = (counts[a.kind] || 0) + 1;
+  const shown = alerts.slice(-100).reverse();
+  return '<div class="st-alerts"><h3>Problems, as they happen · '
+    + Object.entries(counts).map(([k, n]) => n + ' ' + esc(ST_ALERT_TEXT[k] || k)).join(' · ')
+    + '</h3><table class="queue"><tr><th>At</th><th>Job</th><th>Document</th><th>What</th>'
+    + '<th>Where</th><th>Detail</th></tr>'
+    + shown.map(a => '<tr><td class="n">' + stSec(a.elapsed)
+      + (a.phase === 'warmup' ? ' <small>warm-up</small>' : '') + '</td>'
+      + '<td class="n">#' + a.job + '</td><td><b>' + esc(a.case || '') + '</b></td>'
+      + '<td><span class="st-tag ' + (a.kind === 'error' ? 'st-bad' : 'st-warn') + '">'
+      + esc(ST_ALERT_TEXT[a.kind] || a.kind) + '</span></td>'
+      + '<td>' + esc(ST_STAGE_TEXT[a.stage] || a.stage || '')
+      + (a.page ? ', page ' + a.page : '') + '</td>'
+      + '<td class="msg">' + esc(a.message || '') + '</td></tr>').join('')
+    + '</table>'
+    + (alerts.length > shown.length ? '<p class="note">' + (alerts.length - shown.length)
+      + ' older row(s) not shown.</p>' : '')
+    + '</div>';
+}
+
 function stPaint() {
   // The live monitor keeps the card up on its own, with or without a report.
   stShowing(!!(stState || stSnapshot || (typeof monState !== 'undefined' && monState.on)));
@@ -12799,6 +12842,7 @@ function stPaint() {
           + esc(plan.run_id) + '</b>' : '')
       + ' · seed ' + plan.seed + '</p>';
   }
+  html += stAlertsHtml(s.alerts || []);
   const p = s.progress;
   if (p && !s.report) {
     const frac = p.total ? p.done / p.total : 0;
@@ -12812,6 +12856,8 @@ function stPaint() {
       + (st.segment ? ' · splitting ' + st.segment : '')
       + (st.classify ? ' · classifying ' + st.classify : '')
       + (p.failed ? ' · <span style="color:var(--danger)">' + p.failed + ' failed</span>' : '')
+      + ((s.alerts || []).length ? ' · <span style="color:var(--warn)">'
+        + s.alerts.length + ' flagged</span>' : '')
       + (p.pages ? ' · ' + stNum(p.pages_per_second, 2) + ' pages/s · '
         + stNum(p.tokens_per_second, 0) + ' tok/s' : '')
       + '</div></div>';
@@ -12949,7 +12995,7 @@ async function stStart() {
   // Read the form BEFORE going busy: busy disables the sampling checkbox, and
   // a body built after that would never ask for /metrics.
   const body = stBody();
-  stState = { draining: 0 };
+  stState = { draining: 0, alerts: [] };
   stSnapshot = null;
   stNote.textContent = 'Preparing…';
   stNote.classList.remove('err');
@@ -12993,7 +13039,11 @@ async function stStart() {
           stState.report = ev.report;
           stState.draining = ev.draining || 0;
           stNote.textContent = (ev.stopped ? 'Stopped' : 'Finished') + ' — seed ' + ev.seed
-            + '. Nothing was written to the run log.';
+            + (stState.plan && stState.plan.save_log ? '. Each measured job was saved to the run log.'
+              : '. Nothing was written to the run log.');
+        } else if (ev.event === 'alert') {
+          stState.alerts.push(ev);
+          lastPaint = 0;          // a problem is drawn at once, not on the next tick
         } else if (ev.event === 'draining') {
           stState.draining = ev.in_flight;
         } else if (ev.event === 'error') {
