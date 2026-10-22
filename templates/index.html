@@ -629,6 +629,9 @@ document.addEventListener("DOMContentLoaded", function () {
   .fld-grid dd { margin: 0; padding: 6px 0; word-break: break-word; }
   .fld-grid dd.empty { color: var(--muted); opacity: .55; }
   .fld-grid dd.money { font-variant-numeric: tabular-nums; font-weight: 600; }
+  .fld-raw { margin-top: 4px; color: var(--muted); font-size: .76rem; font-weight: 400; }
+  .fld-raw summary { cursor: pointer; }
+  .fld-raw div { padding: 3px 0; overflow-wrap: anywhere; }
   /* Grounding: a value the transcript does not carry must not read like one it
      does, so it is marked at the value rather than only in a summary above. */
   .fld-grid dd.ungrounded, .fld-grid dd.computed { color: var(--danger); }
@@ -2169,17 +2172,20 @@ follows your desktop; Light is the one to pick for projecting or screenshotting.
               <option value="full">Full pipeline</option>
             </select>
           </label>
+          <button type="button" id="stSaveDefaults" class="ghost-sm" style="align-self:flex-end"
+                  title="Remember all Stress test settings for this mode in this browser">Save as default</button>
         </div>
+        <div id="stDefaultsNote" class="note" role="status" aria-live="polite" hidden></div>
         <div class="row">
           <label class="field" style="flex:1;min-width:90px"
                  title="how many requests are in flight at once">
             Concurrent
-            <input id="stConc" type="number" min="1" max="256" value="4">
+            <input id="stConc" type="number" min="1" max="256" value="50">
           </label>
           <label class="field" style="flex:1;min-width:90px"
                  title="how many jobs are queued in total; the concurrent workers take them in order">
             Queue (jobs)
-            <input id="stJobs" type="number" min="1" max="5000" value="20">
+            <input id="stJobs" type="number" min="1" max="5000" value="100">
           </label>
         </div>
         <div class="rt-ex" id="stSourceField">
@@ -3657,7 +3663,9 @@ const FIELD_LABELS = {
   po_gr_rtv_number: 'PO / GR / RTV no.',
   inv_rtv_cnr_number: 'INV / RTV / CNR no.',
   seller_tax_id: 'Supplier tax ID', seller_branch: 'Supplier branch code',
+  seller_branch_location: 'Supplier branch location',
   buyer_tax_id: 'Buyer tax ID', buyer_branch: 'Buyer branch code',
+  buyer_branch_location: 'Buyer branch location',
   subtotal: 'Amount ex VAT', vat_total: 'VAT amount',
   amount_incl_vat: 'Amount incl. VAT',
   remaining_amount: 'Remaining amount', remaining_vat_amount: 'Remaining VAT',
@@ -3670,9 +3678,11 @@ const FIELD_LABELS = {
   book_no: 'Book no.', certificate_no: 'Certificate no.',
   sequence_no: 'Sequence in P.N.D.',
   payer_tax_id: 'Payer tax ID', payer_name: 'Payer name',
-  payer_branch: 'Payer branch code', payer_address: 'Payer address',
+  payer_branch: 'Payer branch code',
+  payer_branch_location: 'Payer branch location', payer_address: 'Payer address',
   payee_tax_id: 'Payee tax ID', payee_name: 'Payee name',
-  payee_branch: 'Payee branch code', payee_address: 'Payee address',
+  payee_branch: 'Payee branch code',
+  payee_branch_location: 'Payee branch location', payee_address: 'Payee address',
   dividend_rate_option: 'Dividend rate option',
   total_amount_paid: 'Total amount paid', total_wht_amount: 'Total WHT amount'
 };
@@ -3695,9 +3705,11 @@ const FIELD_HINTS = {
   po_gr_rtv_number: 'The purchase order, goods receipt or return-to-vendor number this document is raised against. Mandatory on an invoice, optional on a credit note',
   inv_rtv_cnr_number: 'The invoice, return or credit-note-return this payment settles — never this receipt’s own number. Mandatory on a receipt',
   seller_tax_id: 'The issuer\u2019s tax ID. Thirteen digits, with a mod-11 check digit',
-  seller_branch: 'Which office or branch that tax ID is, as printed. Normalised to a five-digit code, head office being 00000',
+  seller_branch: 'Explicit tax branch number, normalised to five digits; head office is 00000. A digit in a place name is not a branch code',
+  seller_branch_location: 'Explicit branch or site name, without the field caption. Never inferred from an ordinary address',
   buyer_tax_id: 'The customer\u2019s tax ID. Thirteen digits, with a mod-11 check digit',
-  buyer_branch: 'Which office or branch that tax ID is, as printed. Normalised to a five-digit code',
+  buyer_branch: 'Explicit tax branch number, normalised to five digits; head office is 00000. A digit in a place name is not a branch code',
+  buyer_branch_location: 'Explicit branch or site name, without the field caption. Never inferred from an ordinary address',
   subtotal: 'The goods total printed BEFORE tax is added',
   vat_total: 'The VAT line. Checked against the standard rate of the figure it is charged on',
   amount_incl_vat: 'The total printed AFTER VAT is added. Checked as subtotal + VAT',
@@ -3710,11 +3722,13 @@ const FIELD_HINTS = {
   sequence_no: 'Which line of the P.N.D. filing this certificate is (ลำดับที่ในแบบ)',
   payer_tax_id: 'The tax ID of the party that paid the income and withheld the tax (ผู้จ่ายเงิน). Thirteen digits, with a mod-11 check digit',
   payer_name: 'The name of the party that withheld the tax. The requirement matches it against a Company Master at 90% — there is none here, so that check reports as not run',
-  payer_branch: 'Which office or branch of the payer, as printed. Normalised to a five-digit code, head office being 00000',
+  payer_branch: 'Explicit tax branch number, normalised to five digits; head office is 00000. A digit in a place name is not a branch code',
+  payer_branch_location: 'Explicit branch or site name, without the field caption. Never inferred from an ordinary address',
   payer_address: 'The payer\u2019s printed address, as printed. No validation rule in the requirement',
   payee_tax_id: 'The tax ID of the party the income was paid to and the tax withheld from (ผู้ถูกหักภาษี). Thirteen digits, with a mod-11 check digit',
   payee_name: 'The name of the party the tax was withheld from. Matched against the Company Master by the same rule as the payer\u2019s',
-  payee_branch: 'Which office or branch of the payee, as printed. Normalised to a five-digit code',
+  payee_branch: 'Explicit tax branch number, normalised to five digits; head office is 00000. A digit in a place name is not a branch code',
+  payee_branch_location: 'Explicit branch or site name, without the field caption. Never inferred from an ordinary address',
   payee_address: 'The payee\u2019s printed address, as printed',
   dividend_rate_option: 'The ticked rate option against a dividend line (กรณี 40(4)(ข)). Required only where an income row states dividend income, and blank on most certificates',
   total_amount_paid: 'The total of the amounts paid (รวมเงินที่จ่าย). Reconciled against the sum of the table\u2019s own column',
@@ -3737,8 +3751,8 @@ const FIELD_SECTIONS = [
      misleading on a receipt, whose form asks for nothing about itself and would
      have shown a lone reference under that heading. */
   ['References', ['po_gr_rtv_number', 'inv_rtv_cnr_number']],
-  ['Supplier', ['seller_tax_id', 'seller_branch']],
-  ['Buyer', ['buyer_tax_id', 'buyer_branch']],
+  ['Supplier', ['seller_tax_id', 'seller_branch', 'seller_branch_location']],
+  ['Buyer', ['buyer_tax_id', 'buyer_branch', 'buyer_branch_location']],
   ['Totals', ['subtotal', 'vat_total', 'amount_incl_vat']],
   /* The receipt's own two groups. Both drop out entirely on an invoice or a
      credit note, whose forms ask for none of these -- a section of rows that
@@ -3752,9 +3766,9 @@ const FIELD_SECTIONS = [
      a page showing two identical headings would be unreadable. */
   ['Certificate', ['book_no', 'certificate_no', 'sequence_no']],
   ['Payer — withheld the tax',
-   ['payer_tax_id', 'payer_name', 'payer_branch', 'payer_address']],
+   ['payer_tax_id', 'payer_name', 'payer_branch', 'payer_branch_location', 'payer_address']],
   ['Payee — tax withheld from them',
-   ['payee_tax_id', 'payee_name', 'payee_branch', 'payee_address']],
+   ['payee_tax_id', 'payee_name', 'payee_branch', 'payee_branch_location', 'payee_address']],
   ['Withheld', ['total_amount_paid', 'total_wht_amount', 'dividend_rate_option']]
 ];
 const MONEY_KEYS = new Set(['subtotal', 'vat_total', 'amount_incl_vat',
@@ -3989,7 +4003,7 @@ function truthLine(row) {
                         + alt.join(', ') + '</i></div>' : '';
   if (row.status === 'spurious')
     return '<div class="truth">Ground truth: <b>the page prints nothing here</b></div>';
-  return '<div class="truth">Ground truth: <b>' + esc(String(row.expected)) + '</b>'
+  return '<div class="truth">Ground truth: <b>' + esc(String(row.normalized_expected ?? row.expected)) + '</b>'
     + (alt.length ? '<i> — or ' + alt.join(', or ') + '</i>' : '')
     + '</div>';
 }
@@ -4026,7 +4040,7 @@ function valMark(rows) {
     + esc(shown[0].why || shown[0].detail || '') + '</div>';
 }
 
-function defList(pairs, truth, val, req, bl) {
+function defList(pairs, truth, val, req, bl, raw) {
   if (!pairs.length) return '';
   return '<dl class="fld-grid">' + pairs.map(([label, value, money, status, key]) => {
     // Which pass lost this value, resolved once: the label's stripe, the value's
@@ -4082,6 +4096,8 @@ function defList(pairs, truth, val, req, bl) {
                 + '</span>' : '')
       + '</dt><dd class="' + (cls.trim() + flag).trim() + '">' + body
       + scoreMark(sc) + blameMark(blm) + truthLine(sc)
+      + (raw && typeof raw[key] === 'string' && raw[key] !== String(value ?? '')
+          ? '<details class="fld-raw"><summary>Raw model value</summary><div>' + esc(raw[key]) + '</div></details>' : '')
       + valMark(val && key ? val[key] : null)
       + '</dd>';
   }).join('') + '</dl>';
@@ -5470,7 +5486,7 @@ function paintFieldBody() {
     return;
   }
 
-  const f = extracted.fields || {};
+  const f = {...(extracted.fields || {}), ...(extracted.normalized || {})};
   /* Which of them the requirement marks Mandatory, from stage 0 -- the live
      event while a run is in flight, the result's own copy for one read back
      afterwards, exactly as the pipeline strip resolves it. Empty on a run that
@@ -5621,7 +5637,7 @@ function paintFieldBody() {
         && !(truth.scalars[k] && truth.scalars[k].status === 'missed'))) continue;
     html += '<div class="fld-sec">' + title + '</div>'
       + defList(keys.map(k => [label(k), f[k], MONEY_KEYS.has(k), st[k], k]),
-                truth.scalars, val, req, bl);
+                truth.scalars, val, req, bl, extracted.fields);
   }
 
   // Filtered exactly as the grounding pass filters it, so the row index in
@@ -13439,6 +13455,99 @@ function stFileInSet(box, name) {
    draws only from the ticked files of a ticked type. */
 var stSource = 'benchmark', stRealPick = 'random', stReal = null;
 const REAL_MODES = ['ocr', 'full'];
+/* Explicitly saved per-mode defaults, scoped to this deployment and browser. */
+const ST_DEFAULTS_KEY = 'ocrStressDefaults:v1:' + API;
+const ST_MODES = ['ocr', 'extract', 'classify', 'full'];
+let stDefaultBase = null, stPendingRealDefaults = null;
+function stReadDefaultStore() {
+  try {
+    const value = JSON.parse(localStorage.getItem(ST_DEFAULTS_KEY));
+    if (value?.version === 1 && value.modes && typeof value.modes === 'object'
+        && !Array.isArray(value.modes)) return value;
+  } catch { /* Missing, invalid or unavailable browser storage uses built-in defaults. */ }
+  return {version: 1, modes: {}};
+}
+function stDefaultControls() {
+  return [...stEl('stSetup').querySelectorAll('input[id], select[id]')]
+    .filter(el => el.id !== 'stMode');
+}
+function stCaptureDefaults() {
+  const selected = id => [...stEl(id).querySelectorAll('input:checked')].map(el => el.value);
+  return {controls: Object.fromEntries(stDefaultControls().map(el =>
+      [el.id, el.type === 'checkbox' ? el.checked : el.value])),
+    source: stSource, files: selected('stFiles'), batch: stBatchOn,
+    realPick: stRealPick, realTypes: stReal && !stReal.error ? selected('stRealTypes') : null,
+    realFiles: stReal && !stReal.error ? selected('stRealFiles') : null};
+}
+function stApplyDefaultControls(values) {
+  for (const el of stDefaultControls()) {
+    const value = values?.[el.id];
+    if (el.type === 'checkbox') {
+      if (typeof value === 'boolean') el.checked = value;
+    } else if (typeof value === 'string') {
+      if (el.tagName === 'SELECT' && ![...el.options].some(o => o.value === value)) continue;
+      if (el.type === 'number' && (!value.trim() || !Number.isFinite(Number(value))
+          || (el.min !== '' && Number(value) < Number(el.min))
+          || (el.max !== '' && Number(value) > Number(el.max)))) continue;
+      el.value = value;
+    }
+  }
+}
+function stApplyRealDefaults() {
+  if (!stPendingRealDefaults || !stReal || stReal.error) return;
+  for (const [id, key] of [['stRealTypes', 'realTypes'], ['stRealFiles', 'realFiles']]) {
+    const values = stPendingRealDefaults[key];
+    const selected = Array.isArray(values) ? new Set(values) : null;
+    for (const box of stEl(id).querySelectorAll('input')) box.checked = !selected || selected.has(box.value);
+  }
+  stPendingRealDefaults = null;
+}
+function stLoadModeDefaults(mode, sourceOverride = null) {
+  if (!ST_MODES.includes(mode) || stRunning) return;
+  const saved = stReadDefaultStore().modes[mode];
+  stMode.value = mode;
+  stApplyDefaultControls(stDefaultBase.controls);
+  const [concurrent, jobs] = mode === 'ocr' ? [50, 100] : mode === 'extract' ? [64, 40] : [4, 20];
+  stEl('stConc').value = String(concurrent);
+  stEl('stJobs').value = String(jobs);
+  if (saved && typeof saved === 'object') stApplyDefaultControls(saved.controls);
+  const files = new Set(Array.isArray(saved?.files) ? saved.files : stDefaultBase.files);
+  for (const box of stFileBoxes()) box.checked = files.has(box.value);
+  stBatchOn = saved?.batch === true;
+  stRealPick = saved?.realPick === 'choose' ? 'choose' : 'random';
+  stPendingRealDefaults = saved && typeof saved === 'object' ? saved : {};
+  stApplyRealDefaults();
+  const source = sourceOverride || saved?.source;
+  stSetSource(source === 'realdata' && REAL_MODES.includes(mode) ? 'realdata' : 'benchmark');
+  const note = stEl('stDefaultsNote');
+  note.hidden = true;
+  note.classList.remove('err');
+}
+function stSaveModeDefaults() {
+  if (stRunning) return;
+  const note = stEl('stDefaultsNote');
+  note.hidden = false;
+  note.classList.remove('err');
+  if (stSource === 'realdata' && (!stReal || stReal.error)) {
+    note.textContent = 'Load the realData file list before saving defaults.';
+    note.classList.add('err');
+    return;
+  }
+  const invalid = stDefaultControls().find(el => !el.disabled && !el.checkValidity());
+  if (invalid) { invalid.reportValidity(); note.hidden = true; return; }
+  // Re-read so saving one mode cannot overwrite another tab's saved modes.
+  const store = stReadDefaultStore();
+  store.modes[stMode.value] = stCaptureDefaults();
+  store.lastMode = stMode.value;
+  try {
+    localStorage.setItem(ST_DEFAULTS_KEY, JSON.stringify(store));
+    const name = stMode.options[stMode.selectedIndex].textContent;
+    note.textContent = 'Saved defaults for ' + name + ' in this browser.';
+  } catch {
+    note.textContent = 'Defaults could not be saved. Browser storage is unavailable or full.';
+    note.classList.add('err');
+  }
+}
 function stRealTypes() {
   return [...stEl('stRealTypes').querySelectorAll('input:checked')].map(box => box.value);
 }
@@ -13484,6 +13593,7 @@ async function stLoadReal() {
     chip(t, t.toUpperCase() + ' · ' + count(t), count(t) + ' ' + t + ' file(s)', offTypes.has(t))));
   stEl('stRealFiles').replaceChildren(...stReal.files.map(f =>
     chip(f.name, f.name + ' · ' + f.size_mb + ' MB', f.name, offFiles.has(f.name), f.type)));
+  stApplyRealDefaults();
   stPaintFiles();
   realPickPaint();
 }
@@ -13530,7 +13640,10 @@ function stSetSource(source) {
   stEl('stFilesField').hidden = real;
   // realData has no transcript truth, so the modes that start from one go.
   for (const option of stMode.options) option.disabled = real && !REAL_MODES.includes(option.value);
-  if (real && !REAL_MODES.includes(stMode.value)) stMode.value = 'ocr';
+  if (real && !REAL_MODES.includes(stMode.value)) {
+    stLoadModeDefaults('ocr', 'realdata');
+    return;
+  }
   if (real && !stReal) stLoadReal();
   stPaintMode();
 }
@@ -13678,6 +13791,7 @@ function showStressView(view) {
 
 function stBusy(on) {
   stRunning = on;
+  stEl('stSaveDefaults').disabled = on;
   if (on) { stStopping = false; setTestStatus('st', 'running'); }
   stClear.disabled = on;
   stRun.disabled = on;
@@ -14249,7 +14363,9 @@ if (stRun) {
     stPaintFiles();
     scrollToSelection();
   });
-  stMode.addEventListener('change', stPaintMode);
+  stDefaultBase = stCaptureDefaults();
+  stMode.addEventListener('change', () => stLoadModeDefaults(stMode.value));
+  stEl('stSaveDefaults').addEventListener('click', stSaveModeDefaults);
   stEl('stShape').addEventListener('change', stPaintMode);
   stEl('stSource').addEventListener('click', event => {
     const button = event.target.closest('button[data-st-source]');
@@ -14288,8 +14404,9 @@ if (stRun) {
     setTestStatus('st', 'ready');
     stPaint();
   });
-  stPaintMode();
-  stLoadReal();     // also fills the Source pane's realData picker
+  const initialMode = stReadDefaultStore().lastMode;
+  stLoadModeDefaults(ST_MODES.includes(initialMode) ? initialMode : stMode.value);
+  if (stSource !== 'realdata') stLoadReal(); // realData defaults already start the listing
   stPaintServer();
 }
 

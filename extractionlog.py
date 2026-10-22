@@ -74,7 +74,7 @@ def job_detail(record, spec, source, warmup=0, catalog=None):
                      **{key: document[key] for key in (
                          "doc_types", "doc_type_expected", "doc_type_from", "doc_type_heading",
                          "doc_type_confidence", "doc_type_escalated", "error", "partial",
-                         "field_truth_scope") if document.get(key) is not None},
+                         "field_truth_scope", "normalization_version") if document.get(key) is not None},
                      "context_id": _reference(catalog, "contexts",
                                               document.get("prompt_prefix") or document.get("prompt")),
                      "steps": [_step_detail(step, catalog) for step in evidence]}

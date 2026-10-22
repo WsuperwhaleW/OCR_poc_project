@@ -445,22 +445,11 @@ BRANCH_CODE_WIDTH = 5
 _HEAD_OFFICE = _needles("สำนักงานใหญ่", "สนญ", "head office", "ho office",
                         "headquarter")
 
-# A run of digits that is a branch number rather than something else on the line.
-# Capped at five AND bounded on both sides, and the bounding is the load-bearing
-# half: `\d{1,5}` alone happily chews a thirteen-digit tax ID that has been copied
-# into the branch key into its first five digits, turning a known extraction
-# failure into a confident-looking branch code. Bounded, a run that long matches
-# nothing and the branch code comes back "" -- which is the honest answer, and the
-# one a reviewer can act on.
-_BRANCH_DIGITS = re.compile(r"(?<!\d)\d{1,5}(?!\d)")
-
-
 def branch_code(branch_text):
     """A printed branch line reduced to a standard branch code, or "".
 
-    Empty for a branch the page names but does not number -- sol003's buyer block
-    prints "(สาขาอำพัน แพร่)", a branch identified by place. That is a missing
-    code, not a head office, and the two must not be confused: defaulting an
+    Empty for a branch identified only by place. That is a missing code, not a
+    head office, and the two must not be confused: defaulting an
     unnumbered branch to 00000 would file a branch's documents against the head
     office, which is the one error this normalisation exists to prevent.
     """
@@ -468,7 +457,13 @@ def branch_code(branch_text):
     if not text:
         return ""
     squashed = grounding.squash(text)
-    digits = _BRANCH_DIGITS.findall(text.translate(_THAI_DIGITS))
+    numbered = text.translate(_THAI_DIGITS)
+    # A digit inside a place name (พระราม 9, ลาดพร้าว 101) is not a
+    # revenue branch code. Accept a standalone code or an explicit code caption.
+    bare = numbered.strip(" ()[]:")
+    digits = ([bare] if re.fullmatch(r"\d{1,5}", bare) else
+              re.findall(r"(?:สาขา(?:ที่)?|ลำดับ(?:สาขา|ที่)|(?<![A-Za-z])branch\s*(?:no\.?|number|code)?)[\s:.-]*(\d{1,5})(?!\d)",
+                         numbered, re.I))
     head_office = any(n in squashed for n in _HEAD_OFFICE)
     # A branch number wins over a head-office word where both are printed: a line
     # reading "สำนักงานใหญ่ สาขาที่ 00068" names a numbered branch, and the
@@ -480,6 +475,45 @@ def branch_code(branch_text):
     if head_office or (digits and not any(int(d) for d in digits)):
         return HEAD_OFFICE_CODE
     return ""
+
+
+NORMALIZATION_VERSION = 1
+PARTY_PREFIXES = ("seller", "buyer", "payer", "payee")
+
+
+def field_value(key, value):
+    """Canonical display/comparison of party captions; raw fields stay intact.
+
+    Never infer a location from an address, or manufacture a number from a
+    named branch. Unrecognised branch text stays visible as an extraction error.
+    """
+    text = str(value or "").strip()
+    if key in {p + "_branch" for p in PARTY_PREFIXES}:
+        return branch_code(text) or text
+    if key in {p + "_branch_location" for p in PARTY_PREFIXES}:
+        text = _unwrap(text)
+        text = re.sub(r"^(?:(?:ชื่อ|ตำแหน่ง|ที่ตั้ง)\s*)?สาขา\s*[:：-]?\s*", "", text)
+        text = re.sub(r"^branch\b(?:\s+(?:name|location)\b)?[\s:：-]*", "", text, flags=re.I)
+        text = _unwrap(text)
+        if any(n == grounding.squash(text) for n in _HEAD_OFFICE):
+            return "สำนักงานใหญ่"
+        return re.sub(r"\s+", " ", text)
+    if key in {p + "_name" for p in PARTY_PREFIXES}:
+        # Strip a caption at the beginning only, never a word in a legal name.
+        return re.sub(r"^(?:ชื่อ(?:ผู้จ่ายเงิน|ผู้ถูกหักภาษี|ผู้รับเงิน)?|name)(?:\s*[:：]\s*|\s+)", "", text, flags=re.I).strip()
+    return text
+
+
+def _unwrap(text):
+    while len(text) > 1 and (text[0], text[-1]) in (("(", ")"), ("[", "]")):
+        text = text[1:-1].strip()
+    return text
+
+
+def normalize_fields(fields):
+    """Additive view of extracted values; nested tables and raw values untouched."""
+    return {key: field_value(key, value) if isinstance(value, str) else value
+            for key, value in (fields or {}).items()}
 
 
 # --------------------------------------------------------------------------

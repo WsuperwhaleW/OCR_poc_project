@@ -75,7 +75,27 @@
       ],
       "subtotal": "512,157.94",
       "vat_total": "35,851.06",
-      "amount_incl_vat": "548,009.00"
+      "amount_incl_vat": "548,009.00",
+      "seller_branch_location": "สำนักงานใหญ่",
+      "buyer_branch_location": "รังสิต",
+      "_branch_review": {
+        "version": 1,
+        "source": "mockOcr/multiple_sol023.pdf",
+        "reviewed_pages": [
+          1
+        ],
+        "previous_branch_values": {
+          "seller_branch": [
+            "สำนักงานใหญ่",
+            "HEAD OFFICE"
+          ],
+          "buyer_branch": [
+            "สาขา 00008",
+            "00008"
+          ]
+        },
+        "note": "Reviewed the party identity blocks on the cited PDF page: head-office wording is recorded where explicitly printed; numeric-only branch designations do not imply a place name. Ordinary address text is not a branch location."
+      }
     },
     {
       "pages": [
@@ -125,7 +145,27 @@
       ],
       "subtotal": "68,397.20",
       "vat_total": "4,787.80",
-      "amount_incl_vat": "73,185.00"
+      "amount_incl_vat": "73,185.00",
+      "seller_branch_location": "สำนักงานใหญ่",
+      "buyer_branch_location": "สุรินทร์",
+      "_branch_review": {
+        "version": 1,
+        "source": "mockOcr/multiple_sol023.pdf",
+        "reviewed_pages": [
+          6
+        ],
+        "previous_branch_values": {
+          "seller_branch": [
+            "สำนักงานใหญ่",
+            "HEAD OFFICE"
+          ],
+          "buyer_branch": [
+            "สาขา 00032",
+            "00032"
+          ]
+        },
+        "note": "Reviewed the party identity blocks on the cited PDF page: head-office wording is recorded where explicitly printed; numeric-only branch designations do not imply a place name. Ordinary address text is not a branch location."
+      }
     },
     {
       "pages": [
@@ -175,7 +215,27 @@
       ],
       "subtotal": "195,633.64",
       "vat_total": "13,694.36",
-      "amount_incl_vat": "209,328.00"
+      "amount_incl_vat": "209,328.00",
+      "seller_branch_location": "สำนักงานใหญ่",
+      "buyer_branch_location": "ร้อยเอ็ด",
+      "_branch_review": {
+        "version": 1,
+        "source": "mockOcr/multiple_sol023.pdf",
+        "reviewed_pages": [
+          9
+        ],
+        "previous_branch_values": {
+          "seller_branch": [
+            "สำนักงานใหญ่",
+            "HEAD OFFICE"
+          ],
+          "buyer_branch": [
+            "สาขา 00037",
+            "00037"
+          ]
+        },
+        "note": "Reviewed the party identity blocks on the cited PDF page: head-office wording is recorded where explicitly printed; numeric-only branch designations do not imply a place name. Ordinary address text is not a branch location."
+      }
     },
     {
       "pages": [
@@ -228,7 +288,27 @@
       ],
       "subtotal": "78,936.45",
       "vat_total": "5,525.55",
-      "amount_incl_vat": "84,462.00"
+      "amount_incl_vat": "84,462.00",
+      "seller_branch_location": "สำนักงานใหญ่",
+      "buyer_branch_location": "ร้อยเอ็ด",
+      "_branch_review": {
+        "version": 1,
+        "source": "mockOcr/multiple_sol023.pdf",
+        "reviewed_pages": [
+          12
+        ],
+        "previous_branch_values": {
+          "seller_branch": [
+            "สำนักงานใหญ่",
+            "HEAD OFFICE"
+          ],
+          "buyer_branch": [
+            "สาขา 00037",
+            "00037"
+          ]
+        },
+        "note": "Reviewed the party identity blocks on the cited PDF page: head-office wording is recorded where explicitly printed; numeric-only branch designations do not imply a place name. Ordinary address text is not a branch location."
+      }
     }
   ]
 }

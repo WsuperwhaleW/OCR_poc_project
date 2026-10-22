@@ -60,6 +60,7 @@ from pathlib import Path
 
 import config
 import grounding
+import normalise
 import prompts
 import tables
 import verify
@@ -1095,7 +1096,12 @@ def score(truth: dict, fields, table: dict = None, keys=None,
     for key, value in truth["scalars"].items():
         if key not in asked:
             continue
-        status, reading = judge_best(value, fields.get(key))
+        # Compare canonical party captions/codes, but keep the literal readings
+        # in the report so a tuning log never disguises what the model said.
+        actual = normalise.field_value(key, fields.get(key))
+        choices = [(judge(normalise.field_value(key, option), actual), option)
+                   for option in accepted(value)]
+        status, reading = min(choices, key=lambda pair: _STATUS_ORDER.index(pair[0]))
         row = {
             "path": key,
             # The reading that produced the outcome, not the whole truth entry:
@@ -1112,6 +1118,9 @@ def score(truth: dict, fields, table: dict = None, keys=None,
             # answers to one question drift.
             "required": True if required is None else key in required,
         }
+        canonical_expected = normalise.field_value(key, reading)
+        if canonical_expected != str(reading or "") or actual != str(fields.get(key) or ""):
+            row.update(normalized_expected=canonical_expected, normalized_actual=actual)
         readings = accepted(value)
         # Present only where there is genuinely a choice, so a caller can say
         # "or" without having to compare the list with the value beside it.
@@ -1194,6 +1203,7 @@ def score(truth: dict, fields, table: dict = None, keys=None,
 
     return {
         "overall": overall,
+        "normalization_version": normalise.NORMALIZATION_VERSION,
         "optional": optional,
         # Which of the three states the caller put this in. 100% of nothing and
         # 100% of eleven are the same number and not the same claim, so the scope

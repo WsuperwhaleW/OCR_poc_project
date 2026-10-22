@@ -40,5 +40,19 @@
   "seller_name": "บริษัท บราตวูสท์ จำกัด (มหาชน)",
   "buyer_name": "บริษัท ซไนท์เชล จำกัด",
   "amount_incl_vat": "",
-  "currency": "บาท"
+  "currency": "บาท",
+  "seller_branch_location": null,
+  "buyer_branch_location": "สำนักงานใหญ่",
+  "_branch_review": {
+    "version": 1,
+    "source": "mockOcr/receipt_tax_invoice_sol004.pdf",
+    "reviewed_pages": [
+      1
+    ],
+    "previous_branch_values": {
+      "seller_branch": "สาขา: 01065",
+      "buyer_branch": "สำนักงานใหญ่"
+    },
+    "note": "Seller letterhead has a venue-like second line and code 01065; whether the second line is a branch name is uncertain. Buyer explicitly prints สำนักงานใหญ่."
+  }
 }

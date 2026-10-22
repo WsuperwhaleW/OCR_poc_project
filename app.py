@@ -4680,6 +4680,8 @@ def _validate_fields(result: dict, form: dict, text: str, mode: str) -> dict:
     result["classified"] = _classified(form, mode)
     if not result.get("fields"):
         return result
+    result["normalized"] = normalise.normalize_fields(result["fields"])
+    result["normalization_version"] = normalise.NORMALIZATION_VERSION
     try:
         result["validation"] = validate.validate(
             result["fields"], keys=form["keys"], doc_types=form["doc_types"],
@@ -7896,7 +7898,8 @@ def _stress_run(cfg: dict, cancel):
     cfg["run_id"] = f"{time.strftime('%Y-%m-%dT%H:%M:%S')}-{seed}"
     total = cfg["warmup"] + cfg["jobs"]
     detail_identity = (extractionlog.provenance(prompts.__file__, __file__, {
-        "AGENTIC_RETRIES": AGENTIC_RETRIES, "EXTRACT_SCHEMA": EXTRACT_SCHEMA})
+        "AGENTIC_RETRIES": AGENTIC_RETRIES, "EXTRACT_SCHEMA": EXTRACT_SCHEMA,
+        "NORMALIZATION_VERSION": normalise.NORMALIZATION_VERSION})
         if cfg.get("save_details") else None)
     reader = llama_status() if mode in ("ocr", "full") else None
     extractor = backends.extract_status() if mode != "ocr" else None

@@ -254,7 +254,8 @@ class RunLogTests(unittest.TestCase):
                           "model_quant", "inference_engine",
                           "extract_quant", "extract_inference_engine",
                           "in_tokens", "out_tokens", "extract_in_tokens", "extract_out_tokens",
-                          "stress_run", "stress_concurrency", "extract_extras", "extract_schema_first"])
+                      "stress_run", "stress_concurrency", "extract_extras", "extract_schema_first",
+                      "extract_normalization_version"])
         # The retired hop columns stay in the file format, written blank.
         self.assertIn("network_seconds", runlog.COLUMNS)
         self.assertIn("extract_network_seconds", runlog.COLUMNS)

@@ -1715,6 +1715,15 @@ Workspace uses **Clear workspace**, since it also removes the selected input fil
 | **How documents are drawn**, **Seed** | Balanced uses the least-read file; Random shuffles complete passes; Sequential uses selected files in sorted order and loops after the last. Sequential ignores the seed and past runs; measured jobs restart at the first selected file after warm-up. The report records the strategy and seed |
 | **Files to test** | choose **1–20**, **21–23** or **All**, or open **Advanced** to tick individual files. Warm-up and measured jobs draw only from this selection; classification builds its long files from these transcripts. Select one file to run only that document |
 
+**Save as default** beside Mode remembers all controls in the Stress test setup for
+that mode, including Concurrent/Queue, shape, strategy, seed, checkboxes, Batch,
+document source and selected benchmark/realData files. Switching modes restores
+their saved settings; reloading restores the last saved mode. Defaults are stored
+in this browser for this deployment, independently of server History. Press Save
+again to replace a mode's saved defaults; editing controls alone does not save them.
+Before any defaults are saved, OCR starts at **50 concurrent / 100 jobs**, Extract
+at **64 / 40**, and Classify/Full pipeline at **4 / 20**.
+
 **Every new Stress test is saved to History.** Open **Stress test → History** to select a run
 and inspect its Concurrent, Queue, Warm-up, time limit, seed, document strategy,
 selected file IDs, models, servers, sampling and extraction settings, together with its complete report,
@@ -1752,6 +1761,19 @@ fields have a null expected value. Warm-up jobs are excluded; cancelled or skipp
 have no invented answers. A Stop exports the results available when the report was made.
 Old version 1 downloads can be reduced locally using `extractionlog.compact_download`
 without another model run; the original file is left intact.
+
+Party branches have two fields: `*_branch` for an explicit tax branch number or
+head-office designation, and `*_branch_location` for an explicitly named branch/site.
+Names of places containing digits are not branch codes. Python normalises codes to
+five digits and removes field captions from party names/locations. Raw model values
+stay in `fields`; the Fields pane shows `normalized` values and a collapsed raw value
+when they differ. Ground-truth comparison uses the same normalisation and records its
+version; detail downloads keep raw values plus canonical comparisons where they differ.
+New CSV rows record `extract_normalization_version`; older rows keep it blank.
+Existing saved scores are not rewritten. Location fields are optional; ambiguous
+ground truth is `null` and unscored. See [the PDF review](docs/branch-ground-truth-review.md).
+Commercial agentic party steps ask three fields; withholding-certificate identity and
+branch questions use separate two-field steps to keep requests small.
 
 Diagnostics are formatted and streamed after benchmark timing ends, independently of
 **Save each job** (the accuracy CSV). They are never written into server History, CSV,

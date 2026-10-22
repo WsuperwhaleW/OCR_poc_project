@@ -41,5 +41,22 @@
   "subtotal": "208,839.60",
   "vat_total": "-",
   "amount_incl_vat": "208,839.60",
-  "currency": ""
+  "currency": "",
+  "seller_branch_location": "",
+  "buyer_branch_location": "ศูนย์เลนกลาง",
+  "_branch_review": {
+    "version": 1,
+    "source": "mockOcr/credit_note_sol009.pdf",
+    "reviewed_pages": [
+      1
+    ],
+    "previous_branch_values": {
+      "seller_branch": "",
+      "buyer_branch": [
+        "ลำดับสาขา 05656",
+        "05656"
+      ]
+    },
+    "note": "Buyer name ends (ศูนย์เลนกลาง); the same block prints ลำดับสาขา 05656. Both values refer to the buyer."
+  }
 }

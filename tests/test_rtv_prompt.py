@@ -21,7 +21,7 @@ class ReturnPromptTests(unittest.TestCase):
         keys = prompts.fields_for_types(RTV)
         self.assertEqual(set(keys), {
             "document_type", "document_number", "issue_date", "seller_tax_id",
-            "seller_branch", "buyer_tax_id", "buyer_branch", "subtotal",
+            "seller_branch", "seller_branch_location", "buyer_tax_id", "buyer_branch", "buyer_branch_location", "subtotal",
             "vat_total", "amount_incl_vat"})
         table = prompts.steps_for_types(RTV, extras=False)
         self.assertEqual([s["id"] for s in table],
