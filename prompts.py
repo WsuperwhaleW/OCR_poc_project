@@ -279,6 +279,11 @@ TYPE_SPECIFICITY = tuple(TYPE_NAMES)
 # would be a prompt arguing with itself, and the narrower reading is the one that
 # knows more about the page.
 TYPE_KEY_RULES = {
+    ("RTV_SHIP_CREDIT", "document_number"): """- document_number is this goods-return shipment's own number, labelled as the return
+  number (for example เลขที่การส่งคืน). A return notification, a referenced invoice or
+  a credit-note number is a different identifier and must not replace it.""",
+    ("RTV_SHIP_CREDIT", "issue_date"): """- issue_date is the date of this goods return (for example วันที่ส่งคืน), not the
+  print timestamp or the date of a referenced invoice or credit note.""",
     ("INVOICE", "document_number"): """- document_number is the invoice's own number, the one printed with its heading. The number
   of an order, a delivery or an earlier document it cites is not it.""",
     ("INVOICE", "po_gr_rtv_number"): """- An invoice is normally raised against an order or a goods receipt, so where the page
@@ -355,6 +360,17 @@ def type_phrase(codes):
     return ", ".join(words[:-1]) + " and " + words[-1]
 
 
+def _rtv_return(codes):
+    """A return shipment, rather than a credit/debit note accepting returned goods.
+
+    Some credit-note headings also classify as RTV (e.g. sol009). Their issuer
+    remains the seller; applying the return-shipment roles would reverse it.
+    """
+    codes = set(codes or ())
+    return ("RTV_SHIP_CREDIT" in codes
+            and not codes.intersection({"CREDIT_NOTE", "DEBIT_NOTE"}))
+
+
 def type_bullets(codes, keys):
     """The type-specific bullets for one form, in the schema's key order.
 
@@ -362,7 +378,9 @@ def type_bullets(codes, keys):
     `_SCALAR_KEYS` order rather than in the order the caller passed them, so the
     bullets read down the page in the same order as the skeleton above them.
     """
-    codes = [c for c in TYPE_SPECIFICITY if c in set(codes or ())]
+    use_rtv = _rtv_return(codes)
+    codes = [c for c in TYPE_SPECIFICITY if c in set(codes or ())
+             and (c != "RTV_SHIP_CREDIT" or use_rtv)]
     if not codes:
         # Nothing is emitted where nothing was identified, `_TYPE_ANY_RULES`
         # included: that rule exists to stop the model answering with the
@@ -987,6 +1005,37 @@ _EP_PARTIES_SIDES = """- The issuer is the party the document is FROM -- who wro
 
 """
 
+_RTV_PARTIES = """On a goods-return shipment, keep the roles from the ORIGINAL SALE:
+- The seller is the original supplier/vendor RECEIVING the returned goods. A block
+  labelled ส่งคืนร้านค้า, return to vendor or return to supplier identifies this party.
+- The buyer is the original customer SENDING the goods back. A block labelled
+  สาขาผู้ส่งคืน, returning customer or returning branch identifies this party.
+- These labels are examples, not required wording. Follow the meaning and direction
+  of the return even when labels, language, layout or the document's issuer differ.
+- The buyer may print the return document and appear in its letterhead. Issuing the
+  document does not make that party the seller. Use the return-direction labels,
+  not the page position, logo or who printed the form, to assign the two blocks.
+- Keep every value inside its own party's block. If the direction cannot be established
+  from the printed text, leave the uncertain values empty rather than swapping parties.
+"""
+
+_RTV_PARTY_VALUES = """- {party}_tax_id: copy only that party's labelled tax/registration number, preserving
+  printed separators. A vendor, customer, store or location code is not a tax ID.
+- {party}_branch: copy that party's explicit tax branch designation, branch number or
+  head-office wording, including its printed label. A branch name is also valid when
+  that is how the party's branch is identified and no explicit branch number is given.
+  An unrelated row ordinal is not a branch. When both a store/location code and an
+  explicit branch designation occur in
+  the same party block, use the branch designation, not the store/location code.
+- Do not infer a branch from an address, reuse the other party's branch, or convert
+  head-office wording into an unprinted number. If absent, answer "".
+"""
+
+
+def _rtv_party_rules(party):
+    return _RTV_PARTIES + _RTV_PARTY_VALUES.format(party=party)
+
+
 _EP_ISSUE_DATE = """issue_date:
 - The date this document is dated. Its label usually names the KIND of document rather than
   saying just "date": a date labelled as the invoice's date, the tax invoice's date, the
@@ -1331,7 +1380,7 @@ def extract_prompt(keys, codes=(), bullets=True, items=(), extras=True):
         parts.append(_EP_PARTIES_HEAD.format(count=party_count))
         if "name" in party_keys:
             parts.append(_EP_PARTIES_NAME)
-        if {"tax_id", "branch"} & set(party_keys):
+        if {"tax_id", "branch"} & set(party_keys) and not _rtv_return(codes):
             parts.append(_EP_PARTIES_IDS)
         what = ", ".join(w for k, w in (("name", "name"), ("tax_id", "tax ID"),
                                         ("branch", "branch")) if k in party_keys)
@@ -1339,7 +1388,13 @@ def extract_prompt(keys, codes=(), bullets=True, items=(), extras=True):
         if "," in what:
             head, _, tail = what.rpartition(", ")
             what = f"{head} or {tail}"
-        parts.append(_EP_PARTIES_SIDES.format(count=party_count, what=what))
+        if _rtv_return(codes):
+            parts.append(_RTV_PARTIES)
+            for party in ("seller", "buyer"):
+                if {f"{party}_tax_id", f"{party}_branch"} & have:
+                    parts.append(_RTV_PARTY_VALUES.format(party=party))
+        else:
+            parts.append(_EP_PARTIES_SIDES.format(count=party_count, what=what))
     if "issue_date" in have:
         parts.append(_EP_ISSUE_DATE)
     if "reference_document" in have:
@@ -1596,6 +1651,9 @@ _PARTIES = ("seller_tax_id", "seller_branch", "buyer_tax_id", "buyer_branch")
 # is not on a requirement. Classification is unaffected: the type is read off the
 # transcript in Python, never out of an extracted field.
 DOC_TYPE_FIELDS = {
+    # An extraction profile; no new Mandatory requirement is claimed for RTV.
+    "RTV_SHIP_CREDIT": ("document_type", "document_number", "issue_date")
+                       + _PARTIES + ("subtotal", "vat_total", "amount_incl_vat"),
     "INVOICE": ("document_type", "document_number", "issue_date",
                 "po_gr_rtv_number") + _PARTIES + ("subtotal", "vat_total",
                                                   "amount_incl_vat"),
@@ -1812,7 +1870,13 @@ def fields_for_types(codes):
     """
     keys = set()
     for code in (codes or []):
+        if code == "RTV_SHIP_CREDIT":
+            continue
         keys.update(DOC_TYPE_FIELDS.get(code, ()))
+    # Do not narrow a credit/debit note's default fallback merely because its
+    # heading also mentions returns. Otherwise retain the union of typed forms.
+    if "RTV_SHIP_CREDIT" in (codes or ()) and (_rtv_return(codes) or keys):
+        keys.update(DOC_TYPE_FIELDS["RTV_SHIP_CREDIT"])
     # Nothing to ask means no type in play had a requirement -- either the page
     # was not classified, or it is only a kind this project has no table for.
     # The default is the union of every requirement rather than one of them: a
@@ -2522,9 +2586,17 @@ def steps_for_types(codes, extras=True):
     # asked for -- once the key it owns is in `wanted`.
     if items_for_types(codes):
         wanted.add(INCOME_ITEMS_KEY)
-    return tuple(s for s in EXTRACT_STEPS
-                 if (s["id"] == "other" and extras)
-                 or (s["keys"] and set(s["keys"]) <= wanted))
+    table = tuple(s for s in EXTRACT_STEPS
+                  if (s["id"] == "other" and extras)
+                  or (s["keys"] and set(s["keys"]) <= wanted))
+    if _rtv_return(codes):
+        titles = {"seller": "the original supplier receiving the returned goods",
+                  "buyer": "the original customer sending the goods back"}
+        # Copy per document: workers for other types share EXTRACT_STEPS.
+        table = tuple({**s, "title": titles[s["id"]],
+                       "rules": _rtv_party_rules(s["id"])}
+                      if s["id"] in titles else s for s in table)
+    return table
 
 
 def steps_for_type(code):

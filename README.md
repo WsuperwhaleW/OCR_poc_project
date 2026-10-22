@@ -1099,6 +1099,25 @@ merged into the document in front of it.
 | `CHEQUE_DELIVERY` | ใบแจ้งนำส่งเช็ค / Delivery Acknowledgement |
 | `PAYMENT_ADVICE` | Pre-Payment Advice / Credit Advice |
 
+**RTV extraction profile:** a goods-return shipment (`RTV_SHIP_CREDIT`) asks for
+10 scalar fields: document type, its own return number/date, seller and buyer tax IDs
+and branches, subtotal, VAT and total including VAT. With Extra fields off this is
+five independent agentic steps; enabling Extra fields adds the `other` step. The
+seller is the original supplier receiving the goods back, and the buyer is the
+original customer returning them, even when the buyer prints the document. Explicit
+branch designations take precedence over internal store/location codes. Single mode
+uses the same party rules. A heading that also identifies a credit/debit note keeps
+the note's existing party rules (e.g. a credit note accepting returned goods).
+
+This profile does not introduce Mandatory requirements for RTV or change the ground
+truth. Older RTV runs used the broad fallback field set, including payment and WHT
+keys; compare per-field errors on the shared fields when measuring prompt changes,
+since the new run asks for fewer fields. Run the actual model benchmark on the model
+server; local mock-inference tests verify routing and schemas, not extraction accuracy.
+The uploaded errors are development examples, not a held-out evaluation. Validate on
+additional RTV documents with different vendors, layouts, labels and issuing parties,
+including missing/ambiguous branches, before claiming a general accuracy improvement.
+
 **A case holding more than one document carries `documents` in the manifest** — the pages and
 the types of each — and its top-level `doc_types` is document 1's, which is the document its
 `.fields.json` describes. `app.case_doc_types` reads the entry a document's pages fall in, so
