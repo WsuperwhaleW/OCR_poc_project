@@ -8032,7 +8032,8 @@ def _stress_run(cfg: dict, cancel):
             report["server_metrics"] = views[0]["view"]
     if cfg.get("save_details"):
         for event in extractionlog.events(records, specs[cfg["warmup"]:],
-                                           prepared["sources"], cfg["warmup"], detail_identity):
+                                           prepared["sources"], cfg["warmup"], detail_identity,
+                                           report=report):
             yield json.dumps(event, ensure_ascii=False) + "\n"
         # A stopped run may still drain requests; release exported results now.
         for record in records:

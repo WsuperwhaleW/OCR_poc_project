@@ -13370,10 +13370,10 @@ const stStop2 = stEl('stStop2'), stClear = stEl('stClear');
 const stOut = stEl('stOut'), stNote = stEl('stNote');
 let stAbort = null, stStopping = false;
 let stState = null;          // {plan, progress, report, metrics, draining, alerts}
-let stDetailLog = {parts: null, count: 0, url: '', name: '', summary: []};
+let stDetailLog = {parts: null, count: 0, url: '', name: '', summary: [], catalog: {}, report: null};
 function stClearDetailLog() {
   if (stDetailLog.url) URL.revokeObjectURL(stDetailLog.url);
-  stDetailLog = {parts: null, count: 0, url: '', name: '', summary: []};
+  stDetailLog = {parts: null, count: 0, url: '', name: '', summary: [], catalog: {}, report: null};
 }
 function stDownloadDetailLog() {
   if (!stDetailLog.url) return;
@@ -13394,20 +13394,26 @@ function stReceiveDetailLog(ev) {
     stDetailLog.count++;
   } else if (ev.event === 'detail_log_end') {
     stDetailLog.summary = ev.field_summary || [];
+    stDetailLog.catalog = {contexts: ev.contexts || {}, questions: ev.questions || {}};
+    stDetailLog.report = ev.report || null;
   }
 }
 function stFinishDetailLog(ev) {
   if (!stDetailLog.parts) return;
   stDetailLog.parts.push('],"field_summary":' + JSON.stringify(stDetailLog.summary)
+    + ',"contexts":' + JSON.stringify(stDetailLog.catalog.contexts || {})
+    + ',"questions":' + JSON.stringify(stDetailLog.catalog.questions || {})
     + ',"completion":' + JSON.stringify({received_jobs: stDetailLog.count,
       finished: ev.event === 'done', stopped: !!ev.stopped,
       history_id: ev.history_id || null, error: ev.error || null})
-    + ',"report":' + JSON.stringify(ev.report || null) + '}');
+    + ',"report":' + JSON.stringify(stDetailLog.report) + '}');
   stDetailLog.url = URL.createObjectURL(new Blob(stDetailLog.parts, {type: 'application/json'}));
   stDetailLog.name = 'extraction-details-' + ((stState?.plan?.run_id || new Date().toISOString())
     .replace(/[^a-zA-Z0-9_-]/g, '-')) + '.json';
   stDetailLog.parts = null;
   stDetailLog.summary = [];
+  stDetailLog.catalog = {};
+  stDetailLog.report = null;
   stState.detailDownload = {url: stDetailLog.url, name: stDetailLog.name, count: stDetailLog.count};
   stDownloadDetailLog();
 }

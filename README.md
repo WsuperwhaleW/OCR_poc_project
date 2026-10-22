@@ -1721,11 +1721,18 @@ and its JSON download. Older History entries cannot recover measurements that we
 
 **Save detail log** is an optional Stress test checkbox for Extract only and Full pipeline,
 off by default. It automatically downloads `extraction-details-*.json` to the computer
-running the browser when the run finishes. The file contains each measured job's full
-extraction, raw step replies and retry questions, final field values, expected values and
-verdicts, document/page boundaries, timings, settings, and the prompt source/hash. Unscored
+running the browser when the run finishes. Version 2 is a compact tuning log: every job's
+actual/expected field values and verdicts, document/page boundaries, classifications,
+timings, settings, and code/prompt hashes. Raw replies and exact questions are kept only
+for incorrect, partial, unscored, retried, or failed steps; ordinary correct/absent steps
+need no duplicate raw reply. Input contexts and questions are deduplicated across jobs
+in the top-level `contexts` and `questions` dictionaries, referenced by SHA-256 IDs.
+Full prompt-module source, concatenated replies, duplicate extraction/scoring dumps,
+table-processing internals, monitoring, and per-chat performance dumps are omitted. Unscored
 fields have a null expected value. Warm-up jobs are excluded; cancelled or skipped jobs
 have no invented answers. A Stop exports the results available when the report was made.
+Old version 1 downloads can be reduced locally using `extractionlog.compact_download`
+without another model run; the original file is left intact.
 
 Diagnostics are formatted and streamed after benchmark timing ends, independently of
 **Save each job** (the accuracy CSV). They are never written into server History, CSV,

@@ -27,6 +27,41 @@ STATUS = {"available": True, "text_available": True, "reason": None,
 
 
 class FormatTests(unittest.TestCase):
+    def test_repeated_documents_share_contexts_and_questions_but_keep_retry_evidence(self):
+        result = copy.deepcopy(RESULT)
+        for doc in result["documents"]:
+            doc["prompt_prefix"] = "shared input document"
+            doc["steps"][0]["prompt"] = "shared question"
+            doc["steps"][0]["raw"][0]["prompt"] = "shared question"
+        # A successful final answer still needs its evidence when it was retried.
+        result["documents"][0]["steps"][0]["retried"] = True
+        events = list(extractionlog.events(
+            [{"status": "ok", "_extraction_result": result}] * 2,
+            [{"index": i, "case": "a"} for i in range(2)], {}, 0, {}))
+        end = events[-1]
+        self.assertEqual(list(end["contexts"].values()), ["shared input document"])
+        self.assertEqual(list(end["questions"].values()), ["shared question"])
+        for event in events[1:-1]:
+            for doc in event["job"]["documents"]:
+                self.assertIn(doc["context_id"], end["contexts"])
+                self.assertEqual(doc["steps"][0]["raw"][0]["text"], MARKER)
+                self.assertIn(doc["steps"][0]["raw"][0]["question_id"], end["questions"])
+
+    def test_old_download_conversion_preserves_verdicts_and_removes_duplicate_dumps(self):
+        old = {"format": "ocr-extraction-detail-log", "format_version": 1,
+               "provenance": {"files": {"prompts": {"sha256": "abc", "source": "full source"}}},
+               "report": {"completed": 1, "timeline": [[0, 1]], "agentic_context": {"requests": [1]}},
+               "jobs": [{"job": 1, "queue_position": 1, "case": "a", "status": "ok",
+                         "extraction": RESULT, "field_rows": [{"path": "seller_tax_id",
+                         "expected": "seller", "actual": "buyer", "status": "wrong"}]}]}
+        compact = extractionlog.compact_download(old)
+        self.assertEqual(compact["format_version"], 2)
+        self.assertEqual(compact["jobs"][0]["field_rows"], old["jobs"][0]["field_rows"])
+        self.assertNotIn("extraction", compact["jobs"][0])
+        self.assertEqual(compact["report"], {"completed": 1})
+        self.assertEqual(compact["provenance"]["files"]["prompts"], {"sha256": "abc"})
+        self.assertIn("source", old["provenance"]["files"]["prompts"])
+
     def test_documents_values_and_replies_are_not_merged(self):
         events = list(extractionlog.events([{"status": "ok", "_extraction_result": RESULT}],
             [{"index": 3, "case": "sol014"}], {}, 2, {}))
@@ -35,7 +70,9 @@ class FormatTests(unittest.TestCase):
         self.assertEqual([(r["document"], r["pages"], r["actual"], r["status"], r["step"])
             for r in detail["field_rows"]], [(1, [1], "seller", "correct", "seller"),
                                              (2, [2], "buyer", "wrong", "seller")])
-        self.assertEqual(detail["extraction"]["documents"][1]["steps"][0]["raw"][0]["text"], MARKER)
+        self.assertEqual(detail["documents"][1]["steps"][0]["raw"][0]["text"], MARKER)
+        self.assertEqual(detail["documents"][0]["steps"], [])
+        self.assertNotIn("extraction", detail)
         self.assertEqual(events[-1]["field_summary"][0]["counts"], {"correct": 1, "wrong": 1})
         self.assertEqual(events[-1]["field_summary"][0]["accuracy"], .5)
 
@@ -45,7 +82,7 @@ class FormatTests(unittest.TestCase):
             {"index": 0, "case": "real.pdf"}, {})["field_rows"][0]
         self.assertEqual((row["status"], row["expected"], row["pages"]), ("unscored", None, [1, 2]))
         cancelled = extractionlog.job_detail({"status": "cancelled"}, {"index": 0}, {})
-        self.assertIsNone(cancelled["extraction"])
+        self.assertEqual(cancelled["documents"], [])
         self.assertEqual(cancelled["field_rows"], [])
 
 
@@ -86,7 +123,7 @@ class StreamTests(unittest.TestCase):
         self.assertEqual([j["job"] for j in jobs], [2, 3])
         self.assertIn(MARKER, json.dumps(jobs))
         start = next(e for e in events if e["event"] == "detail_log_start")
-        self.assertIn("source", start["provenance"]["files"]["prompts"])
+        self.assertNotIn("source", start["provenance"]["files"]["prompts"])
         self.assertIn("sha256", start["provenance"]["files"]["prompts"])
         self.assertTrue(start["configuration"]["save_details"])
         self.assertEqual(start["plan"]["jobs"], 2)
@@ -108,9 +145,9 @@ class StreamTests(unittest.TestCase):
 
     def test_export_delay_is_outside_benchmark_wall_clock(self):
         original = extractionlog.events
-        def slow(*args):
+        def slow(*args, **kwargs):
             time.sleep(.1)
-            yield from original(*args)
+            yield from original(*args, **kwargs)
         with patch.object(extractionlog, "events", side_effect=slow):
             began = time.perf_counter()
             events = self.run_stress(jobs=1, warmup=0)
