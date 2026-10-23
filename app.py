@@ -2998,8 +2998,8 @@ def _steps_for(wanted, doc_types=(), extras=True):
     the change did not touch. Unknown ids are refused rather than skipped -- a
     sweep that quietly asked for no steps would report a schema-wide failure.
 
-    The order is always `EXTRACT_STEPS`', never the caller's, so a restricted run
-    is the full run with steps removed rather than a differently ordered one.
+    The order is the document's final step table, never the caller's. A historical
+    component id such as total_incl now selects its complete related group.
     """
     table = steps_for_types(doc_types, extras)
     if not wanted:
@@ -3008,7 +3008,7 @@ def _steps_for(wanted, doc_types=(), extras=True):
     # Checked against THIS document's table, so asking a receipt for the
     # `original_invoice` step is refused by name rather than silently running
     # nothing. The message names the steps this type actually has.
-    known = {s["id"] for s in table}
+    known = {name for s in table for name in (s["id"], *s.get("includes_steps", ()))}
     unknown = [i for i in ids if i not in known]
     if unknown:
         raise ValueError(f"unknown extraction step(s): {', '.join(unknown)} -- "
@@ -3016,7 +3016,9 @@ def _steps_for(wanted, doc_types=(), extras=True):
                          f" has {', '.join(sorted(known))}")
     if not ids:
         raise ValueError("no extraction steps named")
-    return tuple(s for s in table if s["id"] in set(ids))
+    selected = set(ids)
+    return tuple(s for s in table
+                 if selected.intersection((s["id"], *s.get("includes_steps", ()))))
 
 
 def _agentic_parallelism(status: dict, steps: int) -> int:

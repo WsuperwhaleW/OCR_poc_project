@@ -1038,11 +1038,15 @@ def _branch_rules(party):
 """
 
 
-def _party_values(party):
+def _party_tax_id_rules(party):
     return f"""- {party}_tax_id: copy only that party's labelled tax/registration number,
   preserving separators. A short book, sequence, vendor, customer or store code
   is not a tax ID. If absent, answer "".
-""" + _branch_rules(party)
+"""
+
+
+def _party_values(party):
+    return _party_tax_id_rules(party) + _branch_rules(party)
 
 
 def _rtv_party_rules(party):
@@ -2066,8 +2070,9 @@ Rules for every answer:
 - A value belongs to the field whose printed LABEL matches it, never to the field it
   happens to sit nearest on the page.
 - Use "" for anything the document does not state. An empty field is a correct answer and
-  a common one; a plausible invented value is neither. Never write a placeholder, a row of
-  zeros, a dash, or a figure you would have to work out from other figures.
+  a common one; a plausible invented value is neither. Never invent placeholder zeros or
+  derive a figure from other figures. Zeros explicitly printed as a branch code or amount
+  ARE evidence: copy them. A blank line or a dash standing for no value stays "".
 - Return exactly the keys shown above and no others. Nothing written in these instructions
   is itself a key or a value: where a rule names a label to look for, that is a hint for
   finding the value on the page, never something to emit.
@@ -2094,6 +2099,9 @@ own label, or return "" for it. Return the same JSON object as before."""
 # A document runs only the steps owning its form's fields. Commercial party
 # steps have three keys (tax ID, code, location). WHT identity and branch pairs
 # are separate requests, so adding locations never widens a step past three keys.
+# When the form asks for all three commercial totals, totals + total_incl become
+# one three-key request. Likewise inv_rtv_cnr + payment become one settlement
+# request. Receipt-only totals remain two keys; no form gains keys from grouping.
 # `other` is present only when extra fields are enabled.
 #
 #   document           document_type, document_number, issue_date
@@ -2121,13 +2129,9 @@ own label, or return "" for it. Return the same JSON object as before."""
 # the keys they owned. A step whose keys are not in the schema asks a question
 # whose answer has nowhere to go.
 #
-# **`totals` split from three keys to two on the same date**, and it is the one
-# step here that was cut for a reason other than the schema: a receipt's
-# requirement asks for the amount excluding VAT and the VAT, and NOT for the
-# amount including VAT. A step is taken whole or not at all -- `steps_for_types`
-# includes one only when every key it owns is in the form -- so a three-key
-# totals step would have taken the receipt's two figures down with the third.
-# `total_incl` carries the with-tax rules, which were the bulk of the old step.
+# `totals` and `total_incl` remain separate base definitions so receipt forms
+# can select just their two totals. `steps_for_types` groups selected steps
+# afterwards, only where all their fields are already in the document's form.
 #
 # **THREE KEYS PER STEP IS A CEILING, NOT A STYLE.** Measured 2026-08-19: adding a
 # fourth key to a step does not cost that key, it costs the keys the step was
@@ -2158,6 +2162,33 @@ def _wht_identity_rules(party):
 """
 
 
+_AGENTIC_BRANCH_SELECTION = """Read both branch keys from the SAME party block:
+- {party}_branch takes the explicit tax branch NUMBER, not the store/location code.
+  Match captions meaning branch number/code: เลขสาขา, สาขาที่, ลำดับสาขา, Branch No.
+  or Branch Code. ลำดับที่ counts only when it designates this party's branch, not
+  a document/item sequence. Preserve printed digits; Python will pad the code.
+- {party}_branch_location takes an explicitly named branch/site, without captions
+  such as ชื่อสาขา, สาขา, Branch name, or enclosing brackets. A branch name is also valid
+  when a separate branch number exists: put BOTH in their separate keys.
+  A place containing digits is still a place, not a tax branch number.
+- A bare number, company name or line containing only a branch NUMBER is not a
+  location name. A district/town in an ordinary address is not evidence of a branch.
+  Require a branch/site designation or a branch suffix attached to this party's name.
+  Keep words/digits belonging to the place name; remove only the field caption.
+- Copy a printed all-zero branch number as printed. It is not a missing value.
+  Explicit head-office wording belongs in BOTH keys when no branch number is printed;
+  copy the wording rather than inventing digits. If head office and a nonzero branch
+  number conflict for the same party, leave the uncertain branch code empty.
+- Do not copy the other party's values, infer a missing number or translate names.
+  A location alone never establishes a numeric code. If absent or uncertain, use "".
+"""
+
+
+def _agentic_party_values(party):
+    # Agentic-only clarification: keep the single-request baseline unchanged.
+    return _party_tax_id_rules(party) + _AGENTIC_BRANCH_SELECTION.format(party=party)
+
+
 EXTRACT_STEPS = (
     {
         "id": "document",
@@ -2172,7 +2203,9 @@ EXTRACT_STEPS = (
 - It is often printed near the head of the page and often not: take it from wherever the page
   prints it. A company, brand or place name is never the heading -- those name a party to the
   document, not the kind of document it is.
-- document_number is the number identifying this document, printed with that heading.
+- document_number is the number identifying this document, printed with that heading
+  or its own document-number caption. Keep it distinct from a referenced invoice,
+  payment/cheque number, tax ID or customer code elsewhere in the text.
 - issue_date is the date the document is dated. Where the page prints several dates, take
   the one labelled as this document's own date -- not a due date, not a period, not a
   payment date.""",
@@ -2202,7 +2235,7 @@ EXTRACT_STEPS = (
         "keys": ("seller_tax_id", "seller_branch", "seller_branch_location"),
         "skeleton": '{ "seller_tax_id": "", "seller_branch": "", "seller_branch_location": "" }',
         "max_tokens": 300,
-        "rules": 'The issuer is the party this document is FROM -- who wrote it or is to be paid. The customer is the party addressed TO, billed or delivered to. Identify their blocks by printed labels, not page position or logo. On an order or request the top block can belong to the customer. If the roles are uncertain, leave the values empty. ' + "\n" + _party_values("seller"),
+        "rules": 'The issuer is the party this document is FROM -- who wrote it or is to be paid. The customer is the party addressed TO, billed or delivered to. Identify their blocks by printed labels, not page position or logo. On an order or request the top block can belong to the customer. If the roles are uncertain, leave the values empty. ' + "\n" + _agentic_party_values("seller"),
     },
     {
         "id": "buyer",
@@ -2210,7 +2243,7 @@ EXTRACT_STEPS = (
         "keys": ("buyer_tax_id", "buyer_branch", "buyer_branch_location"),
         "skeleton": '{ "buyer_tax_id": "", "buyer_branch": "", "buyer_branch_location": "" }',
         "max_tokens": 300,
-        "rules": 'The issuer is the party this document is FROM -- who wrote it or is to be paid. The customer is the party addressed TO, billed or delivered to. Identify their blocks by printed labels, not page position or logo. On an order or request the top block can belong to the customer. If the roles are uncertain, leave the values empty. ' + "\n" + _party_values("buyer"),
+        "rules": 'The issuer is the party this document is FROM -- who wrote it or is to be paid. The customer is the party addressed TO, billed or delivered to. Identify their blocks by printed labels, not page position or logo. On an order or request the top block can belong to the customer. If the roles are uncertain, leave the values empty. ' + "\n" + _agentic_party_values("buyer"),
     },
     {
         "id": "totals",
@@ -2261,15 +2294,17 @@ EXTRACT_STEPS = (
         "max_tokens": 160,
         "rules": """What to look for:
 - inv_rtv_cnr_number is ONE identifier: the invoice, return-to-vendor, or credit-note-return
-  document that this payment settles.
+  document referenced as being paid or settled by this document.
 - Find it by its printed label -- a label meaning invoice number, reference document, return,
   or the document being paid. Name that label to yourself before answering; where you cannot
   name one, the answer is "".
 - It is NOT this document's own number. A receipt carries its own number too, usually under a
   label meaning receipt number, and that one is never the answer here.
-- Where the page settles several documents -- a table with a column of them, or a list --
-  none of them belongs here. Do not pick one and do not join them together: answer "".
-- Answer with the one short value and stop.""",
+- A single referenced identifier is valid whether printed in a header, a line or a table.
+  Repeated occurrences of the SAME identifier still identify one document.
+- Where the page settles several DISTINCT documents, do not pick one or join them:
+  answer "". A table containing one referenced document is not several documents.
+- Keep this key to one short identifier, without prose or additional identifiers.""",
     },
     {
         "id": "remaining",
@@ -2347,7 +2382,8 @@ EXTRACT_STEPS = (
         "keys": ("payer_tax_id", "payer_name"),
         "skeleton": '{ "payer_tax_id": "", "payer_name": "" }',
         "max_tokens": 260,
-        "rules": _WHT_PARTY_ROLES + _wht_identity_rules("payer"),
+        "rules": _WHT_PARTY_ROLES + _wht_identity_rules("payer") +
+                 'Read the complete payer block, but stop payer_name before an explicit branch/head-office suffix. Do not append that designation to the name.\n',
     },
     {
         "id": "wht_payer_branch",
@@ -2355,7 +2391,7 @@ EXTRACT_STEPS = (
         "keys": ("payer_branch", "payer_branch_location"),
         "skeleton": '{ "payer_branch": "", "payer_branch_location": "" }',
         "max_tokens": 220,
-        "rules": _WHT_PARTY_ROLES + _branch_rules("payer"),
+        "rules": _WHT_PARTY_ROLES + _AGENTIC_BRANCH_SELECTION.format(party="payer"),
     },
     {
         "id": "wht_payer_address",
@@ -2379,7 +2415,8 @@ EXTRACT_STEPS = (
         "keys": ("payee_tax_id", "payee_name"),
         "skeleton": '{ "payee_tax_id": "", "payee_name": "" }',
         "max_tokens": 260,
-        "rules": _WHT_PARTY_ROLES + _wht_identity_rules("payee"),
+        "rules": _WHT_PARTY_ROLES + _wht_identity_rules("payee") +
+                 'Read the complete payee block, but stop payee_name before an explicit branch/head-office suffix. Do not append that designation to the name.\n',
     },
     {
         "id": "wht_payee_branch",
@@ -2387,7 +2424,7 @@ EXTRACT_STEPS = (
         "keys": ("payee_branch", "payee_branch_location"),
         "skeleton": '{ "payee_branch": "", "payee_branch_location": "" }',
         "max_tokens": 220,
-        "rules": _WHT_PARTY_ROLES + _branch_rules("payee"),
+        "rules": _WHT_PARTY_ROLES + _AGENTIC_BRANCH_SELECTION.format(party="payee"),
     },
     {
         "id": "wht_payee_address",
@@ -2491,6 +2528,34 @@ its own column.
 )
 
 
+def _group_steps(table, members, primary, title, guidance):
+    """Combine already-selected fields, never extend a type's form.
+
+    Keep the request at the first member's position. Historical member ids stay
+    available for targeted extraction, but request the complete related group.
+    Definitions in EXTRACT_STEPS are never mutated by concurrent documents.
+    """
+    by_id = {s["id"]: s for s in table}
+    if not all(member in by_id for member in members):
+        return table
+    keys = tuple(k for member in members for k in by_id[member]["keys"])
+    if len(keys) > 3 or len(keys) != len(set(keys)):
+        raise ValueError("a grouped extraction step must own at most three unique keys")
+    grouped = {**by_id[primary], "title": title, "keys": keys,
+               "includes_steps": tuple(members),
+               "skeleton": '{ ' + ', '.join(f'"{key}": ""' for key in keys) + ' }',
+               "max_tokens": 300,
+               "rules": guidance + "\n\n" + "\n\n".join(by_id[m]["rules"] for m in members)}
+    result, inserted = [], False
+    for step in table:
+        if step["id"] not in members:
+            result.append(step)
+        elif not inserted:
+            result.append(grouped)
+            inserted = True
+    return tuple(result)
+
+
 def steps_for_types(codes, extras=True):
     """The agentic steps that fill exactly the field set for a document type.
 
@@ -2499,11 +2564,12 @@ def steps_for_types(codes, extras=True):
     asserts the chosen steps cover the type's keys exactly, no key asked twice
     and none left unasked -- so there is never a step to include "partly".
     Emitting a step with some of its keys removed would mean rewriting its
-    skeleton and its rules on the fly, and those rules are measured text.
+    skeleton and its rules on the fly. Once selected, related complete steps
+    may be grouped into one request of at most three keys.
 
-    `other` owns no scalar key and is always included: it is the overflow valve
-    every set leans on. Order is always `EXTRACT_STEPS`', so a type's run is the
-    full run with steps removed -- the same rule `app._steps_for` follows.
+    `other` owns no scalar key and is included when extras is enabled. Groups
+    occupy their first component's position in EXTRACT_STEPS; other steps retain
+    their relative order. `app._steps_for` restricts this final table.
 
     Takes the CODES a document names, not one code, so a receipt/tax-invoice
     runs the steps for the union of both forms. `extras` False drops `other`,
@@ -2523,8 +2589,21 @@ def steps_for_types(codes, extras=True):
                   "buyer": "the original customer sending the goods back"}
         # Copy per document: workers for other types share EXTRACT_STEPS.
         table = tuple({**s, "title": titles[s["id"]],
-                       "rules": _rtv_party_rules(s["id"])}
+                       "rules": _RTV_PARTIES + _agentic_party_values(s["id"])}
                       if s["id"] in titles else s for s in table)
+    table = _group_steps(table, ("totals", "total_incl"), "totals",
+                         "the printed totals before tax, tax and including tax",
+                         "Read the same totals block for these three keys. Match each printed "
+                         "label to its own amount before answering. Do not reuse a net payable "
+                         "or a withholding deduction as a VAT-inclusive total. Copy only "
+                         "printed amounts; never calculate a missing total.")
+    table = _group_steps(table, ("inv_rtv_cnr", "payment"), "payment",
+                         "the referenced document and its payment date and cheque",
+                         "Read the payment/settlement evidence together. The referenced "
+                         "document identifier, payment date and cheque number are different "
+                         "facts: each needs its own printed label. A missing cheque number "
+                         "does not make a printed reference or payment date empty. A cheque "
+                         "number must never fill the referenced-document key.")
     return table
 
 

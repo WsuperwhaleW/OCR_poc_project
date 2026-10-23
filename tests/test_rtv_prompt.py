@@ -25,7 +25,7 @@ class ReturnPromptTests(unittest.TestCase):
             "vat_total", "amount_incl_vat"})
         table = prompts.steps_for_types(RTV, extras=False)
         self.assertEqual([s["id"] for s in table],
-                         ["document", "seller", "buyer", "totals", "total_incl"])
+                         ["document", "seller", "buyer", "totals"])
         self.assertEqual([k for s in table for k in s["keys"]], list(keys))
         self.assertEqual(prompts.mandatory_for_types(RTV), ())
         self.assertEqual(prompts.steps_for_types(RTV)[-1]["id"], "other")
@@ -88,7 +88,7 @@ class ReturnPromptTests(unittest.TestCase):
             step = next(s for s in prompts.steps_for_types(codes) if s["id"] == "seller")
             self.assertEqual(step["title"], "who issued this document")
 
-    def test_real_return_page_routes_five_schema_requests_with_grounded_values(self):
+    def test_real_return_page_routes_four_schema_requests_with_grounded_values(self):
         truth = json.loads((ROOT / "solution/sol014.fields.json").read_text(encoding="utf-8"))
         block = truth["documents"][1]
         expected = block
@@ -110,7 +110,7 @@ class ReturnPromptTests(unittest.TestCase):
              patch.object(app, "AGENTIC_PARALLEL", False):
             result = app._drain(app._extract_agentic(text, STATUS, form))
         self.assertNotIn("error", result)
-        self.assertEqual(len(requests), 5)
+        self.assertEqual(len(requests), 4)
         self.assertEqual(set().union(*(set(schema["properties"]) for _, schema, _ in requests)),
                          set(form["keys"]))
         for key in form["keys"]:

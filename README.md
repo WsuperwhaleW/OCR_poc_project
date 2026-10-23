@@ -700,16 +700,35 @@ Pass 2 runs in one of two shapes, chosen by **Field extraction** in the sidebar 
 
 | | one request | agentic |
 |---|---|---|
-| Requests per document | 1 | 15 |
-| Fields asked for at once | all 31 | 1–3 |
+| Requests per document | 1, plus a parsing retry if needed | depends on the document's form |
+| Fields asked for at once | all fields in the document's form | 1–3 scalar fields, or one list |
 | A step that returns something not on the page | — | asked again once |
 | A reply that will not parse | costs the whole extraction | costs that step's fields |
-| Speed | fast | slower |
+| Speed | depends on workload and document length | depends on workload and parallelism |
 
-Agentic mode walks seven steps — the heading, the reference, the seller, the buyer, the
-currency, the totals, and whatever is left over — asking for one to three fields each against
-the same transcript. Use it when a value keeps landing in the wrong field; the single request
-is faster and is what a fresh process starts in.
+Agentic mode asks independent steps against the same complete document transcript and
+type framing. Each step sees its own question, not the other steps' answers. vLLM can run
+these steps in parallel. The number of steps depends on the document's requested fields;
+single-request mode remains the process default.
+
+Related fields share a request where the form asks for them: `subtotal`, `vat_total` and
+`amount_incl_vat` form one totals step; `inv_rtv_cnr_number`, `payment_date` and `cheque_number`
+form one payment step. A receipt that asks for just the first two totals still asks for
+only those two. No grouped step exceeds three keys or adds fields to the form. Without
+extras, an invoice runs five steps, a receipt five, and an RTV return shipment four.
+Seller and buyer remain separate requests of tax ID, branch code and branch location.
+WHT identity/address requests stay separate; their name instructions exclude explicitly
+designated branch/head-office suffixes while preserving qualifiers in legal names.
+
+Agentic branch instructions distinguish labelled tax branch numbers from place names
+and store/customer codes. Printed zeros are valid evidence; missing values must not be
+filled with invented zeros. These wording changes apply to Agentic; the Single prompt
+and ground truth remain unchanged for benchmark comparison. Accuracy and speed still
+need verification on the actual model server.
+
+For targeted extraction, historical step ids `total_incl` and `inv_rtv_cnr` select the
+complete related totals/payment group. Results and detail logs list the group's actual
+keys under `totals` or `payment`, respectively; old saved logs retain their original steps.
 
 While it runs, the Fields tab lists the steps and marks each one done, re-asked or failed.
 The list stays after the run, under the fields, so a value can be traced back to the step
