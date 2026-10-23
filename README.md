@@ -1756,11 +1756,25 @@ for incorrect, partial, unscored, retried, or failed steps; ordinary correct/abs
 need no duplicate raw reply. Input contexts and questions are deduplicated across jobs
 in the top-level `contexts` and `questions` dictionaries, referenced by SHA-256 IDs.
 Full prompt-module source, concatenated replies, duplicate extraction/scoring dumps,
-table-processing internals, monitoring, and per-chat performance dumps are omitted. Unscored
+table-processing internals and monitoring are omitted. Unscored
 fields have a null expected value. Warm-up jobs are excluded; cancelled or skipped jobs
 have no invented answers. A Stop exports the results available when the report was made.
 Old version 1 downloads can be reduced locally using `extractionlog.compact_download`
 without another model run; the original file is left intact.
+
+New v2 downloads carry `diagnostics_revision: 1`. They add compact `step_stats` for
+every extraction step (timing, request schema flags, tokens and context limits),
+including steps with correct answers; full replies remain limited to problem/retry
+evidence. Job/document `score` summaries preserve counts, denominators and the
+macro/pooled rates without repeating field rows, and each document records its
+requested `form`. Provenance hashes the scorer, normalizer, segmenter, backend,
+grounding and benchmark aggregation code, manifest, and selected field/transcript
+truth files before the benchmark clock starts. The hashes identify that starting
+snapshot; editing files during a run is not locked or monitored. Expected document
+pages are recorded once per case; `document_alignment` flags spans that differ or
+cross truth documents using the scorer's first-page matching rule. This is diagnostic
+only and does not change page grouping or score calculation. Old downloads cannot
+recover step statistics or file hashes that were not saved at the time.
 
 Party branches have two fields: `*_branch` for an explicit tax branch number or
 head-office designation, and `*_branch_location` for an explicitly named branch/site.

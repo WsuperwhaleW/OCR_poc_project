@@ -1,19 +1,87 @@
 """Download-only extraction diagnostics. No filesystem writes or model requests."""
 import hashlib
+import json
 from collections import Counter
 from pathlib import Path
 
 
-def provenance(prompt_file, app_file, settings):
+DIAGNOSTICS_REVISION = 1
+
+
+def _file_identity(path):
+    try:
+        return {"sha256": hashlib.sha256(Path(path).read_bytes()).hexdigest()}
+    except (OSError, UnicodeError, TypeError) as err:
+        return {"error": str(err)}
+
+
+def provenance(prompt_file, app_file, settings, extra_files=None, benchmarks=None):
     """Capture the code/prompt identity once, before the timed run."""
-    files = {}
-    for label, path in (("prompts", prompt_file), ("app", app_file)):
-        try:
-            data = Path(path).read_bytes()
-            files[label] = {"sha256": hashlib.sha256(data).hexdigest()}
-        except (OSError, UnicodeError) as err:
-            files[label] = {"error": str(err)}
-    return {"files": files, "settings": settings}
+    paths = {"prompts": prompt_file, "app": app_file, **(extra_files or {})}
+    out = {"files": {label: _file_identity(path) for label, path in paths.items()},
+           "settings": settings, "snapshot": "before_benchmark"}
+    if benchmarks:
+        snapshots = {}
+        for case, info in benchmarks.items():
+            entry = {name: _file_identity(info.get(name)) for name in ("transcript", "fields")}
+            try:
+                raw = json.loads(Path(info["fields"]).read_text("utf-8"))
+                if isinstance(raw, dict):
+                    docs = raw.get("documents") or []
+                    if docs:
+                        entry["expected_documents"] = [{"pages": d.get("pages") or [],
+                            "doc_types": d.get("doc_types") or []} for d in docs if isinstance(d, dict)]
+                    elif isinstance(info.get("pages"), int) and info["pages"] > 0:
+                        entry["expected_documents"] = [{"pages": list(range(1, info["pages"] + 1)),
+                                                       "doc_types": info.get("doc_types") or []}]
+            except (OSError, ValueError, TypeError):
+                pass  # Missing or old truth files still have an explicit hash error.
+            snapshots[case] = entry
+        out["benchmarks"] = snapshots
+    return out
+
+
+def _score_summary(score):
+    """Keep denominators and averaging scope, without repeating field rows."""
+    return {key: score[key] for key in (
+        "overall", "optional", "coverage", "unknown_type", "scored_scope",
+        "normalization_version", "documents", "scored_documents", "warnings", "error")
+        if key in score}
+
+
+def _step_stats(step, catalog):
+    # Every step gets these small records, including fully correct steps.
+    # Full replies/values stay in the existing problem-step evidence only.
+    out = {key: step[key] for key in ("id", "keys", "seconds", "attempts") if key in step}
+    out["question_id"] = _reference(catalog, "questions", step.get("prompt"))
+    if step.get("chats"):
+        out["chats"] = [{key: chat[key] for key in (
+            "request", "in_tokens", "out_tokens", "used_tokens", "reply_cap",
+            "context_limit", "context_source", "used_pct", "seconds", "http_status",
+            "schema", "error") if key in chat} for chat in step["chats"]]
+    return out
+
+
+def _alignment(documents, benchmark):
+    """Flag spans crossing truth documents; do not change segmentation or scoring."""
+    expected = (benchmark or {}).get("expected_documents") or []
+    if not expected:
+        return []
+    issues = []
+    for number, document in enumerate(documents, 1):
+        pages = document.get("pages") or []
+        if not pages:
+            continue
+        touched = [d.get("pages") or [] for d in expected
+                   if set(pages).intersection(d.get("pages") or [])]
+        selected = next((d.get("pages") or [] for d in expected
+                         if pages[0] in (d.get("pages") or [])), [])
+        if not selected or set(pages) != set(selected):
+            issues.append({"document": document.get("document", number), "pages": pages,
+                           "truth_pages_by_first_page": selected,
+                           "overlapping_truth_documents": touched,
+                           "crosses_truth_documents": len(touched) > 1})
+    return issues
 
 
 def _reference(catalog, section, text):
@@ -36,7 +104,7 @@ def _step_detail(step, catalog):
     return out
 
 
-def job_detail(record, spec, source, warmup=0, catalog=None):
+def job_detail(record, spec, source, warmup=0, catalog=None, benchmark=None):
     """Field outcomes for all steps, with response evidence only where useful for tuning."""
     catalog = catalog if catalog is not None else {"contexts": {}, "questions": {}}
     result = record.get("_extraction_result")
@@ -61,6 +129,10 @@ def job_detail(record, spec, source, warmup=0, catalog=None):
             for row in judged:
                 path = row["path"]
                 key = path.split("[", 1)[0]
+                row = dict(row)
+                normalized = document.get("normalized") or {}
+                if row["status"] == "unscored" and key in normalized and normalized[key] != row.get("actual"):
+                    row["normalized_actual"] = normalized[key]
                 rows.append({**row, "document": document.get("document", number),
                              "pages": pages, "doc_types": document.get("doc_types") or [],
                              "step": step_keys.get(key), "actual_returned": key in fields})
@@ -78,6 +150,18 @@ def job_detail(record, spec, source, warmup=0, catalog=None):
                      "context_id": _reference(catalog, "contexts",
                                               document.get("prompt_prefix") or document.get("prompt")),
                      "steps": [_step_detail(step, catalog) for step in evidence]}
+            if score:
+                entry["score"] = _score_summary(score)
+            form = document.get("classified") or {}
+            entry["form"] = {key: value for key, value in {
+                "keys": document.get("fields_asked", form.get("fields")),
+                "items": document.get("items_asked", form.get("items")),
+                "mandatory": form.get("mandatory"),
+                "mandatory_items": form.get("mandatory_items"),
+                "unknown_type": form.get("unknown_type"),
+            }.items() if value is not None}
+            if steps:
+                entry["step_stats"] = [_step_stats(step, catalog) for step in steps]
             # Tables not judged against ground truth still need their actual values
             # for manual inspection; scored table cells are already in field_rows.
             scored_roots = {key.split("[", 1)[0] for key in checked}
@@ -88,12 +172,18 @@ def job_detail(record, spec, source, warmup=0, catalog=None):
             if not steps and (problem_keys or document.get("error")):
                 entry["raw"] = document.get("raw", "")
             documents.append(entry)
-    return {"job": spec["index"] + 1, "queue_position": spec["index"] - warmup + 1,
+    detail = {"job": spec["index"] + 1, "queue_position": spec["index"] - warmup + 1,
             "case": spec.get("case"), "source": source,
             "status": record.get("status"), "error": record.get("error", ""),
             "timing": {key: record[key] for key in ("wait_s", "total_s", "ocr_s", "extract_s")
                        if key in record},
             "field_rows": rows, "documents": documents}
+    if isinstance(result, dict) and result.get("field_score"):
+        detail["score"] = _score_summary(result["field_score"])
+    alignment = _alignment(documents, benchmark)
+    if alignment:
+        detail["document_alignment"] = alignment
+    return detail
 
 
 def field_summary(counts):
@@ -109,10 +199,12 @@ def field_summary(counts):
 
 def events(records, specs, sources, warmup, identity, report=None):
     """Serialize only after the runner stopped its benchmark clock; never save on disk."""
-    yield {"event": "detail_log_start", "format_version": 2, "provenance": identity}
+    yield {"event": "detail_log_start", "format_version": 2,
+           "diagnostics_revision": DIAGNOSTICS_REVISION, "provenance": identity}
     counts, catalog = {}, {"contexts": {}, "questions": {}}
     for record, spec in zip(records, specs):
-        detail = job_detail(record, spec, sources.get(spec.get("case"), {}), warmup, catalog)
+        detail = job_detail(record, spec, sources.get(spec.get("case"), {}), warmup, catalog,
+                            (identity.get("benchmarks") or {}).get(spec.get("case")))
         for row in detail["field_rows"]:
             counts.setdefault(row["path"], Counter())[row["status"]] += 1
         yield {"event": "detail_log_job", "job": detail}

@@ -7891,16 +7891,32 @@ def _stress_phase(specs: list, cfg: dict, prepared: dict, cancel, phase: str,
     return records, wall, timeline, last_metrics, draining
 
 
+def _stress_detail_identity(cfg):
+    """Hash the code and selected truth files outside the benchmark clock."""
+    index = scoring.cases_index() if cfg.get("source", "benchmark") == "benchmark" else {}
+    benchmarks = {case: {"transcript": index[case]["ground_truth"],
+                         "fields": fieldscore.truth_path(case),
+                         "pages": index[case].get("pages"),
+                         "doc_types": index[case].get("doc_types") or []}
+                  for case in cfg["cases"] if case in index}
+    return extractionlog.provenance(prompts.__file__, __file__, {
+        "AGENTIC_RETRIES": AGENTIC_RETRIES, "EXTRACT_SCHEMA": EXTRACT_SCHEMA,
+        "AGENTIC_PARALLEL": AGENTIC_PARALLEL, "AGENTIC_PARALLEL_MAX": AGENTIC_PARALLEL_MAX,
+        "SEGMENT_MAX_PAGES": SEGMENT_MAX_PAGES,
+        "NORMALIZATION_VERSION": normalise.NORMALIZATION_VERSION}, extra_files={
+            "normalise": normalise.__file__, "fieldscore": fieldscore.__file__,
+            "segment": segment.__file__, "backends": backends.__file__,
+            "grounding": grounding.__file__, "stress": stress.__file__,
+            "manifest": config.SOLUTION_DIR / "manifest.json"}, benchmarks=benchmarks)
+
+
 def _stress_run(cfg: dict, cancel):
     """The whole run: plan, prepare, warm up, measure, report."""
     rng, seed = stress.seeded_rng(cfg["seed"])
     mode = cfg["mode"]
     cfg["run_id"] = f"{time.strftime('%Y-%m-%dT%H:%M:%S')}-{seed}"
     total = cfg["warmup"] + cfg["jobs"]
-    detail_identity = (extractionlog.provenance(prompts.__file__, __file__, {
-        "AGENTIC_RETRIES": AGENTIC_RETRIES, "EXTRACT_SCHEMA": EXTRACT_SCHEMA,
-        "NORMALIZATION_VERSION": normalise.NORMALIZATION_VERSION})
-        if cfg.get("save_details") else None)
+    detail_identity = _stress_detail_identity(cfg) if cfg.get("save_details") else None
     reader = llama_status() if mode in ("ocr", "full") else None
     extractor = backends.extract_status() if mode != "ocr" else None
     info = reader or extractor

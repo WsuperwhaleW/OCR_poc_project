@@ -27,6 +27,88 @@ STATUS = {"available": True, "text_available": True, "reason": None,
 
 
 class FormatTests(unittest.TestCase):
+    def test_correct_steps_keep_compact_stats_and_questions_without_raw_replies(self):
+        result = copy.deepcopy(RESULT)
+        result['documents'] = [result['documents'][0]]
+        step = result['documents'][0]['steps'][0]
+        step.update(prompt='shared question', seconds=1.2, attempts=1, chats=[{
+            'in_tokens': 7000, 'out_tokens': 12, 'used_tokens': 7012,
+            'context_limit': 8192, 'reply_cap': 220, 'schema': True,
+            'seconds': 1.2, 'http_status': 200, 'unwanted': MARKER}])
+        step['raw'][0]['text'] = MARKER * 10000
+        events = list(extractionlog.events(
+            [{'_extraction_result': result}] * 2,
+            [{'index': 0}, {'index': 1}], {}, 0, {}))
+        self.assertEqual(events[0]['diagnostics_revision'], 1)
+        for event in events[1:-1]:
+            doc = event['job']['documents'][0]
+            self.assertEqual(doc['steps'], [])
+            stats = doc['step_stats'][0]
+            self.assertEqual(stats['chats'][0]['used_tokens'], 7012)
+            self.assertTrue(stats['chats'][0]['schema'])
+            self.assertNotIn('raw', stats)
+            self.assertNotIn('values', stats)
+            self.assertEqual(events[-1]['questions'][stats['question_id']], 'shared question')
+        self.assertNotIn(MARKER, json.dumps(events))
+        self.assertLess(len(json.dumps(events)), 10000)
+
+    def test_provenance_hashes_code_and_truth_without_embedding_source(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            code, transcript, fields = root/'code.py', root/'a.md', root/'a.fields.json'
+            code.write_text('private code source')
+            transcript.write_text('private transcript')
+            fields.write_text(json.dumps({'documents': [
+                {'pages': [1], 'doc_types': ['INVOICE'], 'seller_tax_id': 'PRIVATE_ID'},
+                {'pages': [2], 'doc_types': ['RECEIPT']}]}))
+            kwargs = {'extra_files': {'normalise': code}, 'benchmarks': {
+                'a': {'transcript': transcript, 'fields': fields, 'pages': 2}}}
+            first = extractionlog.provenance(code, code, {}, **kwargs)
+            self.assertEqual(first['benchmarks']['a']['expected_documents'][1]['pages'], [2])
+            self.assertEqual(first['snapshot'], 'before_benchmark')
+            self.assertNotIn('PRIVATE_ID', json.dumps(first))
+            self.assertNotIn('private transcript', json.dumps(first))
+            fields.write_text('{"seller_tax_id": "changed"}')
+            second = extractionlog.provenance(code, code, {}, **kwargs)
+            self.assertNotEqual(first['benchmarks']['a']['fields'], second['benchmarks']['a']['fields'])
+            self.assertEqual(second['benchmarks']['a']['expected_documents'][0]['pages'], [1, 2])
+            fields.unlink()
+            missing = extractionlog.provenance(code, code, {}, **kwargs)
+            self.assertIn('error', missing['benchmarks']['a']['fields'])
+
+    def test_alignment_flags_crossing_truth_documents_without_rewriting_results(self):
+        benchmark = {'expected_documents': [{'pages': [6]}, {'pages': [7]}]}
+        result = {'documents': [{'document': 1, 'pages': [6, 7], 'fields': {'issue_date': 'date'}}]}
+        before = copy.deepcopy(result)
+        job = extractionlog.job_detail({'_extraction_result': result}, {'index': 0}, {}, benchmark=benchmark)
+        issue = job['document_alignment'][0]
+        self.assertEqual(issue['truth_pages_by_first_page'], [6])
+        self.assertTrue(issue['crosses_truth_documents'])
+        self.assertEqual(issue['overlapping_truth_documents'], [[6], [7]])
+        self.assertEqual(result, before)
+        result['documents'] = [{'pages': [6]}, {'pages': [7]}]
+        job = extractionlog.job_detail({'_extraction_result': result}, {'index': 0}, {}, benchmark=benchmark)
+        self.assertNotIn('document_alignment', job)
+
+    def test_score_scope_form_and_unscored_normalized_values_are_preserved(self):
+        fields = {'buyer_branch_location': 'สาขาอำพัน แพร่'}
+        score = {'overall': {'accuracy_half': .9, 'accuracy_half_pooled': .8, 'expected': 10},
+                 'optional': {'expected': 1}, 'coverage': {'required_checked': 10},
+                 'unknown_type': True, 'warnings': ['scope warning'], 'scalars': {'rows': []}}
+        result = {'fields': fields, 'normalized': {'buyer_branch_location': 'อำพัน แพร่'},
+                  'field_score': score, 'classified': {'fields': list(fields), 'mandatory': [],
+                                                     'unknown_type': True}}
+        job = extractionlog.job_detail({'_extraction_result': result}, {'index': 0}, {})
+        self.assertEqual(job['score']['overall']['accuracy_half_pooled'], .8)
+        self.assertEqual(job['documents'][0]['score']['warnings'], ['scope warning'])
+        self.assertEqual(job['documents'][0]['form']['keys'], list(fields))
+        self.assertEqual(job['documents'][0]['form']['mandatory'], [])
+        self.assertNotIn('scalars', job['score'])
+        row = job['field_rows'][0]
+        self.assertIsNone(row['expected'])
+        self.assertEqual(row['actual'], 'สาขาอำพัน แพร่')
+        self.assertEqual(row['normalized_actual'], 'อำพัน แพร่')
+
     def test_repeated_documents_share_contexts_and_questions_but_keep_retry_evidence(self):
         result = copy.deepcopy(RESULT)
         for doc in result["documents"]:
@@ -125,6 +207,9 @@ class StreamTests(unittest.TestCase):
         start = next(e for e in events if e["event"] == "detail_log_start")
         self.assertNotIn("source", start["provenance"]["files"]["prompts"])
         self.assertIn("sha256", start["provenance"]["files"]["prompts"])
+        self.assertEqual(start['diagnostics_revision'], 1)
+        for name in ('normalise', 'fieldscore', 'segment', 'backends', 'grounding', 'stress'):
+            self.assertIn('sha256', start['provenance']['files'][name])
         self.assertTrue(start["configuration"]["save_details"])
         self.assertEqual(start["plan"]["jobs"], 2)
         run_id = events[-1]["history_id"]
@@ -134,8 +219,9 @@ class StreamTests(unittest.TestCase):
         self.assertFalse((self.root / "logs/runs.csv").exists())
 
     def test_disabled_option_emits_no_diagnostics(self):
-        self.assertFalse(any(e["event"].startswith("detail_log")
-                             for e in self.run_stress(save_details=False)))
+        with patch.object(extractionlog, 'provenance', side_effect=AssertionError('unrequested hashing')):
+            self.assertFalse(any(e["event"].startswith("detail_log")
+                                 for e in self.run_stress(save_details=False)))
 
     def test_api_validates_boolean_and_ignores_option_for_non_extraction_modes(self):
         response = self.client.post("/api/stress/stream", json={"save_details": "yes"})

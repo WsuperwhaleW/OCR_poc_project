@@ -13403,6 +13403,7 @@ function stDownloadDetailLog() {
 function stReceiveDetailLog(ev) {
   if (ev.event === 'detail_log_start') {
     const header = {format: 'ocr-extraction-detail-log', format_version: ev.format_version,
+      diagnostics_revision: ev.diagnostics_revision,
       configuration: ev.configuration, plan: ev.plan, provenance: ev.provenance};
     stDetailLog.parts = [JSON.stringify(header).slice(0, -1) + ',"jobs":['];
   } else if (ev.event === 'detail_log_job' && stDetailLog.parts) {

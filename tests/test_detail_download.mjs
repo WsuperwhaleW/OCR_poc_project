@@ -13,7 +13,8 @@ function setup(blockDownload = false) {
     document: {body: {appendChild() {}}, createElement() {return {
       click() {if (blockDownload) throw new Error('blocked'); downloads.push(this.href);}, remove() {}};}}});
   vm.runInContext(source + '\napi = {receive: stReceiveDetailLog, finish: stFinishDetailLog, clear: stClearDetailLog, download: stDownloadDetailLog};', ctx);
-  ctx.api.receive({event: 'detail_log_start', format_version: 2, configuration: {save_details: true}});
+  ctx.api.receive({event: 'detail_log_start', format_version: 2, diagnostics_revision: 1,
+    configuration: {save_details: true}});
   return {ctx, api: ctx.api, downloads, blobs, revoked};
 }
 
@@ -29,6 +30,7 @@ test('builds valid JSON, automatically downloads once, and permits a second down
   const file = JSON.parse(await blobs[0].text());
   assert.deepEqual(file.jobs, jobs);
   assert.equal(file.format_version, 2);
+  assert.equal(file.diagnostics_revision, 1);
   assert.deepEqual(file.contexts, {source: 'document text'});
   assert.deepEqual(file.questions, {lookup: 'question'});
   assert.deepEqual(file.report, {completed: 2});
