@@ -2163,10 +2163,18 @@ def _wht_identity_rules(party):
 
 
 _AGENTIC_BRANCH_SELECTION = """Read both branch keys from the SAME party block:
-- {party}_branch takes the explicit tax branch NUMBER, not the store/location code.
+- {party}_branch accepts EITHER a printed tax branch number OR explicit head-office
+  wording. BOTH are valid branch information; this key is not restricted to digits.
+- HEAD OFFICE WITHOUT A NUMBER: when this party is explicitly designated as head office
+  (สำนักงานใหญ่, Head Office, HO or HQ), copy its printed wording into BOTH {party}_branch
+  and {party}_branch_location. Do not leave {party}_branch empty just because no number
+  is printed. Python will normalize the copied wording to the head-office code;
+  copy the wording, do not generate digits that the page does not print.
+- PRINTED BRANCH NUMBER: copy the tax branch number, not the store/location code.
   Match captions meaning branch number/code: เลขสาขา, สาขาที่, ลำดับสาขา, Branch No.
   or Branch Code. ลำดับที่ counts only when it designates this party's branch, not
   a document/item sequence. Preserve printed digits; Python will pad the code.
+  Copy a printed all-zero branch number as printed. It is not a missing value.
 - {party}_branch_location takes an explicitly named branch/site, without captions
   such as ชื่อสาขา, สาขา, Branch name, or enclosing brackets. A branch name is also valid
   when a separate branch number exists: put BOTH in their separate keys.
@@ -2175,12 +2183,15 @@ _AGENTIC_BRANCH_SELECTION = """Read both branch keys from the SAME party block:
   location name. A district/town in an ordinary address is not evidence of a branch.
   Require a branch/site designation or a branch suffix attached to this party's name.
   Keep words/digits belonging to the place name; remove only the field caption.
-- Copy a printed all-zero branch number as printed. It is not a missing value.
-  Explicit head-office wording belongs in BOTH keys when no branch number is printed;
-  copy the wording rather than inventing digits. If head office and a nonzero branch
-  number conflict for the same party, leave the uncertain branch code empty.
+- NAMED LOCATION ONLY: if this party has a named branch/site but neither a printed
+  branch number nor a head-office designation, leave {party}_branch empty and copy
+  only the named location into {party}_branch_location. A general place name does
+  not establish a branch code; explicit head-office wording is the separate case above.
+- If head office and a nonzero branch number conflict for the same party, leave the
+  uncertain branch code empty. If neither branch information nor a named location
+  is stated, leave both keys empty.
 - Do not copy the other party's values, infer a missing number or translate names.
-  A location alone never establishes a numeric code. If absent or uncertain, use "".
+  For any other absent or uncertain value, use "".
 """
 
 
@@ -2254,7 +2265,13 @@ EXTRACT_STEPS = (
         "rules": """These are two different figures, each read off its own printed line.
 - subtotal is the figure on the total line printed BEFORE tax is added -- the total of the
   goods or services themselves.
-- vat_total is the figure on the tax line.
+- vat_total is the printed VAT AMOUNT in money, never the VAT RATE or a percentage.
+  If a line prints both a percentage and a money amount, copy the money amount only.
+  A withholding-tax amount is not VAT and does not belong in this key.
+- If the VAT amount is blank, a dash, or not printed, answer "" for vat_total even when
+  a VAT rate is printed. Never put a percentage in vat_total or calculate the amount
+  from the rate and subtotal. A printed zero VAT AMOUNT is valid: copy it as printed;
+  a zero VAT RATE alone does not establish a zero amount.
 - Take each from its own printed label, never from its position on the page. Pages order
   these lines differently, and the order tells you nothing about which is which.
 - Fill only lines the page actually prints. Never add the rows up yourself and never derive
