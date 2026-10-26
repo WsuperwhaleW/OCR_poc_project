@@ -13819,7 +13819,7 @@ function stMetricsTable(view, title, since) {
 
 const ST_ALERT_TEXT = {
   error: 'error', looped: 'loop', truncated: 'token cap', partial: 'partial reply',
-  stalled: 'stalled'
+  stalled: 'stalled', recovered: 'retry read cleanly'
 };
 const ST_STAGE_TEXT = { ocr: 'reading', extract: 'extracting', segment: 'splitting',
   classify: 'classifying' };
@@ -13838,7 +13838,7 @@ function stAlertsHtml(alerts) {
     + shown.map(a => '<tr><td class="n">' + stSec(a.elapsed)
       + (a.phase === 'warmup' ? ' <small>warm-up</small>' : '') + '</td>'
       + '<td class="n">#' + a.job + '</td><td><b>' + esc(a.case || '') + '</b></td>'
-      + '<td><span class="st-tag ' + (a.kind === 'error' ? 'st-bad' : 'st-warn') + '">'
+      + '<td><span class="st-tag ' + (a.kind === 'error' ? 'st-bad' : a.kind === 'recovered' ? 'st-good' : 'st-warn') + '">'
       + esc(ST_ALERT_TEXT[a.kind] || a.kind) + '</span></td>'
       + '<td>' + esc(ST_STAGE_TEXT[a.stage] || a.stage || '')
       + (a.page ? ', page ' + a.page : '') + '</td>'
@@ -13995,7 +13995,9 @@ function stReportHtml(s, snapshot, host) {
     const tiles = [
       stTile('Completed', r.completed + '<small> / ' + r.attempted + '</small>',
         [c.looped ? c.looped + ' looped' : '', c.truncated ? c.truncated + ' at token cap' : '',
-         c.cancelled ? c.cancelled + ' cancelled' : '', c.skipped ? c.skipped + ' past the time limit' : '']
+         c.cancelled ? c.cancelled + ' cancelled' : '', c.skipped ? c.skipped + ' past the time limit' : '',
+         r.ocr && r.ocr.loop_retries ? r.ocr.loop_retries + ' loop retr' + (r.ocr.loop_retries === 1 ? 'y' : 'ies')
+           + ', ' + (r.ocr.loop_recovered || 0) + ' page(s) recovered' : '']
           .filter(Boolean).join(' · ')),
       stTile('Error rate', stPct(r.error_rate), (c.error || 0) + ' error(s)',
         r.error_rate ? 'st-bad' : ''),
