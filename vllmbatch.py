@@ -121,8 +121,8 @@ def split_reply(body: dict, n: int) -> list:
     estimated = estimated or (n > 1 and usage.get("prompt_tokens") is not None)
     out = []
     for i, choice in enumerate(choices):
-        choice = {k: v for k, v in choice.items() if k != "token_ids"}
-        choice["index"] = 0
+        # `token_ids` stays: a page read replays DRY from it (dryreplay.py).
+        choice = dict(choice, index=0)
         mine = {"prompt_tokens": prompt[i], "completion_tokens": completion[i]}
         if mine["prompt_tokens"] is not None and mine["completion_tokens"] is not None:
             mine["total_tokens"] = mine["prompt_tokens"] + mine["completion_tokens"]

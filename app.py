@@ -37,6 +37,7 @@ import backends
 import settings
 import blame
 import config
+import dryreplay
 import fieldscore
 import extractionlog
 import fixscore
@@ -775,6 +776,17 @@ VLLM_PIXELS_PER_TOKEN = 1024
 VLLM_TEXT_MARGIN = 600  # the instruction and the chat template, with room to spare
 
 
+def tag_page(page: Image.Image, label: str, detail: str) -> None:
+    """Name the page for the vLLM DRY processor's log line, e.g. "sol003 p1/2 low".
+
+    The server logs one line per DRY request saying whether DRY fired on it
+    (../vllm/podman-ocr-server/dry_logits_processor.py); this tag, sent as
+    `vllm_xargs.dry_tag`, is how that line names the document and page.
+    """
+    page._dry_label = label
+    page._dry_tag = f"{label} {detail}"
+
+
 def vllm_page(image: Image.Image) -> Image.Image:
     """The page as vLLM should get it: enlarged to `VLLM_MIN_PIXELS` if smaller.
 
@@ -853,6 +865,7 @@ def stream_page(image: Image.Image, stats: dict = None,
     # is reported (`image_bytes`): uploading it, and the server decoding and
     # resizing it, are in no server phase -- see servertime.py.
     vllm = status["kind"] == "vllm"
+    dry_tag = getattr(image, "_dry_tag", None)  # vllm_page may return a new image
     if vllm:
         image = vllm_page(image)
     image_uri = image_data_uri(image)
@@ -902,10 +915,26 @@ def stream_page(image: Image.Image, stats: dict = None,
     # token to time and nothing for the loop guard to cut -- the finished text
     # is tested below instead.
     batcher = _batcher_for(chat_url(), status)
+    # Names the page in the server's DRY log line (see `tag_page`). Only beside the
+    # DRY settings, and only on a request of its own: a /batch body shares one
+    # vllm_xargs across its conversations, so a per-page value would stop pages
+    # grouping at all (vllmbatch.group_key).
+    if vllm and batcher is None and dry_tag and "vllm_xargs" in payload:
+        payload["vllm_xargs"] = {**payload["vllm_xargs"], "dry_tag": dry_tag}
+    # Where DRY was asked for, the reply's token ids, so whether it fired can be
+    # worked out here (dryreplay.py) -- the server can only say so in its own log.
+    dry_xargs = (payload.get("vllm_xargs") or {}) if vllm else {}
+    dry_ids = None
+    if dry_xargs.get("dry_multiplier"):
+        payload["return_token_ids"] = True
+        dry_ids = []
     if batcher is not None:
         body = _await_batched(batcher, chat_url(), payload, cancel)
         usage = body.get("usage") or {}
         finish = (body.get("choices") or [{}])[0].get("finish_reason")
+        returned = (body.get("choices") or [{}])[0].get("token_ids")
+        if dry_ids is not None and isinstance(returned, list):
+            dry_ids.extend(returned)
         piece = (((body.get("choices") or [{}])[0].get("message") or {})
                  .get("content") or "")
         if piece:
@@ -967,6 +996,8 @@ def stream_page(image: Image.Image, stats: dict = None,
                 # The usage-only final chunk carries no choices at all.
                 choices = obj.get("choices") or [{}]
                 finish = choices[0].get("finish_reason") or finish
+                if dry_ids is not None and isinstance(choices[0].get("token_ids"), list):
+                    dry_ids.extend(choices[0]["token_ids"])
                 piece = (choices[0].get("delta") or {}).get("content")
                 if piece:
                     if first_at is None:
@@ -1042,6 +1073,10 @@ def stream_page(image: Image.Image, stats: dict = None,
                         else new_tokens),
             image_bytes=len(image_uri),
         )
+        if dry_ids is not None:
+            # `checked` False: DRY was on, but this server sent no token ids.
+            stats["dry"] = (dryreplay.replay(dry_ids, dry_xargs) if dry_ids
+                            else {"checked": False})
 
 
 def _timed_post(url: str, payload: dict, status: dict):
@@ -5007,6 +5042,8 @@ def loop_retry_page(page, stats: dict):
     if bigger.size == page.size:
         return None
     bigger._loop_retry = dict(origin, detail=higher)
+    if hasattr(page, "_dry_label"):
+        tag_page(bigger, page._dry_label, higher)
     replace_job_page(origin["job"], origin["index"], bigger)
     return bigger
 
@@ -5477,6 +5514,9 @@ def prepare_input(data: bytes, detail: str, case=None, source=None, *, cache=Tru
     if context_out is not None:
         context_out.update(context)
     job_id = register_job(prepared, context) if cache else None
+    label = context["case"] or (source or {}).get("name") or "upload"
+    for index, page in enumerate(prepared):
+        tag_page(page, f"{label} p{index + 1}/{len(prepared)}", detail)
     # Where a looped read climbs from (`loop_retry_page`). Untagged at the top
     # Detail, which has nowhere to go, so only a lower one holds the trimmed page.
     if LOOP_RETRY and next_detail(detail):
@@ -7113,28 +7153,59 @@ class _StressLive:
     hit the token cap, a salvaged partial reply, a job that stalled. Each is
     queued here by the worker that saw it and sent by `_stress_phase` on its
     next tick, so it arrives within a second.
+
+    **An alert is an issue with an `id`, not a one-off line** (2026-10-26, at the
+    user's request: *if retry and resolve don't add another line, just mark the
+    old one*). `update_flag` sends the same id again with its new state -- a
+    looped page's row goes `retrying` -> `resolved` or `retry failed` -- and the
+    page and the saved History replace the row by id rather than add one.
     """
 
-    def __init__(self, queued: int):
+    def __init__(self, queued: int, prefix: str = ""):
         self._lock = threading.Lock()
         self.stages = {name: 0 for name in stress.STAGES}
         self.stages["queued"] = queued
         self.done = self.failed = self.pages = self.tokens = 0
         self._alerts = []
+        self._issues = {}        # id -> the alert as it stands now
+        self._next_id = 0
+        # Alert ids are `<prefix><n>`, the prefix unique to the run and phase, so
+        # an id names one page of one run -- what `_STRESS_EVIDENCE` keys on.
+        self._prefix = prefix
         self._active = {}        # job number -> {case, stage, last, flagged}
         # The run's `_StressSlots` where a long file may borrow idle workers
         # for its pages (`split_pages`), else None.
         self.slots = None
 
+    def _new_id(self):
+        self._next_id += 1
+        return f"{self._prefix}{self._next_id}" if self._prefix else self._next_id
+
     def queued(self) -> int:
         with self._lock:
             return self.stages["queued"]
 
-    def flag(self, kind: str, job: int, case: str, message: str, **extra):
+    def flag(self, kind: str, job: int, case: str, message: str, **extra) -> int:
+        """Raise an alert; returns its id, for `update_flag`."""
         with self._lock:
-            self._alerts.append({"kind": kind, "job": job, "case": case,
-                                 "message": (message or kind)[:300],
-                                 "at": time.perf_counter(), **extra})
+            alert = {"id": self._new_id(), "kind": kind, "job": job, "case": case,
+                     "message": (message or kind)[:300],
+                     "at": time.perf_counter(), **extra}
+            self._issues[alert["id"]] = alert
+            self._alerts.append(dict(alert))
+            return alert["id"]
+
+    def update_flag(self, alert_id: int, message: str = None, **changes):
+        """Change an alert already raised -- its state, its message -- and send
+        it again under the same id. It keeps the time it was first raised."""
+        with self._lock:
+            alert = self._issues.get(alert_id)
+            if alert is None:
+                return
+            if message is not None:
+                alert["message"] = message[:300]
+            alert.update(changes, updated_at=time.perf_counter())
+            self._alerts.append(dict(alert))
 
     def take_alerts(self) -> list:
         with self._lock:
@@ -7211,6 +7282,7 @@ class _StressLive:
                         more = f"; {len(names) - 3} more" if len(names) > 3 else ""
                         waiting = f" (waiting on {'; '.join(names[:3])}{more})"
                     self._alerts.append({
+                        "id": self._new_id(),
                         "kind": "stalled", "job": job, "case": active["case"],
                         "stage": active["stage"], "at": now,
                         "message": f"nothing back for {now - active['last']:.0f} s "
@@ -7415,6 +7487,7 @@ def _stress_pages(case_id: str, detail: str, source: str = "benchmark") -> tuple
         # at full resolution for the few that loop would multiply its memory.
         page._stress_origin = {"case": case_id, "source": source,
                                "index": index, "detail": detail}
+        tag_page(page, f"{case_id} p{index + 1}/{len(prepared)}", detail)
     return prepared, describe_source(name, data, origin)
 
 
@@ -7458,6 +7531,8 @@ def _stress_retry_page(page):
         return None
     bigger._data_uri = image_data_uri(bigger)
     bigger._stress_origin = dict(origin, detail=higher)
+    if hasattr(page, "_dry_label"):
+        tag_page(bigger, page._dry_label, higher)
     return bigger
 
 
@@ -7539,6 +7614,61 @@ class _StressSlots:
         return self._sem.acquire(blocking=False)
 
 
+# How many flagged pages the stress test keeps for the Compare view. Each holds
+# every attempt's prepared page (a PNG of up to a few MB) and its text.
+STRESS_EVIDENCE_MAX = config.env_int("STRESS_EVIDENCE_MAX", 100, minimum=0)
+
+
+class _StressEvidence:
+    """What a flagged stress page actually was: each attempt's page and text.
+
+    **Built 2026-10-26 at the user's request** -- *on the page that got DRY flag
+    or loop let me see the output: I click that log and the compare below shows
+    the original of that page and the text that got the error.* Keyed by the
+    alert's id; a loop alert and a DRY alert on the same page share one list of
+    attempts, which the read keeps appending to while it retries. Held in memory,
+    newest `STRESS_EVIDENCE_MAX` pages only, so a saved run reopened after a
+    restart, or long after, has its rows but not their pages.
+    """
+
+    def __init__(self, limit: int):
+        self._lock = threading.Lock()
+        self._limit = limit
+        self._items = OrderedDict()
+
+    def put(self, alert_id, case: str, page: int, attempts: list, truth_case):
+        with self._lock:
+            self._items[str(alert_id)] = {"case": case, "page": page,
+                                          "attempts": attempts, "truth_case": truth_case}
+            self._items.move_to_end(str(alert_id))
+            while len(self._items) > self._limit:
+                self._items.popitem(last=False)
+
+    def get(self, alert_id):
+        with self._lock:
+            item = self._items.get(str(alert_id))
+            return None if item is None else dict(item, attempts=list(item["attempts"]))
+
+
+_STRESS_EVIDENCE = _StressEvidence(STRESS_EVIDENCE_MAX)
+
+
+def _page_png(page) -> bytes:
+    """The PNG the model was sent for a stress page."""
+    uri = getattr(page, "_data_uri", "") or ""
+    if uri.startswith("data:image/png;base64,"):
+        return base64.b64decode(uri.split(",", 1)[1])
+    buf = io.BytesIO()
+    page.save(buf, format="PNG")
+    return buf.getvalue()
+
+
+def _at_details(details) -> str:
+    """` at low, medium` -- the Details a page looped at, for its alert."""
+    named = [d for d in details if d]
+    return f" at {', '.join(named)}" if named else ""
+
+
 def _stress_read(pages, cancel, rec: dict, live: _StressLive,
                  stats_out: list = None, job: int = 0, case: str = "") -> tuple:
     """Pass 1 over prepared pages. `(page_texts, looped, truncated)`.
@@ -7559,14 +7689,28 @@ def _stress_read(pages, cancel, rec: dict, live: _StressLive,
     """
     started = time.perf_counter()
     lock = threading.Lock()
-    tally = {"retries": 0, "recovered": 0, "prep": 0.0}
+    tally = {"retries": 0, "recovered": 0, "prep": 0.0, "dry": 0, "dry_checked": 0}
     inner = MultiCancel()                   # a failed page hangs up its siblings
     hangup = _Hangup(inner)                 # held here: `attach` keeps it weakly
     cancel.attach(hangup)
+    cut = "the reading model repeated itself and the loop guard cut the page off"
 
     def read_one(number, page, stats):
-        """One page, with its loop retries. Returns `(text, tokens)`."""
-        page_tokens, attempts = 0, []
+        """One page, with its loop retries. Returns `(text, tokens)`.
+
+        A page that loops has ONE alert however many times it is read: raised
+        `retrying` (or `no retry`), and marked `resolved` or `retry failed` by
+        the read that settles it. DRY firing is one alert per page the same way,
+        its message growing by a Detail each attempt it fired on.
+        """
+        page_tokens, attempts, looped_at = 0, [], []
+        loop_alert = dry_alert = None
+        dry_seen, dry_checked = [], False
+        origin = getattr(page, "_stress_origin", None) or {}
+        truth_case = case if origin.get("source", "benchmark") == "benchmark" else None
+        # Every read of this page, for the Compare view of whichever alert it
+        # raises (`_StressEvidence`). Kept only if it raises one.
+        seen = []
         while True:
             try:
                 text = read_page(page, stats, cancel=inner)
@@ -7578,12 +7722,29 @@ def _stress_read(pages, cancel, rec: dict, live: _StressLive,
                 raise SweepCancelled("stopped")
             live.touch(job)
             page_tokens += stats.get("new_tokens") or 0
+            was = (getattr(page, "_stress_origin", None) or {}).get("detail")
+            dry = stats.get("dry") or {}
+            seen.append({"detail": was, "text": text, "page": page,
+                         "looped": bool(stats.get("looped")),
+                         "truncated": bool(stats.get("truncated")),
+                         "dry": dry if dry.get("fired") else None})
+            dry_checked = dry_checked or bool(dry.get("checked"))
+            if dry.get("fired"):
+                dry_seen.append(f"at {was}: {dryreplay.describe(dry)}" if was
+                                else dryreplay.describe(dry))
+                message = "DRY penalised a repeat " + "; ".join(dry_seen)
+                if dry_alert is None:
+                    dry_alert = live.flag("dry", job, case, message, stage="ocr",
+                                          page=number, evidence=True)
+                    _STRESS_EVIDENCE.put(dry_alert, case, number, seen, truth_case)
+                else:
+                    live.update_flag(dry_alert, message)
             if not stats.get("looped"):
                 break
             # Flagged first, then read again one Detail up (2026-10-26, at the
             # user's request). The retry's page is rebuilt from the file, off
             # the clock: that is this machine's work, not the server's.
-            was = (getattr(page, "_stress_origin", None) or {}).get("detail")
+            looped_at.append(was)
             prep_began = time.perf_counter()
             try:
                 retry = _stress_retry_page(page)
@@ -7591,12 +7752,21 @@ def _stress_read(pages, cancel, rec: dict, live: _StressLive,
                 retry = None
             with lock:
                 tally["prep"] += time.perf_counter() - prep_began
-            message = ("the reading model repeated itself and the loop guard cut "
-                       "the page off")
+            where = _at_details(looped_at)
             if retry is not None:
-                message += (f" at {was}; reading it again at "
-                            f"{retry._stress_origin['detail']}")
-            live.flag("looped", job, case, message, stage="ocr", page=number)
+                state = "retrying"
+                message = (f"{cut}{where}; reading it again at "
+                           f"{retry._stress_origin['detail']}")
+            elif attempts:
+                state, message = "retry failed", f"{cut}{where}; the retry failed"
+            else:
+                state, message = "no retry", cut + where
+            if loop_alert is None:
+                loop_alert = live.flag("looped", job, case, message, stage="ocr",
+                                       page=number, state=state, evidence=True)
+                _STRESS_EVIDENCE.put(loop_alert, case, number, seen, truth_case)
+            else:
+                live.update_flag(loop_alert, message, state=state)
             if retry is None:
                 break
             attempts.append({"detail": was, **{key: stats.get(key) for key in
@@ -7607,12 +7777,14 @@ def _stress_read(pages, cancel, rec: dict, live: _StressLive,
             with lock:
                 tally["retries"] += 1
             page = retry
+        with lock:
+            tally["dry"] += int(dry_alert is not None)
+            tally["dry_checked"] += int(dry_checked)
         if attempts and not stats.get("looped"):
             with lock:
                 tally["recovered"] += 1
-            live.flag("recovered", job, case, f"read cleanly at {stats['detail']} "
-                      f"after {len(attempts)} looped attempt(s)", stage="ocr",
-                      page=number)
+            live.update_flag(loop_alert, f"{cut}{_at_details(looped_at)}; read "
+                             f"cleanly at {stats['detail']}", state="resolved")
         if stats.get("looped"):
             pass                                # flagged above, every attempt
         elif stats.get("truncated"):
@@ -7710,7 +7882,8 @@ def _stress_read(pages, cancel, rec: dict, live: _StressLive,
     prep = tally["prep"]
     rec.pop("at_page", None)
     rec.update(loop_retries=tally["retries"], loop_recovered=tally["recovered"],
-               retry_prepare_s=round(prep, 3))
+               retry_prepare_s=round(prep, 3), dry_pages=tally["dry"],
+               dry_checked=tally["dry_checked"])
     rec.update(ocr_s=round(time.perf_counter() - started - prep, 3), pages=len(pages),
                ocr_tokens=tokens, ttft_s=ttft, page_s=page_s, page_tps=page_tps,
                page_in=page_in, page_out=page_out, pages_lent=lent,
@@ -7790,6 +7963,43 @@ def _agentic_chats(result):
                        "keys": step.get("keys") or [], "document": document.get("document", 1)}
 
 
+def _missing_required(result: dict) -> list:
+    """Each document's Mandatory fields that came back empty: `[(document, [keys])]`.
+
+    **The extraction half of a stress run's flags** (2026-10-26, at the user's
+    request: *OCR stays the same, but the extraction will flag the missing
+    required field*). A looped read still goes on to classify and extract, and
+    what it costs shows up here, as the fields the form demanded and did not get,
+    rather than as a second loop flag.
+
+    The scalars are read off `fields` against the form's own `mandatory` list,
+    not off `validate`'s rows: three Mandatory keys (`amount_incl_vat`,
+    `vat_total`, `total_wht_amount`) have no rule, so no `absent` row either. The
+    table's cells come from `validate`, which already reports a demanded blank
+    cell per row, and a table that never came back as the table key itself. A
+    document of a type no requirement covers demands nothing and is never flagged.
+    """
+    out = []
+    documents = [d for d in (result.get("documents") or []) if isinstance(d, dict)]
+    for doc in documents or [result]:
+        classified = doc.get("classified") or {}
+        fields = doc.get("fields") if isinstance(doc.get("fields"), dict) else {}
+        missing = [key for key in classified.get("mandatory") or []
+                   if validate._blank(fields.get(key))]
+        if classified.get("mandatory_items"):
+            checks = (doc.get("validation") or {}).get("checks")
+            if checks is None:                  # nothing extracted, so no table
+                missing.append(prompts.INCOME_ITEMS_KEY)
+            else:
+                missing.extend(row["field"] for row in checks
+                               if row.get("mandatory") and row.get("state") == validate.ABSENT
+                               and row["field"].startswith(prompts.INCOME_ITEMS_KEY))
+        missing = list(dict.fromkeys(missing))
+        if missing:
+            out.append((doc.get("document") or 1, missing))
+    return out
+
+
 def _stress_job(spec: dict, cfg: dict, prepared: dict, cancel,
                 live: _StressLive) -> dict:
     """One job of the queue, start to finish. Returns its record; never raises."""
@@ -7863,6 +8073,9 @@ def _stress_job(spec: dict, cfg: dict, prepared: dict, cancel,
                     row = {**summarise(all_stats, cfg["detail"], read_began),
                            "truth": truth, **tag}
             if mode in ("extract", "full"):
+                # A read that looped or hit the cap is still classified and
+                # extracted: its OCR flag says what went wrong with the read, and
+                # the extraction's own flag (`_missing_required`) what it cost.
                 if mode == "full":
                     live.move("ocr", "extract")
                     stage = "extract"
@@ -7909,6 +8122,20 @@ def _stress_job(spec: dict, cfg: dict, prepared: dict, cancel,
                               if isinstance(result["partial"], str) else
                               "the extraction reply was cut off; only the fields it "
                               "finished were kept", stage="extract")
+                missing = _missing_required(result)
+                rec["missing_required"] = sum(len(keys) for _, keys in missing)
+                if missing:
+                    several = len(missing) > 1 or (result.get("documents_found") or 1) > 1
+                    listed = "; ".join((f"doc {n}: " if several else "") + ", ".join(keys)
+                                       for n, keys in missing)
+                    why = (" -- the read looped, which may be why" if looped else
+                           " -- the read hit the token cap, which may be why"
+                           if truncated else "")
+                    live.flag("missing", job, who,
+                              f"{rec['missing_required']} required field(s) came back "
+                              f"empty: {listed}{why}", stage="extract",
+                              fields=[f"doc{n}.{k}" if several else k
+                                      for n, keys in missing for k in keys])
                 payload = {"truth": truth, "looped": looped,
                            "truncated": truncated, "extracted": result}
                 if mode == "full":
@@ -8086,7 +8313,8 @@ def _stress_phase(specs: list, cfg: dict, prepared: dict, cancel, phase: str,
     measured through Ollama). The caller reports first and drains after,
     holding the guard until the last one ends.
     """
-    live = _StressLive(len(specs))
+    # A warm-up's ids and the run's must not collide, nor this run's with the last.
+    live = _StressLive(len(specs), prefix=f"{phase}-{uuid.uuid4().hex[:6]}-")
     if cfg.get("split_pages") and cfg["mode"] in ("ocr", "full"):
         live.slots = _StressSlots(cfg["concurrency"])
     pool = ThreadPoolExecutor(max_workers=cfg["concurrency"],
@@ -8111,6 +8339,9 @@ def _stress_phase(specs: list, cfg: dict, prepared: dict, cancel, phase: str,
         # rule is that a failure is reported when it happens, not at the end.
         for alert in live.take_alerts():
             at = alert.pop("at")
+            updated = alert.pop("updated_at", None)
+            if updated is not None:
+                alert["updated"] = round(updated - started, 1)
             yield json.dumps({"event": "alert", "phase": phase,
                               "elapsed": round(at - started, 1), **alert}) + "\n"
 
@@ -8485,7 +8716,14 @@ def _history_stream(stream, kind, configuration):
                 yield json.dumps(event, ensure_ascii=False) + "\n"
                 continue
             if stage == "alert":
-                alerts.append(dict(event))
+                # An alert sent again under its id is the same issue, updated
+                # (`_StressLive.update_flag`): it replaces the row, in place.
+                at = next((i for i, a in enumerate(alerts)
+                           if event.get("id") and a.get("id") == event["id"]), None)
+                if at is None:
+                    alerts.append(dict(event))
+                else:
+                    alerts[at] = dict(event)
             if event.get("event") == "plan":
                 plan = dict(event)
                 if run_id:
@@ -8559,6 +8797,31 @@ def history_detail(run_id):
     if request.args.get("download") == "1":
         response.headers["Content-Disposition"] = f'attachment; filename="run-{run_id}.json"'
     return response
+
+
+@app.get("/api/stress/evidence/<alert_id>")
+def stress_evidence(alert_id: str):
+    """A flagged stress page for the Compare view: each read of it, in order,
+    with its text. Read `n`'s page image is `<this URL>/<n>.png`."""
+    item = _STRESS_EVIDENCE.get(alert_id)
+    if item is None:
+        return jsonify(error="This page is no longer kept -- only the newest "
+                             f"{STRESS_EVIDENCE_MAX} flagged pages since this "
+                             "server started are."), 404
+    return jsonify(case=item["case"], page=item["page"], truth_case=item["truth_case"],
+                   attempts=[{"detail": a["detail"], "text": a["text"],
+                              "looped": a["looped"], "truncated": a["truncated"],
+                              "dry": a["dry"]} for a in item["attempts"]])
+
+
+@app.get("/api/stress/evidence/<alert_id>/<int:index>.png")
+def stress_evidence_image(alert_id: str, index: int):
+    """One read's page image, as the model was sent it."""
+    item = _STRESS_EVIDENCE.get(alert_id)
+    if item is None or not 0 <= index < len(item["attempts"]):
+        return jsonify(error="This page is no longer kept."), 404
+    return Response(_page_png(item["attempts"][index]["page"]), mimetype="image/png",
+                    headers={"Cache-Control": "private, max-age=3600"})
 
 
 @app.post("/api/stress/stop")

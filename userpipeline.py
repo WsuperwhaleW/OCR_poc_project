@@ -94,7 +94,7 @@ class EngineAdapter:
         engine, cfg = self.engine, job['configuration']
         with self.context(job['id'], cfg):
             self.check_model(job, 'ocr')
-            source = {'kind': 'user_upload', 'filename': job['filename']}
+            source = {'kind': 'user_upload', 'name': job['filename'], 'filename': job['filename']}
             context = {}
             images, detail, cache_id, _ = engine.prepare_input(
                 (store.uploads / job['id']).read_bytes(), cfg['detail'], source=source,

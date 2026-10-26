@@ -34,8 +34,8 @@ test('Settings owns the main view and hides benchmark actions despite saved Stre
   for(const name of names)el(name+'Actions').querySelector=()=>({});
   let loads=0;
   const ctx=vm.createContext({document,sideTabs:{querySelectorAll:()=>tabs},selectedPane:'stress',
-    stressPaneOpen:true,historyOpen:true,scOpen:false,stressView:'history',
-    window:{loadUserSettings(){loads++;}},paintSchema(){},historyLoad(){},stPaint(){},rtPaint(){}});
+    stressPaneOpen:true,historyOpen:true,scOpen:false,stressView:'history',cmpOverride:null,
+    window:{loadUserSettings(){loads++;}},enableCompare(){},paintSchema(){},historyLoad(){},stPaint(){},rtPaint(){}});
   for(const name of ['showPane','paintMain']){
     const start=page.indexOf('function '+name+'('),end=page.indexOf('\n}',start)+2;
     vm.runInContext(page.slice(start,end),ctx);
@@ -45,6 +45,9 @@ test('Settings owns the main view and hides benchmark actions despite saved Stre
   assert.equal(el('settingsCard').hidden,false);
   for(const id of ['historyCard','stCard','rtCard','schemaCard','resultCard','compareCard','testActions','runlogCard'])assert.equal(el(id).hidden,true,id);
   ctx.showPane('source');assert.equal(el('settingsCard').hidden,true);assert.equal(el('resultCard').hidden,false);
+  ctx.cmpOverride={case:'sol001',page:1};ctx.showPane('stress');
+  assert.equal(el('compareCard').hidden,false,'Stress evidence must keep its Compare view');
+  ctx.showPane('settings');assert.equal(el('compareCard').hidden,true,'Settings must hide old evidence');
 });
 
 function settingsSetup(fetch){
