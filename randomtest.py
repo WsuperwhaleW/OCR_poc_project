@@ -1101,7 +1101,7 @@ def main(argv=None):
                         help="read every page with this model")
     parser.add_argument("--lock-extractor", default=None,
                         help="extract with this model in every round")
-    parser.add_argument("--lock-mode", choices=("single", "agentic"), default=None,
+    parser.add_argument("--lock-mode", choices=("single", "agentic", "hybrid"), default=None,
                         help="extract in this shape in every round")
     args = parser.parse_args(argv)
 

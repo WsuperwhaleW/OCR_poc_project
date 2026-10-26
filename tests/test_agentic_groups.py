@@ -1,5 +1,6 @@
 """Grouped requests, aliases and evidence rules; no model accuracy claims."""
 import copy
+from functools import partial
 import itertools
 import json
 import unittest
@@ -8,6 +9,11 @@ from unittest.mock import patch
 import app
 import extractionlog
 import prompts
+
+# These tests cover the tuned variant, now exposed explicitly as Hybrid.
+hybrid_steps = partial(prompts.steps_for_types, mode="hybrid")
+hybrid_question = partial(app._step_question, mode="hybrid")
+hybrid_selected = partial(app._steps_for, mode="hybrid")
 
 
 STATUS = {"kind": "vllm", "url": "http://mock:8001", "model": "mock", "reachable": True}
@@ -29,7 +35,7 @@ class GroupSelectionTests(unittest.TestCase):
                          for combo in itertools.combinations(codes, n)]
         for combo in combos:
             for extras in (False, True):
-                table = prompts.steps_for_types(combo, extras)
+                table = hybrid_steps(combo, extras)
                 keys = [k for s in table for k in s['keys']]
                 expected = set(prompts.fields_for_types(combo))
                 if prompts.items_for_types(combo):
@@ -45,31 +51,31 @@ class GroupSelectionTests(unittest.TestCase):
         self.assertEqual(prompts.EXTRACT_STEPS, saved)
 
     def test_receipt_does_not_gain_a_vat_inclusive_total(self):
-        table = {s['id']: s for s in prompts.steps_for_types(['RECEIPT'], extras=False)}
+        table = {s['id']: s for s in hybrid_steps(['RECEIPT'], extras=False)}
         self.assertEqual(set(table['totals']['keys']), {'subtotal', 'vat_total'})
         self.assertEqual(set(table['payment']['keys']), set(PAYMENT))
         self.assertNotIn('total_incl', table)
         self.assertNotIn('inv_rtv_cnr', table)
         with self.assertRaisesRegex(ValueError, 'total_incl'):
-            app._steps_for(['total_incl'], ['RECEIPT'], extras=False)
+            hybrid_selected(['total_incl'], ['RECEIPT'], extras=False)
 
     def test_legacy_component_ids_select_a_group_once(self):
-        table = app._steps_for(['total_incl', 'totals'], ['INVOICE'], extras=False)
+        table = hybrid_selected(['total_incl', 'totals'], ['INVOICE'], extras=False)
         self.assertEqual(len(table), 1)
         self.assertEqual(table[0]['id'], 'totals')
         self.assertEqual(set(table[0]['keys']), set(TOTALS))
-        table = app._steps_for(['inv_rtv_cnr', 'payment'], ['RECEIPT'], extras=False)
+        table = hybrid_selected(['inv_rtv_cnr', 'payment'], ['RECEIPT'], extras=False)
         self.assertEqual(len(table), 1)
         self.assertEqual(table[0]['id'], 'payment')
         self.assertEqual(set(table[0]['keys']), set(PAYMENT))
         with self.assertRaisesRegex(ValueError, 'made_up'):
-            app._steps_for(['made_up'], ['RECEIPT'], extras=False)
+            hybrid_selected(['made_up'], ['RECEIPT'], extras=False)
 
     def test_rtv_keeps_return_roles_and_its_own_party_requests(self):
-        table = {s['id']: s for s in prompts.steps_for_types(['RTV_SHIP_CREDIT'], extras=False)}
+        table = {s['id']: s for s in hybrid_steps(['RTV_SHIP_CREDIT'], extras=False)}
         self.assertEqual(set(table['totals']['keys']), set(TOTALS))
         for party in ('seller', 'buyer'):
-            question = app._step_question(table[party], ['RTV_SHIP_CREDIT'])
+            question = hybrid_question(table[party], ['RTV_SHIP_CREDIT'])
             self.assertIn('ORIGINAL SALE', question)
             self.assertIn('ลำดับสาขา', question)
             self.assertIn('not the store/location code', question)
@@ -97,7 +103,7 @@ class RequestPipelineTests(unittest.TestCase):
 
                     with patch.object(app, '_chat', side_effect=chat), \
                          patch.object(app, 'AGENTIC_PARALLEL', False):
-                        result = app._drain(app._extract_agentic(TEXT, STATUS, form, only=[old_id]))
+                        result = app._drain(app._extract_agentic(TEXT, STATUS, form, only=[old_id], mode="hybrid"))
                     self.assertNotIn('error', result)
                     self.assertEqual(len(requests), 1)
                     message, skeleton, schema, cap = requests[0]
@@ -120,7 +126,7 @@ class RequestPipelineTests(unittest.TestCase):
         values = {**PAYMENT, 'cheque_number': ''}
         form = app._field_set(TEXT, doc_type=['RECEIPT'], extras=False)
         with patch.object(app, '_chat', return_value=(json.dumps(values), False, 20)):
-            result = app._drain(app._extract_agentic(TEXT, STATUS, form, only=['payment']))
+            result = app._drain(app._extract_agentic(TEXT, STATUS, form, only=['payment'], mode='hybrid'))
         self.assertEqual(result['fields'], {**values, 'line_items': [], 'other_fields': []})
         self.assertEqual(len(result['steps']), 1)
 

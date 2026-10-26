@@ -83,6 +83,7 @@ from prompts import (
     EXTRACT_STEP_PREFIX,
     EXTRACT_STEP_RETRY,
     EXTRACT_STEP_TASK,
+    HYBRID_STEP_TASK,
     EXTRACT_STEPS,
     LINE_ITEM_SCHEMA,
     OTHER_FIELDS_SCHEMA,
@@ -2479,8 +2480,8 @@ def _classified(form: dict, mode: str) -> dict:
         # Named only for the shape that walks them. Single mode asks one
         # question, and reporting the steps it did not take would describe a run
         # that did not happen.
-        "steps": ([s["id"] for s in steps_for_types(codes, form.get("extras", True))]
-                  if mode == "agentic" else []),
+        "steps": ([s["id"] for s in steps_for_types(codes, form.get("extras", True), mode=mode)]
+                  if mode in ("agentic", "hybrid") else []),
         "extras": form.get("extras", True),
         "rules": list(rules_for_types(codes)),
         # Whether the answer reached the PROMPT or only the field list. It is
@@ -2763,7 +2764,7 @@ def _step_prefix(text: str) -> str:
     return EXTRACT_STEP_PREFIX + text
 
 
-def _step_question(step: dict, codes=()) -> str:
+def _step_question(step: dict, codes=(), mode="agentic") -> str:
     """The part that differs: this step's title, skeleton and rules.
 
     `codes` names the document's type in the task line and adds the type's rules
@@ -2773,14 +2774,15 @@ def _step_question(step: dict, codes=()) -> str:
     `EXTRACT_REMINDER` closes the single-shot message: what is said after the
     transcript is what the model is still holding when it answers.
     """
-    return EXTRACT_STEP_TASK.format(title=step["title"],
+    task = HYBRID_STEP_TASK if mode == "hybrid" else EXTRACT_STEP_TASK
+    return task.format(title=step["title"],
                                     context=type_line(codes),
                                     skeleton=step["skeleton"],
                                     rules=step_rules(step, codes,
                                                      TYPE_FRAMING_BULLETS))
 
 
-def _step_message(text: str, step: dict, codes=()) -> str:
+def _step_message(text: str, step: dict, codes=(), mode="agentic") -> str:
     """The message for one step: prefix, transcript, then this step's question.
 
     Assembled in that order on purpose. The transcript first is what makes the
@@ -2788,7 +2790,7 @@ def _step_message(text: str, step: dict, codes=()) -> str:
     is what keeps an OCR fine-tune from answering with its own transcript envelope,
     which is the same thing EXTRACT_REMINDER buys the single-shot prompt.
     """
-    return _step_prefix(text) + _step_question(step, codes)
+    return _step_prefix(text) + _step_question(step, codes, mode)
 
 
 def _extras_only(step: dict) -> bool:
@@ -2979,7 +2981,7 @@ def _reply_label(step_id: str, attempt: int, n: int, failed: bool = False) -> st
             + (" (failed)" if failed else ""))
 
 
-def _step_count_label():
+def _step_count_label(mode="agentic"):
     """How many agentic steps a run makes, as "7" or "7-17" across the forms.
 
     Over single types and pairs, because a real document names two about as often
@@ -2992,12 +2994,12 @@ def _step_count_label():
     codes = list(prompts.DOC_TYPE_FIELDS)
     combos = [[]] + [[c] for c in codes] + [[a, b] for a in codes for b in codes
                                             if a != b]
-    counts = {len(steps_for_types(c)) for c in combos}
+    counts = {len(steps_for_types(c, mode=mode)) for c in combos}
     return (str(min(counts)) if len(counts) == 1
             else f"{min(counts)}-{max(counts)}")
 
 
-def _steps_for(wanted, doc_types=(), extras=True):
+def _steps_for(wanted, doc_types=(), extras=True, mode="agentic"):
     """The step table, or the named subset of it, in the table's own order.
 
     A measurement tool and nothing else: it is what lets one step's prompt be
@@ -3008,7 +3010,7 @@ def _steps_for(wanted, doc_types=(), extras=True):
     The order is the document's final step table, never the caller's. A historical
     component id such as total_incl now selects its complete related group.
     """
-    table = steps_for_types(doc_types, extras)
+    table = steps_for_types(doc_types, extras, mode=mode)
     if not wanted:
         return table
     ids = [s.strip() for s in wanted if str(s).strip()]
@@ -3170,7 +3172,7 @@ def _run_step_asked(step: dict, prefix: str, question: str, status: dict, source
     return record, values, step_replies, total_tokens
 
 
-def _extract_agentic(text: str, status: dict, form: dict, only=None):
+def _extract_agentic(text: str, status: dict, form: dict, only=None, mode="agentic"):
     """Walk the step table, yielding progress, and return the merged result.
 
     A generator so that both the browser and the run stream can show which step is
@@ -3186,8 +3188,8 @@ def _extract_agentic(text: str, status: dict, form: dict, only=None):
     # caller applied. `steps_only` is measured against this rather than against
     # the whole step table: an invoice legitimately runs six of the eight steps
     # and is a complete run of its own form, not a partial run of someone else's.
-    full_table = steps_for_types(form["doc_types"], form.get("extras", True))
-    table = _steps_for(only, form["doc_types"], form.get("extras", True))
+    full_table = steps_for_types(form["doc_types"], form.get("extras", True), mode=mode)
+    table = _steps_for(only, form["doc_types"], form.get("extras", True), mode=mode)
     if form.get("schema_first"):
         # Copy shared definitions so concurrent JSON-first runs stay unchanged.
         table = [{**step, "schema_first": True} for step in table]
@@ -3207,7 +3209,7 @@ def _extract_agentic(text: str, status: dict, form: dict, only=None):
     # server the steps are asked at once. Everywhere else, one after another,
     # exactly as every measurement in CLAUDE.md was taken.
     parallel = _agentic_parallelism(status, len(table))
-    framing = _framing(form, "agentic")
+    framing = _framing(form, mode)
 
     yield {"event": "extract_steps", "total": len(table),
            "steps": [{"id": s["id"], "title": s["title"], "keys": list(s["keys"])}
@@ -3239,7 +3241,7 @@ def _extract_agentic(text: str, status: dict, form: dict, only=None):
             def submit(index):
                 step = table[index]
                 return pool.submit(_carry_progress(workspace.bind(batch.run)), _run_step, step,
-                                   prefix, _step_question(step, framing), status,
+                                   prefix, _step_question(step, framing, mode), status,
                                    source)
 
             # The warm-up only exists to fill the prefix cache; with the cache
@@ -3251,7 +3253,7 @@ def _extract_agentic(text: str, status: dict, form: dict, only=None):
                 warmed = threading.Event()
                 futures = {pool.submit(_carry_progress(workspace.bind(batch.run)), _warm_step,
                                        warmed, table[0],
-                                       prefix, _step_question(table[0], framing),
+                                       prefix, _step_question(table[0], framing, mode),
                                        status, source): 0}
                 warmed.wait(VLLM_PREFIX_WARMUP_WAIT)
                 futures.update({submit(index): index
@@ -3269,7 +3271,7 @@ def _extract_agentic(text: str, status: dict, form: dict, only=None):
     else:
         for index, step in enumerate(table):
             yield running(index + 1, step)
-            outcomes[index] = _run_step(step, prefix, _step_question(step, framing),
+            outcomes[index] = _run_step(step, prefix, _step_question(step, framing, mode),
                                         status, source)
             yield done(index + 1, step, outcomes[index][0])
 
@@ -3289,7 +3291,7 @@ def _extract_agentic(text: str, status: dict, form: dict, only=None):
     if dead and len(dead) == len(steps):
         return {"error": "Every extraction step failed. First: "
                          + (dead[0].get("error") or dead[0]["extras_error"]),
-                "mode": "agentic", "steps": steps, "seconds": elapsed,
+                "mode": mode, "steps": steps, "seconds": elapsed,
                 **({"parallel": parallel} if parallel > 1 else {}),
                 "prompt_prefix": prefix,
                 **({"steps_only": [s["id"] for s in table]}
@@ -3332,7 +3334,7 @@ def _extract_agentic(text: str, status: dict, form: dict, only=None):
         # (`backends.select_extract_url`), and a run is attributed to the server
         # that ran it, never to the one selected afterwards.
         "url": status.get("url") or "",
-        "mode": "agentic",
+        "mode": mode,
         # How many steps were in flight at once, where it was more than one
         # (vLLM). Absent on a sequential run, which is every run on llama.cpp
         # and Ollama: the wall clock of the two shapes is not comparable.
@@ -3616,8 +3618,8 @@ def extract_mode() -> str:
 
 
 def set_extract_mode(mode: str) -> str:
-    if mode not in ("single", "agentic"):
-        raise ValueError("mode must be 'single' or 'agentic'.")
+    if mode not in ("single", "agentic", "hybrid"):
+        raise ValueError("mode must be 'single', 'agentic' or 'hybrid'.")
     global _extract_mode
     with _mode_lock:
         if not workspace.put("extract_mode", mode):
@@ -4318,7 +4320,7 @@ def extract_fields_stream(text: str, mode: str = None, case_id: str = None,
     button was pressed.
     """
     mode = mode or extract_mode()
-    schema_first = bool(schema_first and mode == "agentic")
+    schema_first = bool(schema_first and mode in ("agentic", "hybrid"))
     if not text.strip():
         return {"error": "Nothing to extract from.", "schema_first": schema_first}
     # The EXTRACTION model's status, which is the reading model's unless one has
@@ -4409,7 +4411,7 @@ def _extract_document(text: str, mode: str, case_id: str, steps, doc_type,
     # one dict, so the two modes cannot disagree about which document this is.
     form = _field_set(text, case_id, doc_type, status,
                       (record or {}).get("pages"), extras)
-    form["schema_first"] = bool(schema_first and mode == "agentic")
+    form["schema_first"] = bool(schema_first and mode in ("agentic", "hybrid"))
     # Stage 0, announced before either shape starts. It is the one part of a
     # pass-2 run that is finished before the first request goes out, so a page
     # that shows it immediately is showing something true rather than a
@@ -4418,15 +4420,15 @@ def _extract_document(text: str, mode: str, case_id: str, steps, doc_type,
            **({"document": record["document"], "documents": record["documents"],
                "pages": list(record["pages"]),
                "page_range": record["page_range"]} if record else {})}
-    if mode == "agentic":
-        result = yield from _extract_agentic(text, status, form, steps)
+    if mode in ("agentic", "hybrid"):
+        result = yield from _extract_agentic(text, status, form, steps, mode=mode)
     else:
         # Refused rather than ignored: single mode is one request for the whole
         # schema, so there is no honest way to ask it for part of one, and a
         # sweep that thought it was measuring one step would be measuring
         # fourteen keys instead.
         if steps:
-            return {"error": "steps only apply to agentic extraction."}
+            return {"error": "steps only apply to agentic or hybrid extraction."}
         result = _extract_single(text, status, form)
     result = _validate_fields(result, form, text, mode)
     if isinstance(result, dict):
@@ -5686,6 +5688,7 @@ def index():
         # label is the span -- a flat "8 steps" beside a run that made six reads
         # as a run that lost two.
         extract_steps=_step_count_label(),
+        hybrid_steps=_step_count_label("hybrid"),
         ocr_profile=ocr_profile(),
         ocr_profiles=[{"id": pid, **spec} for pid, spec in OCR_PROFILES.items()],
         # Whether a cycling read is cut short, and what it would cost if it were
@@ -6090,8 +6093,8 @@ def _is_truth_fed(context) -> bool:
 def _requested_mode(body):
     """The extraction shape for one request: what it asked for, or the current one."""
     mode = (body.get("mode") or "").strip().lower() or None
-    if mode and mode not in ("single", "agentic"):
-        raise ValueError("mode must be 'single' or 'agentic'.")
+    if mode and mode not in ("single", "agentic", "hybrid"):
+        raise ValueError("mode must be 'single', 'agentic' or 'hybrid'.")
     return mode
 
 
@@ -6246,7 +6249,7 @@ def extract_stream_endpoint():
                     return
         except Exception as err:  # surface failures inside the stream body
             log_extract({"error": str(err), "mode": mode or extract_mode(),
-                         "schema_first": schema_first and (mode or extract_mode()) == "agentic"},
+                         "schema_first": schema_first and (mode or extract_mode()) in ("agentic", "hybrid")},
                         job_id, context)
             yield json.dumps({"event": "error", "error": str(err)}) + "\n"
 
@@ -6255,7 +6258,9 @@ def extract_stream_endpoint():
 
 @app.get("/api/extract/mode")
 def extract_mode_get():
-    return jsonify(mode=extract_mode(), steps=len(EXTRACT_STEPS))
+    mode = extract_mode()
+    return jsonify(mode=mode, steps=(1 if mode == "single" else
+                                    len(steps_for_types([], mode=mode))))
 
 
 @app.post("/api/extract/mode")
@@ -6273,7 +6278,8 @@ def extract_mode_set():
         mode = set_extract_mode((body.get("mode") or "").strip().lower())
     except ValueError as err:
         return jsonify(error=str(err)), 400
-    return jsonify(mode=mode, steps=len(EXTRACT_STEPS))
+    return jsonify(mode=mode, steps=(1 if mode == "single" else
+                                    len(steps_for_types([], mode=mode))))
 
 
 @app.get("/api/extract/extras")
@@ -6703,7 +6709,7 @@ def _random_plan(body: dict) -> dict:
             seed=body.get("seed"), history=runlog.case_counts(), **pools)
     return randomtest.plan(
         rounds=body.get("rounds"), seed=body.get("seed"), scope=scope,
-        details=list(DETAIL_PRESETS), modes=["single", "agentic"],
+        details=list(DETAIL_PRESETS), modes=["single", "agentic", "hybrid"],
         lock=body.get("lock"), strategy=body.get("strategy"),
         history=runlog.case_counts(), **pools)
 
@@ -7235,9 +7241,9 @@ def _stress_config(body: dict) -> dict:
     if mode not in stress.MODES:
         raise ValueError(f"mode must be one of {', '.join(stress.MODES)}.")
     shape = (body.get("extract_mode") or extract_mode()).strip().lower()
-    if shape not in ("single", "agentic"):
-        raise ValueError("extract_mode must be 'single' or 'agentic'.")
-    schema_first = _requested_schema_first(body) and shape == "agentic" and mode in ("extract", "full")
+    if shape not in ("single", "agentic", "hybrid"):
+        raise ValueError("extract_mode must be 'single', 'agentic' or 'hybrid'.")
+    schema_first = _requested_schema_first(body) and shape in ("agentic", "hybrid") and mode in ("extract", "full")
     save_details = body.get("save_details", False)
     if not isinstance(save_details, bool):
         raise ValueError("save_details must be true or false.")

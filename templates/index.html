@@ -1212,7 +1212,7 @@ document.addEventListener("DOMContentLoaded", function () {
      entire point of that block. */
   .pr-shape { display: inline-block; font-size: .8rem; font-weight: 600;
     border-radius: 999px; padding: 2px 11px; border: 1px solid var(--border); }
-  .pr-shape-agentic { background: color-mix(in srgb, var(--info) 16%, transparent);
+  .pr-shape-agentic, .pr-shape-hybrid { background: color-mix(in srgb, var(--info) 16%, transparent);
     border-color: color-mix(in srgb, var(--info) 45%, transparent); }
   .pr-shape-single { background: var(--accent-soft);
     border-color: color-mix(in srgb, var(--accent) 40%, transparent); }
@@ -1515,6 +1515,9 @@ document.addEventListener("DOMContentLoaded", function () {
   .dot.bad { background: var(--danger); }
   button.ghost-sm { padding: 4px 10px; font-size: .78rem; border-radius: 6px; }
   button.ghost-sm.on { background: var(--accent-soft); border-color: var(--accent); }
+  .fld-bar select.ghost-sm { width: auto; padding: 4px 28px 4px 10px;
+    font-size: .78rem; border-radius: 6px; }
+  .fld-bar select.ghost-sm.on { background: var(--accent-soft); border-color: var(--accent); }
   /* One row per extraction step, live while the steps run and kept afterwards.
      The list is the only place that says which part of the form a value came
      from, which is what makes a wrong field traceable to the question that
@@ -1914,6 +1917,7 @@ follows your desktop; Light is the one to pick for projecting or screenshotting.
           <select id="extractSel">
             <option value="single" {% if extract_mode == 'single' %}selected{% endif %}>one request for the whole form</option>
             <option value="agentic" {% if extract_mode == 'agentic' %}selected{% endif %}>agentic · {{ extract_steps }} steps, 1-3 fields each</option>
+              <option value="hybrid" {% if extract_mode == 'hybrid' %}selected{% endif %}>hybrid · {{ hybrid_steps }} steps, 1-3 fields each</option>
           </select>
         </label>
       </div>
@@ -2112,6 +2116,7 @@ follows your desktop; Light is the one to pick for projecting or screenshotting.
               <option value="">&mdash; random &mdash;</option>
               <option value="single">single</option>
               <option value="agentic">agentic</option>
+              <option value="hybrid">hybrid</option>
             </select>
           </label>
         </div>
@@ -2268,6 +2273,7 @@ follows your desktop; Light is the one to pick for projecting or screenshotting.
             <select id="stShape">
               <option value="single">single</option>
               <option value="agentic">agentic</option>
+              <option value="hybrid">hybrid</option>
             </select>
           </label>
           <label class="check" style="flex:1;min-width:110px" id="stExtrasField"
@@ -2297,7 +2303,7 @@ follows your desktop; Light is the one to pick for projecting or screenshotting.
         </div>
         <div class="st-options">
         <label class="st-option" id="stSchemaFirstField"
-               title="Constrain each agentic step to its JSON schema from the first request">
+               title="Constrain each Agentic or Hybrid step to its JSON schema from the first request">
           <input id="stSchemaFirst" type="checkbox" disabled> JSON schema first
         </label>
         <label class="st-option">
@@ -2379,10 +2385,11 @@ follows your desktop; Light is the one to pick for projecting or screenshotting.
             <select id="fxMode">
               <option value="single">one request for the whole form</option>
               <option value="agentic">agentic &middot; {{ extract_steps }} steps, 1-3 fields each</option>
+              <option value="hybrid">hybrid &middot; {{ hybrid_steps }} steps, 1-3 fields each</option>
             </select>
           </label>
         </div>
-        <label class="check" title="Constrain each agentic step to its JSON schema from the first request">
+        <label class="check" title="Constrain each Agentic or Hybrid step to its JSON schema from the first request">
           <input id="fxSchemaFirst" type="checkbox" disabled> JSON schema first
         </label>
 
@@ -2552,7 +2559,7 @@ follows your desktop; Light is the one to pick for projecting or screenshotting.
         <div class="fld-bar">
           <span id="fldStatus"></span>
           <label class="cmp-opt"><input type="checkbox" id="fldRawChk"> Raw output</label>
-          <button id="fldMode" class="ghost-sm"></button>
+          <select id="fldMode" class="ghost-sm" aria-label="Extraction mode"><option value="single">Single</option><option value="agentic">Agentic</option><option value="hybrid">Hybrid</option></select>
           <button id="fldRerun" class="ghost-sm">Re-extract</button>
           <button id="fldCopy" class="ghost-sm">Copy JSON</button>
         </div>
@@ -4373,7 +4380,9 @@ function paintRaw(target, result, reply) {
    result says which mode produced it, so the button and the result cannot
    disagree about what just happened. */
 let extractMode = {{ extract_mode | tojson }};
-const EXTRACT_STEP_COUNT = {{ extract_steps }};
+const EXTRACT_STEP_COUNT = {{ extract_steps | tojson }};
+const HYBRID_STEP_COUNT = {{ hybrid_steps | tojson }};
+function isStepMode(mode) { return mode === 'agentic' || mode === 'hybrid'; }
 let extractSteps = null;
 /* Stage 0's answer, from the `classified` event. Kept outside `extracted`
    because it arrives BEFORE the extraction does and is what the strip draws
@@ -4386,24 +4395,22 @@ let classified = null;
    a document comes back with a value in the wrong field. Both paint from the same
    variable, so they cannot show different things. */
 function paintMode() {
-  const on = extractMode === 'agentic';
-  fldMode.textContent = on ? 'Agentic · ' + EXTRACT_STEP_COUNT + ' steps' : 'Agentic · off';
+  const on = isStepMode(extractMode);
+  const hybrid = extractMode === 'hybrid';
+  fldMode.value = extractMode;
   fldMode.classList.toggle('on', on);
-  fldMode.title = on
-    ? 'Extraction asks for one to three fields at a time, ' + EXTRACT_STEP_COUNT
-      + ' requests against the same transcript, and re-asks a step that returns a '
-      + 'value the page does not contain. Click for one request for the whole form.'
-    : 'Extraction asks for the whole form in one request. Click to extract field by '
-      + 'field instead.';
+  fldMode.title = hybrid ? 'Hybrid: tuned prompts with related fields grouped together.'
+    : on ? 'Agentic: original prompts and separate field groups.'
+    : 'Single: the whole form in one request.';
   if (extractSel.value !== extractMode) extractSel.value = extractMode;
   if (fxMode && fxMode.value !== extractMode) fxMode.value = extractMode;
   if (fxSchemaFirst) fxSchemaFirst.disabled = !on;
-  extractNote.textContent = on
-    ? 'One to three fields per request, against the same transcript. A field can only '
-      + 'be filled from the labels its own step names, and a step that answers with '
-      + 'something that is not on the page is asked again. Slower than one request.'
-    : 'The whole form in one request. Fast, and the shape in which a value can land '
-      + 'in a nearby field it does not belong to.';
+  extractNote.textContent = hybrid
+    ? 'Tuned prompts with related totals and payment fields grouped together. '
+      + HYBRID_STEP_COUNT + ' steps depending on document type.'
+    : on ? 'Original Agentic prompts and separate field groups. '
+      + EXTRACT_STEP_COUNT + ' steps depending on document type.'
+    : 'The whole form in one request.';
 }
 
 /* The server owns the setting -- it applies to the random test and to a run started
@@ -4425,8 +4432,7 @@ async function setMode(next) {
   paintMode();
 }
 
-fldMode.addEventListener('click',
-  () => setMode(extractMode === 'agentic' ? 'single' : 'agentic'));
+fldMode.addEventListener('change', () => setMode(fldMode.value));
 extractSel.addEventListener('change', () => setMode(extractSel.value));
 paintMode();
 
@@ -5191,9 +5197,9 @@ function stepList(steps) {
    result carried over from an older run may have had a different step list. */
 function modeLabel(r) {
   const mode = r && r.mode;
-  if (mode === 'agentic') {
+  if (isStepMode(mode)) {
     const steps = (r.steps || []).length;
-    return 'agentic' + (steps ? ' · ' + steps + ' steps' : '')
+    return mode + (steps ? ' · ' + steps + ' steps' : '')
       + (r.schema_first ? ' · Schema first' : ' · JSON first');
   }
   if (mode === 'single') return 'single prompt';
@@ -5202,7 +5208,7 @@ function modeLabel(r) {
 function stepNote(r) {
   const failed = (r && r.steps_failed) || [];
   const retried = ((r && r.steps) || []).filter(s => s.retried).length;
-  if (!r || r.mode !== 'agentic' || !r.steps) return '';
+  if (!r || !isStepMode(r.mode) || !r.steps) return '';
   let html = '<p class="ground-note' + (failed.length ? ' bad' : '') + '">Extracted in '
     + r.steps.length + ' steps of one to three fields.';
   if (retried) {
@@ -6811,9 +6817,9 @@ function runRow(r) {
       // request and twenty fill the schema in different ways, and the CSV has
       // carried `extract_mode` from the start for exactly this reason.
       + (r.extract_mode
-          ? '<br><span class="tier ' + (r.extract_mode === 'agentic' ? 'p1' : 'p2')
+          ? '<br><span class="tier ' + (isStepMode(r.extract_mode) ? 'p1' : 'p2')
             + '" title="pass 2 ran as '
-            + (r.extract_mode === 'agentic' ? 'a step per group of one to three fields'
+            + (isStepMode(r.extract_mode) ? 'a step per group of one to three fields'
                                             : 'one request for the whole form')
             + '">' + esc(r.extract_mode) + '</span>'
           : '')
@@ -8225,7 +8231,7 @@ function paintExtractSummary(t) {
   const cols = [
     {key: 'setting', label: 'Setting', value: e => csModel(e.model),
      cell: e => msCell(e, [e.quant, e.engine || e.backend, e.extract_mode,
-                           e.extract_mode === 'agentic'
+                           isStepMode(e.extract_mode)
                              ? (e.extract_schema_first === '1' ? 'Schema first' : 'JSON first') : ''],
              // Two lines, both about what the row does not otherwise say.
              //
@@ -8325,7 +8331,7 @@ function paintExtractSummary(t) {
         sort: {key: 'field', dir: 'desc'},
         rowClass: e => e === top ? ' class="ms-top"' : ''
       })
-    + '<p class="note"><b>Single and agentic are separate rows</b>: some '
+    + '<p class="note"><b>Single, Agentic and Hybrid are separate rows</b>: some '
     + 'models do well in one shape and badly in the other, so averaging the two '
     + 'reports a figure neither produces. Everything else about a setting is '
     + 'pooled, including whether pass&nbsp;2 was fed a ground-truth transcript or '
@@ -8976,7 +8982,7 @@ function paintPresent(t) {
     {key: 'model', label: 'Model', cls: 'pr-model', value: e => csModel(e.model),
      cell: e => prModel(e, shapeRank.get(e))},
     {key: 'mode', label: 'Shape', value: e => e.mode,
-     title: 'single: one request for the whole form. agentic: a step per group '
+     title: 'single: one request for the whole form. hybrid: tuned grouped requests. agentic: original steps '
           + 'of one to three fields, then the answers merged.',
      cell: e => '<span class="pr-shape pr-shape-' + esc(e.mode) + '">'
        + esc(e.mode) + '</span>'},
@@ -9041,9 +9047,8 @@ function paintPresent(t) {
     + (ex.length ? lvTable('prExtract', ex, exRank,
         {sort: {key: 'field', dir: 'desc'},
          rowClass: e => e === ex[0] ? ' class="ms-top"' : ''}) : none)
-    + prHead(5, 'Single against agentic',
-             'The two shapes are separate rows, never averaged: some models do '
-             + 'well in one and badly in the other. Extra fields on and off '
+    + prHead(5, 'Extraction modes',
+             'Single, Agentic and Hybrid are separate rows, never averaged. Extra fields on and off '
              + 'also stay separate for accuracy, time and error rate.',
              'model, shape and Extra fields setting')
     + (shapes.length ? lvTable('prShape', shapes, shape, {sort: {key: 'field', dir: 'desc'}}) : none)
@@ -9696,10 +9701,10 @@ const LV_FIELDS = [
   {field: 'extract_inference_engine', label: 'Extraction engine version',
    hint: 'the server kind and version pass 2 ran on'},
   {field: 'extract_mode', label: 'Extraction shape',
-   hint: 'single: one request for the whole form. agentic: a step per group of '
+   hint: 'single: one request for the whole form. hybrid: tuned grouped requests. agentic: original steps of '
        + 'one to three fields'},
   {field: 'extract_schema_first', label: 'JSON schema first',
-   hint: 'on: agentic steps start with a JSON schema. Older runs are off'},
+   hint: 'on: Agentic/Hybrid steps start with a JSON schema. Older runs are off'},
   {field: 'detail', label: 'Detail',
    hint: 'the pixel budget the page was rasterised to: low 2 MP, medium 4 MP '
        + '(the default), original uncapped'},
@@ -10554,7 +10559,7 @@ function tmTitle(e) {
 
 /* The extraction shape beside a name, where the pass has one.
 
-   **Single and agentic are separate rows, not one averaged pair** -- the same
+   **Single, Agentic and Hybrid are separate rows, not one averaged pair** -- the same
    rule `by_extract` follows, and the reason is that the two are two shapes with
    different failure modes rather than two samples of one setting. Pass 1 has no
    shape at all, so `shaped` is false there and this draws nothing; on pass 2 a
@@ -10567,9 +10572,9 @@ function tmShape(e, shaped) {
     + 'before pass 2 chose a shape, so the log records none. It counts as a '
     + 'failure and can carry no score">no shape</span>';
   return '<span class="tm-shape" title="the extraction shape: ' + esc(s)
-    + '. Single asks for the whole form in one request, agentic asks two or '
-    + 'three keys at a time. They are ranked apart because they are two '
-    + 'settings, not two samples of one">' + esc(s) + '</span>';
+    + '. Single asks for the whole form; Agentic uses original field groups; '
+    + 'Hybrid uses tuned prompts and related field groups. Each mode is ranked '
+    + 'separately">' + esc(s) + '</span>';
 }
 
 /* The best or worst KIND of page, as a sentence. Not `stSentence`: that one
@@ -10945,7 +10950,7 @@ function paintTypes(t) {
     + 'those are all asked the same 30-key base form and all scored as an '
     + 'unknown type. That column names what it holds and how many documents of '
     + 'each, so the grouping loses the ranking between those types and nothing '
-    + 'about which they are. <b>Single and agentic are separate rows on the '
+    + 'about which they are. <b>Single, Agentic and Hybrid are separate rows on the '
     + 'pass-2 half</b>, never one averaged pair &mdash; they are two settings '
     + 'with different failure modes rather than two samples of one, which is why '
     + '<b>Best extraction</b> keys on the shape too, and a model that is strong '
@@ -13081,7 +13086,7 @@ function paintFieldsOnly() {
     : 'No model server at ' + server.url;
   fxRun.disabled = !ok || !fxCase.value || fxBusy;
   fxMode.disabled = fxBusy;
-  if (fxSchemaFirst) fxSchemaFirst.disabled = fxBusy || extractMode !== 'agentic';
+  if (fxSchemaFirst) fxSchemaFirst.disabled = fxBusy || !isStepMode(extractMode);
 }
 
 /* What is about to be fed in, and whether the result can be scored. The two are
@@ -13114,7 +13119,7 @@ async function runFieldsOnly() {
   const id = fxCase.value;
   if (!id || fxBusy) return;
   const mode = extractMode;
-  const schemaFirst = mode === 'agentic' && fxSchemaFirst.checked;
+  const schemaFirst = isStepMode(mode) && fxSchemaFirst.checked;
   fxBusy = true; paintFieldsOnly();
   setTestStatus('fx', 'running');
   fxNote.classList.remove('err');
@@ -13719,7 +13724,7 @@ function stPaintMode() {
   stEl('stExtrasField').style.display = (m === 'extract' || m === 'full') ? '' : 'none';
   stEl('stSchemaFirstField').style.display = ['extract', 'full'].includes(m) ? '' : 'none';
   stEl('stSchemaFirst').disabled = stRunning || !['extract', 'full'].includes(m)
-    || stEl('stShape').value !== 'agentic';
+    || !isStepMode(stEl('stShape').value);
   stEl('stDetailsField').style.display = ['extract', 'full'].includes(m) ? '' : 'none';
   stEl('stSaveDetails').disabled = stRunning || !['extract', 'full'].includes(m);
   stEl('stPagesField').style.display = m === 'classify' ? '' : 'none';
@@ -13798,7 +13803,7 @@ function stBusy(on) {
   stRun.disabled = on;
   stEl('stNoCache').disabled = on;
   stEl('stSchemaFirst').disabled = on || !['extract', 'full'].includes(stMode.value)
-    || stEl('stShape').value !== 'agentic';
+    || !isStepMode(stEl('stShape').value);
   stEl('stSaveLog').disabled = on || stMode.value === 'classify';
   stEl('stSaveDetails').disabled = on || !['extract', 'full'].includes(stMode.value);
   stPaintBatch();
@@ -14194,7 +14199,7 @@ function stReportHtml(s, snapshot, host) {
         + '</table>';
     }
     if (r.agentic_context) html += stChatContextHtml(r.agentic_context);
-    else if (plan && plan.extract_mode === 'agentic') {
+    else if (plan && isStepMode(plan.extract_mode)) {
       html += '<p class="note">Per-chat context usage was not recorded for this run.</p>';
     }
     if (r.errors && r.errors.length) {
@@ -14228,7 +14233,7 @@ function stBody() {
     max_seconds: Number(val('stMax')) || 0, detail: val('stDetail'),
     extract_mode: val('stShape'), extras: stEl('stExtras').checked,
     schema_first: stEl('stSchemaFirst').checked && ['extract', 'full'].includes(stMode.value)
-      && val('stShape') === 'agentic',
+      && isStepMode(val('stShape')),
     pack_pages: Number(val('stPages')) || 100,
     strategy: val('stStrategy'), seed: val('stSeed').trim() || null,
     source: stSource,

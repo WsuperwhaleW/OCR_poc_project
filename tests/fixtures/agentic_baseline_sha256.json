@@ -1,0 +1,29 @@
+{
+  "revision": "9880dce1f048b6da04825aeb37af6bf318ef5ff7",
+  "profiles": {
+    "[[], false]": "bdfa6c954bbc4e62ec517a2c671704a3154d017db9ce063407524063b806c3f9",
+    "[[], true]": "b7098bec3cc2fef04e08d0622c699841be0aec07460d70cd685d3a40e507cc20",
+    "[[\"RTV_SHIP_CREDIT\"], false]": "cf630c69a80dedab86ceffd5bf40fc420efc72b1ff65a5d57cd7c20eaccba537",
+    "[[\"RTV_SHIP_CREDIT\"], true]": "41d6bd5dc489dfa0f2dc91099e63a90847436fec5be00bc30609f440d6c9b5f4",
+    "[[\"INVOICE\"], false]": "844126d9b3a327cf3b0e91026326c3df0a95f51d2d75212a97c7d68254b302bf",
+    "[[\"INVOICE\"], true]": "8f325f4d0877b4b793bf359706bb42a8fff86b9cb7f800fd66650b82eb90303f",
+    "[[\"CREDIT_NOTE\"], false]": "844126d9b3a327cf3b0e91026326c3df0a95f51d2d75212a97c7d68254b302bf",
+    "[[\"CREDIT_NOTE\"], true]": "8f325f4d0877b4b793bf359706bb42a8fff86b9cb7f800fd66650b82eb90303f",
+    "[[\"RECEIPT\"], false]": "eade4603f33c66ea5e514d4d3274e3be3ead5c8105f00428a43e96ae0c494965",
+    "[[\"RECEIPT\"], true]": "7079263f50f981b0d332549928524557244737769494379b80b24bb544ac3492",
+    "[[\"WHT_CERTIFICATE\"], false]": "78f13b7fee73552dce0e9251df205237f854e7a7b326a715323d3a77e1928461",
+    "[[\"WHT_CERTIFICATE\"], true]": "8ec02dd2cc4258cac517cee1708356e6e704f99275dbc1efe9583f63c9a9402a",
+    "[[\"TAX_INVOICE\"], false]": "bdfa6c954bbc4e62ec517a2c671704a3154d017db9ce063407524063b806c3f9",
+    "[[\"TAX_INVOICE\"], true]": "b7098bec3cc2fef04e08d0622c699841be0aec07460d70cd685d3a40e507cc20",
+    "[[\"STATEMENT_OF_ACCOUNT\"], false]": "bdfa6c954bbc4e62ec517a2c671704a3154d017db9ce063407524063b806c3f9",
+    "[[\"STATEMENT_OF_ACCOUNT\"], true]": "b7098bec3cc2fef04e08d0622c699841be0aec07460d70cd685d3a40e507cc20",
+    "[[\"DEBIT_NOTE\"], false]": "bdfa6c954bbc4e62ec517a2c671704a3154d017db9ce063407524063b806c3f9",
+    "[[\"DEBIT_NOTE\"], true]": "b7098bec3cc2fef04e08d0622c699841be0aec07460d70cd685d3a40e507cc20",
+    "[[\"BILLING_NOTE\"], false]": "bdfa6c954bbc4e62ec517a2c671704a3154d017db9ce063407524063b806c3f9",
+    "[[\"BILLING_NOTE\"], true]": "b7098bec3cc2fef04e08d0622c699841be0aec07460d70cd685d3a40e507cc20",
+    "[[\"RECEIPT\", \"TAX_INVOICE\"], false]": "eade4603f33c66ea5e514d4d3274e3be3ead5c8105f00428a43e96ae0c494965",
+    "[[\"RECEIPT\", \"TAX_INVOICE\"], true]": "7079263f50f981b0d332549928524557244737769494379b80b24bb544ac3492",
+    "[[\"RTV_SHIP_CREDIT\", \"CREDIT_NOTE\"], false]": "844126d9b3a327cf3b0e91026326c3df0a95f51d2d75212a97c7d68254b302bf",
+    "[[\"RTV_SHIP_CREDIT\", \"CREDIT_NOTE\"], true]": "8f325f4d0877b4b793bf359706bb42a8fff86b9cb7f800fd66650b82eb90303f"
+  }
+}

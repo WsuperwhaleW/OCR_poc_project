@@ -1,5 +1,6 @@
 """RTV request routing and isolation; model accuracy still needs an AWS run."""
 import copy
+from functools import partial
 import json
 import unittest
 from pathlib import Path
@@ -7,6 +8,11 @@ from unittest.mock import patch
 
 import app
 import prompts
+
+# These tests cover the tuned variant, now exposed explicitly as Hybrid.
+hybrid_steps = partial(prompts.steps_for_types, mode="hybrid")
+hybrid_question = partial(app._step_question, mode="hybrid")
+hybrid_selected = partial(app._steps_for, mode="hybrid")
 import segment
 
 
@@ -23,17 +29,17 @@ class ReturnPromptTests(unittest.TestCase):
             "document_type", "document_number", "issue_date", "seller_tax_id",
             "seller_branch", "seller_branch_location", "buyer_tax_id", "buyer_branch", "buyer_branch_location", "subtotal",
             "vat_total", "amount_incl_vat"})
-        table = prompts.steps_for_types(RTV, extras=False)
+        table = hybrid_steps(RTV, extras=False)
         self.assertEqual([s["id"] for s in table],
                          ["document", "seller", "buyer", "totals"])
         self.assertEqual([k for s in table for k in s["keys"]], list(keys))
         self.assertEqual(prompts.mandatory_for_types(RTV), ())
-        self.assertEqual(prompts.steps_for_types(RTV)[-1]["id"], "other")
+        self.assertEqual(hybrid_steps(RTV)[-1]["id"], "other")
 
     def test_agentic_questions_replace_conflicting_issuer_and_addressee_roles(self):
-        table = {s["id"]: s for s in prompts.steps_for_types(RTV, extras=False)}
+        table = {s["id"]: s for s in hybrid_steps(RTV, extras=False)}
         for party in ("seller", "buyer"):
-            question = app._step_question(table[party], RTV)
+            question = hybrid_question(table[party], RTV)
             self.assertIn("ORIGINAL SALE", question)
             self.assertIn("RECEIVING", question)
             self.assertIn("SENDING", question)
@@ -56,8 +62,8 @@ class ReturnPromptTests(unittest.TestCase):
         self.assertNotIn('"po_gr_rtv_number"', text)
 
     def test_return_document_step_distinguishes_own_number_and_return_date(self):
-        document = prompts.steps_for_types(RTV, extras=False)[0]
-        question = app._step_question(document, RTV)
+        document = hybrid_steps(RTV, extras=False)[0]
+        question = hybrid_question(document, RTV)
         self.assertIn("เลขที่การส่งคืน", question)
         self.assertIn("วันที่ส่งคืน", question)
         self.assertIn("print timestamp", question)
@@ -68,8 +74,8 @@ class ReturnPromptTests(unittest.TestCase):
         mixed = RTV + ["CREDIT_NOTE"]
         self.assertEqual(prompts.fields_for_types(mixed),
                          prompts.fields_for_types(["CREDIT_NOTE"]))
-        self.assertEqual(prompts.steps_for_types(mixed),
-                         prompts.steps_for_types(["CREDIT_NOTE"]))
+        self.assertEqual(hybrid_steps(mixed),
+                         hybrid_steps(["CREDIT_NOTE"]))
         self.assertEqual(prompts.type_bullets(mixed, prompts.fields_for_types(mixed)),
                          prompts.type_bullets(["CREDIT_NOTE"], prompts.fields_for_types(mixed)))
         text = prompts.extract_prompt(prompts.fields_for_types(mixed), mixed)
@@ -80,12 +86,12 @@ class ReturnPromptTests(unittest.TestCase):
 
     def test_document_specific_steps_do_not_mutate_shared_definitions(self):
         saved = copy.deepcopy(prompts.EXTRACT_STEPS)
-        rtv = prompts.steps_for_types(RTV)
+        rtv = hybrid_steps(RTV)
         seller = next(s for s in rtv if s["id"] == "seller")
         seller["title"] = "local change"
         self.assertEqual(prompts.EXTRACT_STEPS, saved)
         for codes in (["INVOICE"], ["CREDIT_NOTE"], ["RECEIPT"], []):
-            step = next(s for s in prompts.steps_for_types(codes) if s["id"] == "seller")
+            step = next(s for s in hybrid_steps(codes) if s["id"] == "seller")
             self.assertEqual(step["title"], "who issued this document")
 
     def test_real_return_page_routes_four_schema_requests_with_grounded_values(self):
@@ -108,7 +114,7 @@ class ReturnPromptTests(unittest.TestCase):
 
         with patch.object(app, "_chat", side_effect=chat), \
              patch.object(app, "AGENTIC_PARALLEL", False):
-            result = app._drain(app._extract_agentic(text, STATUS, form))
+            result = app._drain(app._extract_agentic(text, STATUS, form, mode="hybrid"))
         self.assertNotIn("error", result)
         self.assertEqual(len(requests), 4)
         self.assertEqual(set().union(*(set(schema["properties"]) for _, schema, _ in requests)),

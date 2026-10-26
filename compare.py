@@ -235,7 +235,7 @@ def main():
                          "transcript, so pass 1 contributes no noise")
     ap.add_argument("--no-extract", action="store_true",
                     help="re-score the saved extraction, no model call")
-    ap.add_argument("--mode", default=None, choices=["single", "agentic"],
+    ap.add_argument("--mode", default=None, choices=["single", "agentic", "hybrid"],
                     help="extraction shape for this run (default: the app's)")
     ap.add_argument("--server", default=None,
                     help="switch the app to this model server first, e.g. "
