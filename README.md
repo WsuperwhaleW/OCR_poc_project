@@ -734,6 +734,10 @@ keys under `totals` or `payment`, respectively; old saved logs retain their orig
 Hybrid `subtotal` asks for the printed whole-document amount before VAT, including
 both taxable and non-taxable portions, rather than a VAT-base subtotal for just one
 portion. It never adds those portions or subtracts VAT to manufacture a missing total.
+If the document has only VAT-taxable items, a printed `Vatable Amount`, `Taxable Amount`
+or `VAT Base` can be the whole-document subtotal. Those labels are not rejected merely
+because they name a taxable base; the narrower base is excluded when the document also
+prints separate non-taxable portions.
 The totals keys are filled independently; a missing VAT amount does not make a printed
 subtotal empty.
 
@@ -741,6 +745,11 @@ A pure `BILLING_NOTE` in Hybrid has a separate form convention: `subtotal` holds
 aggregate amount billed across its listed invoices, including a labelled total in a
 table footer. This does not assert whether those underlying invoice amounts include
 VAT; `amount_incl_vat` still needs an explicit VAT-inclusive total on the covering bill.
+The request calls this aggregate `billing_total`, then maps that key to the existing
+`subtotal` field before merging, grounding and scoring. The prompt, JSON schema and
+retry messages all use `billing_total`; results/CSV/scoring retain `subtotal`. Raw
+replies stay unchanged and step diagnostics include `request_aliases` so the mapping
+is visible. No value is copied from `amount_incl_vat` to repair a missing answer.
 Its party prompts identify the supplier presenting the bill and the customer being
 billed, including labelled tax IDs in a customer/details panel separated by bill
 metadata. A lone tax ID is never automatically assigned to the customer. These billing

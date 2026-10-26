@@ -2260,8 +2260,9 @@ _AGENTIC_VAT_RULES = """- vat_total is the printed VAT AMOUNT in money, never th
 
 _BILLING_TOTALS = """Billing-note form convention for this totals request:
 - This is a covering bill listing invoices, not a new VAT breakdown of those invoices.
-  For this form, subtotal holds the printed aggregate amount being billed across
-  the listed invoices. Do not require a caption literally saying subtotal/before VAT.
+  billing_total is the printed aggregate amount being billed across the listed invoices,
+  regardless of whether the underlying invoice amounts include VAT. Copy that printed
+  total; do not require a caption saying subtotal or before VAT.
 - Find the table's summary/footer row or an overall amount-billed/total caption,
   such as รวมเงินทั้งสิ้น. A labelled total can sit under the balance/outstanding
   column; read that total row, not one invoice row or a sum you calculate yourself.
@@ -2269,9 +2270,12 @@ _BILLING_TOTALS = """Billing-note form convention for this totals request:
   leave amount_incl_vat empty unless an explicit VAT-inclusive total is printed;
   do not treat the lack of a VAT breakdown as proof of a zero-VAT bill.
   A net payable after withholding is not a VAT-inclusive total either.
+  A total-billed caption alone belongs in billing_total, not amount_incl_vat.
+  When only an aggregate billed is printed, fill billing_total and leave both VAT
+  fields empty. Only an explicit VAT-inclusive caption supports amount_incl_vat.
 - Fill each key independently from its printed label/column. Never infer the underlying
   invoices' VAT, subtract VAT from the aggregate or add invoice rows yourself.
-""" + _AGENTIC_VAT_RULES
+""" + _AGENTIC_VAT_RULES.replace("subtotal", "billing_total")
 
 
 EXTRACT_STEPS = (
@@ -2633,9 +2637,12 @@ HYBRID_STEP_OVERRIDES = {
         'rules': """These are two different figures, each read off its own printed line.
 - subtotal is the printed WHOLE-DOCUMENT total of goods/services BEFORE VAT is added,
   including both VAT-taxable and non-VAT/exempt portions when the document contains both.
-  Distinguish that overall total from a taxable-base/Total VAT subtotal for ONLY the
-  taxable portion, or a subtotal for just one category. Choose the printed overall
-  before-VAT figure, not the narrower taxable base merely because it is beside VAT.
+  If the document has only VAT-taxable items, its printed Vatable Amount, Taxable Amount
+  or VAT Base can be that whole-document before-VAT total: accept it as subtotal.
+  Those captions are not a reason to leave the field empty.
+  If separate taxable AND non-VAT/exempt portions are printed, the taxable base alone
+  is only part of the total: choose the printed overall before-VAT figure covering
+  all portions instead. Likewise, a subtotal for one category alone is not the whole.
   If no overall before-VAT figure is printed, do not add the portions or subtract VAT
   from a gross total yourself; leave subtotal empty.
 """ + _AGENTIC_VAT_RULES + """- Take each from its own printed label, never from its position on the page. Pages order
@@ -2778,7 +2785,9 @@ def steps_for_types(codes, extras=True, mode="agentic"):
                        "rules": _BILLING_PARTIES + _agentic_party_values(s["id"])}
                       if s["id"] in titles else
                       {**s, "title": "the aggregate billed and any explicitly printed VAT totals",
-                       "rules": _BILLING_TOTALS}
+                       "rules": _BILLING_TOTALS,
+                       "request_aliases": {"subtotal": "billing_total"},
+                       "skeleton": '{ "billing_total": "", "vat_total": "", "amount_incl_vat": "" }'}
                       if s["id"] == "totals" else s for s in table)
     return table
 

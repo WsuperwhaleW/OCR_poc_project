@@ -2717,14 +2717,14 @@ def _step_schema(step: dict) -> dict:
     return {
         "type": "object",
         "properties": {
-            key: (LINE_ITEM_SCHEMA if key == "line_items"
+            step.get("request_aliases", {}).get(key, key): (LINE_ITEM_SCHEMA if key == "line_items"
                   else income_items_schema(prompts.INCOME_ITEM_KEYS)
                   if key == INCOME_ITEMS_KEY
                   else OTHER_FIELDS_SCHEMA if key == "other_fields"
                   else {"type": "string"})
             for key in step["keys"]
         },
-        "required": list(step["keys"]),
+        "required": [step.get("request_aliases", {}).get(key, key) for key in step["keys"]],
     }
 
 
@@ -2860,9 +2860,14 @@ def _step_values(step: dict, raw: str, salvage: bool = False):
         raise ValueError("reply was JSON but not an object")
     values = {}
     for key in step["keys"]:
-        if key not in parsed:
+        requested = step.get("request_aliases", {}).get(key, key)
+        if requested not in parsed:
+            if requested != key:
+                # A reply using the canonical storage key did not answer the
+                # actual question. Let the normal schema retry request it again.
+                raise ValueError(f"reply is missing requested field: {requested}")
             continue
-        value = parsed[key]
+        value = parsed[requested]
         if key in ("line_items", INCOME_ITEMS_KEY, "other_fields"):
             values[key] = [v for v in value if isinstance(v, dict)] \
                 if isinstance(value, list) else []
@@ -3085,6 +3090,8 @@ def _run_step_asked(step: dict, prefix: str, question: str, status: dict, source
               # back can still show what it was asked -- which is the state
               # where "what did we send it?" is the actual question.
               "prompt": question}
+    if step.get("request_aliases"):
+        record["request_aliases"] = dict(step["request_aliases"])
     values, elapsed = {}, 0.0
     best_bad = None
 
@@ -3147,7 +3154,11 @@ def _run_step_asked(step: dict, prefix: str, question: str, status: dict, source
             break
         elapsed += time.perf_counter() - at
 
-        bad = _ungrounded_in(attempt_values, source)
+        # Retry wording names the keys the model was actually asked for, while
+        # results, grounding and scoring keep the canonical application fields.
+        requested_values = {step.get("request_aliases", {}).get(k, k): v
+                            for k, v in attempt_values.items()}
+        bad = _ungrounded_in(requested_values, source)
         # Keep whichever attempt invents least. A retry that comes back worse
         # than the answer it was meant to correct is not an improvement, and
         # under greedy decoding that happens whenever the model has nothing

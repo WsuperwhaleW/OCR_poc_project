@@ -52,7 +52,7 @@ def _score_summary(score):
 def _step_stats(step, catalog):
     # Every step gets these small records, including fully correct steps.
     # Full replies/values stay in the existing problem-step evidence only.
-    out = {key: step[key] for key in ("id", "keys", "seconds", "attempts") if key in step}
+    out = {key: step[key] for key in ("id", "keys", "request_aliases", "seconds", "attempts") if key in step}
     out["question_id"] = _reference(catalog, "questions", step.get("prompt"))
     if step.get("chats"):
         out["chats"] = [{key: chat[key] for key in (
@@ -95,7 +95,7 @@ def _reference(catalog, section, text):
 
 def _step_detail(step, catalog):
     out = {key: step[key] for key in (
-        "id", "keys", "values", "attempts", "retried", "schema_retry", "salvaged",
+        "id", "keys", "request_aliases", "values", "attempts", "retried", "schema_retry", "salvaged",
         "error", "retry_error", "extras_error", "ungrounded", "seconds", "chats") if key in step}
     out["question_id"] = _reference(catalog, "questions", step.get("prompt"))
     out["raw"] = [{**{key: reply[key] for key in ("label", "text") if key in reply},
