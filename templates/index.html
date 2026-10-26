@@ -4506,7 +4506,10 @@ paintOcrProfile();
    backstop fired, and that a true runaway costs the whole token budget. */
 const loopGuardChk = document.getElementById('loopGuardChk');
 const loopGuardNote = document.getElementById('loopGuardNote');
-const READ_TOKEN_CAP = {{ max_new_tokens }};
+/* The page-read token cap, as the SERVER reports it. Rendered into the page and
+   refreshed from every loop-guard reply, so an open page follows a server that
+   was restarted with a different MAX_NEW_TOKENS instead of showing the old one. */
+let READ_TOKEN_CAP = {{ max_new_tokens }};
 
 function paintLoopGuard() {
   loopGuardNote.innerHTML = loopGuardChk.checked
@@ -4531,13 +4534,30 @@ async function setLoopGuard(on) {
     const body = await res.json();
     /* Show what the server accepted, never what was clicked. */
     if (typeof body.loop_guard === 'boolean') loopGuardChk.checked = body.loop_guard;
+    if (Number.isFinite(body.max_tokens)) READ_TOKEN_CAP = body.max_tokens;
   } catch (err) { /* leave it where it was */ }
   loopGuardChk.disabled = false;
   paintLoopGuard();
 }
 
+/* What the server holds now: the guard and the cap. Asked on load and when the
+   tab comes back into view; it is the app's own state, never the model server. */
+async function refreshLoopGuard() {
+  try {
+    const body = await (await fetch(API + '/ocr/loop-guard')).json();
+    if (typeof body.loop_guard === 'boolean' && !loopGuardChk.disabled)
+      loopGuardChk.checked = body.loop_guard;
+    if (Number.isFinite(body.max_tokens)) READ_TOKEN_CAP = body.max_tokens;
+  } catch (err) { return; }
+  paintLoopGuard();
+}
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden) refreshLoopGuard();
+});
+
 loopGuardChk.addEventListener('change', () => setLoopGuard(loopGuardChk.checked));
 paintLoopGuard();
+refreshLoopGuard();
 
 /* ---------- the page-read sampler -------------------------------------------
    Temperature, top_p and top_k of the PAGE READ (pass 1); extraction stays greedy.
