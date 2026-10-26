@@ -2311,6 +2311,10 @@ follows your desktop; Light is the one to pick for projecting or screenshotting.
         <label class="st-option">
           <input id="stNoCache" type="checkbox"> Bypass cache
         </label>
+        <label class="st-option" id="stSplitPagesField"
+               title="Once every job has started, a file still reading its pages sends its next pages to the workers left idle, at most the concurrency in flight, and joins them in page order">
+          <input id="stSplitPages" type="checkbox" checked> Spread a long file's pages on idle workers
+        </label>
         <label class="st-option" id="stSaveLogRow">
           <input id="stSaveLog" type="checkbox"> Save each job
         </label>
@@ -13748,6 +13752,7 @@ function stPaintMode() {
   stEl('stSchemaFirst').disabled = stRunning || !['extract', 'full'].includes(m)
     || !isStepMode(stEl('stShape').value);
   stEl('stDetailsField').style.display = ['extract', 'full'].includes(m) ? '' : 'none';
+  stEl('stSplitPagesField').style.display = ['ocr', 'full'].includes(m) ? '' : 'none';
   stEl('stSaveDetails').disabled = stRunning || !['extract', 'full'].includes(m);
   stEl('stPagesField').style.display = m === 'classify' ? '' : 'none';
   stEl('stStrategyField').style.display = m === 'classify' ? 'none' : '';
@@ -13824,6 +13829,7 @@ function stBusy(on) {
   stClear.disabled = on;
   stRun.disabled = on;
   stEl('stNoCache').disabled = on;
+  stEl('stSplitPages').disabled = on;
   stEl('stSchemaFirst').disabled = on || !['extract', 'full'].includes(stMode.value)
     || !isStepMode(stEl('stShape').value);
   stEl('stSaveLog').disabled = on || stMode.value === 'classify';
@@ -14154,6 +14160,7 @@ function stReportHtml(s, snapshot, host) {
       + (plan.no_cache ? ' · prompt cache bypassed ('
           + Object.entries(plan.no_cache_effect || {})
               .map(([k, v]) => esc(k) + ': ' + esc(v)).join('; ') + ')' : '')
+      + (plan.split_pages ? ' · long files spread on idle workers' : '')
       + (plan.vllm_batch ? ' · <b>batched</b>, up to ' + plan.batch_size
           + ' per /batch request on ' + (plan.batch_servers || []).map(esc).join(' and ') : '')
       + (plan.save_log ? ' · saving each job to the run log as stress run <b>'
@@ -14204,6 +14211,7 @@ function stReportHtml(s, snapshot, host) {
       stTile('Completed', r.completed + '<small> / ' + r.attempted + '</small>',
         [c.looped ? c.looped + ' looped' : '', c.truncated ? c.truncated + ' at token cap' : '',
          c.cancelled ? c.cancelled + ' cancelled' : '', c.skipped ? c.skipped + ' past the time limit' : '',
+         r.ocr && r.ocr.pages_lent ? r.ocr.pages_lent + ' page(s) read on idle workers' : '',
          r.ocr && r.ocr.loop_retries ? r.ocr.loop_retries + ' loop retr' + (r.ocr.loop_retries === 1 ? 'y' : 'ies')
            + ', ' + (r.ocr.loop_recovered || 0) + ' page(s) recovered' : '']
           .filter(Boolean).join(' · ')),
@@ -14326,6 +14334,7 @@ function stBody() {
       : stRealPick === 'choose' ? stRealSelected() : undefined,
     metrics: false,
     no_cache: stEl('stNoCache').checked,
+    split_pages: stEl('stSplitPages').checked,
     vllm_batch: stBatchOn && !stEl('stBatch').disabled,
     save_log: stEl('stSaveLog').checked && stMode.value !== 'classify',
     save_details: stEl('stSaveDetails').checked && ['extract', 'full'].includes(stMode.value),

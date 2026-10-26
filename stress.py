@@ -372,6 +372,10 @@ def report(records: list, wall: float, mode: str, concurrency: int) -> dict:
             # tokens are in `tokens`; its latency figures are the kept read's.
             "loop_retries": total("loop_retries", attempted),
             "loop_recovered": total("loop_recovered", attempted),
+            # Pages read on a slot an idle worker lent (`split_pages`), and the
+            # most pages any one job had in flight at once.
+            "pages_lent": total("pages_lent", attempted),
+            "pages_peak": max((r.get("pages_peak") or 0 for r in attempted), default=0),
         }
     if mode in ("extract", "full"):
         rows = [r for r in done if r.get("extract_s") is not None]
