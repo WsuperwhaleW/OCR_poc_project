@@ -881,6 +881,11 @@ def stream_page(image: Image.Image, stats: dict = None,
     first_at = None
     timings, usage, pieces = {}, {}, 0
     collected, looped = [], False
+    # The cap this request was SENT with: on vLLM it is fitted to the window
+    # (vllm_page_fields) and can be far below MAX_NEW_TOKENS, so a page that ran
+    # to it would never reach MAX_NEW_TOKENS and never be flagged truncated.
+    cap = payload.get("max_tokens") or MAX_NEW_TOKENS
+    finish = None
     # "Batch requests" on a stress run: this page is one conversation of a
     # vLLM /batch request (vllmbatch.py). Nothing streams, so there is no first
     # token to time and nothing for the loop guard to cut -- the finished text
@@ -889,6 +894,7 @@ def stream_page(image: Image.Image, stats: dict = None,
     if batcher is not None:
         body = _await_batched(batcher, chat_url(), payload, cancel)
         usage = body.get("usage") or {}
+        finish = (body.get("choices") or [{}])[0].get("finish_reason")
         piece = (((body.get("choices") or [{}])[0].get("message") or {})
                  .get("content") or "")
         if piece:
@@ -949,6 +955,7 @@ def stream_page(image: Image.Image, stats: dict = None,
                     usage = obj["usage"]
                 # The usage-only final chunk carries no choices at all.
                 choices = obj.get("choices") or [{}]
+                finish = choices[0].get("finish_reason") or finish
                 piece = (choices[0].get("delta") or {}).get("content")
                 if piece:
                     if first_at is None:
@@ -997,7 +1004,7 @@ def stream_page(image: Image.Image, stats: dict = None,
             ttft_seconds=(None if batcher is not None
                           else round((first_at or finished) - started, 3)),
             new_tokens=new_tokens,
-            truncated=new_tokens >= MAX_NEW_TOKENS,
+            truncated=finish == "length" or new_tokens >= cap,
             looped=looped,
             resolution=f"{image.width}x{image.height}",
             megapixels=round(image.width * image.height / 1e6, 2),

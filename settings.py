@@ -45,7 +45,10 @@ MAX_PAGES = config.env_int("MAX_PAGES", 0, minimum=0)
 # Render PDFs above the pixel cap so the downscale resamples from real detail
 # rather than the model reading a coarsely rasterised page.
 PDF_DPI = config.env_int("PDF_DPI", 300, minimum=72, maximum=600)
-MAX_NEW_TOKENS = config.env_int("MAX_NEW_TOKENS", 4096, minimum=256)
+# 16384 since 2026-10-26, to match the prod vLLM (--max-model-len 16384). On vLLM
+# the cap actually sent is clamped to the window minus the page image
+# (app.vllm_page_fields), so a 4 MP page asks for ~11,700. It was 4096 until then.
+MAX_NEW_TOKENS = config.env_int("MAX_NEW_TOKENS", 16384, minimum=256)
 
 # File types the folder picker will offer and `resolve_mock` will read. PDFs go
 # through PyMuPDF, everything else through Pillow; the multi-frame formats
