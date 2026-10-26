@@ -69,6 +69,19 @@ class ReadPageRetryTests(unittest.TestCase):
         cached = Image.open(io.BytesIO(app.page_image(job, 0).get_data()))
         self.assertEqual(cached.size, sizes[1])
 
+    def test_each_read_is_tagged_with_its_page_and_detail_for_the_dry_log(self):
+        pages, _, _, _ = app.prepare_input(_upload(), "low")
+        self.assertEqual(pages[0]._dry_tag, "upload p1/1 low")
+        tags = []
+        stream, _ = _stream(3_000_000)
+
+        def tagged(image, stats=None, profile=None, cancel=None):
+            tags.append(image._dry_tag)
+            yield from stream(image, stats, profile, cancel)
+        with mock.patch.object(app, "stream_page", tagged):
+            app.read_page(pages[0], {})
+        self.assertEqual(tags, ["upload p1/1 low", "upload p1/1 medium"])
+
     def test_a_page_that_keeps_looping_climbs_to_original_and_stops(self):
         text, stats, sizes, _ = self.read("low", loop_below=10**9)
         self.assertEqual(len(sizes), 3)

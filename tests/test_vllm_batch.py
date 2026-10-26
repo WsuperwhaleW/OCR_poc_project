@@ -148,15 +148,40 @@ class AppPathTests(unittest.TestCase):
 
     def test_a_page_read_is_one_conversation_of_a_batch(self):
         page = Image.new("RGB", (64, 64), "white")
+        app.tag_page(page, "sol003 p1/2", "low")
         stats = {}
         with patch.object(app, "llama_status", return_value=VLLM), \
              patch.object(app, "chat_url", return_value=CHAT), \
-             patch.object(app.backends, "model_window", return_value=None):
+             patch.object(app.backends, "model_window", return_value=None), \
+             patch.object(app.backends.settings, "vllm_xargs",
+                          return_value={"dry_multiplier": 0.8}):
             text = "".join(app.stream_page(page, stats))
         self.assertTrue(text)                  # the prompt, echoed back
         self.assertEqual(len(self.calls), 1)
         self.assertEqual(stats["new_tokens"], 2)
         self.assertIsNone(stats["ttft_seconds"])   # nothing streamed to time
+        # A batch shares one vllm_xargs, so a per-page tag would split every group.
+        self.assertEqual(self.calls[0][1]["vllm_xargs"], {"dry_multiplier": 0.8})
+
+    def test_a_page_read_on_its_own_names_its_page_for_the_dry_log(self):
+        page = Image.new("RGB", (64, 64), "white")
+        app.tag_page(page, "sol003 p1/2", "low")
+        sent = {}
+
+        def post(url, status, json=None, **kwargs):
+            sent.update(json)
+            raise RuntimeError("sent")
+        with patch.object(app, "llama_status", return_value=VLLM), \
+             patch.object(app, "chat_url", return_value=CHAT), \
+             patch.object(app.backends, "model_window", return_value=None), \
+             patch.object(app, "_batcher_for", return_value=None), \
+             patch.object(app.backends.settings, "vllm_xargs",
+                          return_value={"dry_multiplier": 0.8}), \
+             patch.object(app.backends, "http_post", post):
+            with self.assertRaises(Exception):
+                "".join(app.stream_page(page, {}))
+        self.assertEqual(sent["vllm_xargs"],
+                         {"dry_multiplier": 0.8, "dry_tag": "sol003 p1/2 low"})
 
     def test_config_refuses_batching_where_no_server_is_vllm(self):
         local = {"text_available": True, "text_reason": None, "kind": "ollama",
