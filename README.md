@@ -693,25 +693,26 @@ or *Amount (ex VAT)*, with a note saying which basis the page is on and what sai
 The **References** group hides itself when it comes back empty; a cash receipt legitimately
 has none of those fields.
 
-### Field extraction: one request, or field by field
+### Field extraction: Single, Agentic or Hybrid
 
-Pass 2 runs in one of two shapes, chosen by **Field extraction** in the sidebar or by the
-**Agentic** button beside Re-extract. The two controls are the same switch.
+Pass 2 offers three modes in the **Field extraction** pickers and beside Re-extract.
+The choice also appears in Fields only, Stress test and Random test's shape lock.
 
-| | one request | agentic |
-|---|---|---|
-| Requests per document | 1, plus a parsing retry if needed | depends on the document's form |
-| Fields asked for at once | all fields in the document's form | 1–3 scalar fields, or one list |
-| A step that returns something not on the page | — | asked again once |
-| A reply that will not parse | costs the whole extraction | costs that step's fields |
-| Speed | depends on workload and document length | depends on workload and parallelism |
+| | Single | Agentic | Hybrid |
+|---|---|---|---|
+| Prompts | whole form | original baseline from `9880dce` | tuned prompts, including latest subtotal/billing rules |
+| Fields per request | all form fields | 1–3 scalar fields, or one list | related groups of 1–3 scalar fields, or one list |
+| Invoice steps without extras | 1 | 6 | 5 |
+| Receipt steps without extras | 1 | 6 | 5 |
+| RTV steps without extras | 1 | 5 | 4 |
+| Grounding re-ask | — | per step | per step |
 
-Agentic mode asks independent steps against the same complete document transcript and
+Agentic and Hybrid ask independent steps against the same complete document transcript and
 type framing. Each step sees its own question, not the other steps' answers. vLLM can run
 these steps in parallel. The number of steps depends on the document's requested fields;
 single-request mode remains the process default.
 
-Related fields share a request where the form asks for them: `subtotal`, `vat_total` and
+In Hybrid, related fields share a request where the form asks for them: `subtotal`, `vat_total` and
 `amount_incl_vat` form one totals step; `inv_rtv_cnr_number`, `payment_date` and `cheque_number`
 form one payment step. A receipt that asks for just the first two totals still asks for
 only those two. No grouped step exceeds three keys or adds fields to the form. Without
@@ -720,23 +721,23 @@ Seller and buyer remain separate requests of tax ID, branch code and branch loca
 WHT identity/address requests stay separate; their name instructions exclude explicitly
 designated branch/head-office suffixes while preserving qualifiers in legal names.
 
-Agentic branch instructions distinguish labelled tax branch numbers from place names
+Hybrid branch instructions distinguish labelled tax branch numbers from place names
 and store/customer codes. Printed zeros are valid evidence; missing values must not be
-filled with invented zeros. These wording changes apply to Agentic; the Single prompt
+filled with invented zeros. These wording changes apply to Hybrid; the Single prompt
 and ground truth remain unchanged for benchmark comparison. Accuracy and speed still
 need verification on the actual model server.
 
-For targeted extraction, historical step ids `total_incl` and `inv_rtv_cnr` select the
+For targeted Hybrid extraction, historical step ids `total_incl` and `inv_rtv_cnr` select the
 complete related totals/payment group. Results and detail logs list the group's actual
 keys under `totals` or `payment`, respectively; old saved logs retain their original steps.
 
-Agentic `subtotal` asks for the printed whole-document amount before VAT, including
+Hybrid `subtotal` asks for the printed whole-document amount before VAT, including
 both taxable and non-taxable portions, rather than a VAT-base subtotal for just one
 portion. It never adds those portions or subtracts VAT to manufacture a missing total.
 The totals keys are filled independently; a missing VAT amount does not make a printed
 subtotal empty.
 
-A pure `BILLING_NOTE` has a separate form convention: `subtotal` holds the printed
+A pure `BILLING_NOTE` in Hybrid has a separate form convention: `subtotal` holds the printed
 aggregate amount billed across its listed invoices, including a labelled total in a
 table footer. This does not assert whether those underlying invoice amounts include
 VAT; `amount_incl_vat` still needs an explicit VAT-inclusive total on the covering bill.
@@ -744,6 +745,16 @@ Its party prompts identify the supplier presenting the bill and the customer bei
 billed, including labelled tax IDs in a customer/details panel separated by bill
 metadata. A lone tax ID is never automatically assigned to the customer. These billing
 instructions do not override mixed invoice/receipt headings or RTV return roles.
+
+Agentic retains its original prompt text and separate steps exactly, including the
+older head-office/VAT wording. Snapshot hashes in `tests/fixtures/agentic_baseline_sha256.json`
+guard that baseline. Hybrid carries all tuning through checkpoint `2d92c13`, including
+the latest subtotal and billing-note changes. Both modes retain parallel execution on
+vLLM and the per-run JSON schema first option. Stress defaults can save either choice.
+
+Results, CSV rows, history settings and detail downloads record `hybrid` separately.
+Older rows labelled `agentic` are not rewritten: some historical Agentic runs used tuned
+prompts before the split, so use their provenance hashes when comparing those files.
 
 While it runs, the Fields tab lists the steps and marks each one done, re-asked or failed.
 The list stays after the run, under the fields, so a value can be traced back to the step
@@ -766,13 +777,15 @@ The switch is server-side and takes effect on the next extraction — and on the
 refused while a random test is running, unlike switching model server.
 
 **The fields on screen say which shape produced them**, first thing on the Fields tab status
-line: `single prompt` or `agentic · 7 steps`, then the seconds, tokens, model and grounded
+line: `single prompt`, `agentic · N steps` or `hybrid · N steps`, then seconds, tokens and grounded
 share. That is the mode this result ran in, not the current setting — the picker may have been
 switched since, and a result read back from an earlier run can be older still.
 
 `AGENTIC_EXTRACT=1` starts in agentic mode; `AGENTIC_RETRIES` sets how many times a step may
 be re-asked (default 1, `0` to turn the retry off). Over HTTP, send `{"mode": "agentic"}` to
-`POST /api/extract`, or `POST /api/extract/mode` to change the setting.
+`POST /api/extract`, or `POST /api/extract/mode` to change the setting. Both endpoints
+also accept `{"mode": "hybrid"}`. `AGENTIC_EXTRACT=1` still selects original Agentic;
+it does not silently select Hybrid.
 
 **On a vLLM extraction server the steps are sent at once** (`AGENTIC_PARALLEL`, on by
 default). No step reads another's answer -- each is sent the transcript and its own question,

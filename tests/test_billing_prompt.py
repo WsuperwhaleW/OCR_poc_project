@@ -1,5 +1,6 @@
 """Billing prompt routing and transport; replies are stubs, not model evaluations."""
 import copy
+from functools import partial
 import json
 import unittest
 from unittest.mock import patch
@@ -7,11 +8,16 @@ from unittest.mock import patch
 import app
 import prompts
 
+# These tests cover the tuned variant, now exposed explicitly as Hybrid.
+hybrid_steps = partial(prompts.steps_for_types, mode="hybrid")
+hybrid_question = partial(app._step_question, mode="hybrid")
+hybrid_selected = partial(app._steps_for, mode="hybrid")
+
 
 class BillingPromptTests(unittest.TestCase):
     def test_billing_rules_are_isolated_from_mixed_invoice_and_return_forms(self):
         saved = copy.deepcopy(prompts.EXTRACT_STEPS)
-        table = {s['id']: s for s in prompts.steps_for_types(['BILLING_NOTE'], extras=False)}
+        table = {s['id']: s for s in hybrid_steps(['BILLING_NOTE'], extras=False)}
         self.assertIn('customer being billed', table['buyer']['title'])
         self.assertIn(prompts._BILLING_PARTIES, table['buyer']['rules'])
         self.assertIn(prompts._BILLING_PARTIES, table['seller']['rules'])
@@ -22,7 +28,7 @@ class BillingPromptTests(unittest.TestCase):
         self.assertIn(prompts._AGENTIC_VAT_RULES, table['totals']['rules'])
         for codes in (['INVOICE'], ['RECEIPT'], ['WHT_CERTIFICATE'], [],
                       ['BILLING_NOTE', 'INVOICE'], ['BILLING_NOTE', 'RTV_SHIP_CREDIT']):
-            for step in prompts.steps_for_types(codes, extras=False):
+            for step in hybrid_steps(codes, extras=False):
                 self.assertNotIn(prompts._BILLING_PARTIES, step['rules'])
                 self.assertNotIn(prompts._BILLING_TOTALS, step['rules'])
         self.assertEqual(prompts.EXTRACT_STEPS, saved)
@@ -31,7 +37,7 @@ class BillingPromptTests(unittest.TestCase):
         for codes in (['BILLING_NOTE'], ['BILLING_NOTE', 'INVOICE'],
                       ['BILLING_NOTE', 'RTV_SHIP_CREDIT'], ['BILLING_NOTE', 'RECEIPT']):
             for extras in (False, True):
-                table = prompts.steps_for_types(codes, extras)
+                table = hybrid_steps(codes, extras)
                 actual = [k for s in table for k in s['keys']]
                 expected = set(prompts.fields_for_types(codes))
                 if extras:
@@ -71,7 +77,7 @@ Total amount billed 240.00
 
                 with patch.object(app, '_chat', side_effect=chat), \
                      patch.object(app, 'AGENTIC_PARALLEL', False):
-                    result = app._drain(app._extract_agentic(text, status, form, only=['buyer', 'totals']))
+                    result = app._drain(app._extract_agentic(text, status, form, only=['buyer', 'totals'], mode='hybrid'))
                 self.assertNotIn('error', result)
                 self.assertEqual(len(requests), 2)
                 self.assertIn(prompts._BILLING_PARTIES, requests[0][0])

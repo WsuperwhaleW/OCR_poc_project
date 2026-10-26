@@ -25,7 +25,7 @@ function setup(storage = new Map(), failStorage = false) {
   }
   fields.stConc.max = '256';
   control('stSeed', '');
-  control('stShape', 'single', 'select', ['single', 'agentic']);
+  control('stShape', 'single', 'select', ['single', 'agentic', 'hybrid']);
   control('stStrategy', 'balanced', 'select', ['balanced', 'uniform', 'sequential']);
   control('stDetail', 'original', 'select', ['original', 'medium', 'low']);
   for (const id of ['stExtras', 'stSchemaFirst', 'stNoCache', 'stSaveLog', 'stSaveDetails', 'stHistoryMonitor']) {
@@ -106,6 +106,15 @@ test('saving and switching modes keeps independent defaults, including shapes an
   api.load('ocr');
   assert.equal(fields.stConc.value, '48');
   assert.equal(fields.stStrategy.value, 'uniform');
+});
+
+test('Hybrid and its schema option survive Save as default and a fresh page', () => {
+  const first = setup(); first.api.load('extract');
+  first.fields.stShape.value = 'hybrid'; first.fields.stSchemaFirst.checked = true;
+  first.api.save();
+  const next = setup(first.storage); next.api.load('extract');
+  assert.equal(next.fields.stShape.value, 'hybrid');
+  assert.equal(next.fields.stSchemaFirst.checked, true);
 });
 
 test('realData selection waits for asynchronous listing and survives a failed listing', () => {

@@ -92,7 +92,7 @@ COLUMNS = [
     "tokens_per_second",
     "extract_seconds",
     "extract_tokens",
-    # single | agentic. Taken from the result rather than from the current
+    # single | agentic | hybrid. Taken from the result rather than from the current
     # setting, so a mode switched during a batch still labels each row with the
     # shape that actually produced it. Blank when the run never extracted.
     "extract_mode",
@@ -5125,7 +5125,7 @@ def extract_extras_of(row: dict) -> bool:
 
 def extract_schema_first_of(row: dict) -> bool:
     """Legacy runs are JSON first; single mode never uses this agentic option."""
-    return row.get("extract_mode") == "agentic" and str(
+    return row.get("extract_mode") in ("agentic", "hybrid") and str(
         row.get("extract_schema_first", "")).strip().lower() in ("1", "true", "on")
 
 

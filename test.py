@@ -61,7 +61,7 @@ def parse_args():
                     "the reading model)")
     ap.add_argument("--detail", choices=["low", "medium", "original"],
                     help="page resolution for OCR (default: the app's, medium)")
-    ap.add_argument("--mode", choices=["single", "agentic"],
+    ap.add_argument("--mode", choices=["single", "agentic", "hybrid"],
                     help="extraction shape (default: the app's)")
     ap.add_argument("--save", default="test_output",
                     help="folder for the full JSON result ('' to skip)")

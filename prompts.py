@@ -2046,7 +2046,7 @@ has already been transcribed. Read all of it. One question about it follows the 
 --- document text ---
 """
 
-EXTRACT_STEP_TASK = """
+HYBRID_STEP_TASK = """
 --- end of document text ---
 
 You are filling in ONE part of a form about the document above: {title}.{context}
@@ -2073,6 +2073,39 @@ Rules for every answer:
   a common one; a plausible invented value is neither. Never invent placeholder zeros or
   derive a figure from other figures. Zeros explicitly printed as a branch code or amount
   ARE evidence: copy them. A blank line or a dash standing for no value stays "".
+- Return exactly the keys shown above and no others. Nothing written in these instructions
+  is itself a key or a value: where a rule names a label to look for, that is a hint for
+  finding the value on the page, never something to emit.
+- Do NOT transcribe the document, and do NOT return a natural_text field. Answer with the
+  JSON object above and nothing else."""
+
+# Frozen Agentic wording from 9880dce; do not apply Hybrid tuning here.
+EXTRACT_STEP_TASK = """
+--- end of document text ---
+
+You are filling in ONE part of a form about the document above: {title}.{context}
+
+This is a lookup, not an analysis. Find where the document states each thing and copy it
+across. Do not interpret it and do not work anything out from it.
+
+Return ONLY this JSON object, with no prose, no explanation and no code fence:
+
+{skeleton}
+
+{rules}
+
+Rules for every answer:
+- Find each value by its printed label, wherever on the page that label sits. Documents
+  word their labels differently -- match on what a label MEANS, not on any exact wording.
+- Copy each value EXACTLY as the document prints it. Do not translate it, do not reformat
+  it, and do not convert Thai text to English.
+- Every value must appear, character for character, in the document text above. If you
+  cannot point at it there, the field is not yours to fill.
+- A value belongs to the field whose printed LABEL matches it, never to the field it
+  happens to sit nearest on the page.
+- Use "" for anything the document does not state. An empty field is a correct answer and
+  a common one; a plausible invented value is neither. Never write a placeholder, a row of
+  zeros, a dash, or a figure you would have to work out from other figures.
 - Return exactly the keys shown above and no others. Nothing written in these instructions
   is itself a key or a value: where a rule names a label to look for, that is a hint for
   finding the value on the page, never something to emit.
@@ -2255,9 +2288,7 @@ EXTRACT_STEPS = (
 - It is often printed near the head of the page and often not: take it from wherever the page
   prints it. A company, brand or place name is never the heading -- those name a party to the
   document, not the kind of document it is.
-- document_number is the number identifying this document, printed with that heading
-  or its own document-number caption. Keep it distinct from a referenced invoice,
-  payment/cheque number, tax ID or customer code elsewhere in the text.
+- document_number is the number identifying this document, printed with that heading.
 - issue_date is the date the document is dated. Where the page prints several dates, take
   the one labelled as this document's own date -- not a due date, not a period, not a
   payment date.""",
@@ -2287,7 +2318,7 @@ EXTRACT_STEPS = (
         "keys": ("seller_tax_id", "seller_branch", "seller_branch_location"),
         "skeleton": '{ "seller_tax_id": "", "seller_branch": "", "seller_branch_location": "" }',
         "max_tokens": 300,
-        "rules": 'The issuer is the party this document is FROM -- who wrote it or is to be paid. The customer is the party addressed TO, billed or delivered to. Identify their blocks by printed labels, not page position or logo. On an order or request the top block can belong to the customer. If the roles are uncertain, leave the values empty. ' + "\n" + _agentic_party_values("seller"),
+        "rules": 'The issuer is the party this document is FROM -- who wrote it or is to be paid. The customer is the party addressed TO, billed or delivered to. Identify their blocks by printed labels, not page position or logo. On an order or request the top block can belong to the customer. If the roles are uncertain, leave the values empty. ' + "\n" + _party_values("seller"),
     },
     {
         "id": "buyer",
@@ -2295,7 +2326,7 @@ EXTRACT_STEPS = (
         "keys": ("buyer_tax_id", "buyer_branch", "buyer_branch_location"),
         "skeleton": '{ "buyer_tax_id": "", "buyer_branch": "", "buyer_branch_location": "" }',
         "max_tokens": 300,
-        "rules": 'The issuer is the party this document is FROM -- who wrote it or is to be paid. The customer is the party addressed TO, billed or delivered to. Identify their blocks by printed labels, not page position or logo. On an order or request the top block can belong to the customer. If the roles are uncertain, leave the values empty. ' + "\n" + _agentic_party_values("buyer"),
+        "rules": 'The issuer is the party this document is FROM -- who wrote it or is to be paid. The customer is the party addressed TO, billed or delivered to. Identify their blocks by printed labels, not page position or logo. On an order or request the top block can belong to the customer. If the roles are uncertain, leave the values empty. ' + "\n" + _party_values("buyer"),
     },
     {
         "id": "totals",
@@ -2304,14 +2335,10 @@ EXTRACT_STEPS = (
         "skeleton": '{ "subtotal": "", "vat_total": "" }',
         "max_tokens": 180,
         "rules": """These are two different figures, each read off its own printed line.
-- subtotal is the printed WHOLE-DOCUMENT total of goods/services BEFORE VAT is added,
-  including both VAT-taxable and non-VAT/exempt portions when the document contains both.
-  Distinguish that overall total from a taxable-base/Total VAT subtotal for ONLY the
-  taxable portion, or a subtotal for just one category. Choose the printed overall
-  before-VAT figure, not the narrower taxable base merely because it is beside VAT.
-  If no overall before-VAT figure is printed, do not add the portions or subtract VAT
-  from a gross total yourself; leave subtotal empty.
-""" + _AGENTIC_VAT_RULES + """- Take each from its own printed label, never from its position on the page. Pages order
+- subtotal is the figure on the total line printed BEFORE tax is added -- the total of the
+  goods or services themselves.
+- vat_total is the figure on the tax line.
+- Take each from its own printed label, never from its position on the page. Pages order
   these lines differently, and the order tells you nothing about which is which.
 - Fill only lines the page actually prints. Never add the rows up yourself and never derive
   one of these from another.
@@ -2350,17 +2377,15 @@ EXTRACT_STEPS = (
         "max_tokens": 160,
         "rules": """What to look for:
 - inv_rtv_cnr_number is ONE identifier: the invoice, return-to-vendor, or credit-note-return
-  document referenced as being paid or settled by this document.
+  document that this payment settles.
 - Find it by its printed label -- a label meaning invoice number, reference document, return,
   or the document being paid. Name that label to yourself before answering; where you cannot
   name one, the answer is "".
 - It is NOT this document's own number. A receipt carries its own number too, usually under a
   label meaning receipt number, and that one is never the answer here.
-- A single referenced identifier is valid whether printed in a header, a line or a table.
-  Repeated occurrences of the SAME identifier still identify one document.
-- Where the page settles several DISTINCT documents, do not pick one or join them:
-  answer "". A table containing one referenced document is not several documents.
-- Keep this key to one short identifier, without prose or additional identifiers.""",
+- Where the page settles several documents -- a table with a column of them, or a list --
+  none of them belongs here. Do not pick one and do not join them together: answer "".
+- Answer with the one short value and stop.""",
     },
     {
         "id": "remaining",
@@ -2438,8 +2463,7 @@ EXTRACT_STEPS = (
         "keys": ("payer_tax_id", "payer_name"),
         "skeleton": '{ "payer_tax_id": "", "payer_name": "" }',
         "max_tokens": 260,
-        "rules": _WHT_PARTY_ROLES + _wht_identity_rules("payer") +
-                 'Read the complete payer block, but stop payer_name before an explicit branch/head-office suffix. Do not append that designation to the name.\n',
+        "rules": _WHT_PARTY_ROLES + _wht_identity_rules("payer"),
     },
     {
         "id": "wht_payer_branch",
@@ -2447,7 +2471,7 @@ EXTRACT_STEPS = (
         "keys": ("payer_branch", "payer_branch_location"),
         "skeleton": '{ "payer_branch": "", "payer_branch_location": "" }',
         "max_tokens": 220,
-        "rules": _WHT_PARTY_ROLES + _AGENTIC_BRANCH_SELECTION.format(party="payer"),
+        "rules": _WHT_PARTY_ROLES + _branch_rules("payer"),
     },
     {
         "id": "wht_payer_address",
@@ -2471,8 +2495,7 @@ EXTRACT_STEPS = (
         "keys": ("payee_tax_id", "payee_name"),
         "skeleton": '{ "payee_tax_id": "", "payee_name": "" }',
         "max_tokens": 260,
-        "rules": _WHT_PARTY_ROLES + _wht_identity_rules("payee") +
-                 'Read the complete payee block, but stop payee_name before an explicit branch/head-office suffix. Do not append that designation to the name.\n',
+        "rules": _WHT_PARTY_ROLES + _wht_identity_rules("payee"),
     },
     {
         "id": "wht_payee_branch",
@@ -2480,7 +2503,7 @@ EXTRACT_STEPS = (
         "keys": ("payee_branch", "payee_branch_location"),
         "skeleton": '{ "payee_branch": "", "payee_branch_location": "" }',
         "max_tokens": 220,
-        "rules": _WHT_PARTY_ROLES + _AGENTIC_BRANCH_SELECTION.format(party="payee"),
+        "rules": _WHT_PARTY_ROLES + _branch_rules("payee"),
     },
     {
         "id": "wht_payee_address",
@@ -2583,6 +2606,83 @@ its own column.
     },
 )
 
+# Tuned step wording belongs only to Hybrid; Agentic retains the frozen baseline.
+HYBRID_STEP_OVERRIDES = {
+    'document': {
+        'rules': """What to look for:
+- document_type is the heading that names what this document is. Copy the heading itself, not
+  a description of it, and do not translate it or turn it into a category -- the heading is
+  normalised afterwards, by a program.
+- It is often printed near the head of the page and often not: take it from wherever the page
+  prints it. A company, brand or place name is never the heading -- those name a party to the
+  document, not the kind of document it is.
+- document_number is the number identifying this document, printed with that heading
+  or its own document-number caption. Keep it distinct from a referenced invoice,
+  payment/cheque number, tax ID or customer code elsewhere in the text.
+- issue_date is the date the document is dated. Where the page prints several dates, take
+  the one labelled as this document's own date -- not a due date, not a period, not a
+  payment date.""",
+    },
+    'seller': {
+        'rules': 'The issuer is the party this document is FROM -- who wrote it or is to be paid. The customer is the party addressed TO, billed or delivered to. Identify their blocks by printed labels, not page position or logo. On an order or request the top block can belong to the customer. If the roles are uncertain, leave the values empty. ' + "\n" + _agentic_party_values("seller"),
+    },
+    'buyer': {
+        'rules': 'The issuer is the party this document is FROM -- who wrote it or is to be paid. The customer is the party addressed TO, billed or delivered to. Identify their blocks by printed labels, not page position or logo. On an order or request the top block can belong to the customer. If the roles are uncertain, leave the values empty. ' + "\n" + _agentic_party_values("buyer"),
+    },
+    'totals': {
+        'rules': """These are two different figures, each read off its own printed line.
+- subtotal is the printed WHOLE-DOCUMENT total of goods/services BEFORE VAT is added,
+  including both VAT-taxable and non-VAT/exempt portions when the document contains both.
+  Distinguish that overall total from a taxable-base/Total VAT subtotal for ONLY the
+  taxable portion, or a subtotal for just one category. Choose the printed overall
+  before-VAT figure, not the narrower taxable base merely because it is beside VAT.
+  If no overall before-VAT figure is printed, do not add the portions or subtract VAT
+  from a gross total yourself; leave subtotal empty.
+""" + _AGENTIC_VAT_RULES + """- Take each from its own printed label, never from its position on the page. Pages order
+  these lines differently, and the order tells you nothing about which is which.
+- Fill only lines the page actually prints. Never add the rows up yourself and never derive
+  one of these from another.
+- Where one printed line carries several figures side by side, each under a heading of its
+  own, they are separate figures: take the one whose heading names this key, not the first
+  one on the line. A figure standing under a heading for tax deducted at source belongs to
+  neither of these.
+- Where a money column is ruled into two parts under one heading -- the whole units in one
+  and the fraction of the unit in the next -- those two parts are ONE figure: take them
+  together, the fraction after the decimal point. This applies only to a column actually
+  ruled that way; two money columns each with a heading of its own are two figures, not one,
+  and neither is half of the other.""",
+    },
+    'inv_rtv_cnr': {
+        'rules': """What to look for:
+- inv_rtv_cnr_number is ONE identifier: the invoice, return-to-vendor, or credit-note-return
+  document referenced as being paid or settled by this document.
+- Find it by its printed label -- a label meaning invoice number, reference document, return,
+  or the document being paid. Name that label to yourself before answering; where you cannot
+  name one, the answer is "".
+- It is NOT this document's own number. A receipt carries its own number too, usually under a
+  label meaning receipt number, and that one is never the answer here.
+- A single referenced identifier is valid whether printed in a header, a line or a table.
+  Repeated occurrences of the SAME identifier still identify one document.
+- Where the page settles several DISTINCT documents, do not pick one or join them:
+  answer "". A table containing one referenced document is not several documents.
+- Keep this key to one short identifier, without prose or additional identifiers.""",
+    },
+    'wht_payer': {
+        'rules': _WHT_PARTY_ROLES + _wht_identity_rules("payer") +
+                 'Read the complete payer block, but stop payer_name before an explicit branch/head-office suffix. Do not append that designation to the name.\n',
+    },
+    'wht_payer_branch': {
+        'rules': _WHT_PARTY_ROLES + _AGENTIC_BRANCH_SELECTION.format(party="payer"),
+    },
+    'wht_payee': {
+        'rules': _WHT_PARTY_ROLES + _wht_identity_rules("payee") +
+                 'Read the complete payee block, but stop payee_name before an explicit branch/head-office suffix. Do not append that designation to the name.\n',
+    },
+    'wht_payee_branch': {
+        'rules': _WHT_PARTY_ROLES + _AGENTIC_BRANCH_SELECTION.format(party="payee"),
+    },
+}
+
 
 def _group_steps(table, members, primary, title, guidance):
     """Combine already-selected fields, never extend a type's form.
@@ -2612,8 +2712,8 @@ def _group_steps(table, members, primary, title, guidance):
     return tuple(result)
 
 
-def steps_for_types(codes, extras=True):
-    """The agentic steps that fill exactly the field set for a document type.
+def steps_for_types(codes, extras=True, mode="agentic"):
+    """Steps covering a form: frozen Agentic, or tuned/grouped Hybrid.
 
     A step is included when EVERY key it owns is in that type's set. The step
     table is already grouped so that this partitions cleanly -- `_selftest`
@@ -2631,6 +2731,8 @@ def steps_for_types(codes, extras=True):
     runs the steps for the union of both forms. `extras` False drops `other`,
     for a run that wants the form and nothing else (`EXTRACT_OTHER_FIELDS`).
     """
+    if mode not in ("agentic", "hybrid"):
+        raise ValueError("step mode must be 'agentic' or 'hybrid'")
     wanted = set(fields_for_types(codes))
     # The table step owns a key that is not a scalar and so is not in the form.
     # It is admitted by the same test as every other step -- every key it owns is
@@ -2640,13 +2742,18 @@ def steps_for_types(codes, extras=True):
     table = tuple(s for s in EXTRACT_STEPS
                   if (s["id"] == "other" and extras)
                   or (s["keys"] and set(s["keys"]) <= wanted))
+    if mode == "hybrid":
+        table = tuple({**s, **HYBRID_STEP_OVERRIDES.get(s["id"], {})} for s in table)
     if _rtv_return(codes):
         titles = {"seller": "the original supplier receiving the returned goods",
                   "buyer": "the original customer sending the goods back"}
         # Copy per document: workers for other types share EXTRACT_STEPS.
         table = tuple({**s, "title": titles[s["id"]],
-                       "rules": _RTV_PARTIES + _agentic_party_values(s["id"])}
+                       "rules": (_RTV_PARTIES + _agentic_party_values(s["id"])
+                                 if mode == "hybrid" else _rtv_party_rules(s["id"]))}
                       if s["id"] in titles else s for s in table)
+    if mode == "agentic":
+        return table
     table = _group_steps(table, ("totals", "total_incl"), "totals",
                          "the printed totals before tax, tax and including tax",
                          "Inspect the overall totals summaries and table footers. Match each "
@@ -2676,9 +2783,9 @@ def steps_for_types(codes, extras=True):
     return table
 
 
-def steps_for_type(code):
+def steps_for_type(code, mode="agentic"):
     """One type's steps. `steps_for_types` is what callers should use."""
-    return steps_for_types([code] if code else [])
+    return steps_for_types([code] if code else [], mode=mode)
 
 
 def _selftest():
