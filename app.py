@@ -8081,6 +8081,9 @@ def _stress_job(spec: dict, cfg: dict, prepared: dict, cancel,
            "stress_concurrency": cfg["concurrency"]} if log else {}
     all_stats, row, logged = [], None, False
     read_began = began
+    # Where an extraction flag puts its Compare window, once there is a
+    # transcript to extract from (set below); None before that.
+    fields_window = None
     # Every pass-2 request this job makes resets its stall clock as it streams
     # and when it ends -- not only the extraction as a whole (see `_progress`).
     previous_hook = _progress_swap(live.hook(job))
@@ -8128,6 +8131,21 @@ def _stress_job(spec: dict, cfg: dict, prepared: dict, cancel,
                     live.touch(job, stage)
                 else:
                     text = prepared["truths"][case_id]
+
+                def fields_window(alert, result, missing=()):
+                    """Every extraction flag opens the window a loop row does,
+                    with the form beside it (2026-10-26, at the user's request:
+                    *show image with a field extracted so I can see the missing
+                    field*): the pages and their text in full mode, the
+                    transcript it was fed in extract mode (no page was read)."""
+                    _STRESS_EVIDENCE.put(
+                        alert, who, None,
+                        kept or [{"number": None, "text": text, "page": None,
+                                  "detail": None, "looped": False,
+                                  "truncated": False, "dry": None}],
+                        None if real else case_id,
+                        fields=_fields_evidence(result, list(missing)))
+
                 started = time.perf_counter()
                 result = extract_fields(
                     text, cfg["extract_mode"], None if real else case_id, pages=texts,
@@ -8157,18 +8175,22 @@ def _stress_job(spec: dict, cfg: dict, prepared: dict, cancel,
                             "case": case_id,
                             "source": prepared["sources"][case_id]}, extra=tag)
                 live.touch(job)
+                missing = _missing_required(result)
                 if result.get("error"):
                     if result.get("looped") or result.get("truncated"):
                         rec["alerted"] = True
-                        live.flag("looped" if result.get("looped") else "truncated",
-                                  job, who, result["error"], stage="extract")
+                        alert = live.flag("looped" if result.get("looped") else "truncated",
+                                          job, who, result["error"], stage="extract",
+                                          evidence=True)
+                        fields_window(alert, result, missing)
                     raise ValueError(result["error"])
                 if result.get("partial"):
-                    live.flag("partial", job, who, result["partial"]
-                              if isinstance(result["partial"], str) else
-                              "the extraction reply was cut off; only the fields it "
-                              "finished were kept", stage="extract")
-                missing = _missing_required(result)
+                    alert = live.flag("partial", job, who, result["partial"]
+                                      if isinstance(result["partial"], str) else
+                                      "the extraction reply was cut off; only the fields "
+                                      "it finished were kept", stage="extract",
+                                      evidence=True)
+                    fields_window(alert, result, missing)
                 rec["missing_required"] = sum(len(keys) for _, keys in missing)
                 if missing:
                     several = len(missing) > 1 or (result.get("documents_found") or 1) > 1
@@ -8183,16 +8205,7 @@ def _stress_job(spec: dict, cfg: dict, prepared: dict, cancel,
                                       fields=[f"doc{n}.{k}" if several else k
                                               for n, keys in missing for k in keys],
                                       evidence=True)
-                    # The window a loop row opens, with the form beside it: the
-                    # pages and their text in full mode, the transcript it was
-                    # fed in extract mode (no page was read).
-                    _STRESS_EVIDENCE.put(
-                        alert, who, None,
-                        kept or [{"number": None, "text": text, "page": None,
-                                  "detail": None, "looped": False,
-                                  "truncated": False, "dry": None}],
-                        None if real else case_id,
-                        fields=_fields_evidence(result, missing))
+                    fields_window(alert, result, missing)
                 payload = {"truth": truth, "looped": looped,
                            "truncated": truncated, "extracted": result}
                 if mode == "full":
@@ -8220,8 +8233,14 @@ def _stress_job(spec: dict, cfg: dict, prepared: dict, cancel,
             rec["error"] = f"{type(err).__name__}: {err}"[:300]
             if not rec.pop("alerted", False):     # a looped reply is flagged already
                 page = rec.get("at_page")
-                live.flag("error", job, who, rec["error"], stage=stage,
-                          **({"page": page} if page else {}))
+                # An extraction that raised has no form to show, but its window
+                # still has the pages it was given and says what went wrong.
+                window = fields_window if stage == "extract" else None
+                alert = live.flag("error", job, who, rec["error"], stage=stage,
+                                  **({"page": page} if page else {}),
+                                  **({"evidence": True} if window else {}))
+                if window:
+                    window(alert, {"error": rec["error"]})
             # A job that failed is saved as the failure it was. A cancelled or
             # skipped one is not: nobody let it finish, so it measured nothing.
             if log and not logged and mode != "classify":

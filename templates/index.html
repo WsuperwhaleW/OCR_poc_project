@@ -11783,6 +11783,7 @@ function cmpFieldsHtml(docs) {
       + (d.doc_types && d.doc_types.length ? ' · ' + esc(d.doc_types.join(', ')) : '')
       + (d.error ? ' · <span style="color:var(--danger)">' + esc(d.error) + '</span>' : '')
       + '</h4>' : '';
+    if (!d.rows.length) return head + '<p class="note">No fields came back.</p>';
     return head + '<table><tr><th>Field</th><th>Value</th><th></th></tr>'
       + d.rows.map(r => '<tr' + (r.missing ? ' class="miss"' : '') + '><td>' + esc(r.key)
         + '</td><td class="v">' + (r.value ? esc(r.value) : r.missing ? 'missing' : '—')
@@ -11940,7 +11941,7 @@ function enableCompare() {
   cmpToggle.disabled = !ready;
   cmpHint.textContent = !ready ? 'Run a document first.'
     : cmpInStress() && cmpOverride.fields ? 'Stress test · ' + cmpOverride.case
-      + ' — the fields its extraction came back with, required ones that are empty in red.'
+      + ' — the page and the fields its extraction came back with, required ones that are empty in red.'
     : cmpInStress() ? 'Stress test · ' + cmpOverride.case + ' page ' + cmpOverride.page
       + ' — every read of it, the page it was sent and the text it returned.'
     : hasRun() ? 'Source page, transcript and ground truth, two at a time.'
@@ -14193,7 +14194,10 @@ async function stShowEvidence(alertId, kind) {
   cmpOverride = { alert: alertId, case: data.case, page: data.page,
                   truthCase: data.truth_case, reads, at: Math.max(0, first),
                   fields: data.fields || null };
-  cmpView = data.fields ? 'model-fields' : 'source-model';
+  // An extraction flag opens on the page beside its form, so a missing field
+  // can be looked for on the image; on the transcript where no page was read.
+  cmpView = !data.fields ? 'source-model'
+    : reads.some(r => r.src) ? 'source-fields' : 'model-fields';
   paintMain();
   compareEl.hidden = false;
   cmpToggle.textContent = 'Hide';
