@@ -7947,6 +7947,43 @@ def _agentic_chats(result):
                        "keys": step.get("keys") or [], "document": document.get("document", 1)}
 
 
+def _missing_required(result: dict) -> list:
+    """Each document's Mandatory fields that came back empty: `[(document, [keys])]`.
+
+    **The extraction half of a stress run's flags** (2026-10-26, at the user's
+    request: *OCR stays the same, but the extraction will flag the missing
+    required field*). A looped read still goes on to classify and extract, and
+    what it costs shows up here, as the fields the form demanded and did not get,
+    rather than as a second loop flag.
+
+    The scalars are read off `fields` against the form's own `mandatory` list,
+    not off `validate`'s rows: three Mandatory keys (`amount_incl_vat`,
+    `vat_total`, `total_wht_amount`) have no rule, so no `absent` row either. The
+    table's cells come from `validate`, which already reports a demanded blank
+    cell per row, and a table that never came back as the table key itself. A
+    document of a type no requirement covers demands nothing and is never flagged.
+    """
+    out = []
+    documents = [d for d in (result.get("documents") or []) if isinstance(d, dict)]
+    for doc in documents or [result]:
+        classified = doc.get("classified") or {}
+        fields = doc.get("fields") if isinstance(doc.get("fields"), dict) else {}
+        missing = [key for key in classified.get("mandatory") or []
+                   if validate._blank(fields.get(key))]
+        if classified.get("mandatory_items"):
+            checks = (doc.get("validation") or {}).get("checks")
+            if checks is None:                  # nothing extracted, so no table
+                missing.append(prompts.INCOME_ITEMS_KEY)
+            else:
+                missing.extend(row["field"] for row in checks
+                               if row.get("mandatory") and row.get("state") == validate.ABSENT
+                               and row["field"].startswith(prompts.INCOME_ITEMS_KEY))
+        missing = list(dict.fromkeys(missing))
+        if missing:
+            out.append((doc.get("document") or 1, missing))
+    return out
+
+
 def _stress_job(spec: dict, cfg: dict, prepared: dict, cancel,
                 live: _StressLive) -> dict:
     """One job of the queue, start to finish. Returns its record; never raises."""
@@ -8020,6 +8057,9 @@ def _stress_job(spec: dict, cfg: dict, prepared: dict, cancel,
                     row = {**summarise(all_stats, cfg["detail"], read_began),
                            "truth": truth, **tag}
             if mode in ("extract", "full"):
+                # A read that looped or hit the cap is still classified and
+                # extracted: its OCR flag says what went wrong with the read, and
+                # the extraction's own flag (`_missing_required`) what it cost.
                 if mode == "full":
                     live.move("ocr", "extract")
                     stage = "extract"
@@ -8066,6 +8106,20 @@ def _stress_job(spec: dict, cfg: dict, prepared: dict, cancel,
                               if isinstance(result["partial"], str) else
                               "the extraction reply was cut off; only the fields it "
                               "finished were kept", stage="extract")
+                missing = _missing_required(result)
+                rec["missing_required"] = sum(len(keys) for _, keys in missing)
+                if missing:
+                    several = len(missing) > 1 or (result.get("documents_found") or 1) > 1
+                    listed = "; ".join((f"doc {n}: " if several else "") + ", ".join(keys)
+                                       for n, keys in missing)
+                    why = (" -- the read looped, which may be why" if looped else
+                           " -- the read hit the token cap, which may be why"
+                           if truncated else "")
+                    live.flag("missing", job, who,
+                              f"{rec['missing_required']} required field(s) came back "
+                              f"empty: {listed}{why}", stage="extract",
+                              fields=[f"doc{n}.{k}" if several else k
+                                      for n, keys in missing for k in keys])
                 payload = {"truth": truth, "looped": looped,
                            "truncated": truncated, "extracted": result}
                 if mode == "full":

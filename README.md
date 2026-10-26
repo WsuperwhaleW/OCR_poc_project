@@ -1890,7 +1890,11 @@ cache.
 
 **Problems are flagged as they happen**, not at the end. A *Problems* table appears at the top
 of the card the moment a job hits one, each row naming the job, its document (`sol0xx`, or the
-cases glued into a classification file), the stage and page, and the error itself:
+cases glued into a classification file), the stage and page, and the error itself. It comes in
+**two parts**: *OCR* holds the read's flags, and *Extraction* holds everything after the read
+(classify, split and extract). In a full-pipeline run a page that loops is still classified and
+extracted. The loop is flagged under OCR. What it cost shows up under Extraction as **missing
+required**: the Mandatory fields of the form that came back empty.
 
 | Flag | When |
 |---|---|
@@ -1898,6 +1902,7 @@ cases glued into a classification file), the stage and page, and the error itsel
 | **loop** | the reading model repeated itself and the loop guard cut the page off, or an extraction reply looped and never closed its JSON |
 | **token cap** | a page read or an extraction reply hit the token cap before it finished |
 | **partial reply** | an extraction reply was cut off and only the fields it finished were kept |
+| **missing required** | the extraction finished but left a Mandatory field of its form empty (per document, table cells included). The report's *Missing required* tile counts the jobs and fields. A type that no requirement covers demands nothing |
 | **stalled** | a job has had nothing back for 5 minutes (`STRESS_STALL_SECONDS`) — a hung request or a server that stopped answering; flagged once, and the job keeps running |
 
 The final report still counts errors in its *Errors* table.

@@ -14033,7 +14033,8 @@ function stMetricsTable(view, title, since) {
 
 const ST_ALERT_TEXT = {
   error: 'error', looped: 'loop', truncated: 'token cap', partial: 'partial reply',
-  stalled: 'stalled', recovered: 'retry read cleanly', dry: 'DRY'
+  stalled: 'stalled', recovered: 'retry read cleanly', dry: 'DRY',
+  missing: 'missing required'
 };
 // A looped page's one row, by where its retries got to (`_StressLive.update_flag`).
 const ST_LOOP_STATE = { retrying: 'loop retrying', resolved: 'loop resolved',
@@ -14053,9 +14054,28 @@ function stAlertClass(a) {
   return 'st-warn';
 }
 
+/* The flags in two parts (2026-10-26, at the user's request): the read's, as
+   they always were, and everything after it -- classify and extraction, where a
+   looped read still goes and where a required field that came back empty is
+   flagged. Split by the stage each alert names. */
+const ST_ALERT_PARTS = [
+  ['ocr', 'OCR', a => a.stage === 'ocr'],
+  ['extract', 'Extraction', a => a.stage !== 'ocr'],
+];
+
+function stAlertsHtml(alerts) {
+  return ST_ALERT_PARTS.map(([part, title, test]) =>
+    stAlertBox(alerts.filter(test), part, title)).join('');
+}
+
+function stAlertCounts(alerts) {
+  return ST_ALERT_PARTS.map(([, title, test]) => [title, alerts.filter(test).length])
+    .filter(([, n]) => n);
+}
+
 // Newest first. Only the first rows are drawn: a run where every job fails
 // would otherwise redraw thousands of rows a second.
-function stAlertsHtml(alerts) {
+function stAlertBox(alerts, part, title) {
   if (!alerts.length) return '';
   const counts = {};
   for (const a of alerts) {
@@ -14063,7 +14083,8 @@ function stAlertsHtml(alerts) {
     counts[key] = (counts[key] || 0) + 1;
   }
   const shown = alerts.slice(-100).reverse();
-  return '<div class="st-alerts"><h3>Problems, as they happen · '
+  return '<div class="st-alerts" data-st-part="' + part + '"><h3>' + esc(title)
+    + ' problems, as they happen · '
     + Object.entries(counts).map(([k, n]) => n + ' ' + esc(k)).join(' · ')
     + '</h3><table class="queue"><tr><th>At</th><th>Job</th><th>Document</th><th>What</th>'
     + '<th>Where</th><th>Detail</th></tr>'
@@ -14134,12 +14155,16 @@ function stPaint() {
   // scroll. Keep the reader where they were: newest rows go in at the top, so
   // a box scrolled down is pushed by however much it grew, and one at the top
   // stays there to show the newest.
-  const oldBox = stOut.querySelector('.st-alerts');
-  const oldTop = oldBox ? oldBox.scrollTop : 0;
-  const oldHeight = oldBox ? oldBox.scrollHeight : 0;
+  // One box per part (`ST_ALERT_PARTS`), each kept where it was.
+  const scrolled = {};
+  for (const box of stOut.querySelectorAll('.st-alerts')) {
+    scrolled[box.dataset.stPart] = [box.scrollTop, box.scrollHeight];
+  }
   stOut.innerHTML = stReportHtml(stState, null, stOut);
-  const newBox = stOut.querySelector('.st-alerts');
-  if (newBox && oldTop > 0) newBox.scrollTop = oldTop + (newBox.scrollHeight - oldHeight);
+  for (const box of stOut.querySelectorAll('.st-alerts')) {
+    const [oldTop, oldHeight] = scrolled[box.dataset.stPart] || [0, 0];
+    if (oldTop > 0) box.scrollTop = oldTop + (box.scrollHeight - oldHeight);
+  }
   stWireChart();
   stWireChatContext(stOut, stOutlierReport(stState || {}));
   stWireOutliers(stOut, stState, stPaint);
@@ -14304,7 +14329,8 @@ function stReportHtml(s, snapshot, host) {
       + (st.classify ? ' · classifying ' + st.classify : '')
       + (p.failed ? ' · <span style="color:var(--danger)">' + p.failed + ' failed</span>' : '')
       + ((s.alerts || []).length ? ' · <span style="color:var(--warn)">'
-        + s.alerts.length + ' flagged</span>' : '')
+        + stAlertCounts(s.alerts).map(([title, n]) => n + ' ' + title).join(', ')
+        + ' flagged</span>' : '')
       + (p.pages ? ' · ' + stNum(p.pages_per_second, 2) + ' pages/s · '
         + stNum(p.tokens_per_second, 0) + ' tok/s' : '')
       + '</div></div>';
@@ -14360,6 +14386,10 @@ function stReportHtml(s, snapshot, host) {
       'mean of ' + r.extract.field_scored + ' job(s) · pooled ' + stPct(r.extract.field_pooled)
       + ' of ' + r.extract.field_values + ' values'
       + (r.extract.unscored ? ' · ' + r.extract.unscored + ' under the read floor' : '')));
+    if (r.extract && r.extract.missing_required_jobs !== undefined) tiles.push(stTile(
+      'Missing required', r.extract.missing_required_jobs + '<small> job(s)</small>',
+      r.extract.missing_required_fields + ' required field(s) came back empty',
+      r.extract.missing_required_jobs ? 'st-warn' : ''));
     if (r.classify) {
       tiles.push(stTile('Grouped exactly', stPct(r.classify.grouping_exact),
         r.classify.documents_found + ' found of ' + r.classify.documents_expected + ' documents'));
