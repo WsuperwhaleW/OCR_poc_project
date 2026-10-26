@@ -622,6 +622,8 @@ COLUMNS = [
     "extract_extras",
     # Agentic schema on the first request. Missing on legacy rows means off.
     "extract_schema_first",
+    # Canonical party-name/branch comparison contract; blank on legacy rows.
+    "extract_normalization_version",
 ]
 
 # servertime.FIELDS, spelled out: this module cannot import servertime (it
@@ -852,6 +854,7 @@ FIX_COLUMNS = ("fix_moved", "fix_strays", "fix_stray_removals", "fix_removals",
                "fix_values_removed", "fix_cells_read", "fix_cells_agent", "fix_cells")
 EXTRACT_COLUMNS = ("extract_seconds", "extract_tokens", "extract_mode", "extract_extras",
                    "extract_schema_first",
+                   "extract_normalization_version",
                    "extract_steps", "other_fields",
                    "grounded_pct", "ungrounded", "fields_missing",
                    "p1_present", "p1_absent", "p2_present", "p2_absent",
@@ -899,6 +902,8 @@ def _extract_cells(summary: dict) -> dict:
     cells["extract_extras"] = (int(extracted["extras"])
                                if isinstance(extracted.get("extras"), bool) else "")
     cells["extract_schema_first"] = int(extracted.get("schema_first") is True) if extracted else ""
+    versions = {d.get("normalization_version") for d in (extracted.get("documents") or [extracted])}
+    cells["extract_normalization_version"] = (next(iter(versions)) or "") if len(versions) == 1 else ""
     if extracted.get("extras") is False:
         # `other_fields` was not asked for, so its count is blank rather than
         # 0: nobody looked, which is not the same as finding none.

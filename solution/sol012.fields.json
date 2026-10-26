@@ -76,7 +76,24 @@
       ],
       "buyer_name": "บริษัท อีสปอร์ต จำกัด",
       "amount_incl_vat": "27,560 00",
-      "currency": ""
+      "currency": "",
+      "seller_branch_location": "สำนักงานใหญ่",
+      "buyer_branch_location": null,
+      "_branch_review": {
+        "version": 1,
+        "source": "mockOcr/multiple_sol012.pdf",
+        "reviewed_pages": [
+          1
+        ],
+        "previous_branch_values": {
+          "seller_branch": "สำนักงานใหญ่",
+          "buyer_branch": [
+            "สาขาที่ 00012",
+            "00012"
+          ]
+        },
+        "note": "Buyer name says สำนักงานใหญ่ but tax-ID line says สาขาที่ 00012. Retain the explicit code; location is null because the designations conflict."
+      }
     },
     {
       "pages": [
@@ -153,7 +170,23 @@
       "payee_address": "",
       "dividend_rate_option": "",
       "total_amount_paid": "",
-      "total_wht_amount": ""
+      "total_wht_amount": "",
+      "seller_branch_location": null,
+      "buyer_branch_location": null,
+      "payer_branch_location": "",
+      "payee_branch_location": "",
+      "_branch_review": {
+        "version": 1,
+        "source": "mockOcr/multiple_sol012.pdf",
+        "reviewed_pages": [
+          2
+        ],
+        "previous_branch_values": {
+          "seller_branch": "",
+          "buyer_branch": ""
+        },
+        "note": "SPS-Head Office occurs in repeated Branch (Bill To) table rows, not an unambiguous seller/buyer identity block. Locations are null pending party-role review."
+      }
     }
   ]
 }

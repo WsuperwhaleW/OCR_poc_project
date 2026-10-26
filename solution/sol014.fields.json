@@ -60,7 +60,24 @@
       ],
       "subtotal": "732.32",
       "vat_total": "0.00",
-      "amount_incl_vat": "732.32"
+      "amount_incl_vat": "732.32",
+      "seller_branch_location": "สำนักงานใหญ่",
+      "buyer_branch_location": "",
+      "_branch_review": {
+        "version": 1,
+        "source": "mockOcr/multiple_sol014.pdf",
+        "reviewed_pages": [
+          1
+        ],
+        "previous_branch_values": {
+          "seller_branch": "สำนักงานใหญ่",
+          "buyer_branch": [
+            "สาขาที่ 00001",
+            "00001"
+          ]
+        },
+        "note": "Reviewed the party identity blocks on the cited PDF page: head-office wording is recorded where explicitly printed; numeric-only branch designations do not imply a place name. Ordinary address text is not a branch location."
+      }
     },
     {
       "pages": [
@@ -143,7 +160,29 @@
       "payee_address": "",
       "dividend_rate_option": "",
       "total_amount_paid": "",
-      "total_wht_amount": ""
+      "total_wht_amount": "",
+      "seller_branch_location": "",
+      "buyer_branch_location": "",
+      "payer_branch_location": "",
+      "payee_branch_location": "",
+      "_branch_review": {
+        "version": 1,
+        "source": "mockOcr/multiple_sol014.pdf",
+        "reviewed_pages": [
+          2
+        ],
+        "previous_branch_values": {
+          "seller_branch": [
+            "ลำดับที่ 00000",
+            "00000"
+          ],
+          "buyer_branch": [
+            "สาขาที่ 00001",
+            "00001"
+          ]
+        },
+        "note": "Return direction identifies seller receiving the return and buyer sending it. Seller prints ลำดับที่ 00000; buyer prints สาขาที่ 00001. Neither block prints a place name. Store code 00803 is not the tax branch."
+      }
     }
   ]
 }

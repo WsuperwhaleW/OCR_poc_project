@@ -1,13 +1,24 @@
 {
   "_mandatory": {
-    "types": ["WHT_CERTIFICATE"],
+    "types": [
+      "WHT_CERTIFICATE"
+    ],
     "required": [
-      "payer_tax_id", "payer_name", "payee_tax_id", "payee_name",
-      "total_amount_paid", "total_wht_amount"
+      "payer_tax_id",
+      "payer_name",
+      "payee_tax_id",
+      "payee_name",
+      "total_amount_paid",
+      "total_wht_amount"
     ],
     "found_only": [
-      "book_no", "certificate_no", "sequence_no", "payer_branch",
-      "payer_address", "payee_branch", "payee_address",
+      "book_no",
+      "certificate_no",
+      "sequence_no",
+      "payer_branch",
+      "payer_address",
+      "payee_branch",
+      "payee_address",
       "dividend_rate_option"
     ]
   },
@@ -38,5 +49,19 @@
     }
   ],
   "other_fields": null,
-  "score_table": false
+  "score_table": false,
+  "payer_branch_location": "สำนักงานใหญ่",
+  "payee_branch_location": "",
+  "_branch_review": {
+    "version": 1,
+    "source": "mockOcr/wht_certificate_sol020.png",
+    "reviewed_pages": [
+      1
+    ],
+    "previous_branch_values": {
+      "payer_branch": "สำนักงานใหญ่",
+      "payee_branch": ""
+    },
+    "note": "Reviewed the party identity blocks on the cited PDF page: head-office wording is recorded where explicitly printed; numeric-only branch designations do not imply a place name. Ordinary address text is not a branch location."
+  }
 }

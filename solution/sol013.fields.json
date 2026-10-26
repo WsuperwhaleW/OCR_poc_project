@@ -86,5 +86,27 @@
   ],
   "buyer_name": "บริษัท โรบินราชา",
   "reference_document": "INS2512-96",
-  "currency": ""
+  "currency": "",
+  "seller_branch_location": "สำนักงานใหญ่",
+  "buyer_branch_location": null,
+  "payer_branch_location": "",
+  "payee_branch_location": "",
+  "_branch_review": {
+    "version": 1,
+    "source": "mockOcr/tax_invoice_sol013.pdf",
+    "reviewed_pages": [
+      1
+    ],
+    "previous_branch_values": {
+      "seller_branch": [
+        "สำนักงานใหญ่",
+        "HEAD OFFICE"
+      ],
+      "buyer_branch": [
+        "สาขาที่ 00012",
+        "00012"
+      ]
+    },
+    "note": "Buyer block prints branch code 00012. สาขาศรีราชา appears in a service description; its relation to the legal buyer branch needs confirmation. Location is null, not inferred from the address."
+  }
 }

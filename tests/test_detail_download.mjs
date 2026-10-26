@@ -13,7 +13,8 @@ function setup(blockDownload = false) {
     document: {body: {appendChild() {}}, createElement() {return {
       click() {if (blockDownload) throw new Error('blocked'); downloads.push(this.href);}, remove() {}};}}});
   vm.runInContext(source + '\napi = {receive: stReceiveDetailLog, finish: stFinishDetailLog, clear: stClearDetailLog, download: stDownloadDetailLog};', ctx);
-  ctx.api.receive({event: 'detail_log_start', format_version: 1, configuration: {save_details: true}});
+  ctx.api.receive({event: 'detail_log_start', format_version: 2, diagnostics_revision: 1,
+    configuration: {save_details: true}});
   return {ctx, api: ctx.api, downloads, blobs, revoked};
 }
 
@@ -21,12 +22,18 @@ test('builds valid JSON, automatically downloads once, and permits a second down
   const {api, downloads, blobs, revoked} = setup();
   const jobs = [{case: 'sol001', actual: 'ภาษาไทย "quoted"\nnext line'}, {case: 'sol002', expected: null}];
   jobs.forEach(job => api.receive({event: 'detail_log_job', job}));
-  api.receive({event: 'detail_log_end', field_summary: [{field: 'tax_id'}]});
-  api.finish({event: 'done', report: {completed: 2}});
+  api.receive({event: 'detail_log_end', field_summary: [{field: 'tax_id'}],
+    contexts: {source: 'document text'}, questions: {lookup: 'question'}, report: {completed: 2}});
+  api.finish({event: 'done', report: {completed: 2, timeline: ['not for tuning']}});
   api.finish({event: 'done'});
   assert.equal(downloads.length, 1);
   const file = JSON.parse(await blobs[0].text());
   assert.deepEqual(file.jobs, jobs);
+  assert.equal(file.format_version, 2);
+  assert.equal(file.diagnostics_revision, 1);
+  assert.deepEqual(file.contexts, {source: 'document text'});
+  assert.deepEqual(file.questions, {lookup: 'question'});
+  assert.deepEqual(file.report, {completed: 2});
   assert.equal(file.completion.finished, true);
   assert.equal(file.completion.received_jobs, 2);
   api.download();

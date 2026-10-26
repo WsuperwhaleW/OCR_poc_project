@@ -25,7 +25,7 @@
   "seller_tax_id": "1447778880084",
   "seller_branch": "สาขาที่: 00009",
   "buyer_tax_id": "1885555445555",
-  "buyer_branch": "สำนักงานกลาง",
+  "buyer_branch": "",
   "subtotal": "711,900.73",
   "vat_total": "49,833.05",
   "remaining_amount": "",
@@ -47,5 +47,19 @@
     "บริษัท แพนด้า ทำกล่อง จำกัด (1555500)"
   ],
   "amount_incl_vat": "761,733.78",
-  "currency": "บาท"
+  "currency": "บาท",
+  "seller_branch_location": "",
+  "buyer_branch_location": "สำนักงานกลาง",
+  "_branch_review": {
+    "version": 1,
+    "source": "mockOcr/receipt_tax_invoice_sol007.pdf",
+    "reviewed_pages": [
+      1
+    ],
+    "previous_branch_values": {
+      "seller_branch": "สาขาที่: 00009",
+      "buyer_branch": "สำนักงานกลาง"
+    },
+    "note": "Buyer tax-ID line prints สำนักงานกลาง, a named office without a numeric branch. Moved that wording from branch code to location. Seller explicitly prints สาขาที่: 00009."
+  }
 }

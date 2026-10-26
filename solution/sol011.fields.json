@@ -52,5 +52,25 @@
   ],
   "buyer_name": "แสนวัน จำกัด",
   "amount_incl_vat": "210,375.40",
-  "currency": ""
+  "currency": "",
+  "seller_branch_location": "",
+  "buyer_branch_location": "",
+  "_branch_review": {
+    "version": 1,
+    "source": "mockOcr/receipt_tax_invoice_sol011.pdf",
+    "reviewed_pages": [
+      1
+    ],
+    "previous_branch_values": {
+      "seller_branch": [
+        "สาขาที่ 00012",
+        "Branch No.00012"
+      ],
+      "buyer_branch": [
+        "สาขาที่ 00001",
+        "00001"
+      ]
+    },
+    "note": "Reviewed the party identity blocks on the cited PDF page: head-office wording is recorded where explicitly printed; numeric-only branch designations do not imply a place name. Ordinary address text is not a branch location."
+  }
 }

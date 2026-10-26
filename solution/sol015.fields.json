@@ -67,7 +67,7 @@
       "po_gr_rtv_number": "",
       "inv_rtv_cnr_number": "",
       "seller_tax_id": "",
-      "seller_branch": "",
+      "seller_branch": "HEAD OFFICE",
       "buyer_tax_id": "0105557874178",
       "buyer_branch": "",
       "subtotal": "63,417.52",
@@ -90,7 +90,23 @@
       "payee_address": "",
       "dividend_rate_option": "",
       "total_amount_paid": "",
-      "total_wht_amount": ""
+      "total_wht_amount": "",
+      "seller_branch_location": "สำนักงานใหญ่",
+      "buyer_branch_location": "",
+      "payer_branch_location": "",
+      "payee_branch_location": "",
+      "_branch_review": {
+        "version": 1,
+        "source": "mockOcr/multiple_sol015.pdf",
+        "reviewed_pages": [
+          1
+        ],
+        "previous_branch_values": {
+          "seller_branch": "",
+          "buyer_branch": ""
+        },
+        "note": "Issuer letterhead explicitly prints INTER CO., LTD. (HEAD OFFICE). Corrected previous empty seller branch. Buyer block does not print a branch designation."
+      }
     },
     {
       "pages": [
@@ -124,7 +140,7 @@
       "is_master_table": true,
       "inv_rtv_cnr_number": "",
       "seller_tax_id": "0105533353335",
-      "seller_branch": "",
+      "seller_branch": "HEAD OFFICE",
       "buyer_tax_id": "0105557874178",
       "buyer_branch": "สำนักงานใหญ่",
       "subtotal": "106,678.70",
@@ -132,7 +148,21 @@
       "remaining_amount": "",
       "remaining_vat_amount": "",
       "payment_date": "25/3/26",
-      "cheque_number": "18661994"
+      "cheque_number": "18661994",
+      "seller_branch_location": "สำนักงานใหญ่",
+      "buyer_branch_location": "สำนักงานใหญ่",
+      "_branch_review": {
+        "version": 1,
+        "source": "mockOcr/multiple_sol015.pdf",
+        "reviewed_pages": [
+          2
+        ],
+        "previous_branch_values": {
+          "seller_branch": "",
+          "buyer_branch": "สำนักงานใหญ่"
+        },
+        "note": "Issuer letterhead explicitly prints (HEAD OFFICE); buyer tax-ID line prints สำนักงานใหญ่. Corrected previous empty seller branch."
+      }
     },
     {
       "pages": [
@@ -209,7 +239,23 @@
       "payee_address": "",
       "dividend_rate_option": "",
       "total_amount_paid": "",
-      "total_wht_amount": ""
+      "total_wht_amount": "",
+      "seller_branch_location": null,
+      "buyer_branch_location": null,
+      "payer_branch_location": "",
+      "payee_branch_location": "",
+      "_branch_review": {
+        "version": 1,
+        "source": "mockOcr/multiple_sol015.pdf",
+        "reviewed_pages": [
+          3
+        ],
+        "previous_branch_values": {
+          "seller_branch": "",
+          "buyer_branch": ""
+        },
+        "note": "Payment appointment/bill-to rows do not unambiguously designate either legal party branch. Locations are null pending party-role review."
+      }
     },
     {
       "pages": [
@@ -263,7 +309,7 @@
       "po_gr_rtv_number": "",
       "inv_rtv_cnr_number": "",
       "seller_tax_id": "",
-      "seller_branch": "",
+      "seller_branch": "HEAD OFFICE",
       "buyer_tax_id": "0105557874178",
       "buyer_branch": "",
       "subtotal": "75,587.15",
@@ -286,7 +332,23 @@
       "payee_address": "",
       "dividend_rate_option": "",
       "total_amount_paid": "",
-      "total_wht_amount": ""
+      "total_wht_amount": "",
+      "seller_branch_location": "สำนักงานใหญ่",
+      "buyer_branch_location": "",
+      "payer_branch_location": "",
+      "payee_branch_location": "",
+      "_branch_review": {
+        "version": 1,
+        "source": "mockOcr/multiple_sol015.pdf",
+        "reviewed_pages": [
+          4
+        ],
+        "previous_branch_values": {
+          "seller_branch": "",
+          "buyer_branch": ""
+        },
+        "note": "Issuer letterhead explicitly prints INTER CO., LTD. (HEAD OFFICE). Corrected previous empty seller branch. Buyer block does not print a branch designation."
+      }
     },
     {
       "pages": [
@@ -363,7 +425,23 @@
       "payee_address": "",
       "dividend_rate_option": "",
       "total_amount_paid": "",
-      "total_wht_amount": ""
+      "total_wht_amount": "",
+      "seller_branch_location": null,
+      "buyer_branch_location": null,
+      "payer_branch_location": "",
+      "payee_branch_location": "",
+      "_branch_review": {
+        "version": 1,
+        "source": "mockOcr/multiple_sol015.pdf",
+        "reviewed_pages": [
+          5
+        ],
+        "previous_branch_values": {
+          "seller_branch": "",
+          "buyer_branch": ""
+        },
+        "note": "Payment appointment/bill-to rows do not unambiguously designate either legal party branch. Locations are null pending party-role review."
+      }
     },
     {
       "pages": [
@@ -442,7 +520,23 @@
       "payee_address": "",
       "dividend_rate_option": "",
       "total_amount_paid": "",
-      "total_wht_amount": ""
+      "total_wht_amount": "",
+      "seller_branch_location": null,
+      "buyer_branch_location": null,
+      "payer_branch_location": "",
+      "payee_branch_location": "",
+      "_branch_review": {
+        "version": 1,
+        "source": "mockOcr/multiple_sol015.pdf",
+        "reviewed_pages": [
+          6
+        ],
+        "previous_branch_values": {
+          "seller_branch": "",
+          "buyer_branch": ""
+        },
+        "note": "Bank cheque-delivery acknowledgement; do not assign a bank or delivery location to a legal seller/buyer branch. Party branch locations remain unreviewed/null."
+      }
     },
     {
       "pages": [
@@ -519,7 +613,23 @@
       "payee_address": "",
       "dividend_rate_option": "",
       "total_amount_paid": "",
-      "total_wht_amount": ""
+      "total_wht_amount": "",
+      "seller_branch_location": null,
+      "buyer_branch_location": null,
+      "payer_branch_location": "",
+      "payee_branch_location": "",
+      "_branch_review": {
+        "version": 1,
+        "source": "mockOcr/multiple_sol015.pdf",
+        "reviewed_pages": [
+          7
+        ],
+        "previous_branch_values": {
+          "seller_branch": "",
+          "buyer_branch": ""
+        },
+        "note": "Bank advice has pickup location Ratchayothin and table text MJT-Head Office. Do not equate a bank pickup branch or table reference to seller/buyer branch without role confirmation; locations are null."
+      }
     }
   ]
 }

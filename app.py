@@ -2998,8 +2998,8 @@ def _steps_for(wanted, doc_types=(), extras=True):
     the change did not touch. Unknown ids are refused rather than skipped -- a
     sweep that quietly asked for no steps would report a schema-wide failure.
 
-    The order is always `EXTRACT_STEPS`', never the caller's, so a restricted run
-    is the full run with steps removed rather than a differently ordered one.
+    The order is the document's final step table, never the caller's. A historical
+    component id such as total_incl now selects its complete related group.
     """
     table = steps_for_types(doc_types, extras)
     if not wanted:
@@ -3008,7 +3008,7 @@ def _steps_for(wanted, doc_types=(), extras=True):
     # Checked against THIS document's table, so asking a receipt for the
     # `original_invoice` step is refused by name rather than silently running
     # nothing. The message names the steps this type actually has.
-    known = {s["id"] for s in table}
+    known = {name for s in table for name in (s["id"], *s.get("includes_steps", ()))}
     unknown = [i for i in ids if i not in known]
     if unknown:
         raise ValueError(f"unknown extraction step(s): {', '.join(unknown)} -- "
@@ -3016,7 +3016,9 @@ def _steps_for(wanted, doc_types=(), extras=True):
                          f" has {', '.join(sorted(known))}")
     if not ids:
         raise ValueError("no extraction steps named")
-    return tuple(s for s in table if s["id"] in set(ids))
+    selected = set(ids)
+    return tuple(s for s in table
+                 if selected.intersection((s["id"], *s.get("includes_steps", ()))))
 
 
 def _agentic_parallelism(status: dict, steps: int) -> int:
@@ -4680,6 +4682,8 @@ def _validate_fields(result: dict, form: dict, text: str, mode: str) -> dict:
     result["classified"] = _classified(form, mode)
     if not result.get("fields"):
         return result
+    result["normalized"] = normalise.normalize_fields(result["fields"])
+    result["normalization_version"] = normalise.NORMALIZATION_VERSION
     try:
         result["validation"] = validate.validate(
             result["fields"], keys=form["keys"], doc_types=form["doc_types"],
@@ -7980,15 +7984,32 @@ def _stress_phase(specs: list, cfg: dict, prepared: dict, cancel, phase: str,
     return records, wall, timeline, last_metrics, draining
 
 
+def _stress_detail_identity(cfg):
+    """Hash the code and selected truth files outside the benchmark clock."""
+    index = scoring.cases_index() if cfg.get("source", "benchmark") == "benchmark" else {}
+    benchmarks = {case: {"transcript": index[case]["ground_truth"],
+                         "fields": fieldscore.truth_path(case),
+                         "pages": index[case].get("pages"),
+                         "doc_types": index[case].get("doc_types") or []}
+                  for case in cfg["cases"] if case in index}
+    return extractionlog.provenance(prompts.__file__, __file__, {
+        "AGENTIC_RETRIES": AGENTIC_RETRIES, "EXTRACT_SCHEMA": EXTRACT_SCHEMA,
+        "AGENTIC_PARALLEL": AGENTIC_PARALLEL, "AGENTIC_PARALLEL_MAX": AGENTIC_PARALLEL_MAX,
+        "SEGMENT_MAX_PAGES": SEGMENT_MAX_PAGES,
+        "NORMALIZATION_VERSION": normalise.NORMALIZATION_VERSION}, extra_files={
+            "normalise": normalise.__file__, "fieldscore": fieldscore.__file__,
+            "segment": segment.__file__, "backends": backends.__file__,
+            "grounding": grounding.__file__, "stress": stress.__file__,
+            "manifest": config.SOLUTION_DIR / "manifest.json"}, benchmarks=benchmarks)
+
+
 def _stress_run(cfg: dict, cancel):
     """The whole run: plan, prepare, warm up, measure, report."""
     rng, seed = stress.seeded_rng(cfg["seed"])
     mode = cfg["mode"]
     cfg["run_id"] = f"{time.strftime('%Y-%m-%dT%H:%M:%S')}-{seed}"
     total = cfg["warmup"] + cfg["jobs"]
-    detail_identity = (extractionlog.provenance(prompts.__file__, __file__, {
-        "AGENTIC_RETRIES": AGENTIC_RETRIES, "EXTRACT_SCHEMA": EXTRACT_SCHEMA})
-        if cfg.get("save_details") else None)
+    detail_identity = _stress_detail_identity(cfg) if cfg.get("save_details") else None
     reader = llama_status() if mode in ("ocr", "full") else None
     extractor = backends.extract_status() if mode != "ocr" else None
     info = reader or extractor
@@ -8123,7 +8144,8 @@ def _stress_run(cfg: dict, cancel):
             report["server_metrics"] = views[0]["view"]
     if cfg.get("save_details"):
         for event in extractionlog.events(records, specs[cfg["warmup"]:],
-                                           prepared["sources"], cfg["warmup"], detail_identity):
+                                           prepared["sources"], cfg["warmup"], detail_identity,
+                                           report=report):
             yield json.dumps(event, ensure_ascii=False) + "\n"
         # A stopped run may still drain requests; release exported results now.
         for record in records:

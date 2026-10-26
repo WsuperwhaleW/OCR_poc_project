@@ -103,7 +103,23 @@
       "payee_address": "",
       "dividend_rate_option": "",
       "total_amount_paid": "",
-      "total_wht_amount": ""
+      "total_wht_amount": "",
+      "seller_branch_location": "สำนักงานใหญ่",
+      "buyer_branch_location": "สำนักงานใหญ่",
+      "payer_branch_location": "",
+      "payee_branch_location": "",
+      "_branch_review": {
+        "version": 1,
+        "source": "mockOcr/multiple_sol021.pdf",
+        "reviewed_pages": [
+          1
+        ],
+        "previous_branch_values": {
+          "seller_branch": "HEAD OFFICE",
+          "buyer_branch": "สำนักงานใหญ่"
+        },
+        "note": "Reviewed the party identity blocks on the cited PDF page: head-office wording is recorded where explicitly printed; numeric-only branch designations do not imply a place name. Ordinary address text is not a branch location."
+      }
     },
     {
       "pages": [
@@ -189,7 +205,23 @@
       "payee_address": "",
       "dividend_rate_option": "",
       "total_amount_paid": "",
-      "total_wht_amount": ""
+      "total_wht_amount": "",
+      "seller_branch_location": "สำนักงานใหญ่",
+      "buyer_branch_location": "สำนักงานใหญ่",
+      "payer_branch_location": "",
+      "payee_branch_location": "",
+      "_branch_review": {
+        "version": 1,
+        "source": "mockOcr/multiple_sol021.pdf",
+        "reviewed_pages": [
+          3
+        ],
+        "previous_branch_values": {
+          "seller_branch": "สำนักงานใหญ่",
+          "buyer_branch": "สำนักงานใหญ่"
+        },
+        "note": "Reviewed the party identity blocks on the cited PDF page: head-office wording is recorded where explicitly printed; numeric-only branch designations do not imply a place name. Ordinary address text is not a branch location."
+      }
     },
     {
       "pages": [
@@ -275,7 +307,23 @@
       "payee_address": "",
       "dividend_rate_option": "",
       "total_amount_paid": "",
-      "total_wht_amount": ""
+      "total_wht_amount": "",
+      "seller_branch_location": "สำนักงานใหญ่",
+      "buyer_branch_location": null,
+      "payer_branch_location": "",
+      "payee_branch_location": "",
+      "_branch_review": {
+        "version": 1,
+        "source": "mockOcr/multiple_sol021.pdf",
+        "reviewed_pages": [
+          4
+        ],
+        "previous_branch_values": {
+          "seller_branch": "สำนักงานใหญ่",
+          "buyer_branch": ""
+        },
+        "note": "Seller tax-ID line explicitly prints สาขา สำนักงานใหญ่. Buyer address AOFH (Flag Ship) is not explicitly a tax branch/location designation; leave buyer location null."
+      }
     }
   ]
 }

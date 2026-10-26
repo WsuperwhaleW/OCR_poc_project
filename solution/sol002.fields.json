@@ -43,5 +43,22 @@
   "vat_total": "814.71",
   "amount_incl_vat": "12,453.35",
   "reference_document": "",
-  "currency": "Baht"
+  "currency": "Baht",
+  "seller_branch_location": "",
+  "buyer_branch_location": "สำนักงานใหญ่",
+  "_branch_review": {
+    "version": 1,
+    "source": "mockOcr/invoice_sol002.pdf",
+    "reviewed_pages": [
+      1
+    ],
+    "previous_branch_values": {
+      "seller_branch": [
+        "สาขาที่ 00001",
+        "Branch 00001"
+      ],
+      "buyer_branch": "Head Office"
+    },
+    "note": "Reviewed the party identity blocks on the cited PDF page: head-office wording is recorded where explicitly printed; numeric-only branch designations do not imply a place name. Ordinary address text is not a branch location."
+  }
 }

@@ -40,5 +40,19 @@
   "seller_name": "บริษัท อะเวนจูรีน จำกัด",
   "buyer_name": "บริษัท ไพลิน จำกัด",
   "amount_incl_vat": "10,276 60",
-  "currency": ""
+  "currency": "",
+  "seller_branch_location": "สำนักงานใหญ่",
+  "buyer_branch_location": null,
+  "_branch_review": {
+    "version": 1,
+    "source": "mockOcr/receipt_tax_invoice_sol003.pdf",
+    "reviewed_pages": [
+      1
+    ],
+    "previous_branch_values": {
+      "seller_branch": "สำนักงานใหญ่",
+      "buyer_branch": "สาขาที่ 226"
+    },
+    "note": "Buyer branch name is handwritten after the name; spelling is uncertain. Numeric branch 226 is retained; location is null pending confirmation."
+  }
 }

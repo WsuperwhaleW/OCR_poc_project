@@ -700,16 +700,35 @@ Pass 2 runs in one of two shapes, chosen by **Field extraction** in the sidebar 
 
 | | one request | agentic |
 |---|---|---|
-| Requests per document | 1 | 15 |
-| Fields asked for at once | all 31 | 1–3 |
+| Requests per document | 1, plus a parsing retry if needed | depends on the document's form |
+| Fields asked for at once | all fields in the document's form | 1–3 scalar fields, or one list |
 | A step that returns something not on the page | — | asked again once |
 | A reply that will not parse | costs the whole extraction | costs that step's fields |
-| Speed | fast | slower |
+| Speed | depends on workload and document length | depends on workload and parallelism |
 
-Agentic mode walks seven steps — the heading, the reference, the seller, the buyer, the
-currency, the totals, and whatever is left over — asking for one to three fields each against
-the same transcript. Use it when a value keeps landing in the wrong field; the single request
-is faster and is what a fresh process starts in.
+Agentic mode asks independent steps against the same complete document transcript and
+type framing. Each step sees its own question, not the other steps' answers. vLLM can run
+these steps in parallel. The number of steps depends on the document's requested fields;
+single-request mode remains the process default.
+
+Related fields share a request where the form asks for them: `subtotal`, `vat_total` and
+`amount_incl_vat` form one totals step; `inv_rtv_cnr_number`, `payment_date` and `cheque_number`
+form one payment step. A receipt that asks for just the first two totals still asks for
+only those two. No grouped step exceeds three keys or adds fields to the form. Without
+extras, an invoice runs five steps, a receipt five, and an RTV return shipment four.
+Seller and buyer remain separate requests of tax ID, branch code and branch location.
+WHT identity/address requests stay separate; their name instructions exclude explicitly
+designated branch/head-office suffixes while preserving qualifiers in legal names.
+
+Agentic branch instructions distinguish labelled tax branch numbers from place names
+and store/customer codes. Printed zeros are valid evidence; missing values must not be
+filled with invented zeros. These wording changes apply to Agentic; the Single prompt
+and ground truth remain unchanged for benchmark comparison. Accuracy and speed still
+need verification on the actual model server.
+
+For targeted extraction, historical step ids `total_incl` and `inv_rtv_cnr` select the
+complete related totals/payment group. Results and detail logs list the group's actual
+keys under `totals` or `payment`, respectively; old saved logs retain their original steps.
 
 While it runs, the Fields tab lists the steps and marks each one done, re-asked or failed.
 The list stays after the run, under the fields, so a value can be traced back to the step
@@ -1098,6 +1117,25 @@ merged into the document in front of it.
 | `PAYMENT_SCHEDULE` | ใบนัดจ่าย |
 | `CHEQUE_DELIVERY` | ใบแจ้งนำส่งเช็ค / Delivery Acknowledgement |
 | `PAYMENT_ADVICE` | Pre-Payment Advice / Credit Advice |
+
+**RTV extraction profile:** a goods-return shipment (`RTV_SHIP_CREDIT`) asks for
+10 scalar fields: document type, its own return number/date, seller and buyer tax IDs
+and branches, subtotal, VAT and total including VAT. With Extra fields off this is
+five independent agentic steps; enabling Extra fields adds the `other` step. The
+seller is the original supplier receiving the goods back, and the buyer is the
+original customer returning them, even when the buyer prints the document. Explicit
+branch designations take precedence over internal store/location codes. Single mode
+uses the same party rules. A heading that also identifies a credit/debit note keeps
+the note's existing party rules (e.g. a credit note accepting returned goods).
+
+This profile does not introduce Mandatory requirements for RTV or change the ground
+truth. Older RTV runs used the broad fallback field set, including payment and WHT
+keys; compare per-field errors on the shared fields when measuring prompt changes,
+since the new run asks for fewer fields. Run the actual model benchmark on the model
+server; local mock-inference tests verify routing and schemas, not extraction accuracy.
+The uploaded errors are development examples, not a held-out evaluation. Validate on
+additional RTV documents with different vendors, layouts, labels and issuing parties,
+including missing/ambiguous branches, before claiming a general accuracy improvement.
 
 **A case holding more than one document carries `documents` in the manifest** — the pages and
 the types of each — and its top-level `doc_types` is document 1's, which is the document its
@@ -1696,6 +1734,15 @@ Workspace uses **Clear workspace**, since it also removes the selected input fil
 | **How documents are drawn**, **Seed** | Balanced uses the least-read file; Random shuffles complete passes; Sequential uses selected files in sorted order and loops after the last. Sequential ignores the seed and past runs; measured jobs restart at the first selected file after warm-up. The report records the strategy and seed |
 | **Files to test** | choose **1–20**, **21–23** or **All**, or open **Advanced** to tick individual files. Warm-up and measured jobs draw only from this selection; classification builds its long files from these transcripts. Select one file to run only that document |
 
+**Save as default** beside Mode remembers all controls in the Stress test setup for
+that mode, including Concurrent/Queue, shape, strategy, seed, checkboxes, Batch,
+document source and selected benchmark/realData files. Switching modes restores
+their saved settings; reloading restores the last saved mode. Defaults are stored
+in this browser for this deployment, independently of server History. Press Save
+again to replace a mode's saved defaults; editing controls alone does not save them.
+Before any defaults are saved, OCR starts at **50 concurrent / 100 jobs**, Extract
+at **64 / 40**, and Classify/Full pipeline at **4 / 20**.
+
 **Every new Stress test is saved to History.** Open **Stress test → History** to select a run
 and inspect its Concurrent, Queue, Warm-up, time limit, seed, document strategy,
 selected file IDs, models, servers, sampling and extraction settings, together with its complete report,
@@ -1721,11 +1768,45 @@ and its JSON download. Older History entries cannot recover measurements that we
 
 **Save detail log** is an optional Stress test checkbox for Extract only and Full pipeline,
 off by default. It automatically downloads `extraction-details-*.json` to the computer
-running the browser when the run finishes. The file contains each measured job's full
-extraction, raw step replies and retry questions, final field values, expected values and
-verdicts, document/page boundaries, timings, settings, and the prompt source/hash. Unscored
+running the browser when the run finishes. Version 2 is a compact tuning log: every job's
+actual/expected field values and verdicts, document/page boundaries, classifications,
+timings, settings, and code/prompt hashes. Raw replies and exact questions are kept only
+for incorrect, partial, unscored, retried, or failed steps; ordinary correct/absent steps
+need no duplicate raw reply. Input contexts and questions are deduplicated across jobs
+in the top-level `contexts` and `questions` dictionaries, referenced by SHA-256 IDs.
+Full prompt-module source, concatenated replies, duplicate extraction/scoring dumps,
+table-processing internals and monitoring are omitted. Unscored
 fields have a null expected value. Warm-up jobs are excluded; cancelled or skipped jobs
 have no invented answers. A Stop exports the results available when the report was made.
+Old version 1 downloads can be reduced locally using `extractionlog.compact_download`
+without another model run; the original file is left intact.
+
+New v2 downloads carry `diagnostics_revision: 1`. They add compact `step_stats` for
+every extraction step (timing, request schema flags, tokens and context limits),
+including steps with correct answers; full replies remain limited to problem/retry
+evidence. Job/document `score` summaries preserve counts, denominators and the
+macro/pooled rates without repeating field rows, and each document records its
+requested `form`. Provenance hashes the scorer, normalizer, segmenter, backend,
+grounding and benchmark aggregation code, manifest, and selected field/transcript
+truth files before the benchmark clock starts. The hashes identify that starting
+snapshot; editing files during a run is not locked or monitored. Expected document
+pages are recorded once per case; `document_alignment` flags spans that differ or
+cross truth documents using the scorer's first-page matching rule. This is diagnostic
+only and does not change page grouping or score calculation. Old downloads cannot
+recover step statistics or file hashes that were not saved at the time.
+
+Party branches have two fields: `*_branch` for an explicit tax branch number or
+head-office designation, and `*_branch_location` for an explicitly named branch/site.
+Names of places containing digits are not branch codes. Python normalises codes to
+five digits and removes field captions from party names/locations. Raw model values
+stay in `fields`; the Fields pane shows `normalized` values and a collapsed raw value
+when they differ. Ground-truth comparison uses the same normalisation and records its
+version; detail downloads keep raw values plus canonical comparisons where they differ.
+New CSV rows record `extract_normalization_version`; older rows keep it blank.
+Existing saved scores are not rewritten. Location fields are optional; ambiguous
+ground truth is `null` and unscored. See [the PDF review](docs/branch-ground-truth-review.md).
+Commercial agentic party steps ask three fields; withholding-certificate identity and
+branch questions use separate two-field steps to keep requests small.
 
 Diagnostics are formatted and streamed after benchmark timing ends, independently of
 **Save each job** (the accuracy CSV). They are never written into server History, CSV,

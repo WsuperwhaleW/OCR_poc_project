@@ -48,5 +48,19 @@
   ],
   "buyer_name": "บริษัท สปริงโรล จำกัด",
   "amount_incl_vat": "",
-  "currency": "บาท"
+  "currency": "บาท",
+  "seller_branch_location": "สำนักงานใหญ่",
+  "buyer_branch_location": "",
+  "_branch_review": {
+    "version": 1,
+    "source": "mockOcr/receipt_tax_invoice_sol005.pdf",
+    "reviewed_pages": [
+      1
+    ],
+    "previous_branch_values": {
+      "seller_branch": "สำนักงานใหญ่",
+      "buyer_branch": "สาขาที่ 00068"
+    },
+    "note": "Reviewed the party identity blocks on the cited PDF page: head-office wording is recorded where explicitly printed; numeric-only branch designations do not imply a place name. Ordinary address text is not a branch location."
+  }
 }

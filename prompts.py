@@ -279,6 +279,11 @@ TYPE_SPECIFICITY = tuple(TYPE_NAMES)
 # would be a prompt arguing with itself, and the narrower reading is the one that
 # knows more about the page.
 TYPE_KEY_RULES = {
+    ("RTV_SHIP_CREDIT", "document_number"): """- document_number is this goods-return shipment's own number, labelled as the return
+  number (for example เลขที่การส่งคืน). A return notification, a referenced invoice or
+  a credit-note number is a different identifier and must not replace it.""",
+    ("RTV_SHIP_CREDIT", "issue_date"): """- issue_date is the date of this goods return (for example วันที่ส่งคืน), not the
+  print timestamp or the date of a referenced invoice or credit note.""",
     ("INVOICE", "document_number"): """- document_number is the invoice's own number, the one printed with its heading. The number
   of an order, a delivery or an earlier document it cites is not it.""",
     ("INVOICE", "po_gr_rtv_number"): """- An invoice is normally raised against an order or a goods receipt, so where the page
@@ -355,6 +360,17 @@ def type_phrase(codes):
     return ", ".join(words[:-1]) + " and " + words[-1]
 
 
+def _rtv_return(codes):
+    """A return shipment, rather than a credit/debit note accepting returned goods.
+
+    Some credit-note headings also classify as RTV (e.g. sol009). Their issuer
+    remains the seller; applying the return-shipment roles would reverse it.
+    """
+    codes = set(codes or ())
+    return ("RTV_SHIP_CREDIT" in codes
+            and not codes.intersection({"CREDIT_NOTE", "DEBIT_NOTE"}))
+
+
 def type_bullets(codes, keys):
     """The type-specific bullets for one form, in the schema's key order.
 
@@ -362,7 +378,9 @@ def type_bullets(codes, keys):
     `_SCALAR_KEYS` order rather than in the order the caller passed them, so the
     bullets read down the page in the same order as the skeleton above them.
     """
-    codes = [c for c in TYPE_SPECIFICITY if c in set(codes or ())]
+    use_rtv = _rtv_return(codes)
+    codes = [c for c in TYPE_SPECIFICITY if c in set(codes or ())
+             and (c != "RTV_SHIP_CREDIT" or use_rtv)]
     if not codes:
         # Nothing is emitted where nothing was identified, `_TYPE_ANY_RULES`
         # included: that rule exists to stop the model answering with the
@@ -987,6 +1005,54 @@ _EP_PARTIES_SIDES = """- The issuer is the party the document is FROM -- who wro
 
 """
 
+_RTV_PARTIES = """On a goods-return shipment, keep the roles from the ORIGINAL SALE:
+- The seller is the original supplier/vendor RECEIVING the returned goods. A block
+  labelled ส่งคืนร้านค้า, return to vendor or return to supplier identifies this party.
+- The buyer is the original customer SENDING the goods back. A block labelled
+  สาขาผู้ส่งคืน, returning customer or returning branch identifies this party.
+- These labels are examples, not required wording. Follow the meaning and direction
+  of the return even when labels, language, layout or the document's issuer differ.
+- The buyer may print the return document and appear in its letterhead. Issuing the
+  document does not make that party the seller. Use the return-direction labels,
+  not the page position, logo or who printed the form, to assign the two blocks.
+- Keep every value inside its own party's block. If the direction cannot be established
+  from the printed text, leave the uncertain values empty rather than swapping parties.
+"""
+
+def _branch_rules(party):
+    return f"""- {party}_branch: copy only this party's explicit tax branch NUMBER, or its
+  head-office wording. Preserve printed digits; Python will pad the code. A branch
+  name is not a branch number. A customer/vendor/store code is not a tax branch.
+  When both occur, use the explicit tax branch designation, not the store/location code.
+- {party}_branch_location: copy this party's explicitly named branch/site, without
+  captions such as ชื่อสาขา, สาขา, Branch name, or enclosing brackets. A branch name is also valid
+  when a separate branch number exists: return BOTH in their separate keys.
+  A place containing digits is still a place, not a tax branch number.
+  Head-office wording goes in this location key as well as the branch key.
+- Read both keys from the SAME party block. A district/town in an ordinary address
+  does not establish a branch location. Require an explicit branch/site designation
+  or a branch suffix attached to that party's name. Do not copy the other party's
+  values, infer missing numbers, translate place names, or invent a head office.
+- Keep geographical qualifiers and words inside names. Drop only the field caption.
+  A bare number does not imply a printed place name. If absent or uncertain, use "".
+"""
+
+
+def _party_tax_id_rules(party):
+    return f"""- {party}_tax_id: copy only that party's labelled tax/registration number,
+  preserving separators. A short book, sequence, vendor, customer or store code
+  is not a tax ID. If absent, answer "".
+"""
+
+
+def _party_values(party):
+    return _party_tax_id_rules(party) + _branch_rules(party)
+
+
+def _rtv_party_rules(party):
+    return _RTV_PARTIES + _party_values(party)
+
+
 _EP_ISSUE_DATE = """issue_date:
 - The date this document is dated. Its label usually names the KIND of document rather than
   saying just "date": a date labelled as the invoice's date, the tax invoice's date, the
@@ -1321,7 +1387,7 @@ def extract_prompt(keys, codes=(), bullets=True, items=(), extras=True):
     # anything names a category that is not printed anywhere.
     parts.append(type_block(codes, keys, bullets))
 
-    party_keys = [k for k in ("name", "tax_id", "branch")
+    party_keys = [k for k in ("name", "tax_id", "branch", "branch_location")
                   if f"seller_{k}" in have or f"buyer_{k}" in have]
     if party_keys:
         # A DIFFERENT count from the form's: how many keys each party holds.
@@ -1331,7 +1397,7 @@ def extract_prompt(keys, codes=(), bullets=True, items=(), extras=True):
         parts.append(_EP_PARTIES_HEAD.format(count=party_count))
         if "name" in party_keys:
             parts.append(_EP_PARTIES_NAME)
-        if {"tax_id", "branch"} & set(party_keys):
+        if {"tax_id", "branch"} & set(party_keys) and not _rtv_return(codes) and "branch_location" not in party_keys:
             parts.append(_EP_PARTIES_IDS)
         what = ", ".join(w for k, w in (("name", "name"), ("tax_id", "tax ID"),
                                         ("branch", "branch")) if k in party_keys)
@@ -1339,7 +1405,17 @@ def extract_prompt(keys, codes=(), bullets=True, items=(), extras=True):
         if "," in what:
             head, _, tail = what.rpartition(", ")
             what = f"{head} or {tail}"
-        parts.append(_EP_PARTIES_SIDES.format(count=party_count, what=what))
+        if _rtv_return(codes):
+            parts.append(_RTV_PARTIES)
+            for party in ("seller", "buyer"):
+                if {f"{party}_tax_id", f"{party}_branch"} & have:
+                    parts.append(_party_values(party))
+        else:
+            parts.append(_EP_PARTIES_SIDES.format(count=party_count, what=what))
+            if "branch_location" in party_keys:
+                for party in ("seller", "buyer"):
+                    if f"{party}_branch_location" in have:
+                        parts.append(_party_values(party))
     if "issue_date" in have:
         parts.append(_EP_ISSUE_DATE)
     if "reference_document" in have:
@@ -1380,7 +1456,14 @@ def extract_prompt(keys, codes=(), bullets=True, items=(), extras=True):
         parts.append(_EP_WHT_IDENTITY)
     if have & {"payer_tax_id", "payer_name", "payer_branch", "payer_address",
                "payee_tax_id", "payee_name", "payee_branch", "payee_address"}:
-        parts.append(_EP_WHT_PARTIES)
+        if "payer_branch_location" in have or "payee_branch_location" in have:
+            parts.append(_WHT_PARTY_ROLES)
+            for party in ("payer", "payee"):
+                parts.append(_wht_identity_rules(party))
+                parts.append(_branch_rules(party))
+                parts.append(f"- {party}_address: copy only this party's printed address, joined across lines.\n")
+        else:
+            parts.append(_EP_WHT_PARTIES)
     if items:
         parts.append(_EP_WHT_INCOME)
     if have & {"total_amount_paid", "total_wht_amount"}:
@@ -1510,8 +1593,8 @@ ITEM_KEYS = ("description", "period", "quantity", "unit_price", "amount",
 _SCALAR_KEYS = (
     "document_type", "document_number", "issue_date",
     "po_gr_rtv_number", "inv_rtv_cnr_number",
-    "seller_tax_id", "seller_branch",
-    "buyer_tax_id", "buyer_branch",
+    "seller_tax_id", "seller_branch", "seller_branch_location",
+    "buyer_tax_id", "buyer_branch", "buyer_branch_location",
     "subtotal", "vat_total", "amount_incl_vat",
     "remaining_amount", "remaining_vat_amount",
     "payment_date", "cheque_number",
@@ -1524,8 +1607,8 @@ _SCALAR_KEYS = (
     # "seller" on a withholding certificate would be a label that is wrong on
     # every document that carries it.
     "book_no", "certificate_no", "sequence_no",
-    "payer_tax_id", "payer_name", "payer_branch", "payer_address",
-    "payee_tax_id", "payee_name", "payee_branch", "payee_address",
+    "payer_tax_id", "payer_name", "payer_branch", "payer_branch_location", "payer_address",
+    "payee_tax_id", "payee_name", "payee_branch", "payee_branch_location", "payee_address",
     "dividend_rate_option",
     "total_amount_paid", "total_wht_amount",
 )
@@ -1577,6 +1660,8 @@ LEGACY_KEYS = (
 )
 
 _PARTIES = ("seller_tax_id", "seller_branch", "buyer_tax_id", "buyer_branch")
+_PARTY_FIELDS = ("seller_tax_id", "seller_branch", "seller_branch_location",
+                 "buyer_tax_id", "buyer_branch", "buyer_branch_location")
 
 # One form per type, straight from that type's requirement table, in reading
 # order. A document is often more than one type and its form is the UNION of
@@ -1596,13 +1681,16 @@ _PARTIES = ("seller_tax_id", "seller_branch", "buyer_tax_id", "buyer_branch")
 # is not on a requirement. Classification is unaffected: the type is read off the
 # transcript in Python, never out of an extracted field.
 DOC_TYPE_FIELDS = {
+    # An extraction profile; no new Mandatory requirement is claimed for RTV.
+    "RTV_SHIP_CREDIT": ("document_type", "document_number", "issue_date")
+                       + _PARTY_FIELDS + ("subtotal", "vat_total", "amount_incl_vat"),
     "INVOICE": ("document_type", "document_number", "issue_date",
-                "po_gr_rtv_number") + _PARTIES + ("subtotal", "vat_total",
+                "po_gr_rtv_number") + _PARTY_FIELDS + ("subtotal", "vat_total",
                                                   "amount_incl_vat"),
     "CREDIT_NOTE": ("document_type", "document_number", "issue_date",
-                    "po_gr_rtv_number") + _PARTIES + ("subtotal", "vat_total",
+                    "po_gr_rtv_number") + _PARTY_FIELDS + ("subtotal", "vat_total",
                                                       "amount_incl_vat"),
-    "RECEIPT": ("inv_rtv_cnr_number",) + _PARTIES + (
+    "RECEIPT": ("inv_rtv_cnr_number",) + _PARTY_FIELDS + (
         "subtotal", "vat_total", "remaining_amount", "remaining_vat_amount",
         "payment_date", "cheque_number"),
     # The WHT Certificate (50 thawi) table, 2026-09-01. It shares NOTHING with
@@ -1617,9 +1705,9 @@ DOC_TYPE_FIELDS = {
     # leave the income recipient's tax ID unextracted, which is the side most
     # matching flows need.
     "WHT_CERTIFICATE": ("book_no", "certificate_no", "sequence_no",
-                        "payer_tax_id", "payer_name", "payer_branch",
+                        "payer_tax_id", "payer_name", "payer_branch", "payer_branch_location",
                         "payer_address",
-                        "payee_tax_id", "payee_name", "payee_branch",
+                        "payee_tax_id", "payee_name", "payee_branch", "payee_branch_location",
                         "payee_address",
                         "dividend_rate_option",
                         "total_amount_paid", "total_wht_amount"),
@@ -1812,7 +1900,13 @@ def fields_for_types(codes):
     """
     keys = set()
     for code in (codes or []):
+        if code == "RTV_SHIP_CREDIT":
+            continue
         keys.update(DOC_TYPE_FIELDS.get(code, ()))
+    # Do not narrow a credit/debit note's default fallback merely because its
+    # heading also mentions returns. Otherwise retain the union of typed forms.
+    if "RTV_SHIP_CREDIT" in (codes or ()) and (_rtv_return(codes) or keys):
+        keys.update(DOC_TYPE_FIELDS["RTV_SHIP_CREDIT"])
     # Nothing to ask means no type in play had a requirement -- either the page
     # was not classified, or it is only a kind this project has no table for.
     # The default is the union of every requirement rather than one of them: a
@@ -1976,8 +2070,9 @@ Rules for every answer:
 - A value belongs to the field whose printed LABEL matches it, never to the field it
   happens to sit nearest on the page.
 - Use "" for anything the document does not state. An empty field is a correct answer and
-  a common one; a plausible invented value is neither. Never write a placeholder, a row of
-  zeros, a dash, or a figure you would have to work out from other figures.
+  a common one; a plausible invented value is neither. Never invent placeholder zeros or
+  derive a figure from other figures. Zeros explicitly printed as a branch code or amount
+  ARE evidence: copy them. A blank line or a dash standing for no value stays "".
 - Return exactly the keys shown above and no others. Nothing written in these instructions
   is itself a key or a value: where a rule names a label to look for, that is a hint for
   finding the value on the page, never something to emit.
@@ -2001,25 +2096,29 @@ own label, or return "" for it. Return the same JSON object as before."""
 # only thing the merge takes from that step's reply -- anything else the model
 # returns is dropped rather than trusted.
 #
-# The step table, and the fields each step extracts. A DOCUMENT runs the subset
-# whose keys its form asks for, `other` included: SEVEN for an invoice, a credit
-# note or a receipt, NINE for a withholding certificate, and seventeen for a
-# document nothing classified -- see `DEFAULT_FIELDS`, which is the union of
-# every form and is the one shape here worth re-measuring.
+# A document runs only the steps owning its form's fields. Commercial party
+# steps have three keys (tax ID, code, location). WHT identity and branch pairs
+# are separate requests, so adding locations never widens a step past three keys.
+# When the form asks for all three commercial totals, totals + total_incl become
+# one three-key request. Likewise inv_rtv_cnr + payment become one settlement
+# request. Receipt-only totals remain two keys; no form gains keys from grouping.
+# `other` is present only when extra fields are enabled.
 #
 #   document           document_type, document_number, issue_date
 #   po_gr_rtv          po_gr_rtv_number
-#   seller             seller_tax_id, seller_branch
-#   buyer              buyer_tax_id, buyer_branch
+#   seller             seller_tax_id, seller_branch, seller_branch_location
+#   buyer              buyer_tax_id, buyer_branch, buyer_branch_location
 #   totals             subtotal, vat_total
 #   total_incl         amount_incl_vat
 #   inv_rtv_cnr        inv_rtv_cnr_number
 #   remaining          remaining_amount, remaining_vat_amount
 #   payment            payment_date, cheque_number
 #   wht_certificate    book_no, certificate_no, sequence_no
-#   wht_payer          payer_tax_id, payer_name, payer_branch
+#   wht_payer          payer_tax_id, payer_name
+#   wht_payer_branch   payer_branch, payer_branch_location
 #   wht_payer_address  payer_address
-#   wht_payee          payee_tax_id, payee_name, payee_branch
+#   wht_payee          payee_tax_id, payee_name
+#   wht_payee_branch   payee_branch, payee_branch_location
 #   wht_payee_address  payee_address
 #   wht_income         income_items[]
 #   wht_totals         total_amount_paid, total_wht_amount
@@ -2030,13 +2129,9 @@ own label, or return "" for it. Return the same JSON object as before."""
 # the keys they owned. A step whose keys are not in the schema asks a question
 # whose answer has nowhere to go.
 #
-# **`totals` split from three keys to two on the same date**, and it is the one
-# step here that was cut for a reason other than the schema: a receipt's
-# requirement asks for the amount excluding VAT and the VAT, and NOT for the
-# amount including VAT. A step is taken whole or not at all -- `steps_for_types`
-# includes one only when every key it owns is in the form -- so a three-key
-# totals step would have taken the receipt's two figures down with the third.
-# `total_incl` carries the with-tax rules, which were the bulk of the old step.
+# `totals` and `total_incl` remain separate base definitions so receipt forms
+# can select just their two totals. `steps_for_types` groups selected steps
+# afterwards, only where all their fields are already in the document's form.
 #
 # **THREE KEYS PER STEP IS A CEILING, NOT A STYLE.** Measured 2026-08-19: adding a
 # fourth key to a step does not cost that key, it costs the keys the step was
@@ -2049,6 +2144,62 @@ own label, or return "" for it. Return the same JSON object as before."""
 # together, and fields mistaken for one another are kept apart. seller and buyer
 # are the pair that matters -- each step is told which block is which, because a
 # tax ID labelled more plainly is very often the other party's.
+_WHT_PARTY_ROLES = """The payer PAID income and withheld/remitted tax (ผู้จ่ายเงิน / ผู้มีหน้าที่หักภาษี).
+The payee RECEIVED the income and had tax withheld (ผู้ถูกหักภาษี / ผู้รับเงิน).
+Use the labels above each block, never their position or size. Keep each party's
+values inside its own block. If the roles are unclear, leave the uncertain values empty.
+"""
+
+
+def _wht_identity_rules(party):
+    return f"""- {party}_tax_id: copy the filled taxpayer OR national identity number,
+  with printed separators. If one label is blank and the other filled, use the filled
+  one; an individual's identity number is valid here. Never use a certificate/book number.
+- {party}_name: copy this party's legal/person name only, without the caption ชื่อ / Name.
+  Preserve legal words and parentheses belonging to the name. Exclude any explicitly
+  designated branch/head-office suffix, street, address, tax ID or phone number.
+  An ordinary place/country in the legal name stays there unless designated as a branch.
+"""
+
+
+_AGENTIC_BRANCH_SELECTION = """Read both branch keys from the SAME party block:
+- {party}_branch accepts EITHER a printed tax branch number OR explicit head-office
+  wording. BOTH are valid branch information; this key is not restricted to digits.
+- HEAD OFFICE WITHOUT A NUMBER: when this party is explicitly designated as head office
+  (สำนักงานใหญ่, Head Office, HO or HQ), copy its printed wording into BOTH {party}_branch
+  and {party}_branch_location. Do not leave {party}_branch empty just because no number
+  is printed. Python will normalize the copied wording to the head-office code;
+  copy the wording, do not generate digits that the page does not print.
+- PRINTED BRANCH NUMBER: copy the tax branch number, not the store/location code.
+  Match captions meaning branch number/code: เลขสาขา, สาขาที่, ลำดับสาขา, Branch No.
+  or Branch Code. ลำดับที่ counts only when it designates this party's branch, not
+  a document/item sequence. Preserve printed digits; Python will pad the code.
+  Copy a printed all-zero branch number as printed. It is not a missing value.
+- {party}_branch_location takes an explicitly named branch/site, without captions
+  such as ชื่อสาขา, สาขา, Branch name, or enclosing brackets. A branch name is also valid
+  when a separate branch number exists: put BOTH in their separate keys.
+  A place containing digits is still a place, not a tax branch number.
+- A bare number, company name or line containing only a branch NUMBER is not a
+  location name. A district/town in an ordinary address is not evidence of a branch.
+  Require a branch/site designation or a branch suffix attached to this party's name.
+  Keep words/digits belonging to the place name; remove only the field caption.
+- NAMED LOCATION ONLY: if this party has a named branch/site but neither a printed
+  branch number nor a head-office designation, leave {party}_branch empty and copy
+  only the named location into {party}_branch_location. A general place name does
+  not establish a branch code; explicit head-office wording is the separate case above.
+- If head office and a nonzero branch number conflict for the same party, leave the
+  uncertain branch code empty. If neither branch information nor a named location
+  is stated, leave both keys empty.
+- Do not copy the other party's values, infer a missing number or translate names.
+  For any other absent or uncertain value, use "".
+"""
+
+
+def _agentic_party_values(party):
+    # Agentic-only clarification: keep the single-request baseline unchanged.
+    return _party_tax_id_rules(party) + _AGENTIC_BRANCH_SELECTION.format(party=party)
+
+
 EXTRACT_STEPS = (
     {
         "id": "document",
@@ -2063,7 +2214,9 @@ EXTRACT_STEPS = (
 - It is often printed near the head of the page and often not: take it from wherever the page
   prints it. A company, brand or place name is never the heading -- those name a party to the
   document, not the kind of document it is.
-- document_number is the number identifying this document, printed with that heading.
+- document_number is the number identifying this document, printed with that heading
+  or its own document-number caption. Keep it distinct from a referenced invoice,
+  payment/cheque number, tax ID or customer code elsewhere in the text.
 - issue_date is the date the document is dated. Where the page prints several dates, take
   the one labelled as this document's own date -- not a due date, not a period, not a
   payment date.""",
@@ -2090,78 +2243,18 @@ EXTRACT_STEPS = (
     {
         "id": "seller",
         "title": "who issued this document",
-        "keys": ("seller_tax_id", "seller_branch"),
-        "skeleton": '{ "seller_tax_id": "", "seller_branch": "" }',
-        "max_tokens": 220,
-        "rules": """The issuer is the party this document is FROM -- the one who wrote it, who
-is to be paid, or whose details close it.
-- Find that party's own block first and work inside it and nowhere else. It is often the
-  letterhead at the top of the page, but not always: on an order, a request, or a form
-  printed by the other party, the block at the top belongs to the other party. Decide from
-  the labels printed around each block, not from where the block sits.
-- A value printed in a block labelled as the customer's, or as the party being billed,
-  belongs to the other party and not here.
-- Where the page does not name the issuer, or you cannot tell which party is which, leave
-  these three "" rather than choosing.
-- seller_tax_id is only the digits printed as that party's tax identification number. Copy
-  the separators as printed if there are any.
-- A tax or company registration number is normally a run of ten or more digits, sometimes
-  written with dashes or spaces and sometimes carrying a letter prefix. Copy it as printed.
-  A short number of two or three digits is something else the page numbers -- a book,
-  volume, page or sequence number -- and does not belong here. Where nothing on the page is
-  labelled as that party's tax or registration number, this is "".
-- seller_branch is what the page prints to say which office, branch or site of that party
-  this document belongs to -- a branch name, a branch number, or a word meaning head office.
-  Copy it as printed; do not translate it, and do not turn a word into a number.
-- This field is the one exception to finding a value by its label: it is usually printed
-  with NO label of its own, so look for the value itself. Inside that party's block it is
-  normally one of these -- a word meaning head office standing alone on its own line; a word
-  meaning head office or branch run on to the END of that party's tax ID line; the same in
-  brackets after that party's name; or the word for branch followed by a number. Where you
-  can see any of those in that party's block, that IS this field. Copy the whole of what is
-  printed there, including the word for branch where the page prints one.
-- What is not a branch: a street, a town, a postcode or a telephone number is an address,
-  and the tax ID itself is not a branch. Where the page prints only an empty caption asking
-  for a branch, with nothing written against it, this is "".
-- An office or branch printed after the issuer's name, in brackets or otherwise, is the
-  branch and belongs to seller_branch.
-- Neither of these two may take the customer's tax ID or branch. The issuer's name is not
-  asked for here -- find the block by it, then answer with the two values inside it.""",
+        "keys": ("seller_tax_id", "seller_branch", "seller_branch_location"),
+        "skeleton": '{ "seller_tax_id": "", "seller_branch": "", "seller_branch_location": "" }',
+        "max_tokens": 300,
+        "rules": 'The issuer is the party this document is FROM -- who wrote it or is to be paid. The customer is the party addressed TO, billed or delivered to. Identify their blocks by printed labels, not page position or logo. On an order or request the top block can belong to the customer. If the roles are uncertain, leave the values empty. ' + "\n" + _agentic_party_values("seller"),
     },
     {
         "id": "buyer",
         "title": "who this document is addressed to",
-        "keys": ("buyer_tax_id", "buyer_branch"),
-        "skeleton": '{ "buyer_tax_id": "", "buyer_branch": "" }',
-        "max_tokens": 220,
-        "rules": """The customer is the party this document is addressed TO -- the one billed,
-ordered from, or delivered to. It is not the party that issued the document.
-- The customer's block is found by its LABELS -- lines labelled with words meaning customer,
-  buyer, bill to, deliver to, or the party being billed. A block at the top of the page
-  carrying a logo and no such label is usually the issuer's letterhead rather than the
-  customer, so do not take it merely for being first; but on an order or a request the block
-  at the top can be the customer, and its labels are what say so. Where no block on the page
-  is labelled as the customer, both of these are "".
-- The customer's NAME is not asked for here. Find the block by it, then answer with the two
-  values printed inside it.
-- buyer_tax_id is only the digits printed as that party's tax identification number, and
-  buyer_branch is what the page prints to say which office, branch or site of that party
-  this document belongs to -- a branch name, a branch number, or a word meaning head office.
-- A tax or company registration number is normally a run of ten or more digits, sometimes
-  written with dashes or spaces and sometimes carrying a letter prefix. Copy it as printed.
-  A short number of two or three digits is something else the page numbers -- a book,
-  volume, page or sequence number -- and does not belong here. Where nothing on the page is
-  labelled as that party's tax or registration number, this is "".
-- buyer_branch is the one exception to finding a value by its label: it is usually printed
-  with NO label of its own, so look for the value itself. Inside the customer's block it is
-  normally one of these -- a word meaning head office standing alone on its own line; a word
-  meaning head office or branch run on to the END of that party's tax ID line; the same in
-  brackets after that party's name; or the word for branch followed by a number. Where you
-  can see any of those in the customer's block, that IS this field. Copy the whole of what
-  is printed there, including the word for branch where the page prints one.
-- A street, a postcode or a telephone number is an address, not a branch, and the tax ID
-  itself is not a branch.
-- Neither of these two may repeat the issuer's tax ID or branch.""",
+        "keys": ("buyer_tax_id", "buyer_branch", "buyer_branch_location"),
+        "skeleton": '{ "buyer_tax_id": "", "buyer_branch": "", "buyer_branch_location": "" }',
+        "max_tokens": 300,
+        "rules": 'The issuer is the party this document is FROM -- who wrote it or is to be paid. The customer is the party addressed TO, billed or delivered to. Identify their blocks by printed labels, not page position or logo. On an order or request the top block can belong to the customer. If the roles are uncertain, leave the values empty. ' + "\n" + _agentic_party_values("buyer"),
     },
     {
         "id": "totals",
@@ -2172,7 +2265,13 @@ ordered from, or delivered to. It is not the party that issued the document.
         "rules": """These are two different figures, each read off its own printed line.
 - subtotal is the figure on the total line printed BEFORE tax is added -- the total of the
   goods or services themselves.
-- vat_total is the figure on the tax line.
+- vat_total is the printed VAT AMOUNT in money, never the VAT RATE or a percentage.
+  If a line prints both a percentage and a money amount, copy the money amount only.
+  A withholding-tax amount is not VAT and does not belong in this key.
+- If the VAT amount is blank, a dash, or not printed, answer "" for vat_total even when
+  a VAT rate is printed. Never put a percentage in vat_total or calculate the amount
+  from the rate and subtotal. A printed zero VAT AMOUNT is valid: copy it as printed;
+  a zero VAT RATE alone does not establish a zero amount.
 - Take each from its own printed label, never from its position on the page. Pages order
   these lines differently, and the order tells you nothing about which is which.
 - Fill only lines the page actually prints. Never add the rows up yourself and never derive
@@ -2212,15 +2311,17 @@ ordered from, or delivered to. It is not the party that issued the document.
         "max_tokens": 160,
         "rules": """What to look for:
 - inv_rtv_cnr_number is ONE identifier: the invoice, return-to-vendor, or credit-note-return
-  document that this payment settles.
+  document referenced as being paid or settled by this document.
 - Find it by its printed label -- a label meaning invoice number, reference document, return,
   or the document being paid. Name that label to yourself before answering; where you cannot
   name one, the answer is "".
 - It is NOT this document's own number. A receipt carries its own number too, usually under a
   label meaning receipt number, and that one is never the answer here.
-- Where the page settles several documents -- a table with a column of them, or a list --
-  none of them belongs here. Do not pick one and do not join them together: answer "".
-- Answer with the one short value and stop.""",
+- A single referenced identifier is valid whether printed in a header, a line or a table.
+  Repeated occurrences of the SAME identifier still identify one document.
+- Where the page settles several DISTINCT documents, do not pick one or join them:
+  answer "". A table containing one referenced document is not several documents.
+- Keep this key to one short identifier, without prose or additional identifiers.""",
     },
     {
         "id": "remaining",
@@ -2294,47 +2395,20 @@ ordered from, or delivered to. It is not the party that issued the document.
     },
     {
         "id": "wht_payer",
-        "title": "who paid the income and withheld the tax",
-        "keys": ("payer_tax_id", "payer_name", "payer_branch"),
-        "skeleton": '{ "payer_tax_id": "", "payer_name": "", "payer_branch": "" }',
+        "title": "the payer's tax ID and name",
+        "keys": ("payer_tax_id", "payer_name"),
+        "skeleton": '{ "payer_tax_id": "", "payer_name": "" }',
         "max_tokens": 260,
-        "rules": """The payer is the party that PAID the income and withheld tax from it --
-the block labelled as the one with the duty to withhold and remit.
-- Find that party's block by the LABEL printed above it, not by where it sits or how large
-  it is printed. This page carries two blocks holding the same things in the same order,
-  and only the label above each says whose they are. Where you cannot tell which block is
-  which, leave all three "" rather than choosing.
-- A value printed in the block labelled as the party the tax was withheld FROM belongs to
-  the other party and not here.
-- payer_tax_id is what is printed as that party's identifying number, copied with whatever
-  separators are printed. Where the block prints the same label twice, or a taxpayer number
-  beside a national identity number, answer with the one that has something written against
-  it. The book, certificate and sequence numbers are printed at the top of the page and do
-  not belong here.
-- **Never answer "" here because the label that fits best is the blank one.** A block often
-  prints two identifying labels -- one for a taxpayer number, one for a national identity
-  number -- and fills only ONE of them. Answer with whichever is filled in, whatever its
-  label says; an individual is normally identified by the national identity number.
-- payer_name is that party's name and nothing else, on ONE line. If what you are about to
-  write contains a street, a postcode, a telephone number or a tax ID, you have taken too
-  much of the block.
-- **Look at the END of the name line before you answer.** If the last thing on it is a word
-  or a bracketed phrase that names an OFFICE -- one meaning head office or main office, or
-  the word for branch with a number after it -- then that is the BRANCH: take it out of the
-  name and answer payer_branch with it. **Brackets around it change nothing.**
-  A name followed by a bracketed office word, and the same name followed by a bare office
-  word, are the same case, and the brackets come away with it.
-- Brackets around anything ELSE stay in the name. A place, a country or a note in brackets
-  is part of what the party is called: it must be neither moved to the branch nor dropped.
-- payer_branch is what says which office or branch of that party this is -- a word meaning
-  head office, or a word meaning branch with a number after it -- copied as printed, not
-  translated and not turned into a number. It carries no label of its own and is printed
-  wherever that block has room: most often ON THE END OF THE NAME LINE, in brackets or
-  not, and sometimes on the end of the address line. The same words then belong
-  to this key and to nothing else: taking them out of the name is what makes
-  them available here, so answer with them rather than leaving this empty.
-- A town, a district, a street or a postcode is part of an address and is not a branch.
-- The address is NOT asked for here.""",
+        "rules": _WHT_PARTY_ROLES + _wht_identity_rules("payer") +
+                 'Read the complete payer block, but stop payer_name before an explicit branch/head-office suffix. Do not append that designation to the name.\n',
+    },
+    {
+        "id": "wht_payer_branch",
+        "title": "the payer's branch number and location",
+        "keys": ("payer_branch", "payer_branch_location"),
+        "skeleton": '{ "payer_branch": "", "payer_branch_location": "" }',
+        "max_tokens": 220,
+        "rules": _WHT_PARTY_ROLES + _AGENTIC_BRANCH_SELECTION.format(party="payer"),
     },
     {
         "id": "wht_payer_address",
@@ -2354,47 +2428,20 @@ the block labelled as the one with the duty to withhold and remit.
     },
     {
         "id": "wht_payee",
-        "title": "who the income was paid to and the tax withheld from",
-        "keys": ("payee_tax_id", "payee_name", "payee_branch"),
-        "skeleton": '{ "payee_tax_id": "", "payee_name": "", "payee_branch": "" }',
+        "title": "the payee's tax ID and name",
+        "keys": ("payee_tax_id", "payee_name"),
+        "skeleton": '{ "payee_tax_id": "", "payee_name": "" }',
         "max_tokens": 260,
-        "rules": """The payee is the party the income was paid TO and the tax withheld FROM --
-the block labelled as the one whose tax was deducted at source.
-- Find that party's block by the LABEL printed above it, not by where it sits. This page
-  carries two blocks holding the same things in the same order, and only the label above
-  each says whose they are. Where you cannot tell which block is which, leave all three ""
-  rather than choosing.
-- A value printed in the block labelled as the party with the duty to withhold belongs to
-  the other party and not here. None of these three may repeat that party's values.
-- payee_tax_id is what is printed as that party's identifying number, copied with whatever
-  separators are printed. Where the block prints the same label twice, or a taxpayer number
-  beside a national identity number, answer with the one that has something written against
-  it. The book, certificate and sequence numbers are printed at the top of the page and do
-  not belong here.
-- **Never answer "" here because the label that fits best is the blank one.** A block often
-  prints two identifying labels -- one for a taxpayer number, one for a national identity
-  number -- and fills only ONE of them. Answer with whichever is filled in, whatever its
-  label says; an individual is normally identified by the national identity number.
-- payee_name is that party's name and nothing else, on ONE line. A street, a postcode, a
-  telephone number or a tax ID means you have taken too much of the block.
-- **Look at the END of the name line before you answer.** If the last thing on it is a word
-  or a bracketed phrase that names an OFFICE -- one meaning head office or main office, or
-  the word for branch with a number after it -- then that is the BRANCH: take it out of the
-  name and answer payee_branch with it. **Brackets around it change nothing.**
-  A name followed by a bracketed office word, and the same name followed by a bare office
-  word, are the same case, and the brackets come away with it.
-- Brackets around anything ELSE stay in the name. A place, a country or a note in brackets
-  is part of what the party is called: it must be neither moved to the branch nor dropped.
-- payee_branch is what says which office or branch of that party this is -- a word meaning
-  head office, or a word meaning branch with a number after it -- copied as printed. It
-  carries no label of its own and is printed wherever that block has room: most often ON
-  THE END OF THE NAME LINE, in brackets or not, and sometimes on the end of the address
-  line. The same words then belong
-  to this key and to nothing else: taking them out of the name is what makes
-  them available here, so answer with them rather than leaving this empty.
-- A town, a district, a street or a postcode is part of an address and is
-  not a branch.
-- The address is NOT asked for here.""",
+        "rules": _WHT_PARTY_ROLES + _wht_identity_rules("payee") +
+                 'Read the complete payee block, but stop payee_name before an explicit branch/head-office suffix. Do not append that designation to the name.\n',
+    },
+    {
+        "id": "wht_payee_branch",
+        "title": "the payee's branch number and location",
+        "keys": ("payee_branch", "payee_branch_location"),
+        "skeleton": '{ "payee_branch": "", "payee_branch_location": "" }',
+        "max_tokens": 220,
+        "rules": _WHT_PARTY_ROLES + _AGENTIC_BRANCH_SELECTION.format(party="payee"),
     },
     {
         "id": "wht_payee_address",
@@ -2498,6 +2545,34 @@ its own column.
 )
 
 
+def _group_steps(table, members, primary, title, guidance):
+    """Combine already-selected fields, never extend a type's form.
+
+    Keep the request at the first member's position. Historical member ids stay
+    available for targeted extraction, but request the complete related group.
+    Definitions in EXTRACT_STEPS are never mutated by concurrent documents.
+    """
+    by_id = {s["id"]: s for s in table}
+    if not all(member in by_id for member in members):
+        return table
+    keys = tuple(k for member in members for k in by_id[member]["keys"])
+    if len(keys) > 3 or len(keys) != len(set(keys)):
+        raise ValueError("a grouped extraction step must own at most three unique keys")
+    grouped = {**by_id[primary], "title": title, "keys": keys,
+               "includes_steps": tuple(members),
+               "skeleton": '{ ' + ', '.join(f'"{key}": ""' for key in keys) + ' }',
+               "max_tokens": 300,
+               "rules": guidance + "\n\n" + "\n\n".join(by_id[m]["rules"] for m in members)}
+    result, inserted = [], False
+    for step in table:
+        if step["id"] not in members:
+            result.append(step)
+        elif not inserted:
+            result.append(grouped)
+            inserted = True
+    return tuple(result)
+
+
 def steps_for_types(codes, extras=True):
     """The agentic steps that fill exactly the field set for a document type.
 
@@ -2506,11 +2581,12 @@ def steps_for_types(codes, extras=True):
     asserts the chosen steps cover the type's keys exactly, no key asked twice
     and none left unasked -- so there is never a step to include "partly".
     Emitting a step with some of its keys removed would mean rewriting its
-    skeleton and its rules on the fly, and those rules are measured text.
+    skeleton and its rules on the fly. Once selected, related complete steps
+    may be grouped into one request of at most three keys.
 
-    `other` owns no scalar key and is always included: it is the overflow valve
-    every set leans on. Order is always `EXTRACT_STEPS`', so a type's run is the
-    full run with steps removed -- the same rule `app._steps_for` follows.
+    `other` owns no scalar key and is included when extras is enabled. Groups
+    occupy their first component's position in EXTRACT_STEPS; other steps retain
+    their relative order. `app._steps_for` restricts this final table.
 
     Takes the CODES a document names, not one code, so a receipt/tax-invoice
     runs the steps for the union of both forms. `extras` False drops `other`,
@@ -2522,9 +2598,30 @@ def steps_for_types(codes, extras=True):
     # asked for -- once the key it owns is in `wanted`.
     if items_for_types(codes):
         wanted.add(INCOME_ITEMS_KEY)
-    return tuple(s for s in EXTRACT_STEPS
-                 if (s["id"] == "other" and extras)
-                 or (s["keys"] and set(s["keys"]) <= wanted))
+    table = tuple(s for s in EXTRACT_STEPS
+                  if (s["id"] == "other" and extras)
+                  or (s["keys"] and set(s["keys"]) <= wanted))
+    if _rtv_return(codes):
+        titles = {"seller": "the original supplier receiving the returned goods",
+                  "buyer": "the original customer sending the goods back"}
+        # Copy per document: workers for other types share EXTRACT_STEPS.
+        table = tuple({**s, "title": titles[s["id"]],
+                       "rules": _RTV_PARTIES + _agentic_party_values(s["id"])}
+                      if s["id"] in titles else s for s in table)
+    table = _group_steps(table, ("totals", "total_incl"), "totals",
+                         "the printed totals before tax, tax and including tax",
+                         "Read the same totals block for these three keys. Match each printed "
+                         "label to its own amount before answering. Do not reuse a net payable "
+                         "or a withholding deduction as a VAT-inclusive total. Copy only "
+                         "printed amounts; never calculate a missing total.")
+    table = _group_steps(table, ("inv_rtv_cnr", "payment"), "payment",
+                         "the referenced document and its payment date and cheque",
+                         "Read the payment/settlement evidence together. The referenced "
+                         "document identifier, payment date and cheque number are different "
+                         "facts: each needs its own printed label. A missing cheque number "
+                         "does not make a printed reference or payment date empty. A cheque "
+                         "number must never fill the referenced-document key.")
+    return table
 
 
 def steps_for_type(code):

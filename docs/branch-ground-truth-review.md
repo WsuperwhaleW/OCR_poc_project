@@ -1,0 +1,51 @@
+# Branch ground-truth review — 2026-10-22
+
+Sources: original PDFs in `mockOcr/`, rendered for visual inspection. Model answers were not used as ground truth. Only branch code/location annotations were changed; unrelated tax IDs, dates, amounts and segmentation were preserved.
+
+Each record also carries `_branch_review` with its source PDF, reviewed page, previous branch values and a review note. Existing raw branch readings remain accepted and are normalised at comparison time. `null` is unscored; an empty cell means no branch place name was identified in the reviewed party block. A printed head-office designation is stored as a location as well as yielding code `00000`; a bare `00000` does not invent head-office wording.
+
+Location fields are optional; existing mandatory requirement sets are unchanged. New scores compare normalised party values. Previously saved scores are not rewritten and should not be mixed with this benchmark without noting the changed prompt/schema and normalization version.
+
+Seller/buyer columns become payer/payee for sol016–sol020. The page column cites the reviewed page, not a claim that every continuation page was independently re-annotated.
+
+| Case | PDF page | Seller / payer location | Buyer / payee location | Evidence / caveat |
+|---|---:|---|---|---|
+| sol001 | 1 | สำนักงานใหญ่ |  | Reviewed the party identity blocks on the cited PDF page: head-office wording is recorded where explicitly printed; numeric-only branch designations do not imply a place name. Ordinary address text is not a branch location. |
+| sol002 | 1 |  | สำนักงานใหญ่ | Reviewed the party identity blocks on the cited PDF page: head-office wording is recorded where explicitly printed; numeric-only branch designations do not imply a place name. Ordinary address text is not a branch location. |
+| sol003 | 1 | สำนักงานใหญ่ | null | Buyer branch name is handwritten after the name; spelling is uncertain. Numeric branch 226 is retained; location is null pending confirmation. |
+| sol004 | 1 | null | สำนักงานใหญ่ | Seller letterhead has a venue-like second line and code 01065; whether the second line is a branch name is uncertain. Buyer explicitly prints สำนักงานใหญ่. |
+| sol005 | 1 | สำนักงานใหญ่ |  | Reviewed the party identity blocks on the cited PDF page: head-office wording is recorded where explicitly printed; numeric-only branch designations do not imply a place name. Ordinary address text is not a branch location. |
+| sol006 | 1 | สำนักงานใหญ่ |  | Reviewed the party identity blocks on the cited PDF page: head-office wording is recorded where explicitly printed; numeric-only branch designations do not imply a place name. Ordinary address text is not a branch location. |
+| sol007 | 1 |  | สำนักงานกลาง | Buyer tax-ID line prints สำนักงานกลาง, a named office without a numeric branch. Moved that wording from branch code to location. Seller explicitly prints สาขาที่: 00009. |
+| sol008 | 1 |  |  | Reviewed the party identity blocks on the cited PDF page: head-office wording is recorded where explicitly printed; numeric-only branch designations do not imply a place name. Ordinary address text is not a branch location. |
+| sol009 | 1 |  | ศูนย์เลนกลาง | Buyer name ends (ศูนย์เลนกลาง); the same block prints ลำดับสาขา 05656. Both values refer to the buyer. |
+| sol010 | 1 | สำนักงานใหญ่ |  | Reviewed the party identity blocks on the cited PDF page: head-office wording is recorded where explicitly printed; numeric-only branch designations do not imply a place name. Ordinary address text is not a branch location. |
+| sol011 | 1 |  |  | Reviewed the party identity blocks on the cited PDF page: head-office wording is recorded where explicitly printed; numeric-only branch designations do not imply a place name. Ordinary address text is not a branch location. |
+| sol012 | 1 | สำนักงานใหญ่ | null | Buyer name says สำนักงานใหญ่ but tax-ID line says สาขาที่ 00012. Retain the explicit code; location is null because the designations conflict. |
+| sol012 | 2 | null | null | SPS-Head Office occurs in repeated Branch (Bill To) table rows, not an unambiguous seller/buyer identity block. Locations are null pending party-role review. |
+| sol013 | 1 | สำนักงานใหญ่ | null | Buyer block prints branch code 00012. สาขาศรีราชา appears in a service description; its relation to the legal buyer branch needs confirmation. Location is null, not inferred from the address. |
+| sol014 | 1 | สำนักงานใหญ่ |  | Reviewed the party identity blocks on the cited PDF page: head-office wording is recorded where explicitly printed; numeric-only branch designations do not imply a place name. Ordinary address text is not a branch location. |
+| sol014 | 2 |  |  | Return direction identifies seller receiving the return and buyer sending it. Seller prints ลำดับที่ 00000; buyer prints สาขาที่ 00001. Neither block prints a place name. Store code 00803 is not the tax branch. |
+| sol015 | 1 | สำนักงานใหญ่ |  | Issuer letterhead explicitly prints INTER CO., LTD. (HEAD OFFICE). Corrected previous empty seller branch. Buyer block does not print a branch designation. |
+| sol015 | 2 | สำนักงานใหญ่ | สำนักงานใหญ่ | Issuer letterhead explicitly prints (HEAD OFFICE); buyer tax-ID line prints สำนักงานใหญ่. Corrected previous empty seller branch. |
+| sol015 | 3 | null | null | Payment appointment/bill-to rows do not unambiguously designate either legal party branch. Locations are null pending party-role review. |
+| sol015 | 4 | สำนักงานใหญ่ |  | Issuer letterhead explicitly prints INTER CO., LTD. (HEAD OFFICE). Corrected previous empty seller branch. Buyer block does not print a branch designation. |
+| sol015 | 5 | null | null | Payment appointment/bill-to rows do not unambiguously designate either legal party branch. Locations are null pending party-role review. |
+| sol015 | 6 | null | null | Bank cheque-delivery acknowledgement; do not assign a bank or delivery location to a legal seller/buyer branch. Party branch locations remain unreviewed/null. |
+| sol015 | 7 | null | null | Bank advice has pickup location Ratchayothin and table text MJT-Head Office. Do not equate a bank pickup branch or table reference to seller/buyer branch without role confirmation; locations are null. |
+| sol016 | 1 | สำนักงานใหญ่ | สำนักงานใหญ่ | Reviewed the party identity blocks on the cited PDF page: head-office wording is recorded where explicitly printed; numeric-only branch designations do not imply a place name. Ordinary address text is not a branch location. |
+| sol017 | 1 |  |  | Reviewed the party identity blocks on the cited PDF page: head-office wording is recorded where explicitly printed; numeric-only branch designations do not imply a place name. Ordinary address text is not a branch location. |
+| sol018 | 1 | สำนักงานใหญ่ | สำนักงานใหญ่ | Reviewed the party identity blocks on the cited PDF page: head-office wording is recorded where explicitly printed; numeric-only branch designations do not imply a place name. Ordinary address text is not a branch location. |
+| sol019 | 1 | สำนักงานใหญ่ |  | Payer address ends (สำนักงานใหญ่), explicitly designating that payer office. Payee block has no branch designation. |
+| sol020 | 1 | สำนักงานใหญ่ |  | Reviewed the party identity blocks on the cited PDF page: head-office wording is recorded where explicitly printed; numeric-only branch designations do not imply a place name. Ordinary address text is not a branch location. |
+| sol021 | 1 | สำนักงานใหญ่ | สำนักงานใหญ่ | Reviewed the party identity blocks on the cited PDF page: head-office wording is recorded where explicitly printed; numeric-only branch designations do not imply a place name. Ordinary address text is not a branch location. |
+| sol021 | 3 | สำนักงานใหญ่ | สำนักงานใหญ่ | Reviewed the party identity blocks on the cited PDF page: head-office wording is recorded where explicitly printed; numeric-only branch designations do not imply a place name. Ordinary address text is not a branch location. |
+| sol021 | 4 | สำนักงานใหญ่ | null | Seller tax-ID line explicitly prints สาขา สำนักงานใหญ่. Buyer address AOFH (Flag Ship) is not explicitly a tax branch/location designation; leave buyer location null. |
+| sol022 | 1 | สำนักงานใหญ่ |  | Reviewed the party identity blocks on the cited PDF page: head-office wording is recorded where explicitly printed; numeric-only branch designations do not imply a place name. Ordinary address text is not a branch location. |
+| sol022 | 2 | สำนักงานใหญ่ |  | Reviewed the party identity blocks on the cited PDF page: head-office wording is recorded where explicitly printed; numeric-only branch designations do not imply a place name. Ordinary address text is not a branch location. |
+| sol022 | 3 | สำนักงานใหญ่ |  | Reviewed the party identity blocks on the cited PDF page: head-office wording is recorded where explicitly printed; numeric-only branch designations do not imply a place name. Ordinary address text is not a branch location. |
+| sol022 | 4 | สำนักงานใหญ่ |  | Reviewed the party identity blocks on the cited PDF page: head-office wording is recorded where explicitly printed; numeric-only branch designations do not imply a place name. Ordinary address text is not a branch location. |
+| sol023 | 1 | สำนักงานใหญ่ | รังสิต | Reviewed the party identity blocks on the cited PDF page: head-office wording is recorded where explicitly printed; numeric-only branch designations do not imply a place name. Ordinary address text is not a branch location. |
+| sol023 | 6 | สำนักงานใหญ่ | สุรินทร์ | Reviewed the party identity blocks on the cited PDF page: head-office wording is recorded where explicitly printed; numeric-only branch designations do not imply a place name. Ordinary address text is not a branch location. |
+| sol023 | 9 | สำนักงานใหญ่ | ร้อยเอ็ด | Reviewed the party identity blocks on the cited PDF page: head-office wording is recorded where explicitly printed; numeric-only branch designations do not imply a place name. Ordinary address text is not a branch location. |
+| sol023 | 12 | สำนักงานใหญ่ | ร้อยเอ็ด | Reviewed the party identity blocks on the cited PDF page: head-office wording is recorded where explicitly printed; numeric-only branch designations do not imply a place name. Ordinary address text is not a branch location. |
