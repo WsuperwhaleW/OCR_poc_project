@@ -1067,6 +1067,7 @@ document.addEventListener("DOMContentLoaded", function () {
   .st-good { background: rgba(60, 200, 130, .16); color: #3cc882; }
   .st-bad { background: rgba(255, 107, 107, .14); color: var(--danger); }
   .st-warn { background: rgba(217, 164, 65, .16); color: var(--warn); }
+  .st-info { background: rgba(110, 160, 255, .16); color: #6ea0ff; }
   /* The stress test's live problems: one row per error, loop or stall, as it happens. */
   .st-alerts { margin-top: 12px; border: 1px solid var(--danger); border-radius: 10px;
                padding: 8px 10px; max-height: 320px; overflow: auto; }
@@ -1075,6 +1076,9 @@ document.addEventListener("DOMContentLoaded", function () {
   .st-alerts h3 { margin: 0 0 6px; font-size: .85rem; color: var(--danger); }
   .st-alerts table.queue { min-width: 0; font-size: .76rem; }
   .st-alerts td.msg { word-break: break-word; }
+  .st-alerts tr.st-alert-link { cursor: pointer; }
+  .st-alerts tr.st-alert-link:hover td { background: rgba(110, 160, 255, .08); }
+  .st-alerts tr.st-alert-link.on td { background: rgba(110, 160, 255, .16); }
   .st-box table.queue { min-width: 0; margin-top: 8px; font-size: .76rem; }
   .st-box table.queue th, .st-box table.queue td { padding: 4px 6px; }
   .st-thin { color: var(--muted); font-size: .7rem; }
@@ -3114,6 +3118,7 @@ function showPane(name) {
   stressPaneOpen = name === 'stress';
   historyOpen = stressPaneOpen && stressView === 'history';
   paintMain();
+  enableCompare();   // the workspace's run or a stress page, whichever pane this is
   if (scOpen) paintSchema();
   if (historyOpen) historyLoad();
   else if (stressPaneOpen) stPaint();
@@ -3130,6 +3135,11 @@ function showPane(name) {
    `var` and element IDs allow early callers before the card consts exist. */
 var scOpen = false, historyOpen = false;
 var selectedPane = 'source', stressPaneOpen = false, stressView = 'run', stRunning = false;
+/* A flagged stress page in the Compare card, in place of the workspace's run:
+   {alert, case, page, truthCase, at, reads: [{detail, text, looped, truncated,
+   dry, src}]}. Only while the stress pane is open (`cmpInStress`); the
+   workspace's own run is untouched and comes back with its pane. */
+var cmpOverride = null;
 function paintMain() {
   const el = id => document.getElementById(id);
   const st = stressPaneOpen && !historyOpen;
@@ -3139,7 +3149,9 @@ function paintMain() {
   el('stCard').hidden = !st;
   el('rtCard').hidden = !rt;
   el('resultCard').hidden = scOpen || historyOpen || rt || st;
-  el('compareCard').hidden = scOpen || historyOpen || rt || st;
+  // In the stress pane, Compare shows a flagged page once one is clicked
+  // (`stShowEvidence`) -- the live run's or a saved run's -- and nothing before.
+  el('compareCard').hidden = scOpen || rt || (stressPaneOpen && !cmpOverride);
   let hasActions = false;
   for (const name of ['source', 'ocr', 'fields', 'random', 'stress']) {
     const group = el(name + 'Actions');
@@ -11705,19 +11717,37 @@ const CMP_VIEWS = {
   'model-truth':  [cmpColModel, cmpColTruth],
 };
 function hasRun() { return !!(job && pageTexts.length); }
+function cmpInStress() { return !!(cmpOverride && stressPaneOpen); }
+/* What the per-page columns step through: the workspace run's pages, or, for a
+   flagged stress page, each read of that one page (a looped read, then its retry). */
+function cmpTotal() { return cmpInStress() ? cmpOverride.reads.length : pageTexts.length; }
+function cmpText(i) { return cmpInStress() ? cmpOverride.reads[i].text : pageTexts[i]; }
+function cmpSrc(i) { return cmpInStress() ? cmpOverride.reads[i].src : pageSrc(i); }
 /* Which case's ground truth to show. What the finished run was scored against
    wins; failing that, whatever the workspace is pointing at -- so a fixture can
-   be read before anything has been run against it. */
+   be read before anything has been run against it. A stress page's is its own
+   case's, and none for a realData file. */
 function truthCase() {
+  if (cmpInStress()) return cmpOverride.truthCase || null;
   if (truth && truth.case) return truth.case;
   return matchedCase || null;
+}
+/* What one read of a flagged stress page came back as, for its caption. */
+function stReadOutcome(r) {
+  const parts = [r.detail || ''];
+  if (r.looped) parts.push('looped — cut off by the loop guard');
+  else if (r.truncated) parts.push('hit the token cap');
+  else parts.push('read cleanly');
+  if (r.dry) parts.push('DRY fired from token ' + r.dry.first + ', longest repeat ' + r.dry.longest);
+  return parts.filter(Boolean).join(' · ');
 }
 /* The source image and the OCR text both come out of a run; ground truth comes
    out of the fixture and is there before one. So a pair is offered only when
    both of its halves exist -- and where no pair does, the one column that does
    exist is shown on its own rather than beside an empty box. */
 function colAvailable(col) {
-  return col === cmpColTruth ? !!truthCase() : hasRun();
+  if (col === cmpColTruth) return !!truthCase();
+  return cmpInStress() ? cmpTotal() > 0 : hasRun();
 }
 function viewFull(view) { return CMP_VIEWS[view].every(colAvailable); }
 
@@ -11785,10 +11815,32 @@ function paintCompare() {
     b.disabled = !viewFull(b.dataset.view);
   });
 
-  const total = pageTexts.length;
+  const total = cmpTotal();
   // The page controls belong to the two columns that are per-page; ground truth
   // is one file for the whole document and says so in its own caption.
   const paged = cols.some(c => c !== cmpColTruth) && total > 0;
+  if (paged && cmpInStress()) {
+    // One page of a stress run: the controls step through its reads instead.
+    const o = cmpOverride;
+    o.at = Math.max(0, Math.min(o.at, total - 1));
+    const r = o.reads[o.at];
+    cmpLabel.textContent = total > 1 ? `Read ${o.at + 1} of ${total}` : 'Read 1';
+    cmpPrev.disabled = o.at === 0;
+    cmpNext.disabled = o.at >= total - 1;
+    if (cmpImg.getAttribute('src') !== r.src) cmpImg.src = r.src;
+    cmpOpen.href = r.src;
+    cmpDl.href = r.src;
+    cmpDl.download = o.case + '-p' + o.page + '-' + (r.detail || 'read') + '.png';
+    cmpImgCap.textContent = '· ' + o.case + ' page ' + o.page + (r.detail ? ' at ' + r.detail : '');
+    cmpModelCap.textContent = '· ' + stReadOutcome(r);
+    const raw = cmpRawChk.checked;
+    cmpRender.style.display = raw ? 'none' : 'block';
+    cmpRawText.style.display = raw ? 'block' : 'none';
+    if (raw) cmpRawText.textContent = r.text || '';
+    else cmpRender.innerHTML = r.text ? sanitize(renderOutput(r.text)) : '<em>No text.</em>';
+    if (cols.includes(cmpColTruth)) paintTruthPane();
+    return;
+  }
   [cmpPrev, cmpNext, cmpLabel].forEach(el => { el.hidden = !paged; });
   // "Open image" belongs to the image column, not to paging: it is meaningless
   // in the view that shows the transcript beside the fixture.
@@ -11823,9 +11875,11 @@ function paintCompare() {
   if (cols.includes(cmpColTruth)) paintTruthPane();
 }
 function enableCompare() {
-  const ready = hasRun() || !!truthCase();
+  const ready = cmpInStress() || hasRun() || !!truthCase();
   cmpToggle.disabled = !ready;
   cmpHint.textContent = !ready ? 'Run a document first.'
+    : cmpInStress() ? 'Stress test · ' + cmpOverride.case + ' page ' + cmpOverride.page
+      + ' — every read of it, the page it was sent and the text it returned.'
     : hasRun() ? 'Source page, transcript and ground truth, two at a time.'
     : 'Ground truth only — run the document to compare it against a transcript.';
   if (!ready) { compareEl.hidden = true; cmpToggle.textContent = 'Show'; }
@@ -11837,8 +11891,14 @@ cmpModes.addEventListener('click', e => {
   cmpView = btn.dataset.view;
   paintCompare();
 });
-cmpPrev.addEventListener('click', () => { cmpPage--; paintCompare(); });
-cmpNext.addEventListener('click', () => { cmpPage++; paintCompare(); });
+cmpPrev.addEventListener('click', () => {
+  if (cmpInStress()) cmpOverride.at--; else cmpPage--;
+  paintCompare();
+});
+cmpNext.addEventListener('click', () => {
+  if (cmpInStress()) cmpOverride.at++; else cmpPage++;
+  paintCompare();
+});
 cmpRawChk.addEventListener('change', paintCompare);
 
 // Proportional scroll linking: the panes have different natural heights, so
@@ -13973,27 +14033,51 @@ function stMetricsTable(view, title, since) {
 
 const ST_ALERT_TEXT = {
   error: 'error', looped: 'loop', truncated: 'token cap', partial: 'partial reply',
-  stalled: 'stalled', recovered: 'retry read cleanly'
+  stalled: 'stalled', recovered: 'retry read cleanly', dry: 'DRY'
 };
+// A looped page's one row, by where its retries got to (`_StressLive.update_flag`).
+const ST_LOOP_STATE = { retrying: 'loop retrying', resolved: 'loop resolved',
+  'retry failed': 'loop retry failed', 'no retry': 'loop, no retry' };
 const ST_STAGE_TEXT = { ocr: 'reading', extract: 'extracting', segment: 'splitting',
   classify: 'classifying' };
+
+function stAlertTag(a) {
+  if (a.kind === 'looped' && ST_LOOP_STATE[a.state]) return ST_LOOP_STATE[a.state];
+  return ST_ALERT_TEXT[a.kind] || a.kind;
+}
+
+function stAlertClass(a) {
+  if (a.kind === 'error' || a.state === 'retry failed') return 'st-bad';
+  if (a.kind === 'recovered' || a.state === 'resolved') return 'st-good';
+  if (a.kind === 'dry') return 'st-info';
+  return 'st-warn';
+}
 
 // Newest first. Only the first rows are drawn: a run where every job fails
 // would otherwise redraw thousands of rows a second.
 function stAlertsHtml(alerts) {
   if (!alerts.length) return '';
   const counts = {};
-  for (const a of alerts) counts[a.kind] = (counts[a.kind] || 0) + 1;
+  for (const a of alerts) {
+    const key = stAlertTag(a);
+    counts[key] = (counts[key] || 0) + 1;
+  }
   const shown = alerts.slice(-100).reverse();
   return '<div class="st-alerts"><h3>Problems, as they happen · '
-    + Object.entries(counts).map(([k, n]) => n + ' ' + esc(ST_ALERT_TEXT[k] || k)).join(' · ')
+    + Object.entries(counts).map(([k, n]) => n + ' ' + esc(k)).join(' · ')
     + '</h3><table class="queue"><tr><th>At</th><th>Job</th><th>Document</th><th>What</th>'
     + '<th>Where</th><th>Detail</th></tr>'
-    + shown.map(a => '<tr><td class="n">' + stSec(a.elapsed)
-      + (a.phase === 'warmup' ? ' <small>warm-up</small>' : '') + '</td>'
+    + shown.map(a => (a.evidence
+        ? '<tr class="st-alert-link' + (cmpOverride && cmpOverride.alert === a.id ? ' on' : '')
+          + '" data-alert-id="' + esc(String(a.id)) + '" data-alert-kind="' + esc(a.kind)
+          + '" title="Show this page in Compare below">'
+        : '<tr>') + '<td class="n">' + stSec(a.elapsed)
+      + (a.phase === 'warmup' ? ' <small>warm-up</small>' : '')
+      + (a.updated !== undefined && a.updated !== null
+        ? '<br><small>updated ' + stSec(a.updated) + '</small>' : '') + '</td>'
       + '<td class="n">#' + a.job + '</td><td><b>' + esc(a.case || '') + '</b></td>'
-      + '<td><span class="st-tag ' + (a.kind === 'error' ? 'st-bad' : a.kind === 'recovered' ? 'st-good' : 'st-warn') + '">'
-      + esc(ST_ALERT_TEXT[a.kind] || a.kind) + '</span></td>'
+      + '<td><span class="st-tag ' + stAlertClass(a) + '">'
+      + esc(stAlertTag(a)) + '</span></td>'
       + '<td>' + esc(ST_STAGE_TEXT[a.stage] || a.stage || '')
       + (a.page ? ', page ' + a.page : '') + '</td>'
       + '<td class="msg">' + esc(a.message || '') + '</td></tr>').join('')
@@ -14001,6 +14085,42 @@ function stAlertsHtml(alerts) {
     + (alerts.length > shown.length ? '<p class="note">' + (alerts.length - shown.length)
       + ' older row(s) not shown.</p>' : '')
     + '</div>';
+}
+
+/* A flagged page into the Compare card below: the page each read was sent and
+   the text it returned, starting at the read the alert is about. */
+async function stShowEvidence(alertId, kind) {
+  const base = API + '/stress/evidence/' + encodeURIComponent(alertId);
+  let data;
+  try {
+    const res = await fetch(base);
+    data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'This page is no longer kept.');
+  } catch (err) {
+    stNote.textContent = err.message;
+    stNote.classList.add('err');
+    return;
+  }
+  const reads = data.attempts.map((a, n) => Object.assign({}, a, { src: base + '/' + n + '.png' }));
+  const first = kind === 'dry' ? reads.findIndex(r => r.dry)
+                               : reads.findIndex(r => r.looped || r.truncated);
+  cmpOverride = { alert: alertId, case: data.case, page: data.page,
+                  truthCase: data.truth_case, reads, at: Math.max(0, first) };
+  cmpView = 'source-model';
+  paintMain();
+  compareEl.hidden = false;
+  cmpToggle.textContent = 'Hide';
+  enableCompare();
+  paintCompare();
+  document.querySelectorAll('tr.st-alert-link').forEach(tr =>
+    tr.classList.toggle('on', tr.dataset.alertId === String(alertId)));
+  document.getElementById('compareCard').scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+for (const host of [stOut, document.getElementById('historyDetail')]) {
+  host.addEventListener('click', e => {
+    const row = e.target.closest('tr.st-alert-link');
+    if (row) stShowEvidence(row.dataset.alertId, row.dataset.alertKind);
+  });
 }
 
 function stPaint() {
@@ -14213,7 +14333,9 @@ function stReportHtml(s, snapshot, host) {
          c.cancelled ? c.cancelled + ' cancelled' : '', c.skipped ? c.skipped + ' past the time limit' : '',
          r.ocr && r.ocr.pages_lent ? r.ocr.pages_lent + ' page(s) read on idle workers' : '',
          r.ocr && r.ocr.loop_retries ? r.ocr.loop_retries + ' loop retr' + (r.ocr.loop_retries === 1 ? 'y' : 'ies')
-           + ', ' + (r.ocr.loop_recovered || 0) + ' page(s) recovered' : '']
+           + ', ' + (r.ocr.loop_recovered || 0) + ' page(s) recovered' : '',
+         r.ocr && r.ocr.dry_checked ? 'DRY fired on ' + (r.ocr.dry_pages || 0) + ' of '
+           + r.ocr.dry_checked + ' page(s)' : '']
           .filter(Boolean).join(' · ')),
       stTile('Error rate', stPct(r.error_rate), (c.error || 0) + ' error(s)',
         r.error_rate ? 'st-bad' : ''),
@@ -14413,7 +14535,10 @@ async function stStart() {
           stNote.classList.toggle('err', !!ev.history_error);
           if (stState.plan && stState.plan.save_log) stNote.textContent += " Each measured job was saved to the run log.";
         } else if (ev.event === 'alert') {
-          stState.alerts.push(ev);
+          // The same id again is the same issue, updated (a loop retried and
+          // resolved, or not): replace its row rather than add one.
+          const at = ev.id ? stState.alerts.findIndex(a => a.id === ev.id) : -1;
+          if (at >= 0) stState.alerts[at] = ev; else stState.alerts.push(ev);
           lastPaint = 0;
         } else if (ev.event === 'draining') {
           stState.draining = ev.in_flight;

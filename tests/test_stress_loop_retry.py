@@ -46,8 +46,12 @@ class StressLoopRetryTests(unittest.TestCase):
         self.assertEqual(calls, ["low", "medium"])
         self.assertEqual(texts, ["text medium"])
         self.assertFalse(looped)
-        self.assertEqual([a["kind"] for a in alerts], ["looped", "recovered"])
+        # One issue, sent twice: raised retrying, then marked resolved in place.
+        self.assertEqual([(a["kind"], a["state"]) for a in alerts],
+                         [("looped", "retrying"), ("looped", "resolved")])
+        self.assertEqual(alerts[0]["id"], alerts[1]["id"])
         self.assertIn("reading it again at medium", alerts[0]["message"])
+        self.assertIn("at low; read cleanly at medium", alerts[1]["message"])
         self.assertEqual((rec["loop_retries"], rec["loop_recovered"]), (1, 1))
         self.assertEqual(rec["ocr_tokens"], 20)        # both attempts' tokens
 
@@ -59,7 +63,10 @@ class StressLoopRetryTests(unittest.TestCase):
                                                    [True, True, True], up)
         self.assertEqual(calls, ["low", "medium", "original"])
         self.assertTrue(looped)
-        self.assertEqual([a["kind"] for a in alerts], ["looped"] * 3)
+        self.assertEqual(len({a["id"] for a in alerts}), 1)   # one row, updated
+        self.assertEqual([a["state"] for a in alerts],
+                         ["retrying", "retrying", "retry failed"])
+        self.assertIn("at low, medium, original; the retry failed", alerts[-1]["message"])
         self.assertEqual((rec["loop_retries"], rec["loop_recovered"]), (2, 0))
 
     def test_no_retry_left_reads_once(self):
@@ -68,6 +75,7 @@ class StressLoopRetryTests(unittest.TestCase):
         self.assertEqual(calls, ["original"])
         self.assertTrue(looped)
         self.assertEqual(len(alerts), 1)
+        self.assertEqual(alerts[0]["state"], "no retry")
         self.assertNotIn("reading it again", alerts[0]["message"])
         self.assertEqual(rec["loop_retries"], 0)
 

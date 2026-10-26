@@ -372,6 +372,10 @@ def report(records: list, wall: float, mode: str, concurrency: int) -> dict:
             # tokens are in `tokens`; its latency figures are the kept read's.
             "loop_retries": total("loop_retries", attempted),
             "loop_recovered": total("loop_recovered", attempted),
+            # Pages vLLM's DRY processor penalised a repeat on, of the pages it
+            # could be checked on (the server sent their token ids).
+            "dry_pages": total("dry_pages", attempted),
+            "dry_checked": total("dry_checked", attempted),
             # Pages read on a slot an idle worker lent (`split_pages`), and the
             # most pages any one job had in flight at once.
             "pages_lent": total("pages_lent", attempted),
