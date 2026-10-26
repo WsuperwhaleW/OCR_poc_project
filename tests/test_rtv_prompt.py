@@ -31,7 +31,7 @@ class ReturnPromptTests(unittest.TestCase):
             "vat_total", "amount_incl_vat"})
         table = hybrid_steps(RTV, extras=False)
         self.assertEqual([s["id"] for s in table],
-                         ["document", "seller", "buyer", "totals"])
+                         ["document", "parties", "totals"])
         self.assertEqual([k for s in table for k in s["keys"]], list(keys))
         self.assertEqual(prompts.mandatory_for_types(RTV), ())
         self.assertEqual(hybrid_steps(RTV)[-1]["id"], "other")
@@ -39,7 +39,8 @@ class ReturnPromptTests(unittest.TestCase):
     def test_agentic_questions_replace_conflicting_issuer_and_addressee_roles(self):
         table = {s["id"]: s for s in hybrid_steps(RTV, extras=False)}
         for party in ("seller", "buyer"):
-            question = hybrid_question(table[party], RTV)
+            question = hybrid_question(table['parties'], RTV)
+            self.assertIn(party + '_tax_id', question)
             self.assertIn("ORIGINAL SALE", question)
             self.assertIn("RECEIVING", question)
             self.assertIn("SENDING", question)
@@ -87,14 +88,14 @@ class ReturnPromptTests(unittest.TestCase):
     def test_document_specific_steps_do_not_mutate_shared_definitions(self):
         saved = copy.deepcopy(prompts.EXTRACT_STEPS)
         rtv = hybrid_steps(RTV)
-        seller = next(s for s in rtv if s["id"] == "seller")
+        seller = next(s for s in rtv if s["id"] == "parties")
         seller["title"] = "local change"
         self.assertEqual(prompts.EXTRACT_STEPS, saved)
         for codes in (["INVOICE"], ["CREDIT_NOTE"], ["RECEIPT"], []):
-            step = next(s for s in hybrid_steps(codes) if s["id"] == "seller")
-            self.assertEqual(step["title"], "who issued this document")
+            step = next(s for s in hybrid_steps(codes) if s["id"] == "parties")
+            self.assertEqual(step["title"], "the seller and buyer tax IDs and branches together")
 
-    def test_real_return_page_routes_four_schema_requests_with_grounded_values(self):
+    def test_real_return_page_routes_three_schema_requests_with_grounded_values(self):
         truth = json.loads((ROOT / "solution/sol014.fields.json").read_text(encoding="utf-8"))
         block = truth["documents"][1]
         expected = block
@@ -116,7 +117,7 @@ class ReturnPromptTests(unittest.TestCase):
              patch.object(app, "AGENTIC_PARALLEL", False):
             result = app._drain(app._extract_agentic(text, STATUS, form, mode="hybrid"))
         self.assertNotIn("error", result)
-        self.assertEqual(len(requests), 4)
+        self.assertEqual(len(requests), 3)
         self.assertEqual(set().union(*(set(schema["properties"]) for _, schema, _ in requests)),
                          set(form["keys"]))
         for key in form["keys"]:

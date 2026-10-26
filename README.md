@@ -701,10 +701,10 @@ The choice also appears in Fields only, Stress test and Random test's shape lock
 | | Single | Agentic | Hybrid |
 |---|---|---|---|
 | Prompts | whole form | original baseline from `9880dce` | tuned prompts, including latest subtotal/billing rules |
-| Fields per request | all form fields | 1–3 scalar fields, or one list | related groups of 1–3 scalar fields, or one list |
-| Invoice steps without extras | 1 | 6 | 5 |
-| Receipt steps without extras | 1 | 6 | 5 |
-| RTV steps without extras | 1 | 5 | 4 |
+| Fields per request | all form fields | 1–3 scalar fields, or one list | related groups of 1–3 scalar fields, six party fields, or one list |
+| Invoice steps without extras | 1 | 6 | 4 |
+| Receipt steps without extras | 1 | 6 | 4 |
+| RTV steps without extras | 1 | 5 | 3 |
 | Grounding re-ask | — | per step | per step |
 
 Agentic and Hybrid ask independent steps against the same complete document transcript and
@@ -715,9 +715,13 @@ single-request mode remains the process default.
 In Hybrid, related fields share a request where the form asks for them: `subtotal`, `vat_total` and
 `amount_incl_vat` form one totals step; `inv_rtv_cnr_number`, `payment_date` and `cheque_number`
 form one payment step. A receipt that asks for just the first two totals still asks for
-only those two. No grouped step exceeds three keys or adds fields to the form. Without
-extras, an invoice runs five steps, a receipt five, and an RTV return shipment four.
-Seller and buyer remain separate requests of tax ID, branch code and branch location.
+only those two. A joint `parties` step asks for both seller and buyer tax IDs, branch
+codes and branch locations: six keys resolved in one chat, with a 600-token reply cap.
+It retains the document-specific roles, including original-sale roles on RTV and
+customer-panel rules on pure billing notes. Both sides need their own evidence;
+a lone tax ID is not assigned by elimination, and a missing seller value must not
+erase an identifiable buyer value, or vice versa. No group adds fields to the form.
+Without extras, an invoice runs four steps, a receipt four, and an RTV return shipment three.
 WHT identity/address requests stay separate; their name instructions exclude explicitly
 designated branch/head-office suffixes while preserving qualifiers in legal names.
 
@@ -728,8 +732,9 @@ and ground truth remain unchanged for benchmark comparison. Accuracy and speed s
 need verification on the actual model server.
 
 For targeted Hybrid extraction, historical step ids `total_incl` and `inv_rtv_cnr` select the
-complete related totals/payment group. Results and detail logs list the group's actual
-keys under `totals` or `payment`, respectively; old saved logs retain their original steps.
+complete related totals/payment group. Either `seller` or `buyer` selects the complete
+`parties` group once. Results and detail logs list the group's actual keys under
+`totals`, `payment` or `parties`; old saved logs retain their original steps.
 
 Hybrid `subtotal` asks for the printed whole-document amount before VAT, including
 both taxable and non-taxable portions, rather than a VAT-base subtotal for just one

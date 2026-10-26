@@ -44,10 +44,12 @@ class GroupSelectionTests(unittest.TestCase):
                     expected.add('other_fields')
                 self.assertEqual(set(keys), expected, combo)
                 self.assertEqual(len(keys), len(set(keys)), combo)
-                self.assertTrue(all(len(s['keys']) <= 3 for s in table), combo)
+                self.assertTrue(all(len(s['keys']) <= (6 if s['id'] == 'parties' else 3)
+                                    for s in table), combo)
                 for step in table:
-                    self.assertEqual(set(json.loads(step['skeleton'])), set(step['keys']))
-                    self.assertEqual(set(app._step_schema(step)['properties']), set(step['keys']))
+                    requested = {step.get('request_aliases', {}).get(k, k) for k in step['keys']}
+                    self.assertEqual(set(json.loads(step['skeleton'])), requested)
+                    self.assertEqual(set(app._step_schema(step)['properties']), requested)
         self.assertEqual(prompts.EXTRACT_STEPS, saved)
 
     def test_receipt_does_not_gain_a_vat_inclusive_total(self):
@@ -71,11 +73,12 @@ class GroupSelectionTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'made_up'):
             hybrid_selected(['made_up'], ['RECEIPT'], extras=False)
 
-    def test_rtv_keeps_return_roles_and_its_own_party_requests(self):
+    def test_rtv_keeps_return_roles_in_its_joint_party_request(self):
         table = {s['id']: s for s in hybrid_steps(['RTV_SHIP_CREDIT'], extras=False)}
         self.assertEqual(set(table['totals']['keys']), set(TOTALS))
         for party in ('seller', 'buyer'):
-            question = hybrid_question(table[party], ['RTV_SHIP_CREDIT'])
+            question = hybrid_question(table['parties'], ['RTV_SHIP_CREDIT'])
+            self.assertIn(party + '_tax_id', question)
             self.assertIn('ORIGINAL SALE', question)
             self.assertIn('ลำดับสาขา', question)
             self.assertIn('not the store/location code', question)

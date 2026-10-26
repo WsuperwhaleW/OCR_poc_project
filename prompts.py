@@ -2691,7 +2691,8 @@ HYBRID_STEP_OVERRIDES = {
 }
 
 
-def _group_steps(table, members, primary, title, guidance):
+def _group_steps(table, members, primary, title, guidance, *, group_id=None,
+                 max_keys=3, max_tokens=300):
     """Combine already-selected fields, never extend a type's form.
 
     Keep the request at the first member's position. Historical member ids stay
@@ -2702,12 +2703,12 @@ def _group_steps(table, members, primary, title, guidance):
     if not all(member in by_id for member in members):
         return table
     keys = tuple(k for member in members for k in by_id[member]["keys"])
-    if len(keys) > 3 or len(keys) != len(set(keys)):
-        raise ValueError("a grouped extraction step must own at most three unique keys")
-    grouped = {**by_id[primary], "title": title, "keys": keys,
+    if len(keys) > max_keys or len(keys) != len(set(keys)):
+        raise ValueError(f"a grouped extraction step must own at most {max_keys} unique keys")
+    grouped = {**by_id[primary], "id": group_id or primary, "title": title, "keys": keys,
                "includes_steps": tuple(members),
                "skeleton": '{ ' + ', '.join(f'"{key}": ""' for key in keys) + ' }',
-               "max_tokens": 300,
+               "max_tokens": max_tokens,
                "rules": guidance + "\n\n" + "\n\n".join(by_id[m]["rules"] for m in members)}
     result, inserted = [], False
     for step in table:
@@ -2728,7 +2729,8 @@ def steps_for_types(codes, extras=True, mode="agentic"):
     and none left unasked -- so there is never a step to include "partly".
     Emitting a step with some of its keys removed would mean rewriting its
     skeleton and its rules on the fly. Once selected, related complete steps
-    may be grouped into one request of at most three keys.
+    may be grouped into one request of at most three keys, or six keys for the
+    paired seller/buyer identities.
 
     `other` owns no scalar key and is included when extras is enabled. Groups
     occupy their first component's position in EXTRACT_STEPS; other steps retain
@@ -2789,6 +2791,21 @@ def steps_for_types(codes, extras=True, mode="agentic"):
                        "request_aliases": {"subtotal": "billing_total"},
                        "skeleton": '{ "billing_total": "", "vat_total": "", "amount_incl_vat": "" }'}
                       if s["id"] == "totals" else s for s in table)
+    # Resolve both parties in one answer, after the type-specific role rules
+    # have been applied. Historical seller/buyer ids select this entire group.
+    table = _group_steps(table, ("seller", "buyer"), "seller",
+                         "the seller and buyer tax IDs and branches together",
+                         "Identify both party blocks in this document before filling these six keys. "
+                         "Use the document-specific roles below, then match each labelled tax ID "
+                         "and branch to its own party using the section labels and grouping. "
+                         "Evaluate both parties together; an empty value on one side does not "
+                         "make the other side empty. Missing seller information must not erase "
+                         "an identifiable buyer's information, or vice versa. Do not assign a "
+                         "tax ID by elimination just because it is the only one printed. "
+                         "Never transfer a value to the other party merely to fill a blank. "
+                         "Leave only the unsupported or uncertain values empty. "
+                         "Return just the six requested keys, without explanations or extra fields.",
+                         group_id="parties", max_keys=6, max_tokens=600)
     return table
 
 

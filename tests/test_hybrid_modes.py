@@ -31,8 +31,8 @@ class VariantTests(unittest.TestCase):
             self.assertEqual(actual, expected, profile)
 
     def test_only_hybrid_groups_related_steps(self):
-        for code, original, hybrid in [('INVOICE', 6, 5), ('RECEIPT', 6, 5),
-                                       ('RTV_SHIP_CREDIT', 5, 4)]:
+        for code, original, hybrid in [('INVOICE', 6, 4), ('RECEIPT', 6, 4),
+                                       ('RTV_SHIP_CREDIT', 5, 3)]:
             a = prompts.steps_for_types([code], extras=False, mode='agentic')
             h = prompts.steps_for_types([code], extras=False, mode='hybrid')
             self.assertEqual((len(a), len(h)), (original, hybrid))
@@ -44,7 +44,7 @@ class VariantTests(unittest.TestCase):
 
     def test_document_driver_uses_the_selected_task_schema_and_result_label(self):
         for mode, count, task in [('agentic', 6, prompts.EXTRACT_STEP_TASK),
-                                  ('hybrid', 5, prompts.HYBRID_STEP_TASK)]:
+                                  ('hybrid', 4, prompts.HYBRID_STEP_TASK)]:
             requests = []
 
             def chat(message, cap, status, schema=None):
@@ -91,7 +91,7 @@ class VariantTests(unittest.TestCase):
              patch.object(app, 'VLLM_PREFIX_WARMUP', False), ThreadPoolExecutor(max_workers=2) as pool:
             original, hybrid = list(pool.map(run, ['agentic', 'hybrid']))
         self.assertEqual((original['mode'], hybrid['mode']), ('agentic', 'hybrid'))
-        self.assertEqual((original['parallel'], hybrid['parallel']), (6, 5))
+        self.assertEqual((original['parallel'], hybrid['parallel']), (6, 4))
         self.assertIn('total_incl', {s['id'] for s in original['steps']})
         self.assertNotIn('total_incl', {s['id'] for s in hybrid['steps']})
 

@@ -19,9 +19,8 @@ class BillingPromptTests(unittest.TestCase):
     def test_billing_rules_are_isolated_from_mixed_invoice_and_return_forms(self):
         saved = copy.deepcopy(prompts.EXTRACT_STEPS)
         table = {s['id']: s for s in hybrid_steps(['BILLING_NOTE'], extras=False)}
-        self.assertIn('customer being billed', table['buyer']['title'])
-        self.assertIn(prompts._BILLING_PARTIES, table['buyer']['rules'])
-        self.assertIn(prompts._BILLING_PARTIES, table['seller']['rules'])
+        self.assertIn(prompts._BILLING_PARTIES, table['parties']['rules'])
+        self.assertEqual(table['parties']['includes_steps'], ('seller', 'buyer'))
         self.assertIn(prompts._BILLING_TOTALS, table['totals']['rules'])
         # The covering bill replaces the generic before-VAT question instead
         # of appending an exception after conflicting subtotal instructions.
@@ -47,7 +46,8 @@ class BillingPromptTests(unittest.TestCase):
                     expected.add(prompts.INCOME_ITEMS_KEY)
                 self.assertEqual(set(actual), expected)
                 self.assertEqual(len(actual), len(set(actual)))
-                self.assertTrue(all(len(s['keys']) <= 3 for s in table))
+                self.assertTrue(all(len(s['keys']) <= (6 if s['id'] == 'parties' else 3)
+                                    for s in table))
                 for step in table:
                     requested = {step.get('request_aliases', {}).get(k, k) for k in step['keys']}
                     self.assertEqual(set(json.loads(step['skeleton'])), requested)
@@ -63,7 +63,8 @@ Invoice INV-X Amount 240.00
 Total amount billed 240.00
 """
         status = {'kind': 'vllm', 'model': 'mock', 'url': 'http://mock:8001'}
-        answers = {'buyer_tax_id': '1234567890123', 'buyer_branch': 'Head Office',
+        answers = {'seller_tax_id': '', 'seller_branch': '', 'seller_branch_location': '',
+                   'buyer_tax_id': '1234567890123', 'buyer_branch': 'Head Office',
                    'buyer_branch_location': 'Head Office', 'billing_total': '240.00',
                    'vat_total': '', 'amount_incl_vat': ''}
         for schema_first in (False, True):
