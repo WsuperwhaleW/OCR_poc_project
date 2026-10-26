@@ -402,6 +402,11 @@ def report(records: list, wall: float, mode: str, concurrency: int) -> dict:
             "field_scored": len(scored),
             "unscored": sum(1 for r in ok if r.get("unscored")),
             "partial_replies": sum(1 for r in rows if r.get("partial_reply")),
+            # Jobs whose form came back with a Mandatory field empty, and how
+            # many such fields in all -- over every completed job, a looped read's
+            # included: that is the extraction half of what a loop cost.
+            "missing_required_jobs": sum(1 for r in rows if r.get("missing_required")),
+            "missing_required_fields": sum(r.get("missing_required") or 0 for r in rows),
         }
     if mode in ("ocr", "full"):
         out["ocr"]["tokens_per_page"] = io_spread(
