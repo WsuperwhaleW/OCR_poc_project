@@ -449,6 +449,47 @@ def report(records: list, wall: float, mode: str, concurrency: int) -> dict:
     return out
 
 
+def without_longest(records: list, wall: float, mode: str, concurrency: int,
+                    limit: int) -> list:
+    """The report again, without the 1, 2, ... `limit` longest jobs.
+
+    Entry `n - 1` is the run as if its `n` slowest jobs (`total_s`) had never
+    been queued: they leave every population, the error rate included, so a
+    job that hung and then failed is an outlier like one that hung and then
+    finished. Cancelled and skipped jobs are never ranked -- they have no
+    length -- and at least one job that ran is always kept.
+
+    **The wall clock ends with the last KEPT job** (`end_s`, from the phase's
+    start) where every kept job has one, because a straggler finishing a minute
+    after everything else is exactly what makes the throughput figures low.
+    Removing it from the counts but not from the clock would make them lower
+    still. Without `end_s` (an older record) the run's own wall is used.
+
+    The per-request list of `agentic_context` is dropped from each entry: the
+    full report carries it, and the page filters it by the excluded jobs.
+    """
+    ran = sorted((i for i, r in enumerate(records)
+                  if r.get("status") not in ("cancelled", "skipped")
+                  and r.get("total_s") is not None),
+                 key=lambda i: -records[i]["total_s"])
+    out = []
+    for n in range(1, min(limit, len(ran) - 1) + 1):
+        drop = set(ran[:n])
+        kept = [r for i, r in enumerate(records) if i not in drop]
+        ends = [r.get("end_s") for r in kept
+                if r.get("status") not in ("cancelled", "skipped")]
+        kept_wall = (min(wall, max(ends))
+                     if ends and all(e is not None for e in ends) else wall)
+        rep = report(kept, kept_wall, mode, concurrency)
+        if rep.get("agentic_context"):
+            rep["agentic_context"].pop("requests", None)
+        rep["excluded"] = [{"job": records[i].get("job"), "case": records[i].get("who", ""),
+                            "status": records[i].get("status"),
+                            "total_s": records[i]["total_s"]} for i in ran[:n]]
+        out.append(rep)
+    return out
+
+
 def io_spread(pairs) -> dict:
     """Min, max and mean of the in and the out tokens over `(in, out)` pairs.
 

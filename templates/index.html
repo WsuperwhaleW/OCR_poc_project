@@ -1070,6 +1070,8 @@ document.addEventListener("DOMContentLoaded", function () {
   /* The stress test's live problems: one row per error, loop or stall, as it happens. */
   .st-alerts { margin-top: 12px; border: 1px solid var(--danger); border-radius: 10px;
                padding: 8px 10px; max-height: 320px; overflow: auto; }
+  .st-outliers { margin: 10px 0 4px; }
+  .st-outliers .note { margin: 4px 0 0; }
   .st-alerts h3 { margin: 0 0 6px; font-size: .85rem; color: var(--danger); }
   .st-alerts table.queue { min-width: 0; font-size: .76rem; }
   .st-alerts td.msg { word-break: break-word; }
@@ -14001,9 +14003,20 @@ function stPaint() {
     stOut.innerHTML = '<p class="note">Run a stress test to see its report here, or open History to review a saved run.</p>';
     return;
   }
+  // The report is rebuilt on every progress event, which reset the live
+  // problems box to its top many times a second and made it impossible to
+  // scroll. Keep the reader where they were: newest rows go in at the top, so
+  // a box scrolled down is pushed by however much it grew, and one at the top
+  // stays there to show the newest.
+  const oldBox = stOut.querySelector('.st-alerts');
+  const oldTop = oldBox ? oldBox.scrollTop : 0;
+  const oldHeight = oldBox ? oldBox.scrollHeight : 0;
   stOut.innerHTML = stReportHtml(stState, null, stOut);
+  const newBox = stOut.querySelector('.st-alerts');
+  if (newBox && oldTop > 0) newBox.scrollTop = oldTop + (newBox.scrollHeight - oldHeight);
   stWireChart();
-  stWireChatContext(stOut, (stState || {}).report);
+  stWireChatContext(stOut, stOutlierReport(stState || {}));
+  stWireOutliers(stOut, stState, stPaint);
 }
 
 function chatToken(value) {
@@ -14063,6 +14076,54 @@ function stWireChatContext(host, report) {
   };
   select.addEventListener('change', paint);
   paint();
+}
+
+// The report without the N longest jobs (`report.outliers[N - 1]`, computed by
+// the server while it still had every job). The run-wide parts that are not
+// per job -- the timeline, /metrics, batches, prepare time -- stay the full
+// run's, and the per-chat list is the full one minus the excluded jobs.
+function stOutlierReport(s) {
+  const full = s.report;
+  const n = s.excludeN || 0;
+  const cut = full && n && (full.outliers || [])[n - 1];
+  if (!cut) return full;
+  const gone = new Set(cut.excluded.map(e => e.job));
+  const ctx = cut.agentic_context && full.agentic_context
+    ? {...cut.agentic_context, requests: (full.agentic_context.requests || [])
+        .filter(chat => !gone.has(chat.job))} : cut.agentic_context;
+  return {...cut, agentic_context: ctx, concurrency: full.concurrency, timeline: full.timeline,
+    timeline_columns: full.timeline_columns, prepare_seconds: full.prepare_seconds,
+    vllm_batch: full.vllm_batch, servers_metrics: full.servers_metrics,
+    server_metrics: full.server_metrics};
+}
+
+function stOutlierPicker(s) {
+  const options = (s.report.outliers || []);
+  if (!options.length) return '';
+  const n = s.excludeN || 0;
+  const cut = n ? options[n - 1] : null;
+  return '<div class="st-outliers"><label class="field">Exclude outliers'
+    + '<select data-st-exclude title="Recompute the report as if the slowest jobs (end to end) had never run">'
+    + '<option value="0">None: every run</option>'
+    + options.map((o, i) => '<option value="' + (i + 1) + '"' + (n === i + 1 ? ' selected' : '')
+      + '>The ' + (i + 1) + ' longest run' + (i ? 's' : '') + '</option>').join('')
+    + '</select></label>'
+    + (cut ? '<p class="note">Left out: ' + cut.excluded.map(e => '#' + e.job + ' '
+        + esc(e.case || '') + ' (' + stSec(e.total_s)
+        + (e.status !== 'ok' ? ', ' + esc(e.status) : '') + ')').join(' · ')
+      + '. They leave every count and figure, error rate included; the wall clock ends with the '
+      + 'last job kept. The chart and /metrics below are still the whole run.</p>' : '')
+    + '</div>';
+}
+
+// The picker re-draws the report it sits in; `rerender` is how this host draws it.
+function stWireOutliers(host, s, rerender) {
+  const select = host.querySelector('[data-st-exclude]');
+  if (!select) return;
+  select.addEventListener('change', () => {
+    s.excludeN = Number(select.value) || 0;
+    rerender();
+  });
 }
 
 function stReportHtml(s, snapshot, host) {
@@ -14135,8 +14196,9 @@ function stReportHtml(s, snapshot, host) {
     }
     if (p.metrics_error) html += '<p class="note err">/metrics: ' + esc(p.metrics_error) + '</p>';
   }
-  const r = s.report;
+  const r = stOutlierReport(s);
   if (r) {
+    html += stOutlierPicker(s);
     const c = r.counts || {};
     const tiles = [
       stTile('Completed', r.completed + '<small> / ' + r.attempted + '</small>',
@@ -14879,12 +14941,17 @@ function historyRender(item) {
     + '</dl></details><div id="historyReport" class="history-report"></div>'
     + '<details><summary>All saved settings and metrics (JSON)</summary><pre class="history-json"></pre></details>';
   const host = stEl('historyReport');
-  host.innerHTML = stReportHtml({plan: item.plan, report: result.report,
+  const saved = {plan: item.plan, report: result.report,
     alerts: result.alerts || [], monitor_samples: result.monitor_samples,
-    monitor_samples_total: result.monitor_samples_total}, null, host)
-    + (!result.report ? '<p class="note">No final report was saved for this run.</p>' : '');
-  stWireChart(host, result.report);
-  stWireChatContext(host, result.report);
+    monitor_samples_total: result.monitor_samples_total};
+  const draw = () => {
+    host.innerHTML = stReportHtml(saved, null, host)
+      + (!result.report ? '<p class="note">No final report was saved for this run.</p>' : '');
+    stWireChart(host, result.report);
+    stWireChatContext(host, stOutlierReport(saved));
+    stWireOutliers(host, saved, draw);
+  };
+  draw();
   root.querySelector('.history-json').textContent = JSON.stringify(item, null, 2);
 }
 

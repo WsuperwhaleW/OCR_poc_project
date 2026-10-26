@@ -7070,6 +7070,9 @@ STRESS_STALL_SECONDS = 300
 # memory while it runs -- so fifty jobs each starting a different file at once
 # must not all do it together.
 STRESS_PREPARE_PARALLEL = config.env_int("STRESS_PREPARE_PARALLEL", 2, minimum=1)
+# How many "without the N longest jobs" reports a stress run carries, for the
+# page's Exclude picker (`stress.without_longest`). Each is a few KB.
+STRESS_OUTLIER_MAX = config.env_int("STRESS_OUTLIER_MAX", 10, minimum=0)
 _STAGE_VERB = {"ocr": "reading", "extract": "extracting", "segment": "splitting",
                "classify": "classifying"}
 
@@ -7798,6 +7801,10 @@ def _stress_job(spec: dict, cfg: dict, prepared: dict, cancel,
         if lazy is not None:
             lazy.release(spec["case"])
     rec["total_s"] = round(time.perf_counter() - began, 3)
+    # When it ended on the phase's clock, and whose it was: what lets the report
+    # be taken again without the longest jobs (`stress.without_longest`).
+    rec["end_s"] = round(time.perf_counter() - spec["submitted"], 3)
+    rec["job"], rec["who"] = job, who
     live.finish(rec["status"] == "error")
     return rec
 
@@ -8143,6 +8150,8 @@ def _stress_run(cfg: dict, cancel):
     report["timeline"] = stress.thin_timeline(timeline)
     report["timeline_columns"] = ["t", *stress.STAGES, "done"]
     report["prepare_seconds"] = prepare_seconds
+    report["outliers"] = stress.without_longest(records, wall, mode, cfg["concurrency"],
+                                                STRESS_OUTLIER_MAX)
     if batcher is not None:
         report["vllm_batch"] = batcher.summary()
     if targets:
