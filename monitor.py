@@ -25,6 +25,9 @@ Three things worth knowing before reading the numbers:
 * **KV cache remaining in TOKENS needs `cache_config_info`**, whose labels carry
   the block count and block size. Where a build does not export it, only the
   percentage is shown.
+* **Batch size is generated tokens per engine step**, the only reading of it
+  `/metrics` gives without its histogram buckets; and **requests that fit** is
+  the KV cache divided by what a finished request costs, an estimate.
 * **Rates are taken between this process's last two scrapes of that server**,
   whatever asked for them. Two tabs polling halve the interval and leave every
   rate correct, because each is a change over the time it actually covers.
@@ -44,6 +47,10 @@ _LABEL = re.compile(r'([A-Za-z_][A-Za-z0-9_]*)="((?:[^"\\]|\\.)*)"')
 # and the figure is an average over minutes nobody was looking at.
 RATE_MAX_GAP = 120.0
 RATE_MIN_GAP = 0.2
+
+# Requests that must finish in a window before `fit` costs a request off the
+# window rather than off the lifetime mean.
+FIT_MIN_REQUESTS = 3
 
 _lock = threading.Lock()
 _last = {}          # url -> (monotonic time, snapshot)
@@ -118,6 +125,22 @@ def kv_capacity(samples):
         if s:
             size = s
     return blocks, size
+
+
+def kv_max_concurrency(samples):
+    """`kv_cache_max_concurrency` off `vllm:cache_config_info`, or None.
+
+    How many requests fit at once if every one used the FULL context window --
+    vLLM's own worst case. Summed over engines, like the block count.
+    """
+    total = None
+    for name, labels, _ in samples:
+        if name == "vllm:cache_config_info":
+            try:
+                total = (total or 0.0) + float(labels.get("kv_cache_max_concurrency", ""))
+            except ValueError:
+                pass
+    return round(total, 2) if total is not None else None
 
 
 def reserved_share(samples):
@@ -246,6 +269,20 @@ def snapshot(samples) -> dict:
                                "vllm:prefix_cache_queries"),
         # v0 reports a hit rate directly, as a gauge.
         "prefix_hit_gauge": _mean(samples, "vllm:gpu_prefix_cache_hit_rate"),
+        # The multimodal cache: an image whose preprocessing was reused. Counted
+        # in ITEMS, not tokens, and separate from the prefix cache -- a request
+        # sent with `cache_salt` still hits it.
+        "mm_hits": _sum(samples, "vllm:mm_cache_hits_total", "vllm:mm_cache_hits"),
+        "mm_queries": _sum(samples, "vllm:mm_cache_queries_total",
+                           "vllm:mm_cache_queries"),
+        # Engine steps, and the tokens they carried (prefill chunks included).
+        "steps": _sum(samples, "vllm:iteration_tokens_total_count"),
+        "step_tokens": _sum(samples, "vllm:iteration_tokens_total_sum"),
+        # Per finished request: prompt and output tokens, for what one costs.
+        "req_count": _sum(samples, "vllm:request_prompt_tokens_count"),
+        "req_prompt_tokens": _sum(samples, "vllm:request_prompt_tokens_sum"),
+        "req_output_tokens": _sum(samples, "vllm:request_generation_tokens_sum"),
+        "kv_max_concurrency": kv_max_concurrency(samples),
     }
 
 
@@ -287,6 +324,21 @@ def rates(prev: dict, cur: dict, seconds: float) -> dict:
     # No queries in the window is "nothing to hit", not a 0% hit rate.
     out["prefix_hit_rate"] = round(hits / queries, 4) if hits is not None and queries else None
     out["preemptions"] = _delta(cur, prev, "preemptions")
+    mm_hits, mm_queries = _delta(cur, prev, "mm_hits"), _delta(cur, prev, "mm_queries")
+    out["mm_queries"] = mm_queries
+    out["mm_hit_rate"] = (round(mm_hits / mm_queries, 4)
+                          if mm_hits is not None and mm_queries else None)
+    steps = _delta(cur, prev, "steps")
+    gen, step_tokens = _delta(cur, prev, "generation_tokens"), _delta(cur, prev, "step_tokens")
+    out["steps"] = steps
+    out["batch"] = round(gen / steps, 2) if gen is not None and steps else None
+    out["tokens_per_step"] = (round(step_tokens / steps, 1)
+                              if step_tokens is not None and steps else None)
+    count = _delta(cur, prev, "req_count")
+    p, o = _delta(cur, prev, "req_prompt_tokens"), _delta(cur, prev, "req_output_tokens")
+    out["req_count"] = count
+    out["tokens_per_request"] = (round((p + o) / count)
+                                 if p is not None and o is not None and count else None)
     return out
 
 
@@ -297,6 +349,52 @@ def lifetime_hit_rate(snap: dict):
         return round(h / q, 4)
     g = snap.get("prefix_hit_gauge")
     return round(g, 4) if g is not None else None
+
+
+def lifetime_mm_hit_rate(snap: dict):
+    """Multimodal cache hits over lookups since the server started, or None."""
+    h, q = snap.get("mm_hits"), snap.get("mm_queries")
+    return round(h / q, 4) if h is not None and q else None
+
+
+def lifetime_batch(snap: dict):
+    """Generated tokens per engine step since start: the mean decode batch.
+
+    Without speculative decoding a request emits one token per step, so tokens
+    generated per step is how many requests a step decoded. Idle time makes no
+    steps, so this is the batch while the server was working, not a time average.
+    """
+    g, n = snap.get("generation_tokens"), snap.get("steps")
+    return round(g / n, 2) if g is not None and n else None
+
+
+def fit(snap: dict, window: dict = None):
+    """How many requests the KV cache holds before vLLM has to preempt one.
+
+    `{per_request, source, requests, more_now, at_full_context}`, or None where
+    the cache size or a finished request is missing. A request is costed at its
+    prompt plus its whole output -- its footprint when it finishes -- using the
+    window's finished requests where there were any and the lifetime mean
+    otherwise. Prefix sharing is ignored, so the figure leans low.
+    """
+    total = snap.get("kv_tokens_total")
+    window = window or {}
+    # One or two requests finishing in a window make the figure jump on every
+    # reading; fewer than FIT_MIN_REQUESTS and the lifetime mean answers.
+    per = (window.get("tokens_per_request")
+           if (window.get("req_count") or 0) >= FIT_MIN_REQUESTS else None)
+    source = "window" if per else "lifetime"
+    if not per:
+        n = snap.get("req_count")
+        p, o = snap.get("req_prompt_tokens"), snap.get("req_output_tokens")
+        per = round((p + o) / n) if n and p is not None and o is not None else None
+    if not total or not per:
+        return None
+    free = snap.get("kv_tokens_free")
+    return {"per_request": per, "source": source,
+            "requests": round(total / per, 1),
+            "more_now": round(free / per, 1) if free is not None else None,
+            "at_full_context": snap.get("kv_max_concurrency")}
 
 
 def observe(url: str, snap: dict, now: float = None):
@@ -351,6 +449,27 @@ def _selftest():
     assert parse_smi("4000, 6144\n")["free_mb"] == 2144
     assert is_local("http://127.0.0.1:8000") and not is_local("http://10.1.2.3:8000")
     assert snapshot([])["kv_usage"] is None
+    a = snapshot(parse_samples(
+        'vllm:cache_config_info{block_size="16",num_gpu_blocks="100",'
+        'kv_cache_max_concurrency="2.5"} 1\n'
+        'vllm:kv_cache_usage_perc 0.25\n'
+        'vllm:generation_tokens_total 1000\n'
+        'vllm:iteration_tokens_total_count 400\n'
+        'vllm:iteration_tokens_total_sum 4000\n'
+        'vllm:mm_cache_queries_total 10\nvllm:mm_cache_hits_total 1\n'
+        'vllm:request_prompt_tokens_count 4\n'
+        'vllm:request_prompt_tokens_sum 300\n'
+        'vllm:request_generation_tokens_sum 100\n'))
+    assert lifetime_batch(a) == 2.5 and lifetime_mm_hit_rate(a) == 0.1
+    assert fit(a) == {"per_request": 100, "source": "lifetime", "requests": 16.0,
+                      "more_now": 12.0, "at_full_context": 2.5}
+    b = dict(a, generation_tokens=1400, steps=500, step_tokens=4600,
+             mm_hits=4, mm_queries=14, req_count=7, req_prompt_tokens=500,
+             req_output_tokens=200)
+    r = rates(a, b, 2.0)
+    assert r["batch"] == 4 and r["tokens_per_step"] == 6 and r["mm_hit_rate"] == 0.75
+    assert r["tokens_per_request"] == 100 and fit(b, r)["source"] == "window"
+    assert fit(snapshot([])) is None
 
 
 _selftest()

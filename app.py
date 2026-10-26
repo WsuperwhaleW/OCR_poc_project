@@ -8541,10 +8541,13 @@ def _monitor_scrape(info, url, gpu_url):
     samples = monitor.parse_samples(res.text)
     snap = monitor.snapshot(samples)
     gpu, gpu_why = _vram(samples, url, gpu_url)
+    rates = monitor.observe(url, snap)
     return dict(url=url, kind=info.get("kind"), model=info.get("model"),
-                at=time.time(), snapshot=snap,
-                rates=monitor.observe(url, snap),
+                at=time.time(), snapshot=snap, rates=rates,
                 lifetime_hit_rate=monitor.lifetime_hit_rate(snap),
+                lifetime_mm_hit_rate=monitor.lifetime_mm_hit_rate(snap),
+                lifetime_batch=monitor.lifetime_batch(snap),
+                fit=monitor.fit(snap, rates),
                 gpu=gpu, gpu_reason=gpu_why, gpu_url=gpu_url or "",
                 loop_aborts=loop_aborts(),
                 loop_abort_on=bool(EXTRACT_LOOP_ABORT and loop_guard())), 200

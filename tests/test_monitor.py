@@ -48,6 +48,52 @@ class SnapshotTests(unittest.TestCase):
         self.assertEqual(r["prefix_hit_rate"], 0.8)
         self.assertIsNone(monitor.rates(b, a, 5.0)["generation_tps"])
 
+    def test_image_cache_batch_size_and_fit(self):
+        # Lines exactly as a vLLM 0.30 server exposes them, buckets included.
+        text = (
+            'vllm:kv_cache_usage_perc{engine="0",model_name="m"} 0.4507119763362455\n'
+            'vllm:cache_config_info{block_size="16",engine="0",'
+            'kv_cache_max_concurrency="14.197265625",num_gpu_blocks="14538"} 1.0\n'
+            'vllm:mm_cache_queries_total{engine="0",model_name="m"} 2457.0\n'
+            'vllm:mm_cache_hits_total{engine="0",model_name="m"} 263.0\n'
+            'vllm:generation_tokens_total{engine="0",model_name="m"} 3.119415e+06\n'
+            'vllm:iteration_tokens_total_bucket{engine="0",le="1.0",model_name="m"} 369686.0\n'
+            'vllm:iteration_tokens_total_count{engine="0",model_name="m"} 563248.0\n'
+            'vllm:iteration_tokens_total_sum{engine="0",model_name="m"} 1.1735316e+07\n'
+            'vllm:iteration_tokens_total_created{engine="0",model_name="m"} 1.79e+09\n'
+            'vllm:request_prompt_tokens_count{engine="0",model_name="m"} 2420.0\n'
+            'vllm:request_prompt_tokens_sum{engine="0",model_name="m"} 9.40437e+06\n'
+            'vllm:request_generation_tokens_sum{engine="0",model_name="m"} 3.087733e+06\n')
+        s = monitor.snapshot(monitor.parse_samples(text))
+        self.assertEqual(monitor.lifetime_mm_hit_rate(s), 0.107)
+        self.assertEqual(monitor.lifetime_batch(s), 5.54)
+        f = monitor.fit(s)
+        self.assertEqual((f["per_request"], f["requests"], f["more_now"],
+                          f["at_full_context"], f["source"]),
+                         (5162, 45.1, 24.8, 14.2, "lifetime"))
+
+        later = dict(s, mm_hits=s["mm_hits"] + 5, mm_queries=s["mm_queries"] + 10,
+                     steps=s["steps"] + 100, step_tokens=s["step_tokens"] + 2000,
+                     generation_tokens=s["generation_tokens"] + 800,
+                     req_count=s["req_count"] + 3,
+                     req_prompt_tokens=s["req_prompt_tokens"] + 12000,
+                     req_output_tokens=s["req_output_tokens"] + 3000)
+        r = monitor.rates(s, later, 2.0)
+        self.assertEqual((r["mm_hit_rate"], r["batch"], r["tokens_per_step"],
+                          r["tokens_per_request"]), (0.5, 8.0, 20.0, 5000))
+        self.assertEqual(monitor.fit(later, r)["source"], "window")
+        # A quiet window: nothing to hit, no batch, and fit falls back to lifetime.
+        quiet = monitor.rates(s, dict(s), 2.0)
+        self.assertIsNone(quiet["mm_hit_rate"])
+        self.assertIsNone(quiet["batch"])
+        self.assertEqual(monitor.fit(s, quiet)["source"], "lifetime")
+
+    def test_fit_needs_the_cache_size_and_a_finished_request(self):
+        self.assertIsNone(monitor.fit(monitor.snapshot(monitor.parse_samples(
+            'vllm:request_prompt_tokens_count 1\nvllm:request_prompt_tokens_sum 10\n'
+            'vllm:request_generation_tokens_sum 10\n'))))
+        self.assertIsNone(monitor.fit(monitor.snapshot(monitor.parse_samples(SCRAPE))))
+
     def test_observe_needs_two_scrapes_close_together(self):
         s = monitor.snapshot(monitor.parse_samples(SCRAPE))
         url = "http://test-observe"
