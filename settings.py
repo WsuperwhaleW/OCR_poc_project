@@ -720,9 +720,10 @@ LOOP_GUARD = config.env_bool("LOOP_GUARD", True)
 # A page whose read looped is read again at the next Detail up -- low to medium,
 # medium to original -- rescaled from the trimmed page rather than enlarged from
 # the smaller one, until a read comes back clean or `original` loops too. The looped attempts are kept on the page's stats
-# as `loop_retries`. Only reads that went through `prepare_input` can climb: the
-# stress test prepares its own pages and is never retried, so its timings stay
-# one request per page. LOOP_RETRY=0 turns it off.
+# as `loop_retries`. A read through `prepare_input` climbs inside `read_page`; the
+# stress test flags the loop first and then climbs too (`app._stress_retry_page`),
+# its per-page timings describing the kept read and its token totals every
+# attempt. LOOP_RETRY=0 turns it off everywhere.
 LOOP_RETRY = config.env_bool("LOOP_RETRY", True)
 LOOP_TAIL_CHARS = 600
 LOOP_MIN_REPEATS = 4

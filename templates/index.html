@@ -13945,7 +13945,7 @@ function stMetricsTable(view, title, since) {
 
 const ST_ALERT_TEXT = {
   error: 'error', looped: 'loop', truncated: 'token cap', partial: 'partial reply',
-  stalled: 'stalled'
+  stalled: 'stalled', recovered: 'retry read cleanly'
 };
 const ST_STAGE_TEXT = { ocr: 'reading', extract: 'extracting', segment: 'splitting',
   classify: 'classifying' };
@@ -13964,7 +13964,7 @@ function stAlertsHtml(alerts) {
     + shown.map(a => '<tr><td class="n">' + stSec(a.elapsed)
       + (a.phase === 'warmup' ? ' <small>warm-up</small>' : '') + '</td>'
       + '<td class="n">#' + a.job + '</td><td><b>' + esc(a.case || '') + '</b></td>'
-      + '<td><span class="st-tag ' + (a.kind === 'error' ? 'st-bad' : 'st-warn') + '">'
+      + '<td><span class="st-tag ' + (a.kind === 'error' ? 'st-bad' : a.kind === 'recovered' ? 'st-good' : 'st-warn') + '">'
       + esc(ST_ALERT_TEXT[a.kind] || a.kind) + '</span></td>'
       + '<td>' + esc(ST_STAGE_TEXT[a.stage] || a.stage || '')
       + (a.page ? ', page ' + a.page : '') + '</td>'
@@ -14121,7 +14121,9 @@ function stReportHtml(s, snapshot, host) {
     const tiles = [
       stTile('Completed', r.completed + '<small> / ' + r.attempted + '</small>',
         [c.looped ? c.looped + ' looped' : '', c.truncated ? c.truncated + ' at token cap' : '',
-         c.cancelled ? c.cancelled + ' cancelled' : '', c.skipped ? c.skipped + ' past the time limit' : '']
+         c.cancelled ? c.cancelled + ' cancelled' : '', c.skipped ? c.skipped + ' past the time limit' : '',
+         r.ocr && r.ocr.loop_retries ? r.ocr.loop_retries + ' loop retr' + (r.ocr.loop_retries === 1 ? 'y' : 'ies')
+           + ', ' + (r.ocr.loop_recovered || 0) + ' page(s) recovered' : '']
           .filter(Boolean).join(' · ')),
       stTile('Error rate', stPct(r.error_rate), (c.error || 0) + ' error(s)',
         r.error_rate ? 'st-bad' : ''),
@@ -14500,7 +14502,8 @@ async function monTick(p) {
       t: d.at, kv_free: s.kv_free, running: s.running, waiting: s.waiting,
       vram_free: g ? g.free_mb / 1024 : null,
       gen: r.generation_tps, prompt: r.prompt_tps, hit: r.prefix_hit_rate,
-      rps: r.requests_per_s
+      rps: r.requests_per_s, mm: r.mm_hit_rate, batch: r.batch,
+      fits: d.fit ? d.fit.more_now : null
     });
     if (p.hist.length > MON_HIST) p.hist.shift();
   } catch (err) {
@@ -14655,6 +14658,37 @@ function monPaneHtml(p, many, on = monState.on) {
     + (la.count ? ' · <b>' + la.count + ' cut by this app</b>' : '');
 
   const waitCls = s.waiting ? 'mon-warn' : '';
+  const has = v => v !== null && v !== undefined;
+
+  // Batch size: generated tokens per engine step, i.e. how many requests one
+  // step decoded. Far below "running" means the GPU is decoding few at a time.
+  const batchSub = (r.seconds
+      ? (r.steps ? 'requests decoded per engine step'
+          + (has(r.tokens_per_step) ? ' · ' + stNum(r.tokens_per_step, 1) + ' tokens/step with prefill' : '')
+        : 'no engine steps in this window')
+      : noRate)
+    + (has(d.lifetime_batch) ? ' · ' + stNum(d.lifetime_batch, 1) + ' since start' : '');
+
+  // Multimodal cache: images whose preprocessing was reused. Counted in items,
+  // and cache_salt does not bypass it.
+  const mmSub = (r.seconds
+      ? (r.mm_queries ? 'of ' + stNum(r.mm_queries, 0) + ' images looked up'
+                      : 'no images in this window')
+      : noRate)
+    + (has(d.lifetime_mm_hit_rate) ? ' · ' + stPct(d.lifetime_mm_hit_rate) + ' since start' : '');
+
+  // Requests that fit: the KV cache over what one finished request costs
+  // (prompt + whole output). Prefix sharing is ignored, so it leans low.
+  const f = d.fit;
+  const fitCls = !f || !has(f.more_now) ? '' : f.more_now < 1 ? 'mon-bad' : f.more_now < 5 ? 'mon-warn' : '';
+  const fitVal = f ? '≈' + stNum(f.requests, 0) + '<small> requests</small>' : '—';
+  const fitSub = f
+    ? (has(f.more_now) ? '≈' + stNum(f.more_now, 0) + ' more fit now · ' : '')
+      + stNum(f.per_request, 0) + ' tokens each ('
+      + (f.source === 'window' ? 'requests finished in the last ' + r.seconds + ' s' : 'mean since start')
+      + ')' + (has(f.at_full_context) ? ' · ' + stNum(f.at_full_context, 1) + ' at the full context' : '')
+    : 'needs the KV block count and a finished request';
+
   html += '<div class="st-tiles mon-tiles">'
     + monTile(hist, 'KV cache free', stPct(kvFree), kvSub, 'kv_free', 1, kvCls)
     + monTile(hist, vramLabel, vramVal, vramSub, 'vram_free', 0, vramCls)
@@ -14675,6 +14709,9 @@ function monPaneHtml(p, many, on = monState.on) {
         + (d.lifetime_hit_rate !== null && d.lifetime_hit_rate !== undefined
             ? ' · ' + stPct(d.lifetime_hit_rate) + ' since start' : ''),
         'hit', 1)
+    + monTile(hist, 'Image cache hit', stPct(r.mm_hit_rate), mmSub, 'mm', 1)
+    + monTile(hist, 'Batch size', stNum(r.batch, 1), batchSub, 'batch')
+    + monTile(hist, 'Fit before preemption', fitVal, fitSub, 'fits', 0, fitCls)
     + '</div>';
   return html;
 }
@@ -14838,7 +14875,8 @@ function historyMonitorState(samples, index) {
       const s = sample.snapshot || {}, r = sample.rates || {}, g = sample.gpu;
       return {t: sample.at, kv_free: s.kv_free, running: s.running, waiting: s.waiting,
         vram_free: g ? g.free_mb / 1024 : null, gen: r.generation_tps,
-        prompt: r.prompt_tps, hit: r.prefix_hit_rate, rps: r.requests_per_s};
+        prompt: r.prompt_tps, hit: r.prefix_hit_rate, rps: r.requests_per_s,
+        mm: r.mm_hit_rate, batch: r.batch, fits: sample.fit ? sample.fit.more_now : null};
     })};
 }
 

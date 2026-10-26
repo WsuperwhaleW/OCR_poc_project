@@ -368,6 +368,10 @@ def report(records: list, wall: float, mode: str, concurrency: int) -> dict:
             "char_accuracy": _mean(r.get("char_accuracy") for r in ok),
             "char_scored": sum(1 for r in ok if r.get("char_accuracy") is not None),
             "looped": counts["looped"], "truncated": counts["truncated"],
+            # A looped page is read again one Detail up (LOOP_RETRY). Its
+            # tokens are in `tokens`; its latency figures are the kept read's.
+            "loop_retries": total("loop_retries", attempted),
+            "loop_recovered": total("loop_recovered", attempted),
         }
     if mode in ("extract", "full"):
         rows = [r for r in done if r.get("extract_s") is not None]

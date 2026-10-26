@@ -40,6 +40,13 @@ import workspace
 # Windows does not always refuse a closed loopback port promptly -- without this
 # a switch to an unused port took 12 s.
 PROBE_TIMEOUT = (1.5, 4)
+# A loopback port that is listening accepts in well under a millisecond, so the
+# connect half can be far shorter there. Measured: a probe of a dead localhost
+# port cost the full 1.5 s on Windows, three times over (one per engine), so
+# every page action that touched status paid 4.5 s every MISS_TTL.
+LOOPBACK_PROBE_TIMEOUT = (0.5, 4)
+_LOOPBACK = re.compile(r"^https?://(localhost|127\.\d+\.\d+\.\d+|\[::1\])(:\d+)?(/|$)",
+                       re.IGNORECASE)
 CACHE_TTL = 3.0
 # An endpoint that is not there is remembered for longer: a dead port costs a
 # full connect timeout on every probe, and the page asks for status on each
@@ -246,10 +253,34 @@ def profile_for_model(name: str) -> str:
 # probing
 # --------------------------------------------------------------------------
 
+class _NotListening(Exception):
+    """Nothing accepted the connection, so no other engine's probe can answer."""
+
+
+def _probe_timeout(url):
+    return LOOPBACK_PROBE_TIMEOUT if _LOOPBACK.match(url or "") else PROBE_TIMEOUT
+
+
+def _probe_get(url, path, info=None):
+    """GET for a probe. A refused or timed-out CONNECT raises `_NotListening`.
+
+    Anything after the connection was accepted (a 404, a non-JSON body, a slow
+    reply) is that engine's "not me" and the caller returns None, so the next
+    engine is still asked.
+    """
+    try:
+        if info is None:
+            return requests.get(f"{url}{path}", timeout=_probe_timeout(url))
+        return http_get(f"{url}{path}", info, timeout=_probe_timeout(url))
+    except requests.exceptions.ConnectionError as exc:
+        # ConnectTimeout is a ConnectionError too; a ReadTimeout is not.
+        raise _NotListening(str(exc)) from exc
+
+
 def _probe_llama(url):
     """llama-server if /props answers with its settings object."""
+    res = _probe_get(url, "/props")
     try:
-        res = requests.get(f"{url}/props", timeout=PROBE_TIMEOUT)
         if res.status_code != 200:
             return None
         props = res.json()
@@ -285,8 +316,8 @@ def _probe_llama(url):
 
 def _probe_ollama(url):
     """Ollama if /api/tags answers with its model list."""
+    res = _probe_get(url, "/api/tags")
     try:
-        res = requests.get(f"{url}/api/tags", timeout=PROBE_TIMEOUT)
         if res.status_code != 200:
             return None
         body = res.json()
@@ -340,9 +371,8 @@ def _probe_openai(url):
     status rule already attempts a read on a model that did not say rather than
     refusing one that would have worked.
     """
+    res = _probe_get(url, "/v1/models", {"kind": "openai"})
     try:
-        res = http_get(f"{url}/v1/models", {"kind": "openai"},
-                       timeout=PROBE_TIMEOUT)
         if res.status_code != 200:
             return None
         body = res.json()
@@ -673,7 +703,13 @@ def probe(url: str, force: bool = False) -> dict:
             and not (seen == "vllm" and k == "openai")]
     info = None
     for kind in order:
-        info = _probe_kind(url, kind)
+        try:
+            info = _probe_kind(url, kind)
+        except _NotListening:
+            # Nothing is on the port: the other engines' endpoints are on the
+            # same socket, so asking them only pays the connect timeout again.
+            info = None
+            break
         if info:
             break
     if info and pinned in ("vllm", "openai"):

@@ -7361,9 +7361,57 @@ def _stress_pages(case_id: str, detail: str, source: str = "benchmark") -> tuple
     budget = DETAIL_PRESETS[detail]
     prepared = [fit_pixels(trim_margins(page) if TRIM_MARGINS else page, budget)
                 for page in pages]
-    for page in prepared:
+    for index, page in enumerate(prepared):
         page._data_uri = image_data_uri(page)
+        # Where a looped read climbs from (`_stress_retry_page`). Only the
+        # address is kept, not the trimmed page: holding every page of the run
+        # at full resolution for the few that loop would multiply its memory.
+        page._stress_origin = {"case": case_id, "source": source,
+                               "index": index, "detail": detail}
     return prepared, describe_source(name, data, origin)
+
+
+def _one_page(data: bytes, index: int):
+    """Page `index` of a file, rasterised alone where it is a PDF."""
+    if _looks_like_pdf(data) and PDF_OK:
+        zoom = PDF_DPI / 72.0
+        with _PDF_LOCK, fitz.open(stream=data, filetype="pdf") as doc:
+            if index >= doc.page_count:
+                return None
+            pix = doc[index].get_pixmap(matrix=fitz.Matrix(zoom, zoom))
+            return Image.frombytes("RGB", (pix.width, pix.height), pix.samples)
+    pages, _ = load_pages(data)
+    return pages[index] if index < len(pages) else None
+
+
+def _stress_retry_page(page):
+    """A stress page to read again after it looped, one Detail up -- or None.
+
+    The stress twin of `loop_retry_page`, which needs a page `prepare_input`
+    tagged: stress pages are prepared by `_stress_pages`, so the trimmed source
+    is rebuilt from the file here, only for the page that looped. None when
+    LOOP_RETRY is off, the page is at `original` already, or the next budget
+    gives back the same image.
+    """
+    origin = getattr(page, "_stress_origin", None)
+    if not (LOOP_RETRY and origin):
+        return None
+    higher = next_detail(origin["detail"])
+    if higher is None:
+        return None
+    data = (resolve_real(origin["case"]) if origin["source"] == "realdata"
+            else case_bytes(origin["case"])[0])
+    source = _one_page(data, origin["index"])
+    if source is None:
+        return None
+    if TRIM_MARGINS:
+        source = trim_margins(source)
+    bigger = fit_pixels(source, DETAIL_PRESETS[higher])
+    if bigger.size == page.size:
+        return None
+    bigger._data_uri = image_data_uri(bigger)
+    bigger._stress_origin = dict(origin, detail=higher)
+    return bigger
 
 
 class _StressPages:
@@ -7431,6 +7479,7 @@ def _stress_read(pages, cancel, rec: dict, live: _StressLive,
     texts, looped, truncated = [], False, False
     ttft, page_s, page_tps, tokens = [], [], [], 0
     page_in, page_out = [], []
+    retries, recovered, prep = 0, 0, 0.0
     for number, page in enumerate(pages, 1):
         if cancel.is_set():
             raise SweepCancelled("stopped")
@@ -7438,33 +7487,72 @@ def _stress_read(pages, cancel, rec: dict, live: _StressLive,
         if stats_out is not None:
             stats_out.append(stats)
         rec["at_page"] = number            # so an error's alert names the page
-        try:
-            texts.append(read_page(page, stats, cancel=cancel))
-        except Exception:
+        page_tokens, attempts = 0, []
+        while True:
+            try:
+                text = read_page(page, stats, cancel=cancel)
+            except Exception:
+                if cancel.is_set():
+                    raise SweepCancelled("stopped")
+                raise
             if cancel.is_set():
                 raise SweepCancelled("stopped")
-            raise
-        if cancel.is_set():
-            raise SweepCancelled("stopped")
-        live.touch(job)
+            live.touch(job)
+            page_tokens += stats.get("new_tokens") or 0
+            if not stats.get("looped"):
+                break
+            # Flagged first, then read again one Detail up (2026-10-26, at the
+            # user's request). The retry's page is rebuilt from the file, off
+            # the clock: that is this machine's work, not the server's.
+            was = (getattr(page, "_stress_origin", None) or {}).get("detail")
+            prep_began = time.perf_counter()
+            try:
+                retry = _stress_retry_page(page)
+            except Exception:                   # noqa: BLE001
+                retry = None
+            prep += time.perf_counter() - prep_began
+            message = ("the reading model repeated itself and the loop guard cut "
+                       "the page off")
+            if retry is not None:
+                message += (f" at {was}; reading it again at "
+                            f"{retry._stress_origin['detail']}")
+            live.flag("looped", job, case, message, stage="ocr", page=number)
+            if retry is None:
+                break
+            attempts.append({"detail": was, **{key: stats.get(key) for key in
+                             ("resolution", "new_tokens", "seconds")}})
+            stats.clear()
+            stats.update(loop_retries=list(attempts),
+                         detail=retry._stress_origin["detail"])
+            retries += 1
+            page = retry
+        texts.append(text)
+        if attempts and not stats.get("looped"):
+            recovered += 1
+            live.flag("recovered", job, case, f"read cleanly at {stats['detail']} "
+                      f"after {len(attempts)} looped attempt(s)", stage="ocr",
+                      page=number)
         if stats.get("looped"):
-            live.flag("looped", job, case, "the reading model repeated itself and "
-                      "the loop guard cut the page off", stage="ocr", page=number)
+            pass                                # flagged above, every attempt
         elif stats.get("truncated"):
             live.flag("truncated", job, case, "the page read hit the token cap "
                       "before it finished", stage="ocr", page=number)
         looped = looped or bool(stats.get("looped"))
         truncated = truncated or bool(stats.get("truncated"))
-        tokens += stats.get("new_tokens") or 0
+        # Every attempt's tokens: the server generated them. The per-page
+        # timings below describe the read that was kept.
+        tokens += page_tokens
         ttft.append(stats.get("ttft_seconds"))
         page_in.append(stats.get("in_tokens"))
         page_out.append(stats.get("out_tokens"))
         page_s.append(stats.get("seconds"))
         if stats.get("tokens_per_second"):
             page_tps.append(stats["tokens_per_second"])
-        live.page(stats.get("new_tokens") or 0)
+        live.page(page_tokens)
     rec.pop("at_page", None)
-    rec.update(ocr_s=round(time.perf_counter() - started, 3), pages=len(pages),
+    rec.update(loop_retries=retries, loop_recovered=recovered,
+               retry_prepare_s=round(prep, 3))
+    rec.update(ocr_s=round(time.perf_counter() - started - prep, 3), pages=len(pages),
                ocr_tokens=tokens, ttft_s=ttft, page_s=page_s, page_tps=page_tps,
                page_in=page_in, page_out=page_out)
     return texts, looped, truncated
@@ -7600,6 +7688,9 @@ def _stress_job(spec: dict, cfg: dict, prepared: dict, cancel,
                 texts, looped, truncated = _stress_read(
                     prepared["pages"][case_id], cancel, rec, live,
                     stats_out=all_stats if log else None, job=job, case=who)
+                # Rebuilding a retried page is this machine's work, kept out of
+                # the job's latency like `prepare_s`.
+                began += rec.get("retry_prepare_s") or 0
                 text = join_page_texts(texts) if len(texts) > 1 else texts[0]
                 try:
                     truth = scoring.evaluate(case, text) if case else None
@@ -8456,10 +8547,13 @@ def _monitor_scrape(info, url, gpu_url):
     samples = monitor.parse_samples(res.text)
     snap = monitor.snapshot(samples)
     gpu, gpu_why = _vram(samples, url, gpu_url)
+    rates = monitor.observe(url, snap)
     return dict(url=url, kind=info.get("kind"), model=info.get("model"),
-                at=time.time(), snapshot=snap,
-                rates=monitor.observe(url, snap),
+                at=time.time(), snapshot=snap, rates=rates,
                 lifetime_hit_rate=monitor.lifetime_hit_rate(snap),
+                lifetime_mm_hit_rate=monitor.lifetime_mm_hit_rate(snap),
+                lifetime_batch=monitor.lifetime_batch(snap),
+                fit=monitor.fit(snap, rates),
                 gpu=gpu, gpu_reason=gpu_why, gpu_url=gpu_url or "",
                 loop_aborts=loop_aborts(),
                 loop_abort_on=bool(EXTRACT_LOOP_ABORT and loop_guard())), 200

@@ -1951,6 +1951,9 @@ The tiles:
 | **Generation tok/s**, **Prompt tok/s** | the change in `vllm:generation_tokens_total` / `prompt_tokens_total` since the previous reading |
 | **Requests/s (finished)** | the change in `vllm:request_success_total`. Under it: requests **received** per second (finished plus however much the backlog grew), how the finished ones ended — `stop`, `length` (ran to the token cap, where an uncut loop ends) or `abort` (the client hung up) — and how many looping extraction requests this app cut off since it started |
 | **Prefix cache hit** | hits over lookups in the last interval, with the rate since the server started |
+| **Image cache hit** | `vllm:mm_cache_hits_total` over `mm_cache_queries_total` in the last interval, counted in images, with the rate since start. This is vLLM's multimodal preprocessing cache; it is separate from the prefix cache, and **Bypass the server's prompt cache** does not bypass it |
+| **Batch size** | generated tokens per engine step (`vllm:generation_tokens_total` over `vllm:iteration_tokens_total_count`): how many requests one step decoded. Under it: tokens per step including prefill chunks, and the mean since start. Far below **Running** means the GPU is decoding few requests at a time. Assumes no speculative decoding |
+| **Fit before preemption** | the KV cache in tokens divided by what one finished request costs (prompt + whole output, from `vllm:request_prompt_tokens` and `request_generation_tokens`): about how many requests fit at once, and how many more fit now. Costed over the last interval when at least 3 requests finished in it, else over the mean since start. Prefix sharing is ignored, so it leans low. Also shows vLLM's own `kv_cache_max_concurrency` (requests that fit at the full context). Amber under 5 more, red under 1 |
 
 Rates need two readings, so the first shows `—`. The monitor pauses while the browser tab is
 hidden and reads again as soon as it is visible.
