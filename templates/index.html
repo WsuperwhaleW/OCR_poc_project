@@ -1673,6 +1673,7 @@ document.addEventListener("DOMContentLoaded", function () {
       </div>
       <p id="globalModelNotice" class="note err" role="alert" hidden></p>
     <div class="page-actions">
+      <a class="ghost-sm user-app-link" href="{{ url_for('user_index') }}" target="_blank" rel="noopener">User app ↗</a>
       <details class="model-settings" id="globalModelSettings">
         <summary>Model settings</summary>
         <div class="model-settings-panel" aria-label="Model server settings">
@@ -1802,6 +1803,7 @@ follows your desktop; Light is the one to pick for projecting or screenshotting.
              which is a question you have before a document rather than after
              one. -->
         <button type="button" data-pane="schema" title="which document types carry a field requirement, what each one demands, and what is asked of a document no requirement covers">Doc types</button>
+        <button type="button" data-pane="settings">Settings</button>
       </div>
 
       <div class="pane on" id="paneSource">
@@ -2411,6 +2413,10 @@ follows your desktop; Light is the one to pick for projecting or screenshotting.
           there is nothing to feed pass 2 here.</p>
         {% endif %}
       </div>
+      <div class="pane" id="paneSettings">
+        <p class="note">Configure OCR, Extraction, models and uploads for the User app. These settings are shared and saved on the server.</p>
+        <a class="ghost-sm user-app-link" href="{{ url_for('user_index') }}" target="_blank" rel="noopener">Open User app ↗</a>
+      </div>
       </div><!-- /side-scroll -->
       <div class="test-actions" id="testActions" hidden>
         <div id="sourceActions" hidden>
@@ -2456,6 +2462,7 @@ follows your desktop; Light is the one to pick for projecting or screenshotting.
          that is where the run is decided.
 
          `Clear results` empties this view. Each completed round remains in the run log. -->
+    {% include '_user_settings.html' %}
     <div class="card" id="rtCard" hidden>
       <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
         <h2 style="margin:0">Random test</h2>
@@ -3118,6 +3125,7 @@ function showPane(name) {
   if (historyOpen) historyLoad();
   else if (stressPaneOpen) stPaint();
   else if (name === 'random') rtPaint();
+  else if (name === 'settings' && window.loadUserSettings) window.loadUserSettings();
 }
 
 /* One pane, so nothing moves between panes any more. `paintPanes` and
@@ -3134,12 +3142,15 @@ function paintMain() {
   const el = id => document.getElementById(id);
   const st = stressPaneOpen && !historyOpen;
   const rt = selectedPane === 'random';
+  const settings = selectedPane === 'settings';
+  el('settingsCard').hidden = !settings;
+  el('runlogCard').hidden = settings;
   el('historyCard').hidden = !historyOpen;
   el('schemaCard').hidden = !scOpen;
   el('stCard').hidden = !st;
   el('rtCard').hidden = !rt;
-  el('resultCard').hidden = scOpen || historyOpen || rt || st;
-  el('compareCard').hidden = scOpen || historyOpen || rt || st;
+  el('resultCard').hidden = scOpen || historyOpen || rt || st || settings;
+  el('compareCard').hidden = scOpen || historyOpen || rt || st || settings;
   let hasActions = false;
   for (const name of ['source', 'ocr', 'fields', 'random', 'stress']) {
     const group = el(name + 'Actions');
@@ -15009,6 +15020,11 @@ document.addEventListener('change', event => {
   event.target.closest('.history-monitor').querySelector('.history-monitor-body').innerHTML =
     monReportHtml(historyMonitorState(samples, Number(event.target.value)), 0);
 });
+</script>
+<script>
+const userSettingsScript = document.createElement('script');
+userSettingsScript.src = window.OCR_BASE + '/static/user/settings.js';
+document.body.appendChild(userSettingsScript);
 </script>
 </body>
 </html>

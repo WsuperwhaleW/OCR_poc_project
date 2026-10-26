@@ -1,0 +1,65 @@
+/* Shared User app settings, hosted inside the existing benchmark menu. */
+(() => {
+  const form = document.getElementById('userSettingsForm');
+  const fields = document.getElementById('userSettingsFields');
+  const notice = document.getElementById('userSettingsNotice');
+  const retry = document.getElementById('userSettingsRetry');
+  let loaded = false, loading = false;
+  for (const link of document.querySelectorAll('.user-app-link')) link.href = window.OCR_BASE + '/user';
+  async function api(path, options = {}) {
+    const response = await fetch(window.API + '/user/' + path, options);
+    const body = await response.json();
+    if (!response.ok) throw new Error(body.error || 'Request failed');
+    return body;
+  }
+  function write(value) {
+    for (const [key, item] of Object.entries(value)) {
+      const input = form.elements.namedItem(key);
+      if (!input) continue;
+      if (input.type === 'checkbox') input.checked = item;
+      else input.value = item;
+    }
+    schemaState();
+  }
+  function read() {
+    return Object.fromEntries([...fields.querySelectorAll('input[name],select[name]')].map(input =>
+      [input.name, input.type === 'checkbox' ? input.checked : input.type === 'number' ? Number(input.value) : input.value.trim()]));
+  }
+  function schemaState() { form.elements.schema_first.disabled = form.elements.shape.value === 'single'; }
+  form.elements.shape.addEventListener('change', schemaState);
+  window.loadUserSettings = async () => {
+    if (loaded || loading) return;
+    loading = true; notice.textContent = 'Loading settings…'; retry.hidden = true;
+    try {
+      const body = await api('settings'); write(body.settings);
+      form.elements.max_upload_mb.max = body.upload_ceiling_mb;
+      document.getElementById('userUploadCeiling').textContent = 'Deployment ceiling: ' + body.upload_ceiling_mb + ' MB per file.';
+      fields.disabled = false; loaded = true; notice.textContent = '';
+    } catch (err) { notice.textContent = err.message; retry.hidden = false; }
+    finally { loading = false; }
+  };
+  retry.addEventListener('click', window.loadUserSettings);
+  form.addEventListener('submit', async event => {
+    event.preventDefault();
+    const value = read(); fields.disabled = true; notice.textContent = 'Saving…';
+    try {
+      const body = await api('settings', {method: 'PUT', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(value)});
+      write(body.settings); notice.textContent = 'Saved. Processing options apply to new uploads; concurrency applies to the next file started.';
+    } catch (err) { notice.textContent = err.message; }
+    finally { fields.disabled = false; }
+  });
+  document.getElementById('userModelsRefresh').addEventListener('click', async event => {
+    const button = event.currentTarget; button.disabled = true; notice.textContent = 'Checking models…';
+    try {
+      const body = await api('models', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(read())});
+      for (const [role, id] of [['ocr', 'userOcrModel'], ['extraction', 'userExtractionModel']]) {
+        const info = body.models[role];
+        document.getElementById(id).textContent = (info.model || 'No model') + ' · ' + (info.kind || 'Unavailable')
+          + (info[role === 'ocr' ? 'available' : 'text_available'] ? '' : ' · ' + (info.text_reason || info.reason || 'Unavailable'));
+      }
+      notice.textContent = 'Model check complete. Save to apply any endpoint changes.';
+    } catch (err) { notice.textContent = err.message; }
+    finally { button.disabled = false; }
+  });
+  if (!document.getElementById('settingsCard').hidden) window.loadUserSettings();
+})();

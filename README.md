@@ -693,6 +693,72 @@ or *Amount (ex VAT)*, with a note saying which basis the page is on and what sai
 The **References** group hides itself when it comes back empty; a cash receipt legitimately
 has none of those fields.
 
+### User portal and shared Settings
+
+The same `python app.py` serves the benchmark at `/` and the upload portal at
+`/user`. Open **Settings** in the benchmark's existing left menu to configure
+the User app; **User app ↗** opens the portal. There is no separate app process
+or engine snapshot. Both pages use the current OCR/extraction implementation,
+including Hybrid. Mounting the app at `/ocr/` also serves `/ocr/user`, its assets,
+API calls and downloads under that prefix.
+
+The portal accepts multiple files, uploads each separately, and always runs
+OCR → classification/document segmentation → extraction. It shows each file's
+stage, OCR page progress, extraction step progress, stage duration, transcript
+and fields per document. Original files and JSON results can be downloaded.
+Files without ground truth show no benchmark accuracy score.
+
+| User setting | Initial value |
+|---|---|
+| OCR concurrent files / Detail / Loop guard | 50 / original / on |
+| Extraction concurrent files / Shape | 64 / Hybrid |
+| Extra fields / JSON schema first / Bypass cache | off / off / off |
+| OCR / extraction endpoint | `http://127.0.0.1:8000` / `http://127.0.0.1:8001` |
+| User file max, per upload batch | 0 = unlimited |
+| Maximum size per file | deployment `MAX_UPLOAD_MB`; can be lowered in Settings |
+
+Concurrency counts **files**, not model requests. OCR and extraction have
+separate, process-wide file limits for User jobs and overlap across files.
+Overflow waits in durable queues automatically; there is no Queue setting or
+maximum queued-file count. Page parallelism and Agentic/Hybrid subrequests keep
+the existing backend behavior; this feature does not alter vLLM's request limits.
+Benchmark traffic is separate and still shares the same physical model servers.
+
+Settings are saved on the server, independently of benchmark/tab settings.
+Each upload batch snapshots its processing settings, served model IDs and OCR
+profile. Refresh discovers the current models at the configured URLs. A changed
+served model ID after a batch was accepted causes a clear job failure rather than silently
+processing it with a different model. Changes to the concurrency limits apply
+when dispatching the next file; currently running work is not cancelled.
+
+History is **shared by everyone with access to this web app**, with no login in
+this first version. Accepted files continue processing after the browser closes;
+files still uploading need the page to stay open until they reach the server.
+If extraction fails, already saved OCR remains available. Incomplete reads or
+extractions are marked partial. On restart, queued work resumes; a stage that
+was running becomes interrupted and is not automatically submitted again.
+
+User data lives in `logs/user/`, or `OCR_USER_DATA_DIR` when configured:
+`history.sqlite3` stores settings, queue state and results, while `uploads/`
+holds originals. This does not write to benchmark CSV/ranking or Stress history.
+User results omit benchmark truth, prompt dumps and repeated raw step replies.
+Files/history are retained without automatic deletion. Stop the app before
+backing up the **whole directory**, including the originals. Existing data from
+the standalone `OCR_user_app` is not imported or modified.
+
+Run **one web process**, with HTTP threading enabled as in `python app.py`.
+The dispatcher and its two worker pools live in that process. A WSGI deployment
+must likewise use one worker process. Adjust the proxy's per-request upload
+limit to include the multipart envelope; each selected file is a separate request.
+
+New endpoints are `/api/user/settings` (GET/PUT), `/api/user/models` (POST),
+`/api/user/batches` (POST), `/api/user/jobs` (GET/POST), and
+`/api/user/jobs/<id>` with `/file` and `/export` downloads. Batches reserve a file
+count and snapshot once; uploads use a batch-scoped upload ID so retrying the same
+upload does not create another processing job. Actual model accuracy/load at
+50/64 concurrent files must be evaluated on the model server; local tests use
+mock replies and exercise queueing, engine integration, persistence and UI.
+
 ### Field extraction: Single, Agentic or Hybrid
 
 Pass 2 offers three modes in the **Field extraction** pickers and beside Re-extract.
