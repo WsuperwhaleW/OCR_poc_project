@@ -699,8 +699,11 @@ The same `python app.py` serves the benchmark at `/` and the upload portal at
 `/user`. Open **Settings** in the benchmark's existing left menu to configure
 the User app; **User app ↗** opens the portal. There is no separate app process
 or engine snapshot. Both pages use the current OCR/extraction implementation,
-including Hybrid. Mounting the app at `/ocr/` also serves `/ocr/user`, its assets,
-API calls and downloads under that prefix.
+including Hybrid. Mounting the app at `/ocr/` also serves `/ocr/user`, its API
+calls and downloads under that prefix. User CSS and JavaScript are embedded in
+the HTML, like the benchmark page; the proxy needs no separate `/static` route.
+Their source partials live in `templates/`, so deployments must sync the whole
+`templates/` directory along with the Python files, not only `index.html`.
 
 The portal accepts multiple files, uploads each separately, and always runs
 OCR → classification/document segmentation → extraction. It shows each file's
@@ -732,7 +735,12 @@ processing it with a different model. Changes to the concurrency limits apply
 when dispatching the next file; currently running work is not cancelled.
 
 History is **shared by everyone with access to this web app**, with no login in
-this first version. Accepted files continue processing after the browser closes;
+this first version. `/user` uses the same per-tab workspace/session mechanism
+as the benchmark: `?ws=` and `X-OCR-Workspace`, kept across refresh and renewed
+when a tab is duplicated. Its session key is separate from the benchmark and
+scoped to the deployment path. This is request identity only: settings, queues,
+file limits and history remain shared, and jobs do not store a session owner.
+Accepted files continue processing after the browser closes;
 files still uploading need the page to stay open until they reach the server.
 If extraction fails, already saved OCR remains available. Incomplete reads or
 extractions are marked partial. On restart, queued work resumes; a stage that

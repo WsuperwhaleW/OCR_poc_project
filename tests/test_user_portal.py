@@ -226,6 +226,32 @@ class UserWebTests(unittest.TestCase):
         self.assertEqual(self.client.post('/api/user/models', json=self.store.settings()).status_code, 200)
         self.assertEqual(self.client.put('/api/user/settings', json=[], headers={'Origin': 'http://elsewhere'}).status_code, 403)
 
+    def test_distinct_user_sessions_still_share_jobs_settings_and_history(self):
+        first = {'X-OCR-Workspace': 'user-first-tab'}
+        second = {'X-OCR-Workspace': 'user-second-tab'}
+        self.addCleanup(lambda: workspace.enter(None))
+        batch = self.client.post('/ocr/api/user/batches', json={'file_count': 1}, headers=first).json['batch_id']
+        response = self.client.post('/ocr/api/user/jobs', headers=first, data={
+            'batch_id': batch, 'upload_id': 'upload_01', 'file': (io.BytesIO(b'file'), 'one.pdf')})
+        self.assertEqual(response.status_code, 202)
+        job_id = response.json['job']['id']
+        until(lambda: self.store.get(job_id)['status'] == 'completed')
+        other = app.app.test_client()
+        history = other.get('/ocr/api/user/jobs', headers=second)
+        self.assertEqual(workspace.current_id(), second['X-OCR-Workspace'])
+        self.assertEqual(history.json['jobs'][0]['id'], job_id)
+        detail = other.get('/ocr/api/user/jobs/' + job_id, headers=second).json['job']
+        stored = json.dumps(detail)
+        self.assertNotIn(first['X-OCR-Workspace'], stored)
+        self.assertNotIn(second['X-OCR-Workspace'], stored)
+        a = self.client.get('/ocr/api/user/settings', headers=first).json
+        b = other.get('/ocr/api/user/settings', headers=second).json
+        self.assertEqual(a, b)
+        page = other.get('/ocr/user?ws=user-second-tab')
+        self.assertEqual(page.status_code, 200)
+        self.assertIn('var isUser = true;', page.text)
+        self.assertEqual(workspace.current_id(), 'user-second-tab')
+
     def test_file_validation_and_each_upload_uses_its_own_size_limit(self):
         self.store.save_settings({'max_upload_mb': 1, 'user_file_max': 2})
         self.assertEqual(self.client.post('/api/user/batches', json={'file_count': 3}).status_code, 400)
@@ -238,21 +264,25 @@ class UserWebTests(unittest.TestCase):
         self.assertEqual(self.upload(batch, upload_id='upload_03').status_code, 400)
         self.assertEqual(self.client.get('/api/user/jobs/not-an-id').status_code, 404)
 
-    def test_portal_assets_and_api_work_under_a_mount_with_or_without_stripping(self):
+    def test_portal_embeds_assets_and_api_work_under_a_mount_with_or_without_stripping(self):
         for prefix in ('', '/ocr', '/tools/ocr'):
             page = self.client.get(prefix + '/user')
             self.assertEqual(page.status_code, 200)
             self.assertIn('DOCUMENT WORKSPACE', page.text)
             self.assertNotIn('id="sideTabs"', page.text)
-            for asset in ('app.js', 'settings.js', 'style.css'):
-                response = self.client.get(prefix + '/static/user/' + asset)
-                self.assertEqual(response.status_code, 200); response.close()
+            self.assertIn('.workspace{display:grid', page.text)
+            self.assertIn('async function loadSettings()', page.text)
+            self.assertNotIn('/static/user/', page.text)
+            self.assertNotIn('Whale', page.text)
+            self.assertIn('<title>OCR · เอกสารของทีม</title>', page.text)
             self.assertEqual(self.client.get(prefix + '/api/user/settings').status_code, 200)
         response = self.client.get('/user', headers={'X-Forwarded-Prefix': '/ocr'})
         self.assertEqual(response.status_code, 200)
         root = self.client.get('/').text
         self.assertIn('data-pane="settings"', root)
         self.assertIn('id="settingsCard"', root)
+        self.assertIn('window.loadUserSettings = async', root)
+        self.assertNotIn('/static/user/', root)
         self.assertEqual(self.client.post('/ocr/api/user/batches', json={'file_count': 1}).status_code, 201)
 
 

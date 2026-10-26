@@ -30,62 +30,7 @@ document.addEventListener("DOMContentLoaded", function () {
     a.setAttribute("href", window.API + "/" + a.getAttribute("data-api"));
   });
 });
-(function () {
-  var KEY = "ocrWorkspace", HEADER = "X-OCR-Workspace";
-  var valid = function (v) { return typeof v === "string" && /^[A-Za-z0-9_-]{8,64}$/.test(v); };
-  var make = function () {
-    var raw = (window.crypto && crypto.randomUUID) ? crypto.randomUUID()
-      : Date.now().toString(36) + Math.random().toString(36).slice(2) + Math.random().toString(36).slice(2);
-    return raw.replace(/[^A-Za-z0-9]/g, "").slice(0, 32);
-  };
-  var store = function (v) { try { sessionStorage.setItem(KEY, v); return true; } catch (e) { return false; } };
-  var url = new URL(location.href);
-  var inUrl = url.searchParams.get("ws");
-  var stored = null, storable = true;
-  try { stored = sessionStorage.getItem(KEY); } catch (e) { storable = false; }
-  // Without sessionStorage the URL is the only memory there is; adopt it rather
-  // than re-key on every load, which would redirect forever.
-  var id = valid(stored) ? stored : (!storable && valid(inUrl) ? inUrl : make());
-  store(id);
-  var go = function (wid) {
-    url.searchParams.set("ws", wid);
-    location.replace(url.toString());
-  };
-  window.OCR_WORKSPACE = id;
-  var realFetch = window.fetch.bind(window);
-  window.fetch = function (input, init) {
-    try {
-      var target = new URL(typeof input === "string" ? input : input.url, location.href);
-      if (target.origin === location.origin) {
-        init = Object.assign({}, init || {});
-        var headers = new Headers(init.headers || (typeof input === "string" ? undefined : input.headers));
-        headers.set(HEADER, window.OCR_WORKSPACE);
-        init.headers = headers;
-      }
-    } catch (e) { /* a URL fetch cannot parse is not ours to label */ }
-    return realFetch(input, init);
-  };
-  // Installed first, so anything the rest of the page fetches while this load
-  // is being replaced is still labelled.
-  if (inUrl !== id) { go(id); return; }
-
-  if (!window.BroadcastChannel) return;
-  var channel = new BroadcastChannel("ocr-workspace");
-  var nonce = make();
-  channel.onmessage = function (event) {
-    var msg = event.data || {};
-    if (msg.hello === window.OCR_WORKSPACE && msg.nonce !== nonce) {
-      channel.postMessage({ taken: msg.hello, to: msg.nonce });
-    } else if (msg.taken === window.OCR_WORKSPACE && msg.to === nonce) {
-      // This tab is the copy: take an id of its own and load under it.
-      var fresh = make();
-      store(fresh);
-      window.OCR_WORKSPACE = fresh;
-      go(fresh);
-    }
-  };
-  channel.postMessage({ hello: id, nonce: nonce });
-})();
+{% include '_workspace_session.html' %}
 </script>
 <style>
   /* ---- theme ----
@@ -15177,9 +15122,7 @@ document.addEventListener('change', event => {
 });
 </script>
 <script>
-const userSettingsScript = document.createElement('script');
-userSettingsScript.src = window.OCR_BASE + '/static/user/settings.js';
-document.body.appendChild(userSettingsScript);
+{% include '_user_settings_script.html' %}
 </script>
 </body>
 </html>

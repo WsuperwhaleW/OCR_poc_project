@@ -2,16 +2,15 @@
 <html lang="th">
 <head>
   <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>Whale OCR · เอกสารของทีม</title>
+  <title>OCR · เอกสารของทีม</title>
+  <style>{% include '_user_style.html' %}</style>
   <script>
     window.USER_BASE = location.pathname.replace(/\/user\/?$/, '');
-    const userStyle = document.createElement('link');
-    userStyle.rel = 'stylesheet'; userStyle.href = window.USER_BASE + '/static/user/style.css';
-    document.head.appendChild(userStyle);
+    {% with user_session=true %}{% include '_workspace_session.html' %}{% endwith %}
   </script>
 </head>
 <body>
-  <header><a class="brand" id="homeLink">Whale <b>OCR</b></a><span class="muted">อ่านเอกสาร · ดึงข้อมูล · ดูย้อนหลัง</span><a id="benchmarkLink" class="button subtle">Benchmark ↗</a></header>
+  <header><a class="brand" id="homeLink"><b>OCR</b></a><span class="muted">อ่านเอกสาร · ดึงข้อมูล · ดูย้อนหลัง</span><a id="benchmarkLink" class="button subtle">Benchmark ↗</a></header>
   <main>
     <nav aria-label="หน้าหลัก"><button id="navUpload" class="selected">ทดสอบเอกสาร</button><button id="navHistory">ประวัติของทีม</button></nav>
     <section id="uploadView">
@@ -56,10 +55,9 @@
       </div>
     </section>
   </main>
-  <footer>Whale OCR <span>ผลลัพธ์จาก AI ควรตรวจสอบกับเอกสารต้นฉบับ</span></footer>
+  <footer>OCR <span>ผลลัพธ์จาก AI ควรตรวจสอบกับเอกสารต้นฉบับ</span></footer>
   <script>
-    const userAppScript = document.createElement('script');
-    userAppScript.src = window.USER_BASE + '/static/user/app.js'; document.body.appendChild(userAppScript);
+    {% include '_user_app_script.html' %}
   </script>
 </body>
 </html>

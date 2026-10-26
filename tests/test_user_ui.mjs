@@ -5,8 +5,8 @@ import test from 'node:test';
 
 const root = new URL('../', import.meta.url);
 const page = readFileSync(new URL('templates/index.html', root), 'utf8');
-const settingsSource = readFileSync(new URL('static/user/settings.js', root), 'utf8');
-const appSource = readFileSync(new URL('static/user/app.js', root), 'utf8');
+const settingsSource = readFileSync(new URL('templates/_user_settings_script.html', root), 'utf8');
+const appSource = readFileSync(new URL('templates/_user_app_script.html', root), 'utf8');
 const config = {ocr_concurrency:50,extraction_concurrency:64,detail:'original',shape:'hybrid',
   extras:false,schema_first:false,loop_guard:true,no_cache:false,user_file_max:0,max_upload_mb:32,
   ocr_url:'http://127.0.0.1:8000',extraction_url:'http://127.0.0.1:8001'};
