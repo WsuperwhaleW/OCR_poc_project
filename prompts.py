@@ -2200,6 +2200,47 @@ def _agentic_party_values(party):
     return _party_tax_id_rules(party) + _AGENTIC_BRANCH_SELECTION.format(party=party)
 
 
+_BILLING_PARTIES = """On this billing note, distinguish the supplier presenting the bill
+from the customer being billed:
+- The seller is the supplier/vendor requesting payment for the listed invoices.
+  The buyer is the customer/debtor named under customer, bill to, ลูกค้า or เรียน.
+  A receiver's or presenter's signature is not a separate buyer/seller identity block.
+- Follow the customer/details panel as a whole. A tax-ID caption in that panel can
+  identify the customer even when the bill number or date occurs between the customer
+  name and tax ID in the transcript. The caption need not repeat the word buyer.
+- Establish which party the labelled tax ID belongs to from the section's labels
+  and grouping. Do not assign it to the issuer merely because it is near bill metadata.
+  Equally, the only tax ID on a page does NOT automatically belong to the customer.
+  If the text does not establish the party, leave the uncertain tax ID empty.
+- Customer/vendor account codes are not tax IDs. Keep each party's values separate;
+  never copy the supplier's tax ID into the buyer's field, or the reverse.
+"""
+
+_AGENTIC_VAT_RULES = """- vat_total is the printed VAT AMOUNT in money, never the VAT RATE or a percentage.
+  If a line prints both a percentage and a money amount, copy the money amount only.
+  A withholding-tax amount is not VAT and does not belong in this key.
+- If the VAT amount is blank, a dash, or not printed, answer "" for vat_total even when
+  a VAT rate is printed. Never put a percentage in vat_total or calculate the amount
+  from the rate and subtotal. A printed zero VAT AMOUNT is valid: copy it as printed;
+  a zero VAT RATE alone does not establish a zero amount.
+"""
+
+_BILLING_TOTALS = """Billing-note form convention for this totals request:
+- This is a covering bill listing invoices, not a new VAT breakdown of those invoices.
+  For this form, subtotal holds the printed aggregate amount being billed across
+  the listed invoices. Do not require a caption literally saying subtotal/before VAT.
+- Find the table's summary/footer row or an overall amount-billed/total caption,
+  such as รวมเงินทั้งสิ้น. A labelled total can sit under the balance/outstanding
+  column; read that total row, not one invoice row or a sum you calculate yourself.
+- A billing aggregate alone does not say whether VAT is included. For this form,
+  leave amount_incl_vat empty unless an explicit VAT-inclusive total is printed;
+  do not treat the lack of a VAT breakdown as proof of a zero-VAT bill.
+  A net payable after withholding is not a VAT-inclusive total either.
+- Fill each key independently from its printed label/column. Never infer the underlying
+  invoices' VAT, subtract VAT from the aggregate or add invoice rows yourself.
+""" + _AGENTIC_VAT_RULES
+
+
 EXTRACT_STEPS = (
     {
         "id": "document",
@@ -2263,16 +2304,14 @@ EXTRACT_STEPS = (
         "skeleton": '{ "subtotal": "", "vat_total": "" }',
         "max_tokens": 180,
         "rules": """These are two different figures, each read off its own printed line.
-- subtotal is the figure on the total line printed BEFORE tax is added -- the total of the
-  goods or services themselves.
-- vat_total is the printed VAT AMOUNT in money, never the VAT RATE or a percentage.
-  If a line prints both a percentage and a money amount, copy the money amount only.
-  A withholding-tax amount is not VAT and does not belong in this key.
-- If the VAT amount is blank, a dash, or not printed, answer "" for vat_total even when
-  a VAT rate is printed. Never put a percentage in vat_total or calculate the amount
-  from the rate and subtotal. A printed zero VAT AMOUNT is valid: copy it as printed;
-  a zero VAT RATE alone does not establish a zero amount.
-- Take each from its own printed label, never from its position on the page. Pages order
+- subtotal is the printed WHOLE-DOCUMENT total of goods/services BEFORE VAT is added,
+  including both VAT-taxable and non-VAT/exempt portions when the document contains both.
+  Distinguish that overall total from a taxable-base/Total VAT subtotal for ONLY the
+  taxable portion, or a subtotal for just one category. Choose the printed overall
+  before-VAT figure, not the narrower taxable base merely because it is beside VAT.
+  If no overall before-VAT figure is printed, do not add the portions or subtract VAT
+  from a gross total yourself; leave subtotal empty.
+""" + _AGENTIC_VAT_RULES + """- Take each from its own printed label, never from its position on the page. Pages order
   these lines differently, and the order tells you nothing about which is which.
 - Fill only lines the page actually prints. Never add the rows up yourself and never derive
   one of these from another.
@@ -2610,8 +2649,10 @@ def steps_for_types(codes, extras=True):
                       if s["id"] in titles else s for s in table)
     table = _group_steps(table, ("totals", "total_incl"), "totals",
                          "the printed totals before tax, tax and including tax",
-                         "Read the same totals block for these three keys. Match each printed "
-                         "label to its own amount before answering. Do not reuse a net payable "
+                         "Inspect the overall totals summaries and table footers. Match each "
+                         "key independently to its own printed amount: the three values need "
+                         "not all be present or sit next to each other. A missing VAT amount "
+                         "does not make a printed subtotal empty. Do not reuse a net payable "
                          "or a withholding deduction as a VAT-inclusive total. Copy only "
                          "printed amounts; never calculate a missing total.")
     table = _group_steps(table, ("inv_rtv_cnr", "payment"), "payment",
@@ -2621,6 +2662,17 @@ def steps_for_types(codes, extras=True):
                          "facts: each needs its own printed label. A missing cheque number "
                          "does not make a printed reference or payment date empty. A cheque "
                          "number must never fill the referenced-document key.")
+    # A pure covering bill gets its own roles/aggregate convention. Mixed invoice,
+    # receipt or return headings keep their existing type rules and roles.
+    if set(codes or ()) == {"BILLING_NOTE"}:
+        titles = {"seller": "the supplier presenting this billing note",
+                  "buyer": "the customer being billed on this billing note"}
+        table = tuple({**s, "title": titles[s["id"]],
+                       "rules": _BILLING_PARTIES + _agentic_party_values(s["id"])}
+                      if s["id"] in titles else
+                      {**s, "title": "the aggregate billed and any explicitly printed VAT totals",
+                       "rules": _BILLING_TOTALS}
+                      if s["id"] == "totals" else s for s in table)
     return table
 
 

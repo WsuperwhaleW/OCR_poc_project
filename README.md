@@ -730,6 +730,21 @@ For targeted extraction, historical step ids `total_incl` and `inv_rtv_cnr` sele
 complete related totals/payment group. Results and detail logs list the group's actual
 keys under `totals` or `payment`, respectively; old saved logs retain their original steps.
 
+Agentic `subtotal` asks for the printed whole-document amount before VAT, including
+both taxable and non-taxable portions, rather than a VAT-base subtotal for just one
+portion. It never adds those portions or subtracts VAT to manufacture a missing total.
+The totals keys are filled independently; a missing VAT amount does not make a printed
+subtotal empty.
+
+A pure `BILLING_NOTE` has a separate form convention: `subtotal` holds the printed
+aggregate amount billed across its listed invoices, including a labelled total in a
+table footer. This does not assert whether those underlying invoice amounts include
+VAT; `amount_incl_vat` still needs an explicit VAT-inclusive total on the covering bill.
+Its party prompts identify the supplier presenting the bill and the customer being
+billed, including labelled tax IDs in a customer/details panel separated by bill
+metadata. A lone tax ID is never automatically assigned to the customer. These billing
+instructions do not override mixed invoice/receipt headings or RTV return roles.
+
 While it runs, the Fields tab lists the steps and marks each one done, re-asked or failed.
 The list stays after the run, under the fields, so a value can be traced back to the step
 that produced it. A step that failed is called out above the fields: its keys are empty
