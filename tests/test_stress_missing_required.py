@@ -50,13 +50,46 @@ class MissingRequiredTests(unittest.TestCase):
         self.assertEqual(app._missing_required(empty), [(1, [key])])
 
 
+class FieldsEvidenceTests(unittest.TestCase):
+
+    def test_each_asked_key_with_its_value_and_marks(self):
+        key = prompts.INCOME_ITEMS_KEY
+        result = {"fields": {"issue_date": "2026-01-01", key: [{"amount_paid": ""}]},
+                  "fields_asked": ["issue_date", "buyer_name"], "items_asked": ["amount_paid"],
+                  "classified": {"mandatory": ["issue_date"],
+                                 "mandatory_items": ["amount_paid"]}}
+        docs = app._fields_evidence(result, [(1, [f"{key}[0].amount_paid"])])
+        self.assertEqual([(r["key"], r["required"], r["missing"]) for r in docs[0]["rows"]],
+                         [("issue_date", True, False), ("buyer_name", False, False),
+                          (key, True, False), (f"{key}[0].amount_paid", True, True)])
+        self.assertEqual(docs[0]["rows"][2]["value"], '[{"amount_paid": ""}]')
+
+    def test_an_extract_only_flag_has_text_and_no_image(self):
+        live = app._StressLive(1)
+        result = _doc({"a": ""}, ["a"])
+        spec = {"index": 0, "case": "sol002", "submitted": time.perf_counter()}
+        cfg = {"mode": "extract", "concurrency": 1, "extract_mode": "single"}
+        prepared = {"truths": {"sol002": "the transcript"}, "sources": {"sol002": "x"}}
+        with patch.object(app, "extract_fields", return_value=result):
+            app._stress_job(spec, cfg, prepared, app.MultiCancel(), live)
+        alert = next(a for a in live.take_alerts() if a["kind"] == "missing")
+        with app.app.test_client() as client:
+            body = client.get(f"/api/stress/evidence/{alert['id']}").get_json()
+            image = client.get(f"/api/stress/evidence/{alert['id']}/0.png")
+        self.assertEqual([(a["text"], a["image"]) for a in body["attempts"]],
+                         [("the transcript", False)])
+        self.assertEqual(image.status_code, 404)
+
+
 class FullPipelineLoopTests(unittest.TestCase):
 
     def test_a_looped_read_is_still_extracted_and_flagged_in_both_parts(self):
-        def read(pages, cancel, rec, live, stats_out=None, job=0, case=""):
+        def read(pages, cancel, rec, live, stats_out=None, job=0, case="", kept=None):
             live.flag("looped", job, case, "looped", stage="ocr", page=1,
                       state="retry failed")
             rec.update(ocr_s=1.0, pages=1, ocr_tokens=10)
+            kept.append({"number": 1, "text": "text", "page": "png", "detail": "low",
+                         "looped": True, "truncated": False, "dry": None})
             return ["text"], True, False
 
         result = _doc({"issue_date": "2026-01-01", "vat_total": ""},
@@ -80,6 +113,16 @@ class FullPipelineLoopTests(unittest.TestCase):
         self.assertEqual(missing["fields"], ["vat_total"])
         self.assertIn("vat_total", missing["message"])
         self.assertIn("the read looped", missing["message"])
+
+        # The row opens the Compare window with the form beside the page.
+        with app.app.test_client() as client:
+            body = client.get(f"/api/stress/evidence/{missing['id']}").get_json()
+        self.assertEqual([(a["page"], a["image"], a["looped"]) for a in body["attempts"]],
+                         [(1, True, True)])
+        rows = {r["key"]: r for r in body["fields"][0]["rows"]}
+        self.assertEqual(rows["vat_total"], {"key": "vat_total", "value": "",
+                                             "required": True, "missing": True})
+        self.assertFalse(rows["issue_date"]["missing"])
 
         report = stress.report([rec], 1.0, "full", 1)
         self.assertEqual(report["extract"]["missing_required_jobs"], 1)

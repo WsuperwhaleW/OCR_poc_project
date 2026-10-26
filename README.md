@@ -1902,7 +1902,7 @@ required**: the Mandatory fields of the form that came back empty.
 | **loop** | the reading model repeated itself and the loop guard cut the page off, or an extraction reply looped and never closed its JSON |
 | **token cap** | a page read or an extraction reply hit the token cap before it finished |
 | **partial reply** | an extraction reply was cut off and only the fields it finished were kept |
-| **missing required** | the extraction finished but left a Mandatory field of its form empty (per document, table cells included). The report's *Missing required* tile counts the jobs and fields. A type that no requirement covers demands nothing |
+| **missing required** | the extraction finished but left a Mandatory field of its form empty (per document, table cells included). The report's *Missing required* tile counts the jobs and fields. A type that no requirement covers demands nothing. Click the row to open Compare with a **Fields** column: every field asked, its value, and the empty required ones in red. It sits beside the OCR text or the source page (*OCR › Fields*, *Source › Fields*); an extract-only job shows the transcript it was given |
 | **stalled** | a job has had nothing back for 5 minutes (`STRESS_STALL_SECONDS`) — a hung request or a server that stopped answering; flagged once, and the job keeps running |
 
 The final report still counts errors in its *Errors* table.

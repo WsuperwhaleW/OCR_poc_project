@@ -7620,10 +7620,14 @@ class _StressEvidence:
         self._limit = limit
         self._items = OrderedDict()
 
-    def put(self, alert_id, case: str, page: int, attempts: list, truth_case):
+    def put(self, alert_id, case: str, page: int, attempts: list, truth_case,
+            **extra):
+        """`extra` is what a kind of alert adds -- a missing-required flag's
+        `fields` (`_fields_evidence`), the form beside the pages it was read off."""
         with self._lock:
             self._items[str(alert_id)] = {"case": case, "page": page,
-                                          "attempts": attempts, "truth_case": truth_case}
+                                          "attempts": attempts, "truth_case": truth_case,
+                                          **extra}
             self._items.move_to_end(str(alert_id))
             while len(self._items) > self._limit:
                 self._items.popitem(last=False)
@@ -7654,7 +7658,8 @@ def _at_details(details) -> str:
 
 
 def _stress_read(pages, cancel, rec: dict, live: _StressLive,
-                 stats_out: list = None, job: int = 0, case: str = "") -> tuple:
+                 stats_out: list = None, job: int = 0, case: str = "",
+                 kept: list = None) -> tuple:
     """Pass 1 over prepared pages. `(page_texts, looped, truncated)`.
 
     `stats_out` collects each page's stats as it starts, for a job that is
@@ -7670,6 +7675,10 @@ def _stress_read(pages, cancel, rec: dict, live: _StressLive,
     same split-and-join the Workspace does on vLLM (`read_pages_at_once`).
     `pages_lent` is how many pages were read on a lent slot, and `pages_peak`
     the most this job had in flight at once.
+
+    `kept`, where given, gets each page's read that was kept -- its number, text,
+    the page it was sent and how it ended -- for the Fields evidence of a
+    missing-required flag (`_fields_evidence`).
     """
     started = time.perf_counter()
     lock = threading.Lock()
@@ -7776,7 +7785,7 @@ def _stress_read(pages, cancel, rec: dict, live: _StressLive,
                       "before it finished", stage="ocr", page=number)
         # Every attempt's tokens: the server generated them.
         live.page(page_tokens)
-        return text, page_tokens
+        return text, page_tokens, page
 
     slots = getattr(live, "slots", None)
     results = [None] * len(pages)
@@ -7851,8 +7860,14 @@ def _stress_read(pages, cancel, rec: dict, live: _StressLive,
     texts, looped, truncated = [], False, False
     ttft, page_s, page_tps, tokens = [], [], [], 0
     page_in, page_out = [], []
-    for text, page_tokens, stats in results:
+    for number, (text, page_tokens, page, stats) in enumerate(results, 1):
         texts.append(text)
+        if kept is not None:
+            kept.append({"number": number, "text": text, "page": page,
+                         "detail": (getattr(page, "_stress_origin", None)
+                                    or {}).get("detail"),
+                         "looped": bool(stats.get("looped")),
+                         "truncated": bool(stats.get("truncated")), "dry": None})
         looped = looped or bool(stats.get("looped"))
         truncated = truncated or bool(stats.get("truncated"))
         tokens += page_tokens
@@ -7984,6 +7999,51 @@ def _missing_required(result: dict) -> list:
     return out
 
 
+def _field_value(value) -> str:
+    """One extracted value as the Fields evidence shows it: text as it is, a
+    table or an object as compact JSON, nothing as ''."""
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value
+    return json.dumps(value, ensure_ascii=False)
+
+
+def _fields_evidence(result: dict, missing: list) -> list:
+    """The form of each document, for the Compare view of a missing-required flag.
+
+    **Built 2026-10-26 at the user's request** -- *allow display window on field
+    too*: a loop or DRY row opens the page and its text, and a missing-required
+    row opens the same window with the fields beside them. One entry per
+    document: every key it was asked, its value, whether the requirement demands
+    it and whether it is one of the ones flagged.
+    """
+    flagged = {n: set(keys) for n, keys in missing}
+    documents = [d for d in (result.get("documents") or []) if isinstance(d, dict)]
+    out = []
+    for doc in documents or [result]:
+        number = doc.get("document") or 1
+        classified = doc.get("classified") or {}
+        fields = doc.get("fields") if isinstance(doc.get("fields"), dict) else {}
+        required = set(classified.get("mandatory") or [])
+        gaps = flagged.get(number, set())
+        asked = list(doc.get("fields_asked") or classified.get("fields") or fields)
+        if doc.get("items_asked") and prompts.INCOME_ITEMS_KEY not in asked:
+            asked.append(prompts.INCOME_ITEMS_KEY)
+        rows = [{"key": key, "value": _field_value(fields.get(key)),
+                 "required": key in required
+                 or (key == prompts.INCOME_ITEMS_KEY
+                     and bool(classified.get("mandatory_items"))),
+                 "missing": key in gaps} for key in asked]
+        # A blank table cell is flagged by its path, which no asked key names.
+        rows += [{"key": key, "value": "", "required": True, "missing": True}
+                 for key in sorted(gaps) if key not in asked]
+        out.append({"document": number, "pages": list(doc.get("pages") or []),
+                    "doc_types": list(doc.get("doc_types") or []),
+                    "error": doc.get("error") or "", "rows": rows})
+    return out
+
+
 def _stress_job(spec: dict, cfg: dict, prepared: dict, cancel,
                 live: _StressLive) -> dict:
     """One job of the queue, start to finish. Returns its record; never raises."""
@@ -8039,11 +8099,13 @@ def _stress_job(spec: dict, cfg: dict, prepared: dict, cancel,
                 began += rec["prepare_s"]
                 live.touch(job)
             texts, looped, truncated, truth = None, False, False, None
+            kept = []                   # each page's kept read, for Fields evidence
             if mode in ("ocr", "full"):
                 read_began = time.perf_counter()
                 texts, looped, truncated = _stress_read(
                     prepared["pages"][case_id], cancel, rec, live,
-                    stats_out=all_stats if log else None, job=job, case=who)
+                    stats_out=all_stats if log else None, job=job, case=who,
+                    kept=kept)
                 # Rebuilding a retried page is this machine's work, kept out of
                 # the job's latency like `prepare_s`.
                 began += rec.get("retry_prepare_s") or 0
@@ -8115,11 +8177,22 @@ def _stress_job(spec: dict, cfg: dict, prepared: dict, cancel,
                     why = (" -- the read looped, which may be why" if looped else
                            " -- the read hit the token cap, which may be why"
                            if truncated else "")
-                    live.flag("missing", job, who,
-                              f"{rec['missing_required']} required field(s) came back "
-                              f"empty: {listed}{why}", stage="extract",
-                              fields=[f"doc{n}.{k}" if several else k
-                                      for n, keys in missing for k in keys])
+                    alert = live.flag("missing", job, who,
+                                      f"{rec['missing_required']} required field(s) "
+                                      f"came back empty: {listed}{why}", stage="extract",
+                                      fields=[f"doc{n}.{k}" if several else k
+                                              for n, keys in missing for k in keys],
+                                      evidence=True)
+                    # The window a loop row opens, with the form beside it: the
+                    # pages and their text in full mode, the transcript it was
+                    # fed in extract mode (no page was read).
+                    _STRESS_EVIDENCE.put(
+                        alert, who, None,
+                        kept or [{"number": None, "text": text, "page": None,
+                                  "detail": None, "looped": False,
+                                  "truncated": False, "dry": None}],
+                        None if real else case_id,
+                        fields=_fields_evidence(result, missing))
                 payload = {"truth": truth, "looped": looped,
                            "truncated": truncated, "extracted": result}
                 if mode == "full":
@@ -8793,16 +8866,20 @@ def stress_evidence(alert_id: str):
                              f"{STRESS_EVIDENCE_MAX} flagged pages since this "
                              "server started are."), 404
     return jsonify(case=item["case"], page=item["page"], truth_case=item["truth_case"],
+                   fields=item.get("fields"),
                    attempts=[{"detail": a["detail"], "text": a["text"],
                               "looped": a["looped"], "truncated": a["truncated"],
-                              "dry": a["dry"]} for a in item["attempts"]])
+                              "dry": a["dry"], "page": a.get("number"),
+                              "image": a.get("page") is not None}
+                             for a in item["attempts"]])
 
 
 @app.get("/api/stress/evidence/<alert_id>/<int:index>.png")
 def stress_evidence_image(alert_id: str, index: int):
     """One read's page image, as the model was sent it."""
     item = _STRESS_EVIDENCE.get(alert_id)
-    if item is None or not 0 <= index < len(item["attempts"]):
+    if (item is None or not 0 <= index < len(item["attempts"])
+            or item["attempts"][index].get("page") is None):
         return jsonify(error="This page is no longer kept."), 404
     return Response(_page_png(item["attempts"][index]["page"]), mimetype="image/png",
                     headers={"Cache-Control": "private, max-age=3600"})
