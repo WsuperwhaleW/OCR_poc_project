@@ -536,7 +536,7 @@ burns the whole token budget — minutes of wall clock for a transcript that sto
 anything new near the top. The checkbox under **Page reading** is the backstop: ticked, a read
 whose tail is cycling is stopped where it starts repeating and reported as `looped`.
 
-Untick it to let such a read run to `MAX_NEW_TOKENS` (4096). **Only the abort is turned off.**
+Untick it to let such a read run to `MAX_NEW_TOKENS` (16384). **Only the abort is turned off.**
 The transcript is still tested when it arrives and is still flagged `looped`, so a run that
 cycled the whole way still reads as a failure, is still kept out of every mean, and still has
 its field score suppressed — what you get is all of what the model produced instead of the part
@@ -1093,7 +1093,7 @@ set OLLAMA_CONTEXT_LENGTH=16384
 
 | Reported as | Means |
 |---|---|
-| `truncated` | the reply hit `MAX_NEW_TOKENS` (4096) and was cut off; a warning banner shows on the page |
+| `truncated` | the reply hit its token cap (`MAX_NEW_TOKENS`, 16384, or less on vLLM where it is fitted to the window) and was cut off; a warning banner shows on the page |
 | `looped` | the output was cycling. With the backstop on the read was aborted there; with it off the read ran to the cap and is flagged all the same, rather than letting a repeating transcript pass as a complete one |
 | `error` | the request itself failed — see the message and [Server status](#server-status) |
 
@@ -3441,7 +3441,7 @@ accepted. `400` for an unknown name. Not refused while a random test runs: every
 the profile it ran under, so a batch split across two is still readable afterwards.
 
 `GET /api/ocr/loop-guard` — whether a cycling read is cut short, and the cap it would run to
-without it: `{"loop_guard":true,"max_tokens":4096}`.
+without it: `{"loop_guard":true,"max_tokens":16384}`.
 
 `POST /api/ocr/loop-guard` — `{"loop_guard":false}` switches it, and answers with what was
 accepted. `400` for anything that is not `true` or `false`. Not refused while a sweep is

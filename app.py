@@ -882,6 +882,11 @@ def stream_page(image: Image.Image, stats: dict = None,
     first_at = None
     timings, usage, pieces = {}, {}, 0
     collected, looped = [], False
+    # The cap this request was SENT with: on vLLM it is fitted to the window
+    # (vllm_page_fields) and can be far below MAX_NEW_TOKENS, so a page that ran
+    # to it would never reach MAX_NEW_TOKENS and never be flagged truncated.
+    cap = payload.get("max_tokens") or MAX_NEW_TOKENS
+    finish = None
     # "Batch requests" on a stress run: this page is one conversation of a
     # vLLM /batch request (vllmbatch.py). Nothing streams, so there is no first
     # token to time and nothing for the loop guard to cut -- the finished text
@@ -890,6 +895,7 @@ def stream_page(image: Image.Image, stats: dict = None,
     if batcher is not None:
         body = _await_batched(batcher, chat_url(), payload, cancel)
         usage = body.get("usage") or {}
+        finish = (body.get("choices") or [{}])[0].get("finish_reason")
         piece = (((body.get("choices") or [{}])[0].get("message") or {})
                  .get("content") or "")
         if piece:
@@ -950,6 +956,7 @@ def stream_page(image: Image.Image, stats: dict = None,
                     usage = obj["usage"]
                 # The usage-only final chunk carries no choices at all.
                 choices = obj.get("choices") or [{}]
+                finish = choices[0].get("finish_reason") or finish
                 piece = (choices[0].get("delta") or {}).get("content")
                 if piece:
                     if first_at is None:
@@ -998,7 +1005,7 @@ def stream_page(image: Image.Image, stats: dict = None,
             ttft_seconds=(None if batcher is not None
                           else round((first_at or finished) - started, 3)),
             new_tokens=new_tokens,
-            truncated=new_tokens >= MAX_NEW_TOKENS,
+            truncated=finish == "length" or new_tokens >= cap,
             looped=looped,
             resolution=f"{image.width}x{image.height}",
             megapixels=round(image.width * image.height / 1e6, 2),
@@ -7074,6 +7081,9 @@ STRESS_STALL_SECONDS = 300
 # memory while it runs -- so fifty jobs each starting a different file at once
 # must not all do it together.
 STRESS_PREPARE_PARALLEL = config.env_int("STRESS_PREPARE_PARALLEL", 2, minimum=1)
+# How many "without the N longest jobs" reports a stress run carries, for the
+# page's Exclude picker (`stress.without_longest`). Each is a few KB.
+STRESS_OUTLIER_MAX = config.env_int("STRESS_OUTLIER_MAX", 10, minimum=0)
 _STAGE_VERB = {"ocr": "reading", "extract": "extracting", "segment": "splitting",
                "classify": "classifying"}
 
@@ -7096,6 +7106,13 @@ class _StressLive:
         self.done = self.failed = self.pages = self.tokens = 0
         self._alerts = []
         self._active = {}        # job number -> {case, stage, last, flagged}
+        # The run's `_StressSlots` where a long file may borrow idle workers
+        # for its pages (`split_pages`), else None.
+        self.slots = None
+
+    def queued(self) -> int:
+        with self._lock:
+            return self.stages["queued"]
 
     def flag(self, kind: str, job: int, case: str, message: str, **extra):
         with self._lock:
@@ -7326,6 +7343,9 @@ def _stress_config(body: dict) -> dict:
         "metrics_every": number("metrics_every", 5, 1, 600),
         "metrics": bool(body.get("metrics")),
         "no_cache": bool(body.get("no_cache")),
+        # A long file reads its pages on workers left idle once the queue is
+        # empty (`_StressSlots`). On unless the request says otherwise.
+        "split_pages": body.get("split_pages", True) is not False,
         "vllm_batch": vllm_batch,
         # Classification has no row shape: a glued pack is no benchmark case and
         # its score is a grouping, so nothing is written for it.
@@ -7477,6 +7497,32 @@ class _StressPages:
                 self.prepared["pages"].pop(case_id, None)
 
 
+class _StressSlots:
+    """A stress run's request slots: one per worker of its concurrency.
+
+    A job holds one for as long as it runs, so with every worker busy nothing is
+    left to lend. Once the queue is empty, a worker that finishes has no job to
+    pick up and its slot sits free -- and a long file still reading its pages
+    one at a time is the only thing left (2026-10-26, at the user's request: a
+    100-page file read alone for a long time while every other worker was
+    idle). `lend` hands such a slot to one of that file's pages, which gives it
+    back when the page is read. So the run never has more page requests in
+    flight than its concurrency, and the idle capacity is used.
+    """
+
+    def __init__(self, n: int):
+        self._sem = threading.Semaphore(n)
+
+    def hold(self):
+        self._sem.acquire()
+
+    def release(self):
+        self._sem.release()
+
+    def lend(self) -> bool:
+        return self._sem.acquire(blocking=False)
+
+
 def _stress_read(pages, cancel, rec: dict, live: _StressLive,
                  stats_out: list = None, job: int = 0, case: str = "") -> tuple:
     """Pass 1 over prepared pages. `(page_texts, looped, truncated)`.
@@ -7485,25 +7531,31 @@ def _stress_read(pages, cancel, rec: dict, live: _StressLive,
     saved to the run log -- a list the caller owns, so the pages that finished
     before an error are still there to write. A page that looped or hit the
     token cap is flagged as soon as it comes back, with its page number.
+
+    **Pages are read one at a time, on this job's own slot, until a worker is
+    idle** (`live.slots`, set where the run splits pages): once every job of the
+    queue has started, a free slot is lent to this file's next page and the
+    pages run side by side. They are joined in page order whatever order they
+    finished in, so the transcript is the one a sequential read gives -- the
+    same split-and-join the Workspace does on vLLM (`read_pages_at_once`).
+    `pages_lent` is how many pages were read on a lent slot, and `pages_peak`
+    the most this job had in flight at once.
     """
     started = time.perf_counter()
-    texts, looped, truncated = [], False, False
-    ttft, page_s, page_tps, tokens = [], [], [], 0
-    page_in, page_out = [], []
-    retries, recovered, prep = 0, 0, 0.0
-    for number, page in enumerate(pages, 1):
-        if cancel.is_set():
-            raise SweepCancelled("stopped")
-        stats = {}
-        if stats_out is not None:
-            stats_out.append(stats)
-        rec["at_page"] = number            # so an error's alert names the page
+    lock = threading.Lock()
+    tally = {"retries": 0, "recovered": 0, "prep": 0.0}
+    inner = MultiCancel()                   # a failed page hangs up its siblings
+    hangup = _Hangup(inner)                 # held here: `attach` keeps it weakly
+    cancel.attach(hangup)
+
+    def read_one(number, page, stats):
+        """One page, with its loop retries. Returns `(text, tokens)`."""
         page_tokens, attempts = 0, []
         while True:
             try:
-                text = read_page(page, stats, cancel=cancel)
+                text = read_page(page, stats, cancel=inner)
             except Exception:
-                if cancel.is_set():
+                if cancel.is_set() or inner.is_set():
                     raise SweepCancelled("stopped")
                 raise
             if cancel.is_set():
@@ -7521,7 +7573,8 @@ def _stress_read(pages, cancel, rec: dict, live: _StressLive,
                 retry = _stress_retry_page(page)
             except Exception:                   # noqa: BLE001
                 retry = None
-            prep += time.perf_counter() - prep_began
+            with lock:
+                tally["prep"] += time.perf_counter() - prep_began
             message = ("the reading model repeated itself and the loop guard cut "
                        "the page off")
             if retry is not None:
@@ -7535,11 +7588,12 @@ def _stress_read(pages, cancel, rec: dict, live: _StressLive,
             stats.clear()
             stats.update(loop_retries=list(attempts),
                          detail=retry._stress_origin["detail"])
-            retries += 1
+            with lock:
+                tally["retries"] += 1
             page = retry
-        texts.append(text)
         if attempts and not stats.get("looped"):
-            recovered += 1
+            with lock:
+                tally["recovered"] += 1
             live.flag("recovered", job, case, f"read cleanly at {stats['detail']} "
                       f"after {len(attempts)} looped attempt(s)", stage="ocr",
                       page=number)
@@ -7548,24 +7602,103 @@ def _stress_read(pages, cancel, rec: dict, live: _StressLive,
         elif stats.get("truncated"):
             live.flag("truncated", job, case, "the page read hit the token cap "
                       "before it finished", stage="ocr", page=number)
+        # Every attempt's tokens: the server generated them.
+        live.page(page_tokens)
+        return text, page_tokens
+
+    slots = getattr(live, "slots", None)
+    results = [None] * len(pages)
+    lent = peak = 0
+    if slots is None or len(pages) < 2:
+        for number, page in enumerate(pages, 1):
+            if cancel.is_set():
+                raise SweepCancelled("stopped")
+            stats = {}
+            if stats_out is not None:
+                stats_out.append(stats)
+            rec["at_page"] = number             # so an error's alert names the page
+            results[number - 1] = (*read_one(number, page, stats), stats)
+        peak = 1 if pages else 0
+    else:
+        pool = ThreadPoolExecutor(max_workers=len(pages),
+                                  thread_name_prefix="stress-page")
+        running, nxt, own_busy, error = {}, 0, False, None
+        try:
+            while True:
+                # Start the next pages: on this job's own slot when it is free,
+                # then on any slot an idle worker left -- only once nothing is
+                # queued, so a job waiting to start never waits behind a page.
+                while nxt < len(pages) and error is None and not cancel.is_set():
+                    if not own_busy:
+                        own_busy, slot = True, "own"
+                    elif live.queued() == 0 and slots.lend():
+                        slot = "lent"
+                        lent += 1
+                    else:
+                        break
+                    stats = {}
+                    if stats_out is not None:
+                        stats_out.append(stats)
+                    number = nxt + 1
+                    future = pool.submit(workspace.bind(read_one), number,
+                                         pages[nxt], stats)
+                    running[future] = (slot, number, stats)
+                    nxt += 1
+                    peak = max(peak, len(running))
+                if not running:
+                    break
+                # A second at most, so a slot another job frees is noticed
+                # without one of these pages having to finish first.
+                finished, _ = wait(list(running), timeout=1.0,
+                                   return_when=FIRST_COMPLETED)
+                for future in finished:
+                    slot, number, stats = running.pop(future)
+                    if slot == "own":
+                        own_busy = False
+                    else:
+                        slots.release()
+                    try:
+                        results[number - 1] = (*future.result(), stats)
+                    except SweepCancelled:
+                        pass                    # a Stop, or hung up by a sibling
+                    except Exception as exc:    # noqa: BLE001
+                        if error is None:
+                            error = exc
+                            rec["at_page"] = number
+                            inner.set()
+        finally:
+            for slot, _, _ in running.values():
+                if slot == "lent":
+                    slots.release()
+            pool.shutdown(wait=False, cancel_futures=True)
+        if error is not None:
+            raise error
+        if cancel.is_set():
+            raise SweepCancelled("stopped")
+
+    texts, looped, truncated = [], False, False
+    ttft, page_s, page_tps, tokens = [], [], [], 0
+    page_in, page_out = [], []
+    for text, page_tokens, stats in results:
+        texts.append(text)
         looped = looped or bool(stats.get("looped"))
         truncated = truncated or bool(stats.get("truncated"))
-        # Every attempt's tokens: the server generated them. The per-page
-        # timings below describe the read that was kept.
         tokens += page_tokens
+        # The per-page timings describe the read that was kept.
         ttft.append(stats.get("ttft_seconds"))
         page_in.append(stats.get("in_tokens"))
         page_out.append(stats.get("out_tokens"))
         page_s.append(stats.get("seconds"))
         if stats.get("tokens_per_second"):
             page_tps.append(stats["tokens_per_second"])
-        live.page(page_tokens)
+    prep = tally["prep"]
     rec.pop("at_page", None)
-    rec.update(loop_retries=retries, loop_recovered=recovered,
+    rec.update(loop_retries=tally["retries"], loop_recovered=tally["recovered"],
                retry_prepare_s=round(prep, 3))
     rec.update(ocr_s=round(time.perf_counter() - started - prep, 3), pages=len(pages),
                ocr_tokens=tokens, ttft_s=ttft, page_s=page_s, page_tps=page_tps,
-               page_in=page_in, page_out=page_out)
+               page_in=page_in, page_out=page_out, pages_lent=lent,
+               pages_peak=peak)
     return texts, looped, truncated
 
 
@@ -7656,6 +7789,8 @@ def _stress_job(spec: dict, cfg: dict, prepared: dict, cancel,
     mode = cfg["mode"]
     stage = {"ocr": "ocr", "full": "ocr", "extract": "extract",
              "classify": "segment"}[mode]
+    if live.slots is not None:
+        live.slots.hold()
     live.move("queued", stage)
     began = time.perf_counter()
     # Who the alerts name: the job's place in the queue (warm-up included) and
@@ -7794,6 +7929,8 @@ def _stress_job(spec: dict, cfg: dict, prepared: dict, cancel,
                                   cfg, tag, err)
     finally:
         _progress_swap(previous_hook)
+        if live.slots is not None:
+            live.slots.release()
         live.end(job)
         rec.pop("at_page", None)
         rec.pop("alerted", None)
@@ -7802,6 +7939,10 @@ def _stress_job(spec: dict, cfg: dict, prepared: dict, cancel,
         if lazy is not None:
             lazy.release(spec["case"])
     rec["total_s"] = round(time.perf_counter() - began, 3)
+    # When it ended on the phase's clock, and whose it was: what lets the report
+    # be taken again without the longest jobs (`stress.without_longest`).
+    rec["end_s"] = round(time.perf_counter() - spec["submitted"], 3)
+    rec["job"], rec["who"] = job, who
     live.finish(rec["status"] == "error")
     return rec
 
@@ -7930,6 +8071,8 @@ def _stress_phase(specs: list, cfg: dict, prepared: dict, cancel, phase: str,
     holding the guard until the last one ends.
     """
     live = _StressLive(len(specs))
+    if cfg.get("split_pages") and cfg["mode"] in ("ocr", "full"):
+        live.slots = _StressSlots(cfg["concurrency"])
     pool = ThreadPoolExecutor(max_workers=cfg["concurrency"],
                               thread_name_prefix="stress")
     started = time.perf_counter()
@@ -8076,6 +8219,7 @@ def _stress_run(cfg: dict, cancel):
         "save_details": bool(cfg.get("save_details")),
         "run_id": cfg["run_id"] if cfg.get("save_log") else "",
         "no_cache": bool(cfg.get("no_cache")),
+        "split_pages": bool(cfg.get("split_pages")) and cfg["mode"] in ("ocr", "full"),
         "no_cache_effect": ({s["kind"]: backends.cache_bypass_effect(s["kind"])
                              for s in (reader, extractor) if s}
                             if cfg.get("no_cache") else {}),
@@ -8147,6 +8291,8 @@ def _stress_run(cfg: dict, cancel):
     report["timeline"] = stress.thin_timeline(timeline)
     report["timeline_columns"] = ["t", *stress.STAGES, "done"]
     report["prepare_seconds"] = prepare_seconds
+    report["outliers"] = stress.without_longest(records, wall, mode, cfg["concurrency"],
+                                                STRESS_OUTLIER_MAX)
     if batcher is not None:
         report["vllm_batch"] = batcher.summary()
     if targets:
