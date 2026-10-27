@@ -243,10 +243,18 @@ class _ProxyPrefix:
         forwarded = (environ.get("HTTP_X_FORWARDED_PREFIX") or "").strip().rstrip("/")
         if forwarded and (path == forwarded or path.startswith(forwarded + "/")):
             return forwarded
+        method = environ.get("REQUEST_METHOD", "GET")
+        if self._is_route(path, method):
+            return ""
+        # Match an actual nested route before falling back to the legacy mount
+        # heuristic: /ocr/user and /ocr/static/user/app.js are not the main page.
+        for match in re.finditer('/', path[1:]):
+            at = match.start() + 1
+            if self._is_route(path[at:], method):
+                return path[:at]
         at = path.find("/api/")
         if at > 0:
             return path[:at]
-        method = environ.get("REQUEST_METHOD", "GET")
         last = path.rstrip("/").rsplit("/", 1)[-1]
         if (method in ("GET", "HEAD") and path != "/" and not self._is_route(path, method)
                 and (path.endswith("/") or "." not in last)):
@@ -350,6 +358,8 @@ def replace_job_page(job_id: str, index: int, page) -> None:
     A loop retry reads a bigger image than the one `register_job` cached, and the
     compare and layout views draw the model's output over the cached one.
     """
+    if not job_id:
+        return
     buf = io.BytesIO()
     page.save(buf, format="PNG")
     with _jobs_lock:
@@ -1198,6 +1208,8 @@ def _batcher_for(url: str, status: dict):
     vLLM only (`serves_metrics`, the server's own statement), and only the
     chat endpoint, the one shape vLLM's /batch route takes.
     """
+    if workspace.get('user_pipeline', False):
+        return None
     batcher = _batcher
     if (batcher is None or not backends.serves_metrics(status)
             or not vllmbatch.batchable(url)):
@@ -5474,11 +5486,13 @@ def case_bytes(case_id: str):
     return case["pdf_path"].read_bytes(), case
 
 
-def prepare_input(data: bytes, detail: str, case=None, source=None):
+def prepare_input(data: bytes, detail: str, case=None, source=None, *, cache=True, context_out=None):
     """Decode, trim and resize. Returns (pages, detail, page_job_id, case).
 
     `source` is carried into the job cache rather than only into the run log, so
     a later re-extraction against this transcript can name the same document.
+    The user portal sets cache=False and receives metadata in context_out: it
+    keeps the original on disk and needs no encoded preview in the RAM cache.
     """
     # Through the alias table, so an old preset name from a saved setting or a
     # script lands on the nearest preset that still exists rather than silently
@@ -5497,7 +5511,9 @@ def prepare_input(data: bytes, detail: str, case=None, source=None):
                # caller, which is how one of them ends up dropping it.
                "pages_total": total,
                "case": case["id"] if case else ""}
-    job_id = register_job(prepared, context)
+    if context_out is not None:
+        context_out.update(context)
+    job_id = register_job(prepared, context) if cache else None
     label = context["case"] or (source or {}).get("name") or "upload"
     for index, page in enumerate(prepared):
         tag_page(page, f"{label} p{index + 1}/{len(prepared)}", detail)
@@ -9820,6 +9836,12 @@ def choose_port() -> int:
     sys.exit(1)
 
 
+# Register against this module object even when launched as __main__: importing
+# app again here would create a second engine and a second set of globals.
+import userweb
+get_user_service = userweb.register(app, sys.modules[__name__])
+
+
 if __name__ == "__main__":
     # Before preflight, which prints the URL. Werkzeug's server sets
     # SO_REUSEADDR, which on Windows would let a racing second instance bind
@@ -9832,6 +9854,7 @@ if __name__ == "__main__":
     # What every browser tab starts from: the server and models preflight just
     # selected, and every switch as the environment set it.
     workspace.seal()
+    get_user_service().start()
     app.run(
         host=config.HOST,
         port=config.PORT,

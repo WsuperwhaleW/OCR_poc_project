@@ -30,62 +30,7 @@ document.addEventListener("DOMContentLoaded", function () {
     a.setAttribute("href", window.API + "/" + a.getAttribute("data-api"));
   });
 });
-(function () {
-  var KEY = "ocrWorkspace", HEADER = "X-OCR-Workspace";
-  var valid = function (v) { return typeof v === "string" && /^[A-Za-z0-9_-]{8,64}$/.test(v); };
-  var make = function () {
-    var raw = (window.crypto && crypto.randomUUID) ? crypto.randomUUID()
-      : Date.now().toString(36) + Math.random().toString(36).slice(2) + Math.random().toString(36).slice(2);
-    return raw.replace(/[^A-Za-z0-9]/g, "").slice(0, 32);
-  };
-  var store = function (v) { try { sessionStorage.setItem(KEY, v); return true; } catch (e) { return false; } };
-  var url = new URL(location.href);
-  var inUrl = url.searchParams.get("ws");
-  var stored = null, storable = true;
-  try { stored = sessionStorage.getItem(KEY); } catch (e) { storable = false; }
-  // Without sessionStorage the URL is the only memory there is; adopt it rather
-  // than re-key on every load, which would redirect forever.
-  var id = valid(stored) ? stored : (!storable && valid(inUrl) ? inUrl : make());
-  store(id);
-  var go = function (wid) {
-    url.searchParams.set("ws", wid);
-    location.replace(url.toString());
-  };
-  window.OCR_WORKSPACE = id;
-  var realFetch = window.fetch.bind(window);
-  window.fetch = function (input, init) {
-    try {
-      var target = new URL(typeof input === "string" ? input : input.url, location.href);
-      if (target.origin === location.origin) {
-        init = Object.assign({}, init || {});
-        var headers = new Headers(init.headers || (typeof input === "string" ? undefined : input.headers));
-        headers.set(HEADER, window.OCR_WORKSPACE);
-        init.headers = headers;
-      }
-    } catch (e) { /* a URL fetch cannot parse is not ours to label */ }
-    return realFetch(input, init);
-  };
-  // Installed first, so anything the rest of the page fetches while this load
-  // is being replaced is still labelled.
-  if (inUrl !== id) { go(id); return; }
-
-  if (!window.BroadcastChannel) return;
-  var channel = new BroadcastChannel("ocr-workspace");
-  var nonce = make();
-  channel.onmessage = function (event) {
-    var msg = event.data || {};
-    if (msg.hello === window.OCR_WORKSPACE && msg.nonce !== nonce) {
-      channel.postMessage({ taken: msg.hello, to: msg.nonce });
-    } else if (msg.taken === window.OCR_WORKSPACE && msg.to === nonce) {
-      // This tab is the copy: take an id of its own and load under it.
-      var fresh = make();
-      store(fresh);
-      window.OCR_WORKSPACE = fresh;
-      go(fresh);
-    }
-  };
-  channel.postMessage({ hello: id, nonce: nonce });
-})();
+{% include '_workspace_session.html' %}
 </script>
 <style>
   /* ---- theme ----
@@ -1685,6 +1630,7 @@ document.addEventListener("DOMContentLoaded", function () {
       </div>
       <p id="globalModelNotice" class="note err" role="alert" hidden></p>
     <div class="page-actions">
+      <a class="ghost-sm user-app-link" href="{{ url_for('user_index') }}" target="_blank" rel="noopener">User app ↗</a>
       <details class="model-settings" id="globalModelSettings">
         <summary>Model settings</summary>
         <div class="model-settings-panel" aria-label="Model server settings">
@@ -1814,6 +1760,7 @@ follows your desktop; Light is the one to pick for projecting or screenshotting.
              which is a question you have before a document rather than after
              one. -->
         <button type="button" data-pane="schema" title="which document types carry a field requirement, what each one demands, and what is asked of a document no requirement covers">Doc types</button>
+        <button type="button" data-pane="settings">Settings</button>
       </div>
 
       <div class="pane on" id="paneSource">
@@ -2423,6 +2370,10 @@ follows your desktop; Light is the one to pick for projecting or screenshotting.
           there is nothing to feed pass 2 here.</p>
         {% endif %}
       </div>
+      <div class="pane" id="paneSettings">
+        <p class="note">Configure OCR, Extraction, models and uploads for the User app. These settings are shared and saved on the server.</p>
+        <a class="ghost-sm user-app-link" href="{{ url_for('user_index') }}" target="_blank" rel="noopener">Open User app ↗</a>
+      </div>
       </div><!-- /side-scroll -->
       <div class="test-actions" id="testActions" hidden>
         <div id="sourceActions" hidden>
@@ -2468,6 +2419,7 @@ follows your desktop; Light is the one to pick for projecting or screenshotting.
          that is where the run is decided.
 
          `Clear results` empties this view. Each completed round remains in the run log. -->
+    {% include '_user_settings.html' %}
     <div class="card" id="rtCard" hidden>
       <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
         <h2 style="margin:0">Random test</h2>
@@ -3140,6 +3092,7 @@ function showPane(name) {
   if (historyOpen) historyLoad();
   else if (stressPaneOpen) stPaint();
   else if (name === 'random') rtPaint();
+  else if (name === 'settings' && window.loadUserSettings) window.loadUserSettings();
 }
 
 /* One pane, so nothing moves between panes any more. `paintPanes` and
@@ -3161,14 +3114,17 @@ function paintMain() {
   const el = id => document.getElementById(id);
   const st = stressPaneOpen && !historyOpen;
   const rt = selectedPane === 'random';
+  const settings = selectedPane === 'settings';
+  el('settingsCard').hidden = !settings;
+  el('runlogCard').hidden = settings;
   el('historyCard').hidden = !historyOpen;
   el('schemaCard').hidden = !scOpen;
   el('stCard').hidden = !st;
   el('rtCard').hidden = !rt;
-  el('resultCard').hidden = scOpen || historyOpen || rt || st;
+  el('resultCard').hidden = scOpen || historyOpen || rt || st || settings;
   // In the stress pane, Compare shows a flagged page once one is clicked
   // (`stShowEvidence`) -- the live run's or a saved run's -- and nothing before.
-  el('compareCard').hidden = scOpen || rt || (stressPaneOpen && !cmpOverride);
+  el('compareCard').hidden = scOpen || rt || settings || (stressPaneOpen && !cmpOverride);
   let hasActions = false;
   for (const name of ['source', 'ocr', 'fields', 'random', 'stress']) {
     const group = el(name + 'Actions');
@@ -15234,6 +15190,9 @@ document.addEventListener('change', event => {
   event.target.closest('.history-monitor').querySelector('.history-monitor-body').innerHTML =
     monReportHtml(historyMonitorState(samples, Number(event.target.value)), 0);
 });
+</script>
+<script>
+{% include '_user_settings_script.html' %}
 </script>
 </body>
 </html>

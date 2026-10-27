@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="th">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>OCR · เอกสารของทีม</title>
+  <style>{% include '_user_style.html' %}</style>
+  <script>
+    window.USER_BASE = location.pathname.replace(/\/user\/?$/, '');
+    {% with user_session=true %}{% include '_workspace_session.html' %}{% endwith %}
+  </script>
+</head>
+<body>
+  <header><a class="brand" id="homeLink"><b>OCR</b></a><span class="muted">อ่านเอกสาร · ดึงข้อมูล · ดูย้อนหลัง</span><a id="benchmarkLink" class="button subtle">Benchmark ↗</a></header>
+  <main>
+    <nav aria-label="หน้าหลัก"><button id="navUpload" class="selected">ทดสอบเอกสาร</button><button id="navHistory">ประวัติของทีม</button></nav>
+    <section id="uploadView">
+      <div class="intro"><span class="eyebrow">DOCUMENT WORKSPACE</span><h1>จากเอกสาร สู่ข้อมูล</h1><p class="muted">เลือกไฟล์ แล้วรัน OCR และดึงข้อมูลในครั้งเดียว ผลลัพธ์จะบันทึกให้ทีมดูย้อนหลังโดยอัตโนมัติ</p></div>
+      <div class="workspace">
+        <div class="card upload-card">
+          <h2><span class="number">01</span> เอกสารของคุณ</h2>
+          <form id="uploadForm">
+            <label id="dropzone" class="dropzone" for="fileInput" tabindex="0"><span class="upload-icon" aria-hidden="true">↥</span><strong>ลากไฟล์มาวาง หรือคลิกเพื่อเลือก</strong><span class="muted">PDF · JPG · PNG · TIFF · HEIC และรูปภาพอื่น ๆ</span></label>
+            <input id="fileInput" type="file" accept=".pdf,.jpg,.jpeg,.png,.webp,.bmp,.tiff,.tif,.gif,.heic,.heif" multiple hidden>
+            <p class="muted small" id="uploadLimits">กำลังโหลดการตั้งค่า…</p>
+            <ul id="selectedFiles" class="file-list"></ul>
+            <div class="toolbar"><button id="runButton" class="primary" type="submit" disabled>เริ่ม OCR และดึงข้อมูล →</button><button id="clearFiles" type="button" class="subtle">ล้างรายการ</button></div>
+          </form>
+          <p id="uploadMessage" role="status" aria-live="polite" class="message" hidden></p>
+          <p class="muted small">ไฟล์ที่ส่งถึง server แล้วจะทำงานต่อได้แม้ปิดหน้านี้ ไฟล์ที่ยังส่งไม่ถึงต้องเปิดหน้านี้ไว้จนส่งครบ</p>
+          <div id="batchJobs" class="batch-jobs" aria-live="polite"></div>
+        </div>
+        <section class="card result-card" aria-labelledby="resultTitle">
+          <div class="result-heading"><h2 id="resultTitle"><span class="number">02</span> ผลลัพธ์</h2><span id="resultStatus" class="badge" hidden></span></div>
+          <div id="emptyResult" class="empty"><span class="empty-icon" aria-hidden="true">▤</span><h3>เริ่มจากไฟล์ของคุณ</h3><p class="muted">ดูข้อความ OCR และข้อมูลที่ดึงได้<br>พร้อมสถานะแต่ละขั้นตอน</p></div>
+          <div id="jobResult" hidden>
+            <h3 id="resultFile" class="filename"></h3><p id="resultDate" class="muted small"></p>
+            <ol class="steps"><li id="ocrStep">1 · OCR</li><li id="extractionStep">2 · Extraction</li><li id="finishedStep">3 · บันทึกผล</li></ol>
+            <p id="progress" role="status" aria-live="polite"></p><p id="timing" class="muted small"></p>
+            <p id="jobError" class="message error" hidden role="alert"></p><div id="warnings"></div>
+            <div class="toolbar result-tools"><div class="tabs"><button id="fieldsTab" class="selected">ข้อมูลที่ดึงได้</button><button id="textTab">ข้อความ OCR</button></div><div class="downloads"><a id="originalLink">ต้นฉบับ ↓</a><a id="exportLink">JSON ↓</a></div></div>
+            <div id="fieldsResult"></div><pre id="textResult" class="transcript" hidden></pre>
+            <details class="saved-settings"><summary>โมเดลและการตั้งค่าของงานนี้</summary><pre id="jobSettings" class="transcript"></pre></details>
+          </div>
+        </section>
+      </div>
+    </section>
+    <section id="historyView" hidden>
+      <div class="intro"><span class="eyebrow">TEAM HISTORY</span><h1>ประวัติเอกสาร</h1><p class="muted">ผลลัพธ์ที่บันทึกบน server ทุกคนที่เข้าเว็บนี้เปิดดูได้ โดยไม่เรียกโมเดลซ้ำ</p></div>
+      <div class="card">
+        <div class="toolbar"><h2>รายการทั้งหมด</h2><button id="refreshHistory" class="subtle">รีเฟรช</button><span id="queueSummary" class="muted small" role="status"></span></div>
+        <p id="historyError" class="message error" hidden role="alert"></p>
+        <div class="table-scroll"><table><thead><tr><th>ไฟล์</th><th>วันที่</th><th>สถานะ</th><th></th></tr></thead><tbody id="historyRows"></tbody></table></div>
+        <p id="emptyHistory" class="empty muted" hidden>ยังไม่มีประวัติเอกสาร</p>
+        <button id="moreHistory" class="subtle" hidden>โหลดรายการก่อนหน้า</button>
+      </div>
+    </section>
+  </main>
+  <footer>OCR <span>ผลลัพธ์จาก AI ควรตรวจสอบกับเอกสารต้นฉบับ</span></footer>
+  <script>
+    {% include '_user_app_script.html' %}
+  </script>
+</body>
+</html>
