@@ -1105,9 +1105,6 @@ document.addEventListener("DOMContentLoaded", function () {
     padding: 8px 11px; border-left: 3px solid var(--accent);
     background: var(--accent-soft); border-radius: 0 8px 8px 0; }
   .an-scope-not { color: var(--danger); font-weight: 600; }
-  @keyframes lvFresh { from { background: var(--accent-soft); } to { background: transparent; } }
-  .lv-fresh { animation: lvFresh 1.6s ease-out; border-radius: 6px; }
-  @media (prefers-reduced-motion: reduce) { .lv-fresh { animation: none; } }
   /* The range, one step fainter than the count above it: it is the widest claim
      in the cell and the least precise, so it must not read as the headline. */
   #analysisSum .an-rng { opacity: .8; font-variant-numeric: tabular-nums; }
@@ -11273,8 +11270,8 @@ function paintRunStats(t) {
 }
 
 /* **Responses are applied in request order, not arrival order** (2026-08-25).
-   Two refreshes can be in flight at once -- a chip clicked while the five-second
-   poll is fetching, or two clicks in a row -- and the reply that lands LAST used
+   Two refreshes can be in flight at once -- a chip clicked while Refresh is
+   fetching, or two clicks in a row -- and the reply that lands LAST used
    to win whichever was asked first. The symptom is a card that is exactly one
    change behind: tick a box, watch the previous state paint. Found on the
    Summary tab's toggle, but it was never specific to it -- every control here
@@ -11313,67 +11310,12 @@ async function refreshRuns() {
 }
 runRefresh.addEventListener('click', refreshRuns);
 
-/* ---------- the card keeps itself current ----------
-   **Every refresh used to be tied to something this page had started** — a read,
-   a sweep finishing, a filter change — so rows arriving from anywhere else sat
-   unread until somebody reloaded. A `curl` against /api/ocr, a random test, a
-   second tab, another process: all invisible. This watches for them.
-
-   It polls a two-number signature (`/api/runs/stat`, one `stat()` call) and
-   fetches the real payload only when the file has actually moved. The summary is
-   ~90 KB with every table walked, so polling THAT on a timer would build and
-   discard all of it every few seconds.
-
-   **This is not the never-poll rule being broken.** That rule is about the model
-   server — llama.cpp serves /slots from the same queue as inference, so polling
-   it cancels work. This touches the app's own CSV and no model server.
-
-   Three things it will not do:
-   - poll while the tab is hidden, since nobody is reading the answer;
-   - refresh while a run of ours is streaming, because the `logged` event already
-     does that and a repaint mid-stream fights the live card;
-   - refresh while a fetch is already in flight (`logBusy`).
-
-   Sort, filter and open-panel state all live outside the render, so a repaint
-   that lands under the reader keeps their column order and their chips. */
-const RUNS_POLL_MS = 5000;
-let logSig = null;
-let logPolling = false;
-
-async function pollRuns() {
-  if (logPolling || logBusy || document.hidden) return;
-  // A run of our own is mid-flight; its own `logged` event will refresh us, and
-  // repainting underneath it would fight the live Result card. Read off the
-  // controls that already track it — an enabled Stop means a read is streaming —
-  // rather than a second flag of our own, which could drift out of step with
-  // the buttons on exactly the paths that forgot to set it.
-  if (stopBtn && !stopBtn.disabled) return;
-  logPolling = true;
-  try {
-    const sig = await (await fetch(API + '/runs/stat')).json();
-    const token = sig.size + ':' + sig.mtime;
-    if (logSig === null) { logSig = token; return; }   // first look: adopt, don't repaint
-    if (token !== logSig) {
-      logSig = token;
-      await refreshRuns();
-      flashNewData();
-    }
-  } catch { /* a failed poll is not worth surfacing; the next one retries */ }
-  finally { logPolling = false; }
-}
-
-/* A quiet mark that the card moved on its own. Without it a table silently
-   changing under the reader is indistinguishable from having misread it. */
-function flashNewData() {
-  if (!runStats) return;
-  runStats.classList.remove('lv-fresh');
-  void runStats.offsetWidth;              // restart the animation
-  runStats.classList.add('lv-fresh');
-}
-
-setInterval(pollRuns, RUNS_POLL_MS);
-// Catch up the moment the tab comes back, rather than waiting out the interval.
-document.addEventListener('visibilitychange', () => { if (!document.hidden) pollRuns(); });
+/* ---------- no timer ----------
+   **The card queries only when asked** (2026-10-27). It used to poll
+   `/api/runs/stat` every five seconds and re-query whenever the CSV moved; now
+   rows written from anywhere else -- a `curl`, a second tab, another process --
+   show up when you press Refresh. Filter changes and this page's own runs still
+   refresh it, since those are things you did. */
 
 /* ---------- run mode ---------- */
 /* ---------- theme ----------
