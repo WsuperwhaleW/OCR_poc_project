@@ -11,6 +11,7 @@ from urllib.parse import urlsplit
 from flask import abort, jsonify, render_template, request, send_file
 
 import config
+import priority
 from userpipeline import EngineAdapter, UserService
 from userstore import UserStore, validate_settings
 
@@ -69,6 +70,12 @@ def register(application, engine):
             return jsonify(error=str(err)), 400
         service().wake.set()
         return jsonify(settings=value)
+
+    @application.get('/api/user/status')
+    def user_status():
+        # User jobs always go first (priority.py); a stress test running beside
+        # them still shares the GPU, which the page warns about.
+        return jsonify(stress=priority.stress_runs(), **priority.state())
 
     @application.post('/api/user/models')
     def user_models():

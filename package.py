@@ -49,6 +49,7 @@ FILES = [
     "userweb.py",
     "userpipeline.py",
     "userstore.py",
+    "priority.py",
     "extractionlog.py",
     "scoring.py",
     "segment.py",

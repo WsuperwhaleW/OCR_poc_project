@@ -19,7 +19,7 @@
   const dates = value => new Date(value).toLocaleString('th-TH');
   let files = [], settings = null, sending = false, jobs = [], batchJobs = [], selected = null;
   let historyTimer, detailTimer, batchTimer, historyLoading = false, batchLoading = false, more = false;
-  let modelsTimer, modelsLoading = false, pageClosed = false;
+  let modelsTimer, modelsLoading = false, pageClosed = false, statusTimer;
   let previewKey = null, previewObjectUrl = null, previewId = null, imageZoom = 100;
   $('homeLink').href = window.USER_BASE + '/user';
   function node(tag, text, className) {
@@ -63,6 +63,21 @@
     }
   }
   $('refreshModels').addEventListener('click', refreshModels);
+  // User jobs always go before a stress test, but it still shares the GPU.
+  async function refreshStatus() {
+    clearTimeout(statusTimer);
+    try {
+      const runs = (await api('/status')).stress || [];
+      $('stressAlert').hidden = !runs.length;
+      if (runs.length) {
+        const since = Math.min(...runs.map(run => run.started_at)) * 1000;
+        const time = new Date(since).toLocaleTimeString('th-TH', {hour: '2-digit', minute: '2-digit'});
+        $('stressAlertText').textContent = (runs.length > 1 ? runs.length + ' รายการ ' : '') + 'เริ่มเมื่อ ' + time +
+          ' น. · งานของคุณได้คิวก่อนเสมอ แต่อาจช้ากว่าปกติเพราะใช้ server ร่วมกัน';
+      }
+    } catch (_) { /* The alert is advisory: a failed check leaves it as it was. */ }
+    finally { if (!pageClosed) statusTimer = setTimeout(refreshStatus, 5000); }
+  }
   async function loadSettings() {
     try {
       settings = (await api('/settings')).settings;
@@ -283,7 +298,7 @@
   function tab(mode){for(const key of ['text','fields','json']){const on=mode===key;$(key+'Result').hidden=!on;$(key+'Tab').classList.toggle('selected',on);$(key+'Tab').setAttribute('aria-selected',String(on));}}
   $('fieldsTab').addEventListener('click',()=>tab('fields'));$('textTab').addEventListener('click',()=>tab('text'));$('jsonTab').addEventListener('click',()=>tab('json'));
   window.addEventListener('beforeunload',event=>{if(sending){event.preventDefault();event.returnValue='';}});
-  window.addEventListener('pagehide',event=>{pageClosed=true;clearTimeout(historyTimer);clearTimeout(detailTimer);clearTimeout(batchTimer);clearTimeout(modelsTimer);if(!event?.persisted)clearPreview();});
-  window.addEventListener('pageshow',()=>{if(pageClosed){pageClosed=false;refreshModels();}});
-  loadSettings();loadHistory();refreshModels();
+  window.addEventListener('pagehide',event=>{pageClosed=true;clearTimeout(historyTimer);clearTimeout(detailTimer);clearTimeout(batchTimer);clearTimeout(modelsTimer);clearTimeout(statusTimer);if(!event?.persisted)clearPreview();});
+  window.addEventListener('pageshow',()=>{if(pageClosed){pageClosed=false;refreshModels();refreshStatus();}});
+  loadSettings();loadHistory();refreshModels();refreshStatus();
 })();
