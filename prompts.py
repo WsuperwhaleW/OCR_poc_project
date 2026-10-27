@@ -2208,10 +2208,20 @@ _AGENTIC_BRANCH_SELECTION = """Read both branch keys from the SAME party block:
   or Branch Code. ลำดับที่ counts only when it designates this party's branch, not
   a document/item sequence. Preserve printed digits; Python will pad the code.
   Copy a printed all-zero branch number as printed. It is not a missing value.
+- COMBINED BRANCH NAME AND CODE: in this party's explicitly designated branch/site
+  text (including a branch suffix in parentheses after its company name), a separate
+  five-digit number beside the branch name can be the branch code even without a
+  repeated Branch No. caption. Put that number in {party}_branch and the name alone
+  in {party}_branch_location; do not leave the code attached to the location name.
+  Require the number to belong to that same branch designation. Five digits alone
+  are not sufficient: exclude postal codes in addresses and numbers explicitly
+  labelled as store, customer, vendor or account codes. If its role is unclear,
+  leave the branch code empty rather than guessing.
 - {party}_branch_location takes an explicitly named branch/site, without captions
   such as ชื่อสาขา, สาขา, Branch name, or enclosing brackets. A branch name is also valid
   when a separate branch number exists: put BOTH in their separate keys.
-  A place containing digits is still a place, not a tax branch number.
+  Keep digits that are part of the place name; only separate a branch code supported
+  by the rules above. A number embedded in a place name is not itself a branch code.
 - A bare number, company name or line containing only a branch NUMBER is not a
   location name. A district/town in an ordinary address is not evidence of a branch.
   Require a branch/site designation or a branch suffix attached to this party's name.
@@ -2229,7 +2239,7 @@ _AGENTIC_BRANCH_SELECTION = """Read both branch keys from the SAME party block:
 
 
 def _agentic_party_values(party):
-    # Agentic-only clarification: keep the single-request baseline unchanged.
+    # Tuned Hybrid rules; Single and the frozen Agentic baseline stay separate.
     return _party_tax_id_rules(party) + _AGENTIC_BRANCH_SELECTION.format(party=party)
 
 
