@@ -2291,6 +2291,8 @@ follows your desktop; Light is the one to pick for projecting or screenshotting.
         </div>
         <div class="row" style="margin-top:12px">
           <button id="stBatch" type="button" class="ghost-sm" aria-pressed="false" disabled>Batch requests: off</button>
+          <button id="stFillImages" type="button" class="ghost-sm" aria-pressed="true"
+                  title="When a required field comes back empty, send that document's page images to the extractor and ask for just that field with its Hybrid step">Fill missing from images: on</button>
         </div>
         </div>
         <div id="stHistoryPanel" hidden>
@@ -13598,7 +13600,7 @@ function stCaptureDefaults() {
   const selected = id => [...stEl(id).querySelectorAll('input:checked')].map(el => el.value);
   return {controls: Object.fromEntries(stDefaultControls().map(el =>
       [el.id, el.type === 'checkbox' ? el.checked : el.value])),
-    source: stSource, files: selected('stFiles'), batch: stBatchOn,
+    source: stSource, files: selected('stFiles'), batch: stBatchOn, fillImages: stFillOn,
     realPick: stRealPick, realTypes: stReal && !stReal.error ? selected('stRealTypes') : null,
     realFiles: stReal && !stReal.error ? selected('stRealFiles') : null};
 }
@@ -13637,6 +13639,7 @@ function stLoadModeDefaults(mode, sourceOverride = null) {
   const files = new Set(Array.isArray(saved?.files) ? saved.files : stDefaultBase.files);
   for (const box of stFileBoxes()) box.checked = files.has(box.value);
   stBatchOn = saved?.batch === true;
+  stFillOn = saved?.fillImages !== false;
   stRealPick = saved?.realPick === 'choose' ? 'choose' : 'random';
   stPendingRealDefaults = saved && typeof saved === 'object' ? saved : {};
   stApplyRealDefaults();
@@ -13855,6 +13858,7 @@ function stPaintMode() {
     : m === 'image' ? 'Unavailable for Image to extractor: a run-log row is a read and its transcript' : '';
   stPaintVision();
   stPaintBatch();
+  stPaintFill();
   stPaintFiles();
 }
 
@@ -13897,6 +13901,20 @@ function stPaintBatch() {
   btn.setAttribute('aria-pressed', String(stBatchOn));
   btn.textContent = 'Batch requests: ' + (stBatchOn ? 'on' : 'off');
   btn.title = !ok ? 'Requires vLLM' : '';
+}
+
+/* Full pipeline only: a required field left empty is asked of the page images
+   with its Hybrid step. Hoisted and looks its elements up, like stPaintBatch. */
+var stFillOn = true;   // var, not let: stPaintFill can run before this line
+function stPaintFill() {
+  const btn = document.getElementById('stFillImages');
+  const mode = document.getElementById('stMode');
+  if (!btn || !mode) return;
+  btn.hidden = mode.value !== 'full';
+  btn.disabled = stRunning;
+  btn.classList.toggle('on', stFillOn);
+  btn.setAttribute('aria-pressed', String(stFillOn));
+  btn.textContent = 'Fill missing from images: ' + (stFillOn ? 'on' : 'off');
 }
 
 /* Live monitoring and saved snapshots are offered only for vLLM servers. */
@@ -13950,6 +13968,7 @@ function stBusy(on) {
   stEl('stSaveLog').disabled = on || ['classify', 'image'].includes(stMode.value);
   stEl('stSaveDetails').disabled = on || !ST_EXTRACT_MODES.includes(stMode.value);
   stPaintBatch();
+  stPaintFill();
   stStop.disabled = stStop2.disabled = !on || stStopping;
   if (rtRun) rtRun.disabled = on;
   if (on) runBtn.disabled = true; else paintServer();
@@ -14440,6 +14459,9 @@ function stReportHtml(s, snapshot, host) {
           + Object.entries(plan.no_cache_effect || {})
               .map(([k, v]) => esc(k) + ': ' + esc(v)).join('; ') + ')' : '')
       + (plan.split_pages ? ' · long files spread on idle workers' : '')
+      + (plan.mode === 'full' ? (plan.fill_missing
+          ? ' · missing required fields asked of the page images (Hybrid)'
+          : ' · <b>no fill from images</b>') : '')
       + (plan.vllm_batch ? ' · <b>batched</b>, up to ' + plan.batch_size
           + ' per /batch request on ' + (plan.batch_servers || []).map(esc).join(' and ') : '')
       + (plan.save_log ? ' · saving each job to the run log as stress run <b>'
@@ -14630,6 +14652,7 @@ function stBody() {
     metrics: false,
     no_cache: stEl('stNoCache').checked,
     split_pages: stEl('stSplitPages').checked,
+    fill_missing: stFillOn && stMode.value === 'full',
     vllm_batch: stBatchOn && !stEl('stBatch').disabled,
     save_log: stEl('stSaveLog').checked && !['classify', 'image'].includes(stMode.value),
     save_details: stEl('stSaveDetails').checked && ST_EXTRACT_MODES.includes(stMode.value),
@@ -14864,6 +14887,7 @@ if (stRun) {
   stEl('stRealFiles').addEventListener('change', stPaintFiles);
   stEl('stRealRefresh').addEventListener('click', () => stLoadReal());
   stEl('stBatch').addEventListener('click', () => { stBatchOn = !stBatchOn; stPaintBatch(); });
+  stEl('stFillImages').addEventListener('click', () => { stFillOn = !stFillOn; stPaintFill(); });
   stEl('stConc').addEventListener('input', stPaintBatch);
   stRun.addEventListener('click', () => stStart());
   const stop = async () => {
@@ -15320,6 +15344,7 @@ function historyRender(item) {
     ['Sampling interval (s)', cfg.metrics_every], ['GPU exporter', cfg.gpu_url || 'Default / local'],
     ['Extraction GPU exporter', cfg.gpu_extract_url || 'Default / local'],
     ['Bypass prompt cache', cfg.no_cache], ['Batch requests (vLLM /batch)', cfg.vllm_batch ?? false],
+    ['Fill missing from images (Hybrid)', cfg.mode === 'full' ? cfg.fill_missing ?? true : undefined],
     ['Save per-job accuracy rows', cfg.save_log],
     ['Detail log destination', cfg.save_details ? 'Browser download only; not stored here' : 'Off'],
     ['Workspace', cfg.workspace || 'Default'],

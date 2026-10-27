@@ -19,7 +19,7 @@ function setup() {
   const ctx = vm.createContext({extractMode: 'single', EXTRACT_STEP_COUNT: '6-20',
     HYBRID_STEP_COUNT: '5-18', fldMode: el('fldMode'), extractSel: el('extractSel'),
     fxMode: el('fxMode'), fxSchemaFirst: el('fxSchemaFirst'), extractNote: el('extractNote'),
-    esc: x => x, stMode: el('stMode'), stEl: el, stSource: 'benchmark', stBatchOn: false,
+    esc: x => x, stMode: el('stMode'), stEl: el, stSource: 'benchmark', stBatchOn: false, stFillOn: true,
     stSelectedCases: () => ['sol001']});
   const modes = page.slice(page.indexOf('const ST_EXTRACT_MODES'));
   vm.runInContext(modes.slice(0, modes.indexOf('\n')).replace('const ', 'var ') + '\n'

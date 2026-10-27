@@ -1898,7 +1898,9 @@ scored again, so the field score and *Missing required* describe the form the pi
 ended with. The flag row goes *retrying* → *resolved* or *retry failed*, the fill's tokens
 count toward the job, and the *Missing required* tile adds how many of the fields asked
 the images filled. The extraction model must take images; one that cannot fails the fill
-and the row says so.
+and the row says so. The **Fill missing from images** toggle button (shown in Full
+pipeline, on by default, saved with the mode's defaults) turns it off; the API takes
+`"fill_missing": false`. With it off, an empty required field is only flagged.
 
 **Every new Stress test is saved to History.** Open **Stress test → History** to select a run
 and inspect its Concurrent, Queue, Warm-up, time limit, seed, document strategy,

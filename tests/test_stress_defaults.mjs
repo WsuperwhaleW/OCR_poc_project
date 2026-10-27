@@ -44,7 +44,7 @@ function setup(storage = new Map(), failStorage = false) {
   // An ID outside the Stress setup must never be restored from storage.
   fields.globalModel = {value: 'current-model'};
   const ctx = vm.createContext({API: '/ocr/api', REAL_MODES: ['ocr', 'full'],
-    stMode: fields.stMode, stSource: 'benchmark', stBatchOn: false,
+    stMode: fields.stMode, stSource: 'benchmark', stBatchOn: false, stFillOn: true,
     stRealPick: 'random', stReal: null, stRunning: false,
     stEl: id => fields[id], stFileBoxes: () => fields.stFiles.boxes,
     stSetSource: value => {ctx.stSource = value;},

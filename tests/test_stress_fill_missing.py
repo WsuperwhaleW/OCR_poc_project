@@ -43,7 +43,7 @@ class FillStepsTests(unittest.TestCase):
 
 class FullFillTests(unittest.TestCase):
 
-    def _run(self, result, answers, pages=None, texts=("text",)):
+    def _run(self, result, answers, pages=None, texts=("text",), fill_missing=True):
         def read(pages, cancel, rec, live, stats_out=None, job=0, case="", kept=None):
             rec.update(ocr_s=1.0, pages=len(pages), ocr_tokens=10)
             for n, page in enumerate(pages, 1):
@@ -59,7 +59,8 @@ class FullFillTests(unittest.TestCase):
             return answers.pop(0)
 
         live = app._StressLive(1)
-        cfg = {"mode": "full", "concurrency": 1, "extract_mode": "single", "detail": "low"}
+        cfg = {"mode": "full", "concurrency": 1, "extract_mode": "single", "detail": "low",
+               "fill_missing": fill_missing}
         spec = {"index": 0, "case": "sol002", "submitted": time.perf_counter()}
         prepared = {"pages": {"sol002": pages or [_page()]}, "sources": {"sol002": "x"}}
         with patch.object(app, "_STRESS_EVIDENCE", app._StressEvidence(10)), \
@@ -132,6 +133,14 @@ class FullFillTests(unittest.TestCase):
         self.assertEqual(alerts[-1]["state"], "resolved")
         self.assertIn("doc2.vat_total", alerts[-1]["message"])
 
+    def test_the_toggle_off_flags_the_field_and_asks_nothing(self):
+        rec, alerts, _, asked = self._run(_doc({"vat_total": ""}, ["vat_total"]), [],
+                                          fill_missing=False)
+        self.assertEqual(asked, [])
+        self.assertEqual([(a["kind"], a.get("state")) for a in alerts], [("missing", None)])
+        self.assertEqual(rec["missing_required"], 1)
+        self.assertNotIn("fill_jobs", rec)
+
     def test_a_whole_form_asks_nothing(self):
         rec, alerts, _, asked = self._run(_doc({"vat_total": "1"}, ["vat_total"]), [])
         self.assertEqual((asked, alerts), ([], []))
@@ -152,6 +161,24 @@ class FullFillTests(unittest.TestCase):
         text, only, mode, fed = seen[0]
         self.assertEqual((only, mode, fed), (["totals"], "hybrid", True))
         self.assertIn("1 page image(s)", text)
+
+
+class FillToggleConfigTests(unittest.TestCase):
+
+    def _config(self, **body):
+        status = {"available": True, "text_available": True, "model": "m",
+                  "url": "http://x", "kind": "ollama"}
+        with patch.object(app, "llama_status", return_value=status), \
+                patch.object(app.backends, "extract_status", return_value=status):
+            return app._stress_config(body)
+
+    def test_on_unless_the_request_turns_it_off(self):
+        self.assertTrue(self._config(mode="full")["fill_missing"])
+        self.assertTrue(self._config(mode="full", fill_missing=True)["fill_missing"])
+        self.assertFalse(self._config(mode="full", fill_missing=False)["fill_missing"])
+
+    def test_only_full_pipeline_fills(self):
+        self.assertFalse(self._config(mode="extract", fill_missing=True)["fill_missing"])
 
 
 if __name__ == "__main__":
