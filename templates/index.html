@@ -427,6 +427,14 @@ document.addEventListener("DOMContentLoaded", function () {
     margin: 10px 0; padding: 10px; border-left: 3px solid var(--accent);
     background: var(--accent-soft); border-radius: 0 8px 8px 0; font-size: .85rem;
   }
+  /* A missing-required stress flag's form, beside its pages (`cmpFieldsHtml`). */
+  #cmpFieldsPane h4 { margin: 4px 0 6px; font-size: .82rem; }
+  #cmpFieldsPane table { border-collapse: collapse; width: 100%; font-size: .8rem; margin-bottom: 12px; }
+  #cmpFieldsPane th, #cmpFieldsPane td { border: 1px solid var(--border); padding: 4px 7px;
+    text-align: left; vertical-align: top; }
+  #cmpFieldsPane td.v { word-break: break-word; }
+  #cmpFieldsPane tr.miss td { background: rgba(255, 107, 107, .14); }
+  #cmpFieldsPane tr.miss td.v { color: var(--danger); font-style: italic; }
   #fields { display: none; }
   /* The Grouping view (2026-09-16): which pages of the file are becoming which
      documents, page by page as the walk goes, with each group's pages on hand
@@ -2557,6 +2565,8 @@ follows your desktop; Light is the one to pick for projecting or screenshotting.
           <button data-view="source-model" class="on">Source › OCR</button>
           <button data-view="source-truth">Source › Truth</button>
           <button data-view="model-truth">OCR › Truth</button>
+          <button data-view="model-fields" hidden>OCR › Fields</button>
+          <button data-view="source-fields" hidden>Source › Fields</button>
         </div>
         <button id="cmpPrev" class="ghost-sm">‹</button>
         <span id="cmpLabel">Page 1</span>
@@ -2586,6 +2596,10 @@ follows your desktop; Light is the one to pick for projecting or screenshotting.
             <div id="cmpTruthRender"></div>
             <pre id="cmpTruthText"></pre>
           </div>
+        </div>
+        <div class="cmp-col" id="cmpColFields" hidden>
+          <div class="cmp-cap">Fields <span id="cmpFieldsCap"></span></div>
+          <div class="cmp-pane" id="cmpFieldsPane"></div>
         </div>
       </div>
     </div>
@@ -3035,6 +3049,9 @@ const cmpTruthPane = document.getElementById('cmpTruthPane');
 const cmpTruthRender = document.getElementById('cmpTruthRender');
 const cmpTruthText = document.getElementById('cmpTruthText');
 const cmpTruthCap = document.getElementById('cmpTruthCap');
+const cmpColFields = document.getElementById('cmpColFields');
+const cmpFieldsPane = document.getElementById('cmpFieldsPane');
+const cmpFieldsCap = document.getElementById('cmpFieldsCap');
 const cmpImgCap = document.getElementById('cmpImgCap');
 const cmpModelCap = document.getElementById('cmpModelCap');
 let job = null, pageTexts = [], cmpPage = 0;
@@ -11671,7 +11688,11 @@ const CMP_VIEWS = {
   'source-model': [cmpColImg, cmpColModel],
   'source-truth': [cmpColImg, cmpColTruth],
   'model-truth':  [cmpColModel, cmpColTruth],
+  // Only for a missing-required stress flag: the form it came back with.
+  'model-fields': [cmpColModel, cmpColFields],
+  'source-fields': [cmpColImg, cmpColFields],
 };
+const CMP_FIELD_VIEWS = ['model-fields', 'source-fields'];
 function hasRun() { return !!(job && pageTexts.length); }
 function cmpInStress() { return !!(cmpOverride && stressPaneOpen); }
 /* What the per-page columns step through: the workspace run's pages, or, for a
@@ -11703,7 +11724,29 @@ function stReadOutcome(r) {
    exist is shown on its own rather than beside an empty box. */
 function colAvailable(col) {
   if (col === cmpColTruth) return !!truthCase();
+  if (col === cmpColFields) return cmpInStress() && !!cmpOverride.fields;
+  // An extract-only job read no page, so its flag has text and no image.
+  if (col === cmpColImg && cmpInStress()) return cmpOverride.reads.some(r => r.src);
   return cmpInStress() ? cmpTotal() > 0 : hasRun();
+}
+/* Each document's form: every key asked, its value, Required where the
+   requirement demands it, and the flagged ones marked. */
+function cmpFieldsHtml(docs) {
+  const many = docs.length > 1;
+  return docs.map(d => {
+    const head = many || d.error ? '<h4>Document ' + d.document
+      + (d.pages && d.pages.length ? ' · pages ' + d.pages.join(', ') : '')
+      + (d.doc_types && d.doc_types.length ? ' · ' + esc(d.doc_types.join(', ')) : '')
+      + (d.error ? ' · <span style="color:var(--danger)">' + esc(d.error) + '</span>' : '')
+      + '</h4>' : '';
+    if (!d.rows.length) return head + '<p class="note">No fields came back.</p>';
+    return head + '<table><tr><th>Field</th><th>Value</th><th></th></tr>'
+      + d.rows.map(r => '<tr' + (r.missing ? ' class="miss"' : '') + '><td>' + esc(r.key)
+        + '</td><td class="v">' + (r.value ? esc(r.value) : r.missing ? 'missing' : '—')
+        + '</td><td>' + (r.required ? '<span class="st-tag '
+          + (r.missing ? 'st-bad' : 'st-info') + '">required</span>' : '')
+        + '</td></tr>').join('') + '</table>';
+  }).join('');
 }
 function viewFull(view) { return CMP_VIEWS[view].every(colAvailable); }
 
@@ -11764,12 +11807,21 @@ function paintCompare() {
   const view = effectiveView();
   const cols = view ? CMP_VIEWS[view]
                     : [cmpColImg, cmpColModel, cmpColTruth].filter(colAvailable);
-  [cmpColImg, cmpColModel, cmpColTruth].forEach(c => { c.hidden = !cols.includes(c); });
+  [cmpColImg, cmpColModel, cmpColTruth, cmpColFields].forEach(c => { c.hidden = !cols.includes(c); });
   cmpGrid.classList.toggle('one', cols.length < 2);
+  const withFields = colAvailable(cmpColFields);
   [...cmpModes.querySelectorAll('button')].forEach(b => {
     b.classList.toggle('on', b.dataset.view === view);
     b.disabled = !viewFull(b.dataset.view);
+    // The Fields pairs exist only for a missing-required flag's window.
+    if (CMP_FIELD_VIEWS.includes(b.dataset.view)) b.hidden = !withFields;
   });
+  if (cols.includes(cmpColFields)) {
+    const docs = cmpOverride.fields;
+    const gaps = docs.reduce((n, d) => n + d.rows.filter(r => r.missing).length, 0);
+    cmpFieldsCap.textContent = '· ' + gaps + ' required missing';
+    cmpFieldsPane.innerHTML = cmpFieldsHtml(docs);
+  }
 
   const total = cmpTotal();
   // The page controls belong to the two columns that are per-page; ground truth
@@ -11780,15 +11832,25 @@ function paintCompare() {
     const o = cmpOverride;
     o.at = Math.max(0, Math.min(o.at, total - 1));
     const r = o.reads[o.at];
-    cmpLabel.textContent = total > 1 ? `Read ${o.at + 1} of ${total}` : 'Read 1';
+    // A loop or DRY flag steps through the reads of one page; a missing-required
+    // flag through the pages of its document, each as the read that was kept.
+    const unit = o.fields ? 'Page' : 'Read';
+    const page = r.page || o.page;
+    [cmpPrev, cmpNext, cmpLabel].forEach(el => { el.hidden = false; });
+    cmpLabel.textContent = total > 1 ? `${unit} ${o.at + 1} of ${total}` : unit + ' 1';
     cmpPrev.disabled = o.at === 0;
     cmpNext.disabled = o.at >= total - 1;
-    if (cmpImg.getAttribute('src') !== r.src) cmpImg.src = r.src;
-    cmpOpen.href = r.src;
-    cmpDl.href = r.src;
-    cmpDl.download = o.case + '-p' + o.page + '-' + (r.detail || 'read') + '.png';
-    cmpImgCap.textContent = '· ' + o.case + ' page ' + o.page + (r.detail ? ' at ' + r.detail : '');
-    cmpModelCap.textContent = '· ' + stReadOutcome(r);
+    cmpOpen.hidden = cmpDl.hidden = cmpColImg.hidden || !r.src;
+    if (r.src) {
+      if (cmpImg.getAttribute('src') !== r.src) cmpImg.src = r.src;
+      cmpOpen.href = r.src;
+      cmpDl.href = r.src;
+      cmpDl.download = o.case + '-p' + page + '-' + (r.detail || 'read') + '.png';
+    }
+    cmpImgCap.textContent = '· ' + o.case + (page ? ' page ' + page : '')
+      + (r.detail ? ' at ' + r.detail : '');
+    cmpModelCap.textContent = r.page === null && o.fields ? '· the transcript the extraction was fed'
+      : '· ' + stReadOutcome(r);
     const raw = cmpRawChk.checked;
     cmpRender.style.display = raw ? 'none' : 'block';
     cmpRawText.style.display = raw ? 'block' : 'none';
@@ -11834,6 +11896,8 @@ function enableCompare() {
   const ready = cmpInStress() || hasRun() || !!truthCase();
   cmpToggle.disabled = !ready;
   cmpHint.textContent = !ready ? 'Run a document first.'
+    : cmpInStress() && cmpOverride.fields ? 'Stress test · ' + cmpOverride.case
+      + ' — the page and the fields its extraction came back with, required ones that are empty in red.'
     : cmpInStress() ? 'Stress test · ' + cmpOverride.case + ' page ' + cmpOverride.page
       + ' — every read of it, the page it was sent and the text it returned.'
     : hasRun() ? 'Source page, transcript and ground truth, two at a time.'
@@ -14082,12 +14146,18 @@ async function stShowEvidence(alertId, kind) {
     stNote.classList.add('err');
     return;
   }
-  const reads = data.attempts.map((a, n) => Object.assign({}, a, { src: base + '/' + n + '.png' }));
+  // `image` is false for a read with no page (an extract-only job's transcript).
+  const reads = data.attempts.map((a, n) => Object.assign({}, a,
+    { src: a.image === false ? null : base + '/' + n + '.png' }));
   const first = kind === 'dry' ? reads.findIndex(r => r.dry)
                                : reads.findIndex(r => r.looped || r.truncated);
   cmpOverride = { alert: alertId, case: data.case, page: data.page,
-                  truthCase: data.truth_case, reads, at: Math.max(0, first) };
-  cmpView = 'source-model';
+                  truthCase: data.truth_case, reads, at: Math.max(0, first),
+                  fields: data.fields || null };
+  // An extraction flag opens on the page beside its form, so a missing field
+  // can be looked for on the image; on the transcript where no page was read.
+  cmpView = !data.fields ? 'source-model'
+    : reads.some(r => r.src) ? 'source-fields' : 'model-fields';
   paintMain();
   compareEl.hidden = false;
   cmpToggle.textContent = 'Hide';
