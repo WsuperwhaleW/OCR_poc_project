@@ -1158,6 +1158,7 @@ def _chat_measurement(payload, status, response=None, error=None, seconds=None):
 
 
 def _post_once(url: str, payload: dict, status: dict):
+    payload = _with_images(url, payload, status)
     chats = getattr(_agentic_chat_context, "requests", None)
     if chats is None:
         return _post_dispatch(url, payload, status)
@@ -1329,21 +1330,79 @@ def _progress_swap(cb):
 
 
 def _carry_progress(fn):
-    """`fn`, set to run with this thread's progress hook -- for handing to a thread."""
+    """`fn`, set to run with this thread's progress hook -- for handing to a thread.
+    The page images of an image-fed extraction (`_feeding_images`) go with it."""
     cb = getattr(_progress, "cb", None)
     what = getattr(_progress, "what", None)
-    if cb is None:
+    images = getattr(_progress, "images", None)
+    if cb is None and images is None:
         return fn
 
     def run(*args, **kwargs):
         previous, previous_what = _progress_swap(cb), getattr(_progress, "what", None)
-        _progress.what = what
+        previous_images = getattr(_progress, "images", None)
+        _progress.what, _progress.images = what, images
         try:
             return fn(*args, **kwargs)
         finally:
             _progress_swap(previous)
-            _progress.what = previous_what
+            _progress.what, _progress.images = previous_what, previous_images
     return run
+
+
+# An image-fed extraction (2026-10-27, the stress test's image mode): no page is
+# read, and every pass-2 request this thread makes -- classify, the single
+# request, each agentic step and its retries -- carries the page images at the
+# head of its user message (`_with_images`, in `_post_once`). The prompts are
+# the text ones unchanged; the transcript they wrap is `prompts.IMAGE_TRANSCRIPT`.
+# The checks that need a transcript to check against stand down while it is on:
+# grounding re-asks, the classifier's heading test, the item table, blame.
+
+
+@contextmanager
+def _feeding_images(uris):
+    """Send these page images (data URIs) with every pass-2 request in the block.
+
+    Never wrapped round a `yield`, for the reason `_asking` gives."""
+    previous = getattr(_progress, "images", None)
+    _progress.images = list(uris) or None
+    try:
+        yield
+    finally:
+        _progress.images = previous
+
+
+def _image_fed() -> bool:
+    """Whether this thread's extraction is reading page images, not a transcript."""
+    return bool(getattr(_progress, "images", None))
+
+
+def _with_images(url: str, payload: dict, status: dict) -> dict:
+    """`payload` with this thread's page images in its last user message, or as it is.
+
+    Images first, then the text: every request of one extraction then opens with
+    the same images and the same prefix, so a server's prefix cache still covers
+    what the agentic steps share. Ollama's native `/api/chat` (a schema retry)
+    takes base64 beside a string; everything else takes OpenAI content parts. On
+    vLLM the server's own image cap is lifted as a read lifts it
+    (`vllm_page_fields`), so the extractor sees the Detail the run chose.
+    """
+    images = getattr(_progress, "images", None)
+    if not images or not isinstance(payload.get("messages"), list):
+        return payload
+    messages = [dict(m) for m in payload["messages"]]
+    user = next((m for m in reversed(messages) if m.get("role") == "user"), None)
+    if user is None or not isinstance(user.get("content"), str):
+        return payload
+    if url.endswith("/api/chat"):
+        user["images"] = [uri.split(",", 1)[-1] for uri in images]
+    else:
+        user["content"] = ([{"type": "image_url", "image_url": {"url": uri}} for uri in images]
+                           + [{"type": "text", "text": user["content"]}])
+    out = {**payload, "messages": messages}
+    if (status or {}).get("kind") == "vllm" and settings.VLLM_MAX_PIXELS:
+        out.setdefault("mm_processor_kwargs", {"max_pixels": settings.VLLM_MAX_PIXELS})
+    return out
 
 
 @contextmanager
@@ -1859,7 +1918,9 @@ def _classify_with_model(text: str, status: dict):
     if not codes or not heading:
         return [], ""
     squashed = grounding.squash(heading)
-    if not squashed or squashed not in grounding.squash(text):
+    # Read off page images there is no printed text to hold the heading to; the
+    # codes are still held to the vocabulary above.
+    if not _image_fed() and (not squashed or squashed not in grounding.squash(text)):
         # It named a heading the page does not print, so it read nothing -- the
         # codes are a guess about a document it did not look at. The heading
         # table gets the question instead.
@@ -3010,8 +3071,13 @@ def _ungrounded_in(values: dict, source) -> list:
     them: neither is a claim about the page. Line items are skipped too -- a table
     row is checked cell by cell at the end, and quoting a whole row back at the
     model is a worse question than not asking one.
+
+    Nothing, where the step read page images (`_image_fed`): there is no
+    transcript, and every value would be quoted back as invented.
     """
     bad = []
+    if _image_fed():
+        return bad
     for key, value in values.items():
         if isinstance(value, list):
             continue
@@ -4228,8 +4294,8 @@ def _item_table_stream(text: str, form: dict, status: dict, pages=None,
     page 1 whichever page of the file it was; a document of several pages
     carries its own markers and needs no help.
     """
-    if not TABLE_EXTRACT or form.get("items"):
-        return ...
+    if not TABLE_EXTRACT or form.get("items") or _image_fed():
+        return ...      # an image-fed extraction has no transcript to cut it from
     tag = {"document": document} if document else {}
 
     def event(agent, state, **extra):
@@ -4412,7 +4478,27 @@ def extract_fields_stream(text: str, mode: str = None, case_id: str = None,
         result["server_time"] = served
     if isinstance(result, dict):
         result["schema_first"] = schema_first
+        if _image_fed():
+            _ungrounded_result(result)
     return result
+
+
+def _ungrounded_result(result: dict) -> None:
+    """An image-fed result's grounding, said to be unchecked rather than ~0%.
+
+    `grounding.check` holds each value to the transcript, and an image-fed
+    extraction has none -- every value would read as invented, and a grounded
+    ratio of zero would be a claim about the model that nothing measured. The
+    keys left blank (`missing`) are a fact about the form, and are kept.
+    """
+    for doc in [result, *[d for d in result.get("documents") or [] if isinstance(d, dict)]]:
+        found = doc.get("grounding")
+        if isinstance(found, dict):
+            doc["grounding"] = {"skipped": "no transcript: the extractor read the page images",
+                                "missing": list(found.get("missing") or []),
+                                "statuses": {}, "flagged": [], "counts": {}, "checked": 0,
+                                "grounded_ratio": None}
+    result["image_fed"] = True
 
 
 def _extract_file(text, mode, case_id, steps, doc_type, pages, truth_fed, status,
@@ -4845,6 +4931,8 @@ def _attribute_blame(score, case_id: str, transcript: str,
     It moves no score and no verdict -- see `blame.py`, which is emphatic about
     that -- so a failure here costs a note and must not cost the fields.
     """
+    if _image_fed():
+        return {"skipped": "no transcript: the extractor read the page images"}
     try:
         return blame.check(score, transcript, _page_text(case_id), truth_fed)
     except Exception as err:  # pragma: no cover
@@ -7464,7 +7552,8 @@ def _stress_config(body: dict) -> dict:
     shape = (body.get("extract_mode") or extract_mode()).strip().lower()
     if shape not in ("single", "agentic", "hybrid"):
         raise ValueError("extract_mode must be 'single', 'agentic' or 'hybrid'.")
-    schema_first = _requested_schema_first(body) and shape in ("agentic", "hybrid") and mode in ("extract", "full")
+    schema_first = (_requested_schema_first(body) and shape in ("agentic", "hybrid")
+                    and mode in ("extract", "full", "image"))
     save_details = body.get("save_details", False)
     if not isinstance(save_details, bool):
         raise ValueError("save_details must be true or false.")
@@ -7478,8 +7567,8 @@ def _stress_config(body: dict) -> dict:
         raise ValueError("source must be 'benchmark' or 'realdata'.")
     if source == "realdata":
         if mode not in REAL_STRESS_MODES:
-            raise ValueError("realData files have no ground truth, so only OCR only "
-                             "and Full pipeline can run on them.")
+            raise ValueError("realData files have no ground truth, so only OCR only, "
+                             "Full pipeline and Image to extractor can run on them.")
         cases = [f["name"] for f in real_files()]
         if not cases:
             raise ValueError(f"The realData folder ({REAL_DIR}) has no readable files.")
@@ -7519,11 +7608,21 @@ def _stress_config(body: dict) -> dict:
         if not info["available"]:
             raise ValueError(info["reason"])
         used.append(info)
-    if mode in ("extract", "classify", "full"):
+    sees = None
+    if mode in ("extract", "classify", "full", "image"):
         info = backends.extract_status()
         if not info["text_available"]:
             raise ValueError(info["text_reason"])
         used.append(info)
+        if mode == "image":
+            # Refused only where the server SAYS the model has no vision. A
+            # server that does not say (vLLM) is tried, and a model that cannot
+            # take an image fails its first request -- an error the run flags.
+            sees = _extractor_vision(info)
+            if sees is False:
+                raise ValueError(f"The extraction model {info.get('model') or ''} reports no "
+                                 "vision, so it cannot be sent page images. Choose a vision "
+                                 "model for extraction, or run Full pipeline.")
     # vLLM's /batch route (vllmbatch.py). A server that is not vLLM is sent
     # its requests one by one as always; a run where none of them is, is refused.
     vllm_batch = bool(body.get("vllm_batch"))
@@ -7549,8 +7648,11 @@ def _stress_config(body: dict) -> dict:
         "vllm_batch": vllm_batch,
         # Classification has no row shape: a glued pack is no benchmark case and
         # its score is a grouping, so nothing is written for it.
-        "save_log": bool(body.get("save_log")) and mode != "classify",
-        "save_details": save_details and mode in ("extract", "full"),
+        # Nor has an image-fed job: a run-log row is a read and the extraction
+        # of its transcript, and its grounded ratio is over that transcript.
+        "save_log": bool(body.get("save_log")) and mode not in ("classify", "image"),
+        "save_details": save_details and mode in ("extract", "full", "image"),
+        "extractor_vision": sees,
         "history_monitor": bool(body.get("history_monitor", True)),
         "gpu_url": str(body.get("gpu_url") or "").strip() or MONITOR_GPU_URL,
         "gpu_extract_url": str(body.get("gpu_extract_url") or "").strip() or MONITOR_GPU_URL,
@@ -7568,9 +7670,21 @@ def _stress_config(body: dict) -> dict:
     }
 
 
-# The stress modes a realData file can run in: both start from a read. Extract
+# The stress modes a realData file can run in: they start from the page. Extract
 # and classify start from a ground-truth transcript, which realData has none of.
-REAL_STRESS_MODES = ("ocr", "full")
+REAL_STRESS_MODES = ("ocr", "full", "image")
+
+
+def _extractor_vision(info: dict):
+    """Whether the extraction model takes images: True, False, or None where its
+    server does not say. Read off the model's own entry, not off `info["vision"]`
+    -- an extraction status describes the READER's vision, or none at all."""
+    model = info.get("model")
+    entry = next((m for m in info.get("models") or []
+                  if model and backends._same_model(m.get("name") or "", model)), None)
+    if entry is None or entry.get("vision") is None:
+        return None
+    return bool(entry["vision"])
 
 
 def _stress_pages(case_id: str, detail: str, source: str = "benchmark") -> tuple:
@@ -7646,6 +7760,135 @@ def _stress_retry_page(page):
     if hasattr(page, "_dry_label"):
         tag_page(bigger, page._dry_label, higher)
     return bigger
+
+
+# --------------------------------------------------------------------------
+# Image mode (2026-10-27, at the user's request: *a mode that can send the image
+# directly to extractor if they can handle image ... keep all the feature from
+# the ocr and extraction like if error allow me to see it or retry if the field
+# is missing*). No page is read. Each job sends its prepared pages to the
+# extraction model with the run's shape and extras (`_feeding_images`), and its
+# flags open the pages beside the form, as a full run's do. Where the form comes
+# back with a Mandatory field empty, or the reply loops or hits the cap, the
+# pages are rebuilt one Detail up and extracted once more -- the climb a looped
+# read takes (`_stress_retry_page`, under LOOP_RETRY) -- and the flag's one row
+# goes `retrying` -> `resolved` or `retry failed`.
+# --------------------------------------------------------------------------
+
+def _image_reads(pages, note: str) -> list:
+    """Evidence entries for pages sent to the extractor: the page, no text."""
+    return [{"number": n, "text": "", "page": page,
+             "detail": (getattr(page, "_stress_origin", None) or {}).get("detail"),
+             "looped": False, "truncated": False, "dry": None, "note": note[:300]}
+            for n, page in enumerate(pages, 1)]
+
+
+def _image_extract_once(pages, cfg: dict, case_id, live: _StressLive, job: int) -> dict:
+    """One image-fed extraction of `pages`, with the run's shape and extras.
+
+    The file is one document: segmentation reads page text, and there is none.
+    `case_id` still decides the form where the classifier cannot, and scores it.
+    """
+    text = prompts.IMAGE_TRANSCRIPT.format(pages=len(pages))
+    with _feeding_images([getattr(p, "_data_uri", None) or image_data_uri(p)
+                          for p in pages]):
+        return extract_fields(text, cfg["extract_mode"], case_id, pages=[text],
+                              extras=cfg.get("extras"),
+                              schema_first=cfg.get("schema_first", False),
+                              each=lambda event: live.extract_event(job, event))
+
+
+def _image_problem(result: dict) -> tuple:
+    """`(kind, what, fields)` of an image-fed form worth extracting again, or
+    `(None, "", [])`. An error other than a looped or capped reply is not one:
+    it is the server refusing the request, and asking again with bigger images
+    would only be refused again."""
+    if result.get("error"):
+        if result.get("looped"):
+            return "looped", "the reply looped", []
+        if result.get("truncated"):
+            return "truncated", "the reply hit the token cap", []
+        return None, "", []
+    missing = _missing_required(result)
+    if not missing:
+        return None, "", []
+    several = len(missing) > 1 or (result.get("documents_found") or 1) > 1
+    listed = "; ".join((f"doc {n}: " if several else "") + ", ".join(keys)
+                       for n, keys in missing)
+    count = sum(len(keys) for _, keys in missing)
+    return ("missing", f"{count} required field(s) came back empty: {listed}",
+            [f"doc{n}.{k}" if several else k for n, keys in missing for k in keys])
+
+
+def _image_cost(result: dict) -> tuple:
+    """What makes one image-fed form worse than another: an error, then gaps."""
+    return (bool(result.get("error")),
+            sum(len(keys) for _, keys in _missing_required(result)))
+
+
+def _stress_image_extract(pages, cfg: dict, case_id, rec: dict, live: _StressLive,
+                          job: int, who: str, window, cancel) -> tuple:
+    """Image mode's extraction of one job: `(result, reads, alert)`.
+
+    `reads` is what a flag's window shows -- each page sent, both attempts' where
+    there was a retry. `alert` is the flag this raised and has kept up to date,
+    or None where the first form came back whole; the caller raises no second
+    flag for the same problem. `window` is the job's `fields_window`.
+
+    The kept form is the better of the two (no error, then fewest gaps; the
+    retry on a tie), and its tokens are both attempts': the server did both.
+    """
+    detail = cfg["detail"]
+    result = _image_extract_once(pages, cfg, case_id, live, job)
+    reads = _image_reads(pages, f"sent to the extractor at {detail}")
+    kind, what, fields = _image_problem(result)
+    if kind is None:
+        return result, reads, None
+    extra = {"fields": fields} if fields else {}
+    began = time.perf_counter()
+    bigger = ([_stress_retry_page(p) for p in pages]
+              if LOOP_RETRY and not cancel.is_set() else [])
+    rec["retry_prepare_s"] = round(time.perf_counter() - began, 3)
+    higher = next((b._stress_origin["detail"] for b in bigger if b is not None), None)
+    if higher is None:
+        why = ("the run was stopped" if cancel.is_set() else "LOOP_RETRY is off"
+               if not LOOP_RETRY else "no higher Detail gives bigger pages")
+        alert = live.flag(kind, job, who, f"{what} at {detail} -- no retry: {why}",
+                          stage="extract", state="no retry", evidence=True, **extra)
+        window(alert, result, _missing_required(result))
+        return result, reads, alert
+    alert = live.flag(kind, job, who, f"{what} at {detail} -- extracting again at {higher}",
+                      stage="extract", state="retrying", evidence=True, **extra)
+    window(alert, result, _missing_required(result))
+    rec["image_retries"] = 1
+    live.touch(job)
+    retried = [b if b is not None else p for b, p in zip(bigger, pages)]
+    second = _image_extract_once(retried, cfg, case_id, live, job)
+    kind2, what2, _ = _image_problem(second)
+    if second.get("error") and kind2 is None:
+        what2 = "the request failed: " + str(second["error"])[:160]
+    reads = (_image_reads(pages, f"attempt 1 at {detail}: {what}")
+             + _image_reads(retried, f"attempt 2 at {higher}: " + (what2 or "nothing missing")))
+    took_retry = _image_cost(second) <= _image_cost(result)
+    kept = second if took_retry else result
+    rec["image_detail"] = higher if took_retry else detail
+    if not what2:
+        rec["image_recovered"] = 1
+        live.update_flag(alert, f"{what} at {detail} -- resolved: extracted again at "
+                                f"{higher} with nothing missing", state="resolved")
+    else:
+        live.update_flag(alert, f"{what} at {detail}; again at {higher}, {what2} -- kept "
+                                f"the {rec['image_detail']} form",
+                         state="retry failed")
+    kept = dict(kept)
+    kept["tokens"] = (result.get("tokens") or 0) + (second.get("tokens") or 0)
+    served = [r.get("server_time") or {} for r in (result, second)]
+    if any(served):
+        kept["server_time"] = dict(kept.get("server_time") or {})
+        for key in ("in_tokens", "out_tokens"):
+            values = [s.get(key) for s in served if s.get(key) is not None]
+            kept["server_time"][key] = sum(values) if values else None
+    return kept, reads, alert
 
 
 class _StressPages:
@@ -8252,7 +8495,7 @@ def _stress_job(spec: dict, cfg: dict, prepared: dict, cancel,
             lazy.release(spec["case"])
         return rec
     mode = cfg["mode"]
-    stage = {"ocr": "ocr", "full": "ocr", "extract": "extract",
+    stage = {"ocr": "ocr", "full": "ocr", "extract": "extract", "image": "extract",
              "classify": "segment"}[mode]
     if live.slots is not None:
         live.slots.hold()
@@ -8320,7 +8563,7 @@ def _stress_job(spec: dict, cfg: dict, prepared: dict, cancel,
                 if log:
                     row = {**summarise(all_stats, cfg["detail"], read_began),
                            "truth": truth, **tag}
-            if mode in ("extract", "full"):
+            if mode in ("extract", "full", "image"):
                 # A read that looped or hit the cap is still classified and
                 # extracted: its OCR flag says what went wrong with the read, and
                 # the extraction's own flag (`_missing_required`) what it cost.
@@ -8328,6 +8571,14 @@ def _stress_job(spec: dict, cfg: dict, prepared: dict, cancel,
                     live.move("ocr", "extract")
                     stage = "extract"
                     live.touch(job, stage)
+                elif mode == "image":
+                    # No read: the pages go to the extractor as they are, and a
+                    # flag's window shows each page beside the form.
+                    images = prepared["pages"][case_id]
+                    text = prompts.IMAGE_TRANSCRIPT.format(pages=len(images))
+                    texts = [text]
+                    kept = _image_reads(images, f"sent to the extractor at {cfg['detail']}")
+                    rec["pages"] = len(images)
                 else:
                     text = prepared["truths"][case_id]
 
@@ -8341,18 +8592,28 @@ def _stress_job(spec: dict, cfg: dict, prepared: dict, cancel,
                     extract_alert = extract_alert or alert
                     _STRESS_EVIDENCE.put(
                         alert, who, None,
-                        kept or [{"number": None, "text": text, "page": None,
-                                  "detail": None, "looped": False,
-                                  "truncated": False, "dry": None}],
+                        list(kept) or [{"number": None, "text": text, "page": None,
+                                        "detail": None, "looped": False,
+                                        "truncated": False, "dry": None}],
                         None if real else case_id,
                         fields=_fields_evidence(result, list(missing)))
 
                 started = time.perf_counter()
-                result = extract_fields(
-                    text, cfg["extract_mode"], None if real else case_id, pages=texts,
-                    truth_fed=mode == "extract", extras=cfg.get("extras"),
-                    schema_first=cfg.get("schema_first", False),
-                    each=lambda event: live.extract_event(job, event))
+                retry_alert = None
+                if mode == "image":
+                    result, kept, retry_alert = _stress_image_extract(
+                        images, cfg, None if real else case_id, rec, live, job, who,
+                        fields_window, cancel)
+                    # Rebuilding the pages one Detail up is this machine's work,
+                    # kept out of the job's latency like `prepare_s`.
+                    began += rec.get("retry_prepare_s") or 0
+                    started += rec.get("retry_prepare_s") or 0
+                else:
+                    result = extract_fields(
+                        text, cfg["extract_mode"], None if real else case_id, pages=texts,
+                        truth_fed=mode == "extract", extras=cfg.get("extras"),
+                        schema_first=cfg.get("schema_first", False),
+                        each=lambda event: live.extract_event(job, event))
                 rec["extract_s"] = round(time.perf_counter() - started, 3)
                 if spec.get("detail"):
                     # Hold the existing result; format and send it after timing ends.
@@ -8378,7 +8639,12 @@ def _stress_job(spec: dict, cfg: dict, prepared: dict, cancel,
                 live.touch(job)
                 missing = _missing_required(result)
                 if result.get("error"):
-                    if result.get("looped") or result.get("truncated"):
+                    if retry_alert is not None:
+                        # Image mode flagged it, retried it and marked the row
+                        # with how that went; its window shows the kept result.
+                        rec["alerted"] = True
+                        fields_window(retry_alert, result, missing)
+                    elif result.get("looped") or result.get("truncated"):
                         rec["alerted"] = True
                         alert = live.flag("looped" if result.get("looped") else "truncated",
                                           job, who, result["error"], stage="extract",
@@ -8393,7 +8659,9 @@ def _stress_job(spec: dict, cfg: dict, prepared: dict, cancel,
                                       evidence=True)
                     fields_window(alert, result, missing)
                 rec["missing_required"] = sum(len(keys) for _, keys in missing)
-                if missing:
+                if retry_alert is not None:
+                    fields_window(retry_alert, result, missing)
+                elif missing:
                     several = len(missing) > 1 or (result.get("documents_found") or 1) > 1
                     listed = "; ".join((f"doc {n}: " if several else "") + ", ".join(keys)
                                        for n, keys in missing)
@@ -8742,10 +9010,14 @@ def _stress_run(cfg: dict, cancel):
         "strategy": cfg["strategy"], "lock": cfg["lock"],
         "source": cfg.get("source", "benchmark"),
         "cases": cfg["cases"],
-        "detail": cfg["detail"] if mode in ("ocr", "full") else "",
-        "extract_mode": cfg["extract_mode"] if mode in ("extract", "full") else "",
+        "detail": cfg["detail"] if mode in ("ocr", "full", "image") else "",
+        "extract_mode": cfg["extract_mode"] if mode in ("extract", "full", "image") else "",
         "schema_first": bool(cfg.get("schema_first")),
-        "extras": bool(cfg.get("extras", True)) if mode in ("extract", "full") else None,
+        "extras": (bool(cfg.get("extras", True)) if mode in ("extract", "full", "image")
+                   else None),
+        # Image mode: whether the extraction model says it takes images (None:
+        # its server does not say, and the run is the test of it).
+        "extractor_vision": cfg.get("extractor_vision") if mode == "image" else None,
         "pack_pages": cfg["pack_pages"] if mode == "classify" else 0,
         "documents": len({s["case"] for s in specs if "case" in s}),
         "server": {"url": info["url"], "kind": info["kind"]},
@@ -8795,7 +9067,7 @@ def _stress_run(cfg: dict, cancel):
         for i, case_id in enumerate(wanted, 1):
             if cancel.is_set():
                 break
-            if mode in ("ocr", "full"):
+            if mode in ("ocr", "full", "image"):
                 prepared["pages"][case_id], prepared["sources"][case_id] = \
                     _stress_pages(case_id, cfg["detail"])
             else:
@@ -9042,7 +9314,8 @@ def _stress_generate(cfg, cancel):
                          "context": backends.num_ctx(),
                          "workspace": workspace.current_id(),
                          "reader": llama_status() if cfg.get("mode") in ("ocr", "full") else None,
-                         "extractor": backends.extract_status() if cfg.get("mode") in ("extract", "classify", "full") else None}
+                         "extractor": (backends.extract_status() if cfg.get("mode")
+                                       in ("extract", "classify", "full", "image") else None)}
         yield from _history_stream(_stress_run(cfg, cancel), "stress", configuration)
     except Exception as err:                        # noqa: BLE001
         yield json.dumps({"event": "error",

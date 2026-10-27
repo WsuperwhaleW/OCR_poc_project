@@ -2136,12 +2136,15 @@ follows your desktop; Light is the one to pick for projecting or screenshotting.
               <option value="extract">Extract only</option>
               <option value="classify">Classify 100+ pages</option>
               <option value="full">Full pipeline</option>
+              <option value="image" title="no OCR: each job sends its page images straight to the extraction model, which must take images">Image to extractor</option>
             </select>
           </label>
           <button type="button" id="stSaveDefaults" class="ghost-sm" style="align-self:flex-end"
                   title="Remember all Stress test settings for this mode in this browser">Save as default</button>
         </div>
         <div id="stDefaultsNote" class="note" role="status" aria-live="polite" hidden></div>
+        <!-- Image mode (2026-10-27): whether the extraction model says it takes images. -->
+        <div id="stVisionNote" class="note" role="status" aria-live="polite" hidden></div>
         <div class="row">
           <label class="field" style="flex:1;min-width:90px"
                  title="how many requests are in flight at once">
@@ -2165,8 +2168,9 @@ follows your desktop; Light is the one to pick for projecting or screenshotting.
         </div>
         <!-- realData/ (2026-10-22): real files with no solution. Each job draws a
              file at random from the ticked types, or only from the files ticked
-             under "Choose files". OCR only and Full pipeline -- the other modes
-             start from a ground-truth transcript, which these files do not have. -->
+             under "Choose files". OCR only, Full pipeline and Image to extractor --
+             the other modes start from a ground-truth transcript, which these
+             files do not have. -->
         <div class="rt-ex" id="stRealField" hidden>
           <span class="rt-ex-label">realData files</span>
           <div class="st-file-controls">
@@ -13571,10 +13575,12 @@ function stFileInSet(box, name) {
    reads it too. Random draws from every file of a ticked type; Choose files
    draws only from the ticked files of a ticked type. */
 var stSource = 'benchmark', stRealPick = 'random', stReal = null;
-const REAL_MODES = ['ocr', 'full'];
+const REAL_MODES = ['ocr', 'full', 'image'];
+// The modes that extract a form, with the shape, extras and detail log they take.
+const ST_EXTRACT_MODES = ['extract', 'full', 'image'];
 /* Explicitly saved per-mode defaults, scoped to this deployment and browser. */
 const ST_DEFAULTS_KEY = 'ocrStressDefaults:v1:' + API;
-const ST_MODES = ['ocr', 'extract', 'classify', 'full'];
+const ST_MODES = ['ocr', 'extract', 'classify', 'full', 'image'];
 let stDefaultBase = null, stPendingRealDefaults = null;
 function stReadDefaultStore() {
   try {
@@ -13830,23 +13836,46 @@ function stPaintFiles() {
 
 function stPaintMode() {
   const m = stMode.value;
-  stEl('stDetailField').style.display = (m === 'ocr' || m === 'full') ? '' : 'none';
-  stEl('stShapeField').style.display = (m === 'extract' || m === 'full') ? '' : 'none';
-  stEl('stExtrasField').style.display = (m === 'extract' || m === 'full') ? '' : 'none';
-  stEl('stSchemaFirstField').style.display = ['extract', 'full'].includes(m) ? '' : 'none';
-  stEl('stSchemaFirst').disabled = stRunning || !['extract', 'full'].includes(m)
+  stEl('stDetailField').style.display = ['ocr', 'full', 'image'].includes(m) ? '' : 'none';
+  stEl('stShapeField').style.display = ST_EXTRACT_MODES.includes(m) ? '' : 'none';
+  stEl('stExtrasField').style.display = ST_EXTRACT_MODES.includes(m) ? '' : 'none';
+  stEl('stSchemaFirstField').style.display = ST_EXTRACT_MODES.includes(m) ? '' : 'none';
+  stEl('stSchemaFirst').disabled = stRunning || !ST_EXTRACT_MODES.includes(m)
     || !isStepMode(stEl('stShape').value);
-  stEl('stDetailsField').style.display = ['extract', 'full'].includes(m) ? '' : 'none';
+  stEl('stDetailsField').style.display = ST_EXTRACT_MODES.includes(m) ? '' : 'none';
   stEl('stSplitPagesField').style.display = ['ocr', 'full'].includes(m) ? '' : 'none';
-  stEl('stSaveDetails').disabled = stRunning || !['extract', 'full'].includes(m);
+  stEl('stSaveDetails').disabled = stRunning || !ST_EXTRACT_MODES.includes(m);
   stEl('stPagesField').style.display = m === 'classify' ? '' : 'none';
   stEl('stStrategyField').style.display = m === 'classify' ? 'none' : '';
-  // Classification writes no row, so the box is not offered there.
+  // Classification writes no row, so the box is not offered there; nor does an
+  // image-fed job, whose row would have no transcript to hold its fields to.
   const busy = stRunning;
-  stEl('stSaveLog').disabled = m === 'classify' || busy;
-  stEl('stSaveLogRow').title = m === 'classify' ? 'Unavailable for classification' : '';
+  stEl('stSaveLog').disabled = m === 'classify' || m === 'image' || busy;
+  stEl('stSaveLogRow').title = m === 'classify' ? 'Unavailable for classification'
+    : m === 'image' ? 'Unavailable for Image to extractor: a run-log row is a read and its transcript' : '';
+  stPaintVision();
   stPaintBatch();
   stPaintFiles();
+}
+
+/* Image mode sends page images to the EXTRACTION model, so say whether it takes
+   them: refused on Run where its server says no, tried where it does not say.
+   Hoisted like stPaintBatch, and looks its elements up. */
+function stPaintVision() {
+  const note = document.getElementById('stVisionNote');
+  const mode = document.getElementById('stMode');
+  if (!note || !mode) return;
+  note.hidden = mode.value !== 'image';
+  if (note.hidden) return;
+  const info = extractInfo || {};
+  const name = info.model || '';
+  const entry = (info.models || []).find(m => m.name === name);
+  const sees = entry ? entry.vision : null;
+  note.classList.toggle('err', sees === false);
+  note.textContent = !name ? 'No extraction model is selected.'
+    : sees === false ? 'The extraction model ' + name + ' reports no vision, so it cannot be sent page images. Choose a vision model for extraction.'
+    : sees === true ? 'No OCR: each job sends its page images to ' + name + ', which reports vision.'
+    : 'No OCR: each job sends its page images to ' + name + '. Its server does not say whether it takes images; a model that cannot fails its first request, and the run flags it.';
 }
 
 /* The batch toggle follows the servers THIS MODE sends to: only vLLM has the
@@ -13890,6 +13919,7 @@ function stPaintServer() {
     if (!monVllm && typeof monState !== 'undefined' && monState && monState.on) monSet(false);
   }
   if (typeof monState !== 'undefined' && monState && monState.on) { monSync(); paintMon(); }
+  stPaintVision();
   stPaintBatch();
 }
 
@@ -13915,10 +13945,10 @@ function stBusy(on) {
   stRun.disabled = on;
   stEl('stNoCache').disabled = on;
   stEl('stSplitPages').disabled = on;
-  stEl('stSchemaFirst').disabled = on || !['extract', 'full'].includes(stMode.value)
+  stEl('stSchemaFirst').disabled = on || !ST_EXTRACT_MODES.includes(stMode.value)
     || !isStepMode(stEl('stShape').value);
-  stEl('stSaveLog').disabled = on || stMode.value === 'classify';
-  stEl('stSaveDetails').disabled = on || !['extract', 'full'].includes(stMode.value);
+  stEl('stSaveLog').disabled = on || ['classify', 'image'].includes(stMode.value);
+  stEl('stSaveDetails').disabled = on || !ST_EXTRACT_MODES.includes(stMode.value);
   stPaintBatch();
   stStop.disabled = stStop2.disabled = !on || stStopping;
   if (rtRun) rtRun.disabled = on;
@@ -14067,12 +14097,20 @@ const ST_LOOP_STATE = { retrying: 'loop retrying', resolved: 'loop resolved',
 // A DRY page is read again one Detail up as well (STRESS_DRY_RETRY).
 const ST_DRY_STATE = { retrying: 'DRY retrying', resolved: 'DRY resolved',
   'retry failed': 'DRY retry failed', 'no retry': 'DRY, no retry' };
+// Image mode extracts a form again one Detail up when a required field came
+// back empty or the reply ran to the cap (`_stress_image_extract`).
+const ST_MISSING_STATE = { retrying: 'missing, retrying', resolved: 'missing resolved',
+  'retry failed': 'missing retry failed', 'no retry': 'missing, no retry' };
+const ST_CAP_STATE = { retrying: 'token cap, retrying', resolved: 'token cap resolved',
+  'retry failed': 'token cap retry failed', 'no retry': 'token cap, no retry' };
 const ST_STAGE_TEXT = { ocr: 'reading', extract: 'extracting', segment: 'splitting',
   classify: 'classifying' };
 
 function stAlertTag(a) {
   if (a.kind === 'looped' && ST_LOOP_STATE[a.state]) return ST_LOOP_STATE[a.state];
   if (a.kind === 'dry' && ST_DRY_STATE[a.state]) return ST_DRY_STATE[a.state];
+  if (a.kind === 'missing' && ST_MISSING_STATE[a.state]) return ST_MISSING_STATE[a.state];
+  if (a.kind === 'truncated' && ST_CAP_STATE[a.state]) return ST_CAP_STATE[a.state];
   return ST_ALERT_TEXT[a.kind] || a.kind;
 }
 
@@ -14384,6 +14422,7 @@ function stReportHtml(s, snapshot, host) {
   if (plan) {
     html += '<p class="st-plan">' + esc(plan.mode === 'full' ? 'Full pipeline'
         : plan.mode === 'ocr' ? 'OCR only' : plan.mode === 'extract' ? 'Extract only'
+        : plan.mode === 'image' ? 'Image to extractor (no OCR)'
         : 'Classify ' + plan.pack_pages + '-page files')
       + ' · ' + plan.concurrency + ' concurrent · ' + plan.jobs + ' job(s)'
       + (plan.warmup ? ' + ' + plan.warmup + ' warm-up' : '')
@@ -14393,6 +14432,8 @@ function stReportHtml(s, snapshot, host) {
       + (plan.detail ? ' · ' + esc(plan.detail) : '')
       + (plan.extract_mode ? ' · ' + esc(plan.extract_mode) : '')
       + (plan.extras === false ? ' · <b>no extra fields</b>' : '')
+      + (plan.mode === 'image' && plan.extractor_vision === null
+        ? ' · the extraction server does not say whether the model takes images' : '')
       + (plan.metrics ? ' · sampling vLLM /metrics on '
           + (plan.metrics_servers || []).map(t => esc(t.role) + ' ' + esc(t.url)).join(' and ') : '')
       + (plan.no_cache ? ' · prompt cache bypassed ('
@@ -14456,13 +14497,16 @@ function stReportHtml(s, snapshot, host) {
          r.ocr && r.ocr.dry_checked ? 'DRY fired on ' + (r.ocr.dry_pages || 0) + ' of '
            + r.ocr.dry_checked + ' page(s)' : '',
          r.ocr && r.ocr.dry_retries ? r.ocr.dry_retries + ' DRY retr' + (r.ocr.dry_retries === 1 ? 'y' : 'ies')
-           + ', ' + (r.ocr.dry_recovered || 0) + ' page(s) cleared' : '']
+           + ', ' + (r.ocr.dry_recovered || 0) + ' page(s) cleared' : '',
+         r.image && r.image.retries ? r.image.retries + ' job(s) extracted again one Detail up, '
+           + (r.image.recovered || 0) + ' came back whole' : '']
           .filter(Boolean).join(' · ')),
       stTile('Error rate', stPct(r.error_rate), (c.error || 0) + ' error(s)',
         r.error_rate ? 'st-bad' : ''),
       stTile('Wall clock', stSec(r.wall_seconds), 'prepare ' + stSec(r.prepare_seconds) + ', not timed'),
       stTile('Throughput', stNum(r.jobs_per_minute, 2) + '<small> jobs/min</small>',
         r.ocr ? stNum(r.ocr.pages_per_second, 3) + ' pages/s'
+          : r.image ? stNum(r.image.pages_per_second, 3) + ' pages/s sent as images'
           : r.classify ? stNum(r.classify.pages_per_second, 2) + ' pages/s' : ''),
     ];
     if (r.vllm_batch) tiles.push(stTile('Batches', stNum(r.vllm_batch.batches, 0)
@@ -14510,7 +14554,9 @@ function stReportHtml(s, snapshot, host) {
         ['Time to first token', r.ocr.ttft, 'measured here, so it includes time the request waited in the server queue'],
         ['Decode tokens/s, per request', r.ocr.decode_tps, 'one request own decode rate', 'tps'],
       ] : []),
-      ...(r.extract ? [['Extraction, per job', r.extract.latency_job, 'pass 2, all of its requests']] : []),
+      ...(r.extract ? [['Extraction, per job', r.extract.latency_job, r.image
+        ? 'every request of the page images, a retry one Detail up included'
+        : 'pass 2, all of its requests']] : []),
       ...(r.classify ? [['Splitting into documents', r.classify.latency_segment, 'the page walk, including every question asked'],
                         ['Classifying the documents', r.classify.latency_classify, 'one type per document found']] : []),
     ]);
@@ -14569,7 +14615,7 @@ function stBody() {
     jobs: Number(val('stJobs')) || 1, warmup: Number(val('stWarm')) || 0,
     max_seconds: Number(val('stMax')) || 0, detail: val('stDetail'),
     extract_mode: val('stShape'), extras: stEl('stExtras').checked,
-    schema_first: stEl('stSchemaFirst').checked && ['extract', 'full'].includes(stMode.value)
+    schema_first: stEl('stSchemaFirst').checked && ST_EXTRACT_MODES.includes(stMode.value)
       && isStepMode(val('stShape')),
     pack_pages: Number(val('stPages')) || 100,
     strategy: val('stStrategy'), seed: val('stSeed').trim() || null,
@@ -14583,8 +14629,8 @@ function stBody() {
     no_cache: stEl('stNoCache').checked,
     split_pages: stEl('stSplitPages').checked,
     vllm_batch: stBatchOn && !stEl('stBatch').disabled,
-    save_log: stEl('stSaveLog').checked && stMode.value !== 'classify',
-    save_details: stEl('stSaveDetails').checked && ['extract', 'full'].includes(stMode.value),
+    save_log: stEl('stSaveLog').checked && !['classify', 'image'].includes(stMode.value),
+    save_details: stEl('stSaveDetails').checked && ST_EXTRACT_MODES.includes(stMode.value),
     history_monitor: stEl('stHistoryMonitor').checked && !stEl('stHistoryMonitor').disabled,
     gpu_url: stEl('monGpu').value.trim(),
     gpu_extract_url: stEl('monGpuExtract').value.trim(),

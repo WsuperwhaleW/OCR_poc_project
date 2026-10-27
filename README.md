@@ -1856,7 +1856,7 @@ Workspace uses **Clear workspace**, since it also removes the selected input fil
 
 | Setting | What it does |
 |---|---|
-| **Mode** | **OCR only** — read one document, score the transcript. **Extract only** — pass 2 on a ground-truth transcript, score the fields. **Classify 100+ pages** — glue ground-truth transcripts into one long file, split it into documents and classify each one, score the grouping and the types. **Full pipeline** — read, then extract, with the two stages timed apart |
+| **Mode** | **OCR only** — read one document, score the transcript. **Extract only** — pass 2 on a ground-truth transcript, score the fields. **Classify 100+ pages** — glue ground-truth transcripts into one long file, split it into documents and classify each one, score the grouping and the types. **Full pipeline** — read, then extract, with the two stages timed apart. **Image to extractor** — no OCR: the page images, prepared at the chosen Detail, go straight to the extraction model with the chosen shape and extra-fields switch (see below) |
 | **Concurrent** | how many requests are in flight at once (1–256) |
 | **Queue (jobs)** | how many jobs in total; the concurrent workers take them in order |
 | **Warm-up** | jobs run first at the same concurrency and left out of every figure |
@@ -1872,7 +1872,21 @@ their saved settings; reloading restores the last saved mode. Defaults are store
 in this browser for this deployment, independently of server History. Press Save
 again to replace a mode's saved defaults; editing controls alone does not save them.
 Before any defaults are saved, OCR starts at **50 concurrent / 100 jobs**, Extract
-at **64 / 40**, and Classify/Full pipeline at **4 / 20**.
+at **64 / 40**, and Classify/Full pipeline/Image to extractor at **4 / 20**.
+
+**Image to extractor** needs an extraction model that takes images. The page says
+whether the selected one reports vision; one that reports none is refused on Run, and
+one whose server does not say (vLLM) is tried — a model that cannot fails its first
+request and the run flags it. Every extraction request (classify, the single request,
+each agentic or hybrid step) carries the file's page images ahead of the usual prompt,
+in place of a transcript. Without a transcript the file is one document (nothing to
+split pages on), grounding is reported as not checked rather than ~0%, grounding
+re-asks and the item table are skipped, and **Save each job** is unavailable. Flags work
+as in Full pipeline: an error, a looped or capped reply and a missing required field each
+open the pages beside the form in Compare. A form with a required field empty, or a reply
+that looped or hit the cap, is extracted **again one Detail up** (`LOOP_RETRY`, the
+ladder a looped read climbs); its one flag row goes *retrying* → *resolved* or
+*retry failed*, the better form is kept, and both attempts' tokens are counted.
 
 **Every new Stress test is saved to History.** Open **Stress test → History** to select a run
 and inspect its Concurrent, Queue, Warm-up, time limit, seed, document strategy,
@@ -1897,7 +1911,7 @@ a **requested** context limit instead. Missing figures stay blank, and chunk cou
 aborted stream are not presented as exact tokens. Records are saved in Stress test History
 and its JSON download. Older History entries cannot recover measurements that were not saved.
 
-**Save detail log** is an optional Stress test checkbox for Extract only and Full pipeline,
+**Save detail log** is an optional Stress test checkbox for Extract only, Full pipeline and Image to extractor,
 off by default. It automatically downloads `extraction-details-*.json` to the computer
 running the browser when the run finishes. Version 2 is a compact tuning log: every job's
 actual/expected field values and verdicts, document/page boundaries, classifications,
