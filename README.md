@@ -1888,6 +1888,18 @@ that looped or hit the cap, is extracted **again one Detail up** (`LOOP_RETRY`, 
 ladder a looped read climbs); its one flag row goes *retrying* → *resolved* or
 *retry failed*, the better form is kept, and both attempts' tokens are counted.
 
+In **Full pipeline**, a form that comes back with a required field empty has that field
+**asked of the page images with the Hybrid prompt**, whatever the run's extraction shape:
+each empty key's owning Hybrid step (`totals`, `parties`, the table step for a blank cell)
+is sent alone, with that document's page images in place of the transcript. Only blanks
+are filled — a grouped step's other keys are never overwritten, and a new item table is
+kept only where it leaves fewer required cells empty. The form is then validated and
+scored again, so the field score and *Missing required* describe the form the pipeline
+ended with. The flag row goes *retrying* → *resolved* or *retry failed*, the fill's tokens
+count toward the job, and the *Missing required* tile adds how many of the fields asked
+the images filled. The extraction model must take images; one that cannot fails the fill
+and the row says so.
+
 **Every new Stress test is saved to History.** Open **Stress test → History** to select a run
 and inspect its Concurrent, Queue, Warm-up, time limit, seed, document strategy,
 selected file IDs, models, servers, sampling and extraction settings, together with its complete report,

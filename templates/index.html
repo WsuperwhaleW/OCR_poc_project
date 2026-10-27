@@ -14527,7 +14527,9 @@ function stReportHtml(s, snapshot, host) {
       + (r.extract.unscored ? ' · ' + r.extract.unscored + ' under the read floor' : '')));
     if (r.extract && r.extract.missing_required_jobs !== undefined) tiles.push(stTile(
       'Missing required', r.extract.missing_required_jobs + '<small> job(s)</small>',
-      r.extract.missing_required_fields + ' required field(s) came back empty',
+      r.extract.missing_required_fields + ' required field(s) came back empty'
+        + (r.extract.fill_jobs ? ' · ' + r.extract.fill_filled + ' of ' + r.extract.fill_asked
+          + ' filled from the page images (Hybrid)' : ''),
       r.extract.missing_required_jobs ? 'st-warn' : ''));
     if (r.classify) {
       tiles.push(stTile('Grouped exactly', stPct(r.classify.grouping_exact),

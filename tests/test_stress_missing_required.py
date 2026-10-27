@@ -103,14 +103,18 @@ class FullPipelineLoopTests(unittest.TestCase):
                "detail": "low"}
         spec = {"index": 0, "case": "sol002", "submitted": time.perf_counter()}
         prepared = {"pages": {"sol002": ["page"]}, "sources": {"sol002": "x"}}
-        with patch.object(app, "_stress_read", side_effect=read), extract as called:
+        with patch.object(app, "_stress_read", side_effect=read), extract as called, \
+                patch.object(app, "_fill_ask", return_value={"fields": {}}):
             rec = app._stress_job(spec, cfg, prepared, app.MultiCancel(), live)
         called.assert_called_once()                  # the loop did not stop it
         self.assertEqual(rec["status"], "looped")
         self.assertEqual(rec["missing_required"], 1)
         alerts = live.take_alerts()
-        self.assertEqual([(a["kind"], a["stage"]) for a in alerts],
-                         [("looped", "ocr"), ("missing", "extract")])
+        # The missing row is raised retrying, then marked: the images filled nothing.
+        self.assertEqual([(a["kind"], a["stage"], a.get("state")) for a in alerts],
+                         [("looped", "ocr", "retry failed"),
+                          ("missing", "extract", "retrying"),
+                          ("missing", "extract", "retry failed")])
         missing = alerts[1]
         self.assertEqual(missing["fields"], ["vat_total"])
         self.assertIn("vat_total", missing["message"])
@@ -152,7 +156,8 @@ class OcrFlagToExtractionTests(unittest.TestCase):
         prepared = {"pages": {"sol002": ["page"]}, "sources": {"sol002": "x"}}
         with patch.object(app, "_STRESS_EVIDENCE", app._StressEvidence(10)), \
                 patch.object(app, "_stress_read", side_effect=read), \
-                patch.object(app, "extract_fields", return_value=result):
+                patch.object(app, "extract_fields", return_value=result), \
+                patch.object(app, "_fill_ask", return_value={"fields": {}}):
             app._stress_job(spec, cfg, prepared, app.MultiCancel(), live)
             with app.app.test_client() as client:
                 res = client.get("/api/stress/evidence/measured-test01-job1")
@@ -169,7 +174,8 @@ class OcrFlagToExtractionTests(unittest.TestCase):
 
     def test_a_flagged_extraction_is_its_own_row_and_not_kept_twice(self):
         alerts, res = self._run(_doc({"vat_total": ""}, ["vat_total"]))
-        self.assertEqual([a["kind"] for a in alerts], ["looped", "missing"])
+        self.assertEqual([a["kind"] for a in alerts], ["looped", "missing", "missing"])
+        self.assertEqual(alerts[1]["id"], alerts[2]["id"])
         self.assertEqual(res.status_code, 404)
 
     def test_a_file_with_no_ocr_flag_keeps_nothing(self):

@@ -414,6 +414,14 @@ def report(records: list, wall: float, mode: str, concurrency: int) -> dict:
             "missing_required_jobs": sum(1 for r in rows if r.get("missing_required")),
             "missing_required_fields": sum(r.get("missing_required") or 0 for r in rows),
         }
+        if mode == "full":
+            # Jobs whose empty Mandatory fields were asked of the page images
+            # with their Hybrid step, the fields asked and the ones that came
+            # back filled. `missing_required_*` above is what was left after.
+            out["extract"].update(
+                fill_jobs=sum(r.get("fill_jobs") or 0 for r in rows),
+                fill_asked=sum(r.get("fill_asked") or 0 for r in rows),
+                fill_filled=sum(r.get("fill_filled") or 0 for r in rows))
     if mode == "image":
         # Pages sent to the extractor as images, and the jobs extracted again one
         # Detail up because a Mandatory field came back empty or the reply looped
