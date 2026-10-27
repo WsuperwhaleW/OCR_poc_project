@@ -7891,6 +7891,220 @@ def _stress_image_extract(pages, cfg: dict, case_id, rec: dict, live: _StressLiv
     return kept, reads, alert
 
 
+# --------------------------------------------------------------------------
+# Filling a missing field from the page (2026-10-27, at the user's request: *in
+# full pipeline stress test if the field is missing we will send the image
+# directly and ask for that specific field by using the hybrid prompt*). Where a
+# full run's form comes back with a Mandatory field empty, each document's page
+# images go to the extractor with only the Hybrid step(s) that own the empty
+# keys -- the transcript is not sent, the pages are what is read -- and what
+# comes back fills the blanks. Nothing already filled is overwritten. The form
+# is then validated and scored again, so the job's field score and its Missing
+# required count are of the form the pipeline ended with. One flag row says how
+# it went: `retrying` -> `resolved` or `retry failed`, as image mode's does.
+# --------------------------------------------------------------------------
+
+def _fill_steps(codes, keys) -> tuple:
+    """`(step ids, keys no step owns)`: the Hybrid steps that ask for `keys`.
+
+    A blank table cell (`income_items[0].amount_paid`) is asked for by the step
+    that owns the table. Off the same table the document was asked from, so a
+    grouped step (`totals`, `parties`) is asked whole and only its empty keys are
+    taken from the reply.
+    """
+    table = steps_for_types(codes, False, mode="hybrid")
+    ids, orphans = [], []
+    for key in keys:
+        base = key.split("[", 1)[0]
+        step = next((s for s in table if base in s["keys"]), None)
+        if step is None:
+            orphans.append(key)
+        elif step["id"] not in ids:
+            ids.append(step["id"])
+    return ids, orphans
+
+
+def _fill_form(doc: dict) -> dict:
+    """The form `doc` was extracted with, rebuilt off its `classified` record:
+    what a fill asks, validates and scores against."""
+    classified = doc.get("classified") or {}
+    return {"doc_types": list(classified.get("doc_types") or doc.get("doc_types") or []),
+            "keys": list(classified.get("fields") or doc.get("fields_asked") or []),
+            "mandatory": list(classified.get("mandatory") or []),
+            "items": list(classified.get("items") or doc.get("items_asked") or []),
+            "mandatory_items": list(classified.get("mandatory_items") or []),
+            "extras": False, "schema_first": False}
+
+
+def _fill_ask(pages, form: dict, ids) -> dict:
+    """The Hybrid steps `ids`, asked of `pages` as images and nothing else.
+
+    `_extract_agentic` directly rather than `extract_fields`: the document is
+    already split and classified, and a fill must not classify the placeholder
+    text again or segment it.
+    """
+    status = backends.extract_status()
+    if not status["text_available"]:
+        return {"error": status["text_reason"]}
+    text = prompts.IMAGE_TRANSCRIPT.format(pages=len(pages))
+    with _feeding_images([getattr(p, "_data_uri", None) or image_data_uri(p)
+                          for p in pages]):
+        return _drain(_extract_agentic(text, status, form, only=list(ids), mode="hybrid"))
+
+
+def _gaps(doc: dict) -> int:
+    return sum(len(keys) for _, keys in _missing_required(doc))
+
+
+def _revalidate(doc: dict, form: dict, text: str) -> None:
+    """`_validate_fields`'s normalisation and validation of `doc`'s fields, again."""
+    fields = doc.get("fields") or {}
+    doc["normalized"] = normalise.normalize_fields(fields)
+    try:
+        doc["validation"] = validate.validate(
+            fields, keys=form["keys"], doc_types=form["doc_types"],
+            mandatory=form["mandatory"], transcript=text, items=form["items"])
+    except Exception as err:  # noqa: BLE001 - never worth the job
+        doc["validation"] = {"error": f"validation failed: {err}"}
+
+
+def _fill_document(doc: dict, keys, answer: dict, form: dict, text: str) -> list:
+    """Put `answer`'s values into `doc`'s empty `keys`; the keys it filled.
+
+    A scalar fills only a blank. The table is a whole list, so the new one is
+    taken only where it leaves fewer demanded cells empty than the old.
+    """
+    got = answer.get("fields") or {}
+    fields = dict(doc.get("fields") or {})
+    filled = []
+    for key in keys:
+        if "[" in key or key == prompts.INCOME_ITEMS_KEY:
+            continue
+        if validate._blank(fields.get(key)) and not validate._blank(got.get(key)):
+            fields[key] = got[key]
+            filled.append(key)
+    doc["fields"] = fields
+    _revalidate(doc, form, text)
+    table = [k for k in keys if k.split("[", 1)[0] == prompts.INCOME_ITEMS_KEY]
+    if table and got.get(prompts.INCOME_ITEMS_KEY):
+        trial = dict(doc, fields={**fields, prompts.INCOME_ITEMS_KEY: got[prompts.INCOME_ITEMS_KEY]})
+        _revalidate(trial, form, text)
+        if _gaps(trial) < _gaps(doc):
+            doc.update(fields=trial["fields"], normalized=trial["normalized"],
+                       validation=trial["validation"])
+            filled += [k for k in table if k not in
+                       {key for _, ks in _missing_required(doc) for key in ks}]
+    return filled
+
+
+def _stress_fill_missing(result: dict, images, texts, case_id, rec: dict,
+                         live: _StressLive, job: int, who: str, window, cancel,
+                         why: str = ""):
+    """A full run's Mandatory fields left empty, asked of the page images.
+
+    Returns the flag this raised and kept up to date, or None where nothing was
+    missing (or the extraction failed, which its own flag says). The caller
+    raises no second flag. `result` is filled in place, revalidated and
+    rescored; its tokens and server time grow by the fill's.
+    """
+    if result.get("error") or cancel.is_set():
+        return None
+    missing = _missing_required(result)
+    if not missing:
+        return None
+    _, what, flagged = _image_problem(result)
+    documents = [d for d in (result.get("documents") or []) if isinstance(d, dict)]
+    by_number = {(d.get("document") or 1): d for d in documents} if documents else {1: result}
+    several = len(by_number) > 1
+    plan = []
+    orphans = []
+    for number, keys in missing:
+        doc = by_number.get(number)
+        if doc is None:
+            continue
+        form = _fill_form(doc)
+        ids, lost = _fill_steps(form["doc_types"], keys)
+        orphans += [f"doc{number}.{k}" if several else k for k in lost]
+        if ids:
+            plan.append((number, doc, form, [k for k in keys if k not in lost], ids))
+    extra = {"fields": flagged} if flagged else {}
+    if not plan:
+        alert = live.flag("missing", job, who,
+                          f"{what}{why} -- no retry: no Hybrid step asks for "
+                          + ", ".join(orphans), stage="extract", state="no retry",
+                          evidence=True, **extra)
+        window(alert, result, missing)
+        return alert
+    asked = ", ".join(dict.fromkeys(i for *_, ids in plan for i in ids))
+    alert = live.flag("missing", job, who,
+                      f"{what}{why} -- asking the page images with the Hybrid "
+                      f"prompt ({asked})", stage="extract", state="retrying",
+                      evidence=True, **extra)
+    window(alert, result, missing)
+    rec["fill_jobs"] = 1
+    rec["fill_asked"] = sum(len(keys) for _, _, _, keys, _ in plan)
+    live.touch(job)
+    before = _gaps(result) if not documents else sum(_gaps(d) for d in documents)
+    filled, errors, tokens = [], [], 0
+    previous = servertime.open_tally()
+    try:
+        for number, doc, form, keys, ids in plan:
+            if cancel.is_set():
+                break
+            numbers = [p for p in (doc.get("pages") or []) if 1 <= p <= len(images)]
+            numbers = numbers or list(range(1, len(images) + 1))
+            # This document's own transcript, which validation checks against.
+            own = [texts[p - 1] for p in numbers if p <= len(texts)]
+            text = join_page_texts(own) if len(own) > 1 else "".join(own)
+            try:
+                answer = _fill_ask([images[p - 1] for p in numbers], form, ids)
+            except Exception as err:            # noqa: BLE001
+                answer = {"error": f"{type(err).__name__}: {err}"}
+            tokens += answer.get("tokens") or 0
+            if answer.get("error"):
+                errors.append(str(answer["error"])[:160])
+                continue
+            got = _fill_document(doc, keys, answer, form, text)
+            filled += [f"doc{number}.{k}" if several else k for k in got]
+            if got:
+                doc["image_filled"] = list(doc.get("image_filled") or []) + got
+                if case_id:
+                    _score_fields(doc, case_id, form, doc.get("pages") if several else None,
+                                  text)
+                live.touch(job)
+    finally:
+        served = servertime.close_tally(previous)
+    if documents and any(d.get("image_filled") for d in documents):
+        scored = [d for d in documents if d.get("field_score")]
+        if scored:
+            result["field_score"] = _merge_field_scores(scored, len(documents))
+    result["tokens"] = (result.get("tokens") or 0) + tokens
+    if served:
+        result["server_time"] = dict(result.get("server_time") or {})
+        for key in ("in_tokens", "out_tokens"):
+            values = [v for v in (result["server_time"].get(key), served.get(key))
+                      if v is not None]
+            result["server_time"][key] = sum(values) if values else None
+    after = _gaps(result) if not documents else sum(_gaps(d) for d in documents)
+    rec["fill_filled"] = before - after
+    note = (" · failed: " + "; ".join(errors)) if errors else ""
+    if orphans:
+        note += " · no Hybrid step asks for " + ", ".join(orphans)
+    if not after:
+        live.update_flag(alert, f"{what}{why} -- resolved: the page images filled "
+                                + ", ".join(filled) + note, state="resolved")
+    else:
+        remaining = _missing_required(result)
+        listed = "; ".join((f"doc {n}: " if several else "") + ", ".join(keys)
+                           for n, keys in remaining)
+        live.update_flag(alert, f"{what}{why}; asked the page images, "
+                                f"{len(filled) or 'none'} filled"
+                                + (f" ({', '.join(filled)})" if filled else "")
+                                + f", still empty: {listed}{note}",
+                         state="retry failed")
+    return alert
+
+
 class _StressPages:
     """realData pages for a stress run, prepared when a job first needs them and
     dropped when the last job drawn for that file has finished.
@@ -8614,6 +8828,17 @@ def _stress_job(spec: dict, cfg: dict, prepared: dict, cancel,
                         truth_fed=mode == "extract", extras=cfg.get("extras"),
                         schema_first=cfg.get("schema_first", False),
                         each=lambda event: live.extract_event(job, event))
+                    if mode == "full":
+                        # A Mandatory field left empty is asked of the page
+                        # images with its Hybrid step, before the form is timed,
+                        # logged or scored (`_stress_fill_missing`).
+                        why = (" -- the read looped, which may be why" if looped else
+                               " -- the read hit the token cap, which may be why"
+                               if truncated else "")
+                        retry_alert = _stress_fill_missing(
+                            result, prepared["pages"][case_id], texts,
+                            None if real else case_id, rec, live, job, who,
+                            fields_window, cancel, why)
                 rec["extract_s"] = round(time.perf_counter() - started, 3)
                 if spec.get("detail"):
                     # Hold the existing result; format and send it after timing ends.
