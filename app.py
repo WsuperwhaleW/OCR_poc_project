@@ -901,10 +901,6 @@ def stream_page(image: Image.Image, stats: dict = None,
     if vllm:
         payload.update(vllm_page_fields(image, status))
 
-    # User portal jobs first (priority.py). Before the clocks start, so the time
-    # held is charged to no page: a page's time stays the server's.
-    priority.wait_turn(cancel if cancel is not None else _sweep_state()[1])
-
     # The server's own clock, beside ours. Built BEFORE `started` so the vLLM
     # before-snapshot of /metrics is not charged to this page's time. See
     # servertime.py: its prefill, decode, queue and latency, as the server gave them.
@@ -1180,9 +1176,6 @@ def _post_once(url: str, payload: dict, status: dict):
 
 def _post_dispatch(url: str, payload: dict, status: dict):
     with _watched() as progress:
-        # User portal jobs first (priority.py). Held inside `_watched`, so the
-        # stall alert hears a held request as alive rather than hung.
-        priority.wait_turn(_sweep_state()[1], progress)
         batcher = _batcher_for(url, status)
         if batcher is not None:
             return _batched_post(batcher, url, payload, status)
@@ -8655,10 +8648,7 @@ def _stress_phase(specs: list, cfg: dict, prepared: dict, cancel, phase: str,
             now = time.perf_counter()
             tick = max(tick, now - 1.0)
             elapsed = now - started
-            # A job held for a User job hears nothing back and is not hung, so
-            # silence only counts from when the gate last opened (priority.py).
-            if priority.quiet_for() >= STRESS_STALL_SECONDS:
-                live.flag_stalled(STRESS_STALL_SECONDS)
+            live.flag_stalled(STRESS_STALL_SECONDS)
             yield from alerts()
             snap = live.snapshot()
             stages = snap["stages"]

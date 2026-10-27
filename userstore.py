@@ -218,12 +218,6 @@ class UserStore:
                 row = db.execute('SELECT * FROM jobs WHERE id=?', (row['id'],)).fetchone()
         return self.decode(row)
 
-    def pending(self):
-        """Jobs queued or running, in either stage."""
-        with self.connect() as db:
-            return db.execute("SELECT COUNT(*) FROM jobs WHERE status IN "
-                              "('queued_ocr','ocr','queued_extraction','extraction')").fetchone()[0]
-
     def recover(self):
         with self.connect() as db:
             db.execute('BEGIN IMMEDIATE')

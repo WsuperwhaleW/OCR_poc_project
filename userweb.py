@@ -73,9 +73,9 @@ def register(application, engine):
 
     @application.get('/api/user/status')
     def user_status():
-        # User jobs always go first (priority.py); a stress test running beside
-        # them still shares the GPU, which the page warns about.
-        return jsonify(stress=priority.stress_runs(), **priority.state())
+        # vLLM schedules User jobs first (priority.py); a stress test running
+        # beside them still shares the GPU, which the page warns about.
+        return jsonify(stress=priority.stress_runs())
 
     @application.post('/api/user/models')
     def user_models():

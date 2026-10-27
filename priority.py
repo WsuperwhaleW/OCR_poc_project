@@ -1,97 +1,75 @@
-"""User portal jobs go first: every other model request waits for them.
+"""User portal jobs go first -- scheduled by the vLLM server, not by the app.
 
-While a User job is queued or running, a request from anything else -- a stress
-test, a random test, a read on the benchmark page -- waits here before it is
-sent. A request already on the server finishes; only new ones wait, so a User
-job waits behind at most one request per busy worker, never behind a queue.
+The server runs `--scheduling-policy=priority` (vllm/podman-ocr-server/
+podman-compose.yml), which orders its waiting queue by each request's
+`priority` field, lower first, and preempts a running request of a later
+priority when a sooner one needs the room. So the app holds nothing back: every
+request is sent as it comes, and only the field says who goes first.
 
-The User pipeline says it is busy (`set_user_busy`, from its dispatcher) and its
-own requests skip the gate: they run with `user_pipeline` set in their
-workspace, which `workspace.bind` carries onto every worker thread they use.
+A User request keeps vLLM's default, 0. Every other chat request -- a stress
+test, a random test, a read on the benchmark page -- is sent with `BACKGROUND`.
+User requests are told apart by `user_pipeline` in their workspace, which
+`workspace.bind` carries onto every worker thread they use.
 
-Process-wide, not per workspace: the model server is shared by every tab, so a
-User job in any of them holds back benchmark work in all the others.
+A vLLM started without the priority policy refuses any priority but 0 (HTTP 400,
+"Priority scheduling is not enabled"). That server is remembered and the request
+sent again without the field: there everything is first come, first served, as
+it was before.
 
 The stress tests running now are kept here as well, so the User page can say
 its jobs are sharing the server with one (`stress_runs`).
 """
+import re
 import threading
 import time
+from urllib.parse import urlsplit
 
 import workspace
 
-_cond = threading.Condition()
-_user_busy = False
-_released_at = None     # perf_counter when the gate last opened; None if never shut
-_waiting = 0            # requests held at the gate right now
-_held_seconds = 0.0     # total seconds requests have spent held, since start
+USER = 0            # vLLM's default; the field is not sent for it
+BACKGROUND = 10     # everything else; any value above USER would do
+
+_NOT_ENABLED = re.compile(r"priority scheduling is not enabled", re.I)
+_fcfs_lock = threading.Lock()
+_fcfs = set()           # servers (scheme://host:port) that refused a priority
 
 _stress_lock = threading.Lock()
 _stress = {}            # thread -> what that stress run is
 
 
-def set_user_busy(busy: bool):
-    """The User pipeline has jobs queued or running (True), or none (False)."""
-    global _user_busy, _released_at
-    with _cond:
-        if _user_busy and not busy:
-            _released_at = time.perf_counter()
-        _user_busy = bool(busy)
-        if not busy:
-            _cond.notify_all()
+def _server(url: str) -> str:
+    parts = urlsplit(url or "")
+    return f"{parts.scheme}://{parts.netloc}"
 
 
-def user_busy() -> bool:
-    with _cond:
-        return _user_busy
+def request_priority() -> int:
+    """The priority a request from this thread is sent with."""
+    return USER if workspace.get('user_pipeline', False) else BACKGROUND
 
 
-def wait_turn(cancel=None, progress=None) -> float:
-    """Block this request while User jobs have the server. Returns seconds held.
-
-    A User request never waits. `cancel` (anything with `is_set`) lets a Stop
-    reach a request that is held; the caller sees the flag set and behaves as it
-    would for a Stop mid-request. `progress`, if given, is called about once a
-    second while held, so a stall alert does not read yielding as hanging.
-    """
-    global _waiting, _held_seconds
-    if workspace.get('user_pipeline', False):
-        return 0.0
-    with _cond:
-        if not _user_busy:
-            return 0.0
-        began = time.perf_counter()
-        _waiting += 1
-        try:
-            while _user_busy and not (cancel is not None and cancel.is_set()):
-                _cond.wait(1.0)
-                if progress is not None and _user_busy:
-                    progress()
-        finally:
-            _waiting -= 1
-            held = time.perf_counter() - began
-            _held_seconds += held
-    return held
+def tagged(url: str, body):
+    """`body` with this thread's priority, or None where nothing is to be added:
+    a User request, a body that is not a chat request (/tokenize), one that
+    already says, or a server that has no priority scheduling."""
+    if not isinstance(body, dict) or "messages" not in body or "priority" in body:
+        return None
+    value = request_priority()
+    if value == USER:
+        return None
+    with _fcfs_lock:
+        if _server(url) in _fcfs:
+            return None
+    return {**body, "priority": value}
 
 
-def quiet_for() -> float:
-    """Seconds since the gate last opened: 0 while it is shut, inf if it never was.
-
-    A stress job held here hears nothing back, so its stall clock should only
-    count from when the gate opened again.
-    """
-    with _cond:
-        if _user_busy:
-            return 0.0
-        if _released_at is None:
-            return float('inf')
-        return time.perf_counter() - _released_at
-
-
-def state() -> dict:
-    with _cond:
-        return {'user_busy': _user_busy, 'waiting': _waiting,
-                'held_seconds': round(_held_seconds, 1)}
+def refused(url: str, res) -> bool:
+    """Did this server refuse the priority because its policy is FCFS? Then it
+    is remembered, and the caller sends the request again without one."""
+    if getattr(res, "status_code", None) != 400 or not _NOT_ENABLED.search(res.text or ""):
+        return False
+    with _fcfs_lock:
+        _fcfs.add(_server(url))
+    return True
 
 
 def stress_begin(**about):

@@ -5,7 +5,6 @@ import uuid
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 
-import priority
 import workspace
 
 workspace.field('user_pipeline', lambda: False)
@@ -219,9 +218,6 @@ class UserService:
                             if not job:
                                 break
                             self.active[stage].add(self.pools[stage].submit(self._run, stage, job))
-                # Queued counts as busy too: a job waiting for a worker of its own
-                # stage still goes before every benchmark request (priority.py).
-                priority.set_user_busy(self.store.pending() > 0)
             except Exception as err:
                 # A transient DB failure must not permanently kill the dispatcher.
                 import logging
@@ -254,6 +250,5 @@ class UserService:
         self.wake.set()
         if self.thread:
             self.thread.join(timeout=2)
-        priority.set_user_busy(False)
         for pool in self.pools.values():
             pool.shutdown(wait=True)

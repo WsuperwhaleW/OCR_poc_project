@@ -1,16 +1,15 @@
-"""User portal jobs before every other model request, and the stress-test alert."""
-import tempfile
+"""User portal jobs first by vLLM's priority scheduling, and the stress-test alert."""
 import threading
-import time
 import unittest
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import app
+import backends
 import priority
 import workspace
-from tests.test_user_portal import FakeAdapter, until
-from userpipeline import UserService
-from userstore import UserStore
+
+CHAT = 'http://gpu:8000/v1/chat/completions'
+VLLM = {'kind': 'vllm'}
 
 
 def user_workspace():
@@ -20,97 +19,59 @@ def user_workspace():
     return workspace.use(ws)
 
 
-class GateTests(unittest.TestCase):
+def reply(status=200, text=''):
+    return MagicMock(status_code=status, text=text)
+
+
+class PriorityFieldTests(unittest.TestCase):
     def setUp(self):
-        self.addCleanup(priority.set_user_busy, False)
+        self.addCleanup(priority._fcfs.clear)
+        patcher = patch.object(backends, '_post', return_value=reply())
+        self.post = patcher.start()
+        self.addCleanup(patcher.stop)
 
-    def held(self, fn):
-        """Run `fn` on a thread; return (thread, event set once fn returns)."""
-        done = threading.Event()
-        thread = threading.Thread(target=workspace.bind(lambda: (fn(), done.set())), daemon=True)
-        thread.start()
-        return thread, done
+    def sent(self):
+        return [call.kwargs['json'] for call in self.post.call_args_list]
 
-    def test_nothing_waits_while_no_user_job_is_pending(self):
-        self.assertEqual(priority.wait_turn(), 0.0)
+    def test_benchmark_chat_request_is_sent_with_a_later_priority(self):
+        backends.http_post(CHAT, VLLM, json={'messages': []})
+        self.assertEqual(self.sent(), [{'messages': [], 'priority': priority.BACKGROUND}])
 
-    def test_benchmark_request_waits_until_user_jobs_are_done(self):
-        priority.set_user_busy(True)
-        _, done = self.held(priority.wait_turn)
-        self.assertFalse(done.wait(.3))
-        self.assertEqual(priority.state()['waiting'], 1)
-        priority.set_user_busy(False)
-        self.assertTrue(done.wait(2))
-        self.assertEqual(priority.state()['waiting'], 0)
-
-    def test_user_request_never_waits(self):
-        priority.set_user_busy(True)
+    def test_user_chat_request_keeps_the_default_priority(self):
         with user_workspace():
-            self.assertEqual(priority.wait_turn(), 0.0)
+            backends.http_post(CHAT, VLLM, json={'messages': []})
+        self.assertEqual(self.sent(), [{'messages': []}])
 
-    def test_stop_reaches_a_held_request(self):
-        priority.set_user_busy(True)
-        cancel = threading.Event()
-        _, done = self.held(lambda: priority.wait_turn(cancel))
-        self.assertFalse(done.wait(.2))
-        cancel.set()
-        self.assertTrue(done.wait(2))
+    def test_user_priority_reaches_worker_threads(self):
+        with user_workspace():
+            worker = threading.Thread(target=workspace.bind(
+                lambda: backends.http_post(CHAT, VLLM, json={'messages': []})))
+            worker.start(); worker.join(2)
+        self.assertEqual(self.sent(), [{'messages': []}])
 
-    def test_held_request_reports_progress_so_it_is_not_flagged_stalled(self):
-        priority.set_user_busy(True)
-        beats = []
-        _, done = self.held(lambda: priority.wait_turn(progress=lambda: beats.append(1)))
-        until(lambda: beats, timeout=3)
-        priority.set_user_busy(False)
-        self.assertTrue(done.wait(2))
+    def test_the_callers_payload_is_not_changed(self):
+        payload = {'messages': []}
+        backends.http_post(CHAT, VLLM, json=payload)
+        self.assertEqual(payload, {'messages': []})
 
-    def test_stall_clock_counts_only_from_when_the_gate_opened(self):
-        priority.set_user_busy(True)
-        self.assertEqual(priority.quiet_for(), 0.0)
-        priority.set_user_busy(False)
-        self.assertLess(priority.quiet_for(), 1.0)
+    def test_only_vllm_chat_requests_are_tagged(self):
+        backends.http_post(CHAT, {'kind': 'ollama'}, json={'messages': []})
+        backends.http_post('http://gpu:8000/tokenize', VLLM, json={'prompt': 'x'})
+        self.assertEqual(self.sent(), [{'messages': []}, {'prompt': 'x'}])
 
-    def test_extraction_request_from_a_stress_worker_is_held(self):
-        sent = threading.Event()
-        priority.set_user_busy(True)
-        with patch.object(app, '_batcher_for', return_value=None), \
-                patch.object(app, '_guards_extraction', return_value=False), \
-                patch.object(app, '_plain_post', side_effect=lambda *a: sent.set()):
-            _, done = self.held(lambda: app._post_dispatch('http://x/v1/chat/completions', {}, {}))
-            self.assertFalse(sent.wait(.3))
-            priority.set_user_busy(False)
-            self.assertTrue(done.wait(2))
-            self.assertTrue(sent.is_set())
+    def test_fcfs_server_is_asked_again_without_priority_and_remembered(self):
+        self.post.side_effect = [
+            reply(400, '{"message":"Got priority 10 but Priority scheduling is not enabled."}'),
+            reply(), reply()]
+        self.assertEqual(backends.http_post(CHAT, VLLM, json={'messages': []}).status_code, 200)
+        backends.http_post(CHAT, VLLM, json={'messages': []})
+        self.assertEqual(self.sent(), [{'messages': [], 'priority': priority.BACKGROUND},
+                                       {'messages': []}, {'messages': []}])
 
-    def test_extraction_request_from_a_user_job_is_not_held(self):
-        priority.set_user_busy(True)
-        with patch.object(app, '_batcher_for', return_value=None), \
-                patch.object(app, '_guards_extraction', return_value=False), \
-                patch.object(app, '_plain_post', return_value='reply'), user_workspace():
-            self.assertEqual(app._post_dispatch('http://x/v1/chat/completions', {}, {}), 'reply')
-
-
-class DispatcherTests(unittest.TestCase):
-    def setUp(self):
-        self.temp = tempfile.TemporaryDirectory()
-        self.addCleanup(self.temp.cleanup)
-        self.store = UserStore(self.temp.name, 32)
-
-    def test_pending_user_jobs_hold_the_gate_until_they_finish(self):
-        release = threading.Event()
-        self.addCleanup(release.set)
-        adapter = FakeAdapter()
-        normal = adapter.ocr
-        adapter.ocr = lambda job, store: (release.wait(5), normal(job, store))[1]
-        service = UserService(self.store, adapter)
-        self.addCleanup(service.close)
-        batch = self.store.create_batch(1, self.store.settings())
-        job = self.store.add_job(batch, 'upload_01', 'one.pdf', b'x')
-        service.start()
-        until(priority.user_busy)
-        release.set()
-        until(lambda: self.store.get(job['id'])['status'] == 'completed')
-        until(lambda: not priority.user_busy())
+    def test_another_400_is_returned_as_it_is(self):
+        self.post.return_value = reply(400, 'maximum context length is 16384')
+        self.assertEqual(backends.http_post(CHAT, VLLM, json={'messages': []}).status_code, 400)
+        self.assertEqual(len(self.sent()), 1)
 
 
 class StatusTests(unittest.TestCase):
