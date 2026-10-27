@@ -19,7 +19,8 @@
   const dates = value => new Date(value).toLocaleString('th-TH');
   let files = [], settings = null, sending = false, jobs = [], batchJobs = [], selected = null;
   let historyTimer, detailTimer, batchTimer, historyLoading = false, batchLoading = false, more = false;
-  $('homeLink').href = window.USER_BASE + '/user'; $('benchmarkLink').href = window.USER_BASE + '/';
+  let modelsTimer, modelsLoading = false, pageClosed = false;
+  $('homeLink').href = window.USER_BASE + '/user';
   function node(tag, text, className) {
     const element = document.createElement(tag); if (text !== undefined) element.textContent = text;
     if (className) element.className = className; return element;
@@ -28,11 +29,38 @@
     $(id).textContent = text || ''; $(id).hidden = !text; $(id).className = 'message' + (error ? ' error' : '');
   }
   async function api(path, options = {}) {
+    if (options.method && !['GET', 'HEAD', 'OPTIONS'].includes(options.method.toUpperCase()))
+      options = {...options, headers: {...options.headers, 'X-OCR-User-Token': window.USER_API_TOKEN}};
     const response = await fetch(API + path, options);
     let body; try { body = await response.json(); } catch (_) { throw new Error('Server ไม่ตอบกลับเป็น JSON (' + response.status + ')'); }
     if (!response.ok) throw new Error(body.error || 'ดำเนินการไม่สำเร็จ (' + response.status + ')');
     return body;
   }
+  function paintModel(role, info, error) {
+    const target = $(role === 'ocr' ? 'ocrModelStatus' : 'extractionModelStatus');
+    const online = !!(info?.model && info[role === 'ocr' ? 'available' : 'text_available']);
+    const state = error ? 'unknown' : online ? 'online' : 'offline';
+    target.className = 'model-status ' + state;
+    target.title = error || [info?.url, info?.text_reason || info?.reason].filter(Boolean).join(' · ');
+    target.replaceChildren(node('span', '', 'model-dot'), node('strong', role === 'ocr' ? 'OCR' : 'Extraction'),
+      node('span', info?.model || (error ? 'ตรวจสอบไม่ได้' : 'ไม่พบโมเดล'), 'model-name'),
+      node('span', error ? 'Unknown' : online ? 'Online' : 'Offline', 'model-state'));
+    target.children[0].setAttribute('aria-hidden', 'true');
+  }
+  async function refreshModels() {
+    if (modelsLoading || pageClosed) return;
+    clearTimeout(modelsTimer); modelsLoading = true; $('refreshModels').disabled = true;
+    try {
+      const body = await api('/models', {method: 'POST'});
+      for (const role of ['ocr', 'extraction']) paintModel(role, body.models[role]);
+    } catch (err) {
+      for (const role of ['ocr', 'extraction']) paintModel(role, null, err.message);
+    } finally {
+      modelsLoading = false; $('refreshModels').disabled = false;
+      if (!pageClosed) modelsTimer = setTimeout(refreshModels, 30000);
+    }
+  }
+  $('refreshModels').addEventListener('click', refreshModels);
   async function loadSettings() {
     try {
       settings = (await api('/settings')).settings;
@@ -172,6 +200,7 @@
   function tab(fields){$('fieldsResult').hidden=!fields;$('textResult').hidden=fields;$('fieldsTab').classList.toggle('selected',fields);$('textTab').classList.toggle('selected',!fields);}
   $('fieldsTab').addEventListener('click',()=>tab(true));$('textTab').addEventListener('click',()=>tab(false));
   window.addEventListener('beforeunload',event=>{if(sending){event.preventDefault();event.returnValue='';}});
-  window.addEventListener('pagehide',()=>{clearTimeout(historyTimer);clearTimeout(detailTimer);clearTimeout(batchTimer);});
-  loadSettings();loadHistory();
+  window.addEventListener('pagehide',()=>{pageClosed=true;clearTimeout(historyTimer);clearTimeout(detailTimer);clearTimeout(batchTimer);clearTimeout(modelsTimer);});
+  window.addEventListener('pageshow',()=>{if(pageClosed){pageClosed=false;refreshModels();}});
+  loadSettings();loadHistory();refreshModels();
 })();

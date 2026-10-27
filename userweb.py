@@ -2,6 +2,7 @@
 import io
 import json
 import re
+import secrets
 import threading
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -15,6 +16,13 @@ from userstore import UserStore, validate_settings
 
 def register(application, engine):
     lock = threading.Lock()
+    # Page-issued proof survives proxy Host rewriting without trusting arbitrary
+    # forwarded hosts. Shared across tabs, not a session/ownership identifier.
+    page_token = secrets.token_urlsafe(32)
+
+    @application.context_processor
+    def user_page_context():
+        return {'user_api_token': page_token}
 
     def service():
         with lock:
@@ -31,8 +39,10 @@ def register(application, engine):
         if request.path.startswith('/api/user/'):
             if request.method not in ('GET', 'HEAD', 'OPTIONS'):
                 origin = request.headers.get('Origin')
-                if origin and urlsplit(origin).netloc != request.host:
-                    abort(403)
+                proof = request.headers.get('X-OCR-User-Token', '')
+                if (origin and urlsplit(origin).netloc != request.host
+                        and not secrets.compare_digest(proof.encode('utf-8'), page_token.encode('ascii'))):
+                    return jsonify(error='ไม่สามารถยืนยันคำขอได้ กรุณาโหลดหน้าใหม่แล้วลองอีกครั้ง'), 403
             # Permit a file at the deployment limit plus the multipart envelope.
             if request.path == '/api/user/jobs' and request.method == 'POST':
                 request.max_content_length = (engine.MAX_UPLOAD_MB + 1) * 1024 * 1024

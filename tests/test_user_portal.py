@@ -1,6 +1,7 @@
 """User queue, real engine adapter and HTTP contracts; no model inference."""
 import io
 import json
+import re
 import tempfile
 import threading
 import time
@@ -226,6 +227,31 @@ class UserWebTests(unittest.TestCase):
         self.assertEqual(self.client.post('/api/user/models', json=self.store.settings()).status_code, 200)
         self.assertEqual(self.client.put('/api/user/settings', json=[], headers={'Origin': 'http://elsewhere'}).status_code, 403)
 
+    def test_page_proof_accepts_rewritten_proxy_host_but_rejects_foreign_requests(self):
+        for prefix in ('', '/ocr', '/tools/ocr'):
+            page = self.client.get(prefix + '/user')
+            token = json.loads(re.search(r'window.USER_API_TOKEN = ("[^"]+");', page.text)[1])
+            # Browser sees the public host; a proxy forwards an internal Host.
+            headers = {'Origin': 'http://10.5.26.4:3000', 'X-OCR-User-Token': token}
+            batch = self.client.post(prefix + '/api/user/batches', json={'file_count': 1}, headers=headers)
+            self.assertEqual(batch.status_code, 201)
+            upload = self.client.post(prefix + '/api/user/jobs', headers=headers, data={
+                'batch_id': batch.json['batch_id'], 'upload_id': 'upload_01',
+                'file': (io.BytesIO(b'file'), 'proxy.pdf')})
+            self.addCleanup(upload.request.environ['wsgi.input'].close)
+            self.assertEqual(upload.status_code, 202)
+            self.assertEqual(self.client.post(prefix + '/api/user/models', headers=headers).status_code, 200)
+            self.assertEqual(self.client.put(prefix + '/api/user/settings', json={'shape': 'hybrid'}, headers=headers).status_code, 200)
+            for extra in ({}, {'X-OCR-User-Token': 'wrong'}, {'X-OCR-User-Token': 'é'},
+                          {'X-Forwarded-Host': '10.5.26.4:3000', 'Referer': 'http://10.5.26.4:3000/user'}):
+                rejected = self.client.post(prefix + '/api/user/batches', json={'file_count': 1},
+                                            headers={'Origin': headers['Origin'], **extra})
+                self.assertEqual(rejected.status_code, 403)
+                self.assertIn('error', rejected.json)
+            until(lambda: self.store.get(upload.json['job']['id'])['status'] == 'completed')
+        main_page = self.client.get('/').text
+        self.assertIn('window.USER_API_TOKEN = ' + json.dumps(token), main_page)
+
     def test_distinct_user_sessions_still_share_jobs_settings_and_history(self):
         first = {'X-OCR-Workspace': 'user-first-tab'}
         second = {'X-OCR-Workspace': 'user-second-tab'}
@@ -274,6 +300,9 @@ class UserWebTests(unittest.TestCase):
             self.assertIn('async function loadSettings()', page.text)
             self.assertNotIn('/static/user/', page.text)
             self.assertNotIn('Whale', page.text)
+            self.assertNotIn('benchmarkLink', page.text)
+            self.assertIn('id="ocrModelStatus"', page.text)
+            self.assertIn('id="extractionModelStatus"', page.text)
             self.assertIn('<title>OCR · เอกสารของทีม</title>', page.text)
             self.assertEqual(self.client.get(prefix + '/api/user/settings').status_code, 200)
         response = self.client.get('/user', headers={'X-Forwarded-Prefix': '/ocr'})

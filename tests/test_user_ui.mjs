@@ -7,7 +7,7 @@ const root = new URL('../', import.meta.url);
 const page = readFileSync(new URL('templates/index.html', root), 'utf8');
 const settingsSource = readFileSync(new URL('templates/_user_settings_script.html', root), 'utf8');
 const appSource = readFileSync(new URL('templates/_user_app_script.html', root), 'utf8');
-const config = {ocr_concurrency:50,extraction_concurrency:64,detail:'original',shape:'hybrid',
+const config = {ocr_concurrency:50,extraction_concurrency:64,detail:'medium',shape:'hybrid',
   extras:false,schema_first:false,loop_guard:true,no_cache:false,user_file_max:0,max_upload_mb:32,
   ocr_url:'http://127.0.0.1:8000',extraction_url:'http://127.0.0.1:8001'};
 const clean = value => JSON.parse(JSON.stringify(value));
@@ -60,7 +60,7 @@ function settingsSetup(fetch){
   form.elements={...controls,namedItem:name=>controls[name]};
   el('userSettingsFields').querySelectorAll=()=>Object.values(controls);
   el('settingsCard').hidden=true;
-  const window={API:'/ocr/api',OCR_BASE:'/ocr'};
+  const window={API:'/ocr/api',OCR_BASE:'/ocr',USER_API_TOKEN:'page-proof'};
   const ctx=vm.createContext({document,window,fetch});vm.runInContext(settingsSource,ctx);
   return {window,el,controls,form};
 }
@@ -78,6 +78,7 @@ test('Settings load and Save round-trip numeric and checkbox values to the prefi
   const saved=JSON.parse(calls[1].options.body);
   assert.equal(saved.ocr_concurrency,12);assert.equal(saved.extras,true);assert.equal(saved.no_cache,false);
   assert.equal(calls[1].url,'/ocr/api/user/settings');assert.match(el('userSettingsNotice').textContent,/Saved/);
+  assert.equal(calls[1].options.headers['X-OCR-User-Token'],'page-proof');
   controls.shape.value='single';controls.shape.listeners.change();assert.equal(controls.schema_first.disabled,true);
 });
 
@@ -104,11 +105,12 @@ test('User app uploads each selected file independently and shows shared history
     calls.push({url,options});
     if(url.endsWith('/settings'))return response({settings:config});
     if(url.endsWith('/batches'))return response({batch_id:'batch-id'});
+    if(url.endsWith('/models'))return response({models:{ocr:{model:'reader',available:true},extraction:{model:'extractor',text_available:true}}});
     if(options.method==='POST')return response({job:job(options.body.values.upload_id)});
     if(url.includes('/jobs?'))return response({jobs:[job('shared-job')],counts:{queued_ocr:2},more:false});
     return response({job:job(url.split('/').at(-1))});
   };
-  const ctx=vm.createContext({document,window:{USER_BASE:'/ocr',addEventListener(){}},fetch,FormData,
+  const ctx=vm.createContext({document,window:{USER_BASE:'/ocr',USER_API_TOKEN:'page-proof',addEventListener(){}},fetch,FormData,
     setTimeout:fn=>{timers.set(++timer,fn);return timer;},clearTimeout:id=>timers.delete(id),Date,console});
   vm.runInContext(appSource,ctx);for(let i=0;i<8;i++)await Promise.resolve();
   const files=[{name:'first.png',size:20*1024*1024},{name:'second.png',size:20*1024*1024}];
@@ -119,6 +121,7 @@ test('User app uploads each selected file independently and shows shared history
   assert.equal(uploads.length,2);
   assert.ok(uploads.every(c=>c.url==='/ocr/api/user/jobs'));
   assert.deepEqual(uploads.map(c=>c.options.body.values.file.name),['first.png','second.png']);
+  assert.ok(calls.filter(c=>c.options.method==='POST').every(c=>c.options.headers['X-OCR-User-Token']==='page-proof'));
   assert.match(el('uploadMessage').textContent,/2\/2/);
   assert.equal(el('historyRows').children.length,1);
   assert.equal(el('batchJobs').children.length,2);
@@ -127,6 +130,36 @@ test('User app uploads each selected file independently and shows shared history
   await el('uploadForm').listeners.submit({preventDefault(){}});
   for(let i=0;i<8;i++)await Promise.resolve();
   assert.notEqual(el('resultFile').textContent,'shared-job.png','a new batch must replace the previous selected result');
+});
+
+test('model status uses each capability, refreshes served names and distinguishes API failures',async()=>{
+  const {el,document}=dom(),calls=[],timers=new Map(),events={};let timer=0,version=0,fail=false;
+  const fetch=async(url,options={})=>{
+    calls.push({url,options});
+    if(url.endsWith('/settings'))return response({settings:config});
+    if(url.endsWith('/models')){
+      if(fail)throw new Error('network unavailable');
+      return response({models:{ocr:{model:'ocr-'+version,available:true},
+        extraction:{model:'extract-'+version,available:true,text_available:version>0,text_reason:'Text model unavailable'}}});
+    }
+    return response({jobs:[],counts:{},more:false});
+  };
+  vm.runInContext(appSource,vm.createContext({document,window:{USER_BASE:'/ocr',USER_API_TOKEN:'proof',addEventListener:(name,fn)=>events[name]=fn},fetch,
+    setTimeout:(fn,ms)=>{timers.set(++timer,{fn,ms});return timer;},clearTimeout:id=>timers.delete(id),Date,console}));
+  for(let i=0;i<10;i++)await Promise.resolve();
+  assert.equal(el('ocrModelStatus').children.at(-1).textContent,'Online');
+  assert.equal(el('extractionModelStatus').children.at(-1).textContent,'Offline');
+  assert.match(el('extractionModelStatus').title,/Text model unavailable/);
+  assert.ok([...timers.values()].some(t=>t.ms===30000));
+  version=1;await el('refreshModels').listeners.click();
+  assert.equal(el('extractionModelStatus').children[2].textContent,'extract-1');
+  assert.equal(el('extractionModelStatus').children.at(-1).textContent,'Online');
+  fail=true;await el('refreshModels').listeners.click();
+  assert.equal(el('ocrModelStatus').children.at(-1).textContent,'Unknown');
+  assert.equal(el('refreshModels').disabled,false);
+  const probes=calls.filter(c=>c.url.endsWith('/models'));
+  assert.ok(probes.every(c=>c.url==='/ocr/api/user/models' && c.options.headers['X-OCR-User-Token']==='proof'));
+  events.pagehide();assert.equal(timers.size,0);
 });
 
 test('portal base paths support root, trailing slash and nested reverse-proxy mounts',()=>{

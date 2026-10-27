@@ -7,6 +7,8 @@
   let loaded = false, loading = false;
   for (const link of document.querySelectorAll('.user-app-link')) link.href = window.OCR_BASE + '/user';
   async function api(path, options = {}) {
+    if (options.method && !['GET', 'HEAD', 'OPTIONS'].includes(options.method.toUpperCase()))
+      options = {...options, headers: {...options.headers, 'X-OCR-User-Token': window.USER_API_TOKEN}};
     const response = await fetch(window.API + '/user/' + path, options);
     const body = await response.json();
     if (!response.ok) throw new Error(body.error || 'Request failed');

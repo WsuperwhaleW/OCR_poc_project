@@ -15261,6 +15261,7 @@ document.addEventListener('change', event => {
 });
 </script>
 <script>
+window.USER_API_TOKEN = {{ user_api_token|tojson }};
 {% include '_user_settings_script.html' %}
 </script>
 </body>

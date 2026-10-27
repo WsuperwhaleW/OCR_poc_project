@@ -14,7 +14,7 @@ def now():
 
 
 def defaults(max_upload_mb):
-    return dict(ocr_concurrency=50, detail='original', loop_guard=True,
+    return dict(ocr_concurrency=50, detail='medium', loop_guard=True,
                 extraction_concurrency=64, shape='hybrid', extras=False,
                 schema_first=False, ocr_url='http://127.0.0.1:8000',
                 extraction_url='http://127.0.0.1:8001', no_cache=False,
