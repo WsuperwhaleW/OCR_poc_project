@@ -8864,59 +8864,196 @@ def _stress_run(cfg: dict, cancel):
         yield json.dumps({"event": "draining", "in_flight": len(pending)}) + "\n"
 
 
+class _StressBackground:
+    """A stress run in its own thread, and every NDJSON line it has sent.
+
+    **The run does not belong to the request that started it** (2026-10-27, at
+    the user's request: *allow the stress to run as background even if the
+    frontend is disconnected*). It used to be the response's generator, so a
+    page that reloaded, slept or lost the network hung the run up with it --
+    History said "The client disconnected before the report finished" and the
+    rest of a long run was gone. Now a thread runs it to the end and keeps each
+    line here; a response only follows the list, from any line, so a page that
+    comes back reattaches (`/api/stress/attach`) and replays what it missed.
+
+    One per workspace, the newest -- finished or not -- kept until the next
+    run starts there, so a page that missed the end can still read the report.
+    """
+
+    def __init__(self, body: dict, mode: str):
+        self.id = uuid.uuid4().hex[:12]
+        self.request = body
+        self.mode = mode
+        self.started = time.time()
+        self.finished = None
+        self.lines = []
+        self._cond = threading.Condition()
+
+    def emit(self, line: str):
+        with self._cond:
+            self.lines.append(line)
+            self._cond.notify_all()
+
+    def finish(self):
+        with self._cond:
+            self.finished = time.time()
+            self._cond.notify_all()
+
+    def summary(self) -> dict:
+        with self._cond:
+            return {"id": self.id, "running": self.finished is None,
+                    "started": self.started, "finished": self.finished,
+                    "events": len(self.lines), "mode": self.mode,
+                    "request": self.request}
+
+    def follow(self, start: int = 0):
+        """The lines from `start` on, as they come, until the run has ended.
+
+        A follower that hangs up only stops following: the run never hears.
+        """
+        at = max(0, start)
+        while True:
+            with self._cond:
+                while at >= len(self.lines) and self.finished is None:
+                    self._cond.wait(timeout=30)
+                batch, ended = self.lines[at:], self.finished is not None
+            at += len(batch)
+            if batch:
+                yield "".join(batch)
+            if ended and at >= len(self.lines):
+                return
+
+
+_stress_background = None
+_stress_start_lock = threading.Lock()
+workspace.field("stress_background", lambda: None, fresh=True)
+
+
+def _stress_job_here():
+    """This workspace's newest background stress run, or None."""
+    return workspace.get("stress_background", _stress_background)
+
+
+def _keep_stress_job(job):
+    global _stress_background
+    if not workspace.put("stress_background", job):
+        _stress_background = job
+
+
+def _stress_follow_response(job, start=0):
+    return Response(job.follow(start), mimetype="application/x-ndjson",
+                    headers={"X-Stress-Run": job.id, "Cache-Control": "no-store"})
+
+
 @app.post("/api/stress/stream")
 def stress_stream():
-    """Run a stress test, one NDJSON progress event a second and one report.
+    """Start a stress test and follow it: one NDJSON progress event a second
+    and one report.
 
-    The full report is saved to History, separately from the accuracy run log.
-    Optional `save_log` also writes a CSV row per measured job.
+    The run goes on in the background whether or not anyone is following
+    (`_StressBackground`); the `X-Stress-Run` header names it for
+    `/api/stress/attach`. The full report is saved to History, separately from
+    the accuracy run log. Optional `save_log` also writes a CSV row per
+    measured job.
     """
     body = request.get_json(silent=True) or {}
     try:
         cfg = _stress_config(body)
     except ValueError as err:
         return jsonify(error=str(err)), 400
-    if sweeps_running():
-        return jsonify(error="A random test or stress test is already running. "
-                             "Wait for it or stop it before starting another."), 409
-    cancel = begin_sweep(MultiCancel())
+    with _stress_start_lock:
+        if sweeps_running():
+            return jsonify(error="A random test or stress test is already running. "
+                                 "Wait for it or stop it before starting another."), 409
+        job = _StressBackground(body, cfg["mode"])
+        started = threading.Event()
+        thread = threading.Thread(target=workspace.bind(_stress_background_run),
+                                  args=(job, cfg, started), daemon=True,
+                                  name=f"stress-run-{job.id}")
+        thread.start()
+        # The thread takes the sweep guard itself, as the run's owner; the next
+        # Run is not let through until it has.
+        started.wait()
+        _keep_stress_job(job)
+    return _stress_follow_response(job)
 
-    def generate():
-        # The stress sampler and optional History monitor collect /metrics;
-        # per-request timing must not add its own scrapes under contention.
-        servertime.suspend_metrics()
-        # "Bypass prompt cache": every request of the run and its drain is sent
-        # uncacheable, so prefill is measured rather than a cache lookup.
-        no_cache = bool(cfg.get("no_cache"))
-        global _batcher
-        try:
-            if no_cache:
-                backends.bypass_prefix_cache()
-            if cfg.get("vllm_batch"):
-                # One batcher for every server the run uses; the group key
-                # keeps each URL's requests apart.
-                _batcher = vllmbatch.Batcher(cfg["concurrency"], _send_batch)
-            configuration = {**cfg, "ocr_profile": ocr_profile(),
-                             "sampling": ocr_sampling_state(), "loop_guard": loop_guard(),
-                             "read_floor": read_floor(), "table_agents": table_agents(),
-                             "context": backends.num_ctx(),
-                             "workspace": workspace.current_id(),
-                             "reader": llama_status() if cfg.get("mode") in ("ocr", "full") else None,
-                             "extractor": backends.extract_status() if cfg.get("mode") in ("extract", "classify", "full") else None}
-            yield from _history_stream(_stress_run(cfg, cancel), "stress", configuration)
-        except Exception as err:                    # noqa: BLE001
-            yield json.dumps({"event": "error",
-                              "error": f"{type(err).__name__}: {err}"[:300]}) + "\n"
-        finally:
-            if _batcher is not None:
-                _batcher.close()
-                _batcher = None
-            if no_cache:
-                backends.restore_prefix_cache()
-            servertime.resume_metrics()
-            end_sweep()
 
-    return Response(generate(), mimetype="application/x-ndjson")
+@app.get("/api/stress/active")
+def stress_active():
+    """This tab's newest stress run, running or finished, or `{"run": null}`."""
+    job = _stress_job_here()
+    return jsonify(run=job.summary() if job is not None else None)
+
+
+@app.get("/api/stress/attach")
+def stress_attach():
+    """Follow this tab's stress run again, from line `from` (0 replays it all).
+
+    `id` names the run the page was following: if a newer one has replaced it,
+    this is refused rather than splicing two runs into one report.
+    """
+    job = _stress_job_here()
+    wanted = request.args.get("id")
+    if job is None or (wanted and wanted != job.id):
+        return jsonify(error="That stress run is no longer kept here."), 404
+    try:
+        start = int(request.args.get("from", 0))
+    except ValueError:
+        return jsonify(error="from must be a whole number."), 400
+    return _stress_follow_response(job, start)
+
+
+def _stress_background_run(job, cfg, started):
+    """The thread of a background stress run: take the guard, run, keep each line."""
+    try:
+        cancel = begin_sweep(MultiCancel())
+    finally:
+        started.set()
+    try:
+        for line in _stress_generate(cfg, cancel):
+            job.emit(line)
+    except Exception as err:                        # noqa: BLE001
+        job.emit(json.dumps({"event": "error",
+                             "error": f"{type(err).__name__}: {err}"[:300]}) + "\n")
+    finally:
+        end_sweep()
+        job.finish()
+
+
+def _stress_generate(cfg, cancel):
+    """Every NDJSON line of one stress run, in the thread that holds the guard."""
+    # The stress sampler and optional History monitor collect /metrics;
+    # per-request timing must not add its own scrapes under contention.
+    servertime.suspend_metrics()
+    # "Bypass prompt cache": every request of the run and its drain is sent
+    # uncacheable, so prefill is measured rather than a cache lookup.
+    no_cache = bool(cfg.get("no_cache"))
+    global _batcher
+    try:
+        if no_cache:
+            backends.bypass_prefix_cache()
+        if cfg.get("vllm_batch"):
+            # One batcher for every server the run uses; the group key
+            # keeps each URL's requests apart.
+            _batcher = vllmbatch.Batcher(cfg["concurrency"], _send_batch)
+        configuration = {**cfg, "ocr_profile": ocr_profile(),
+                         "sampling": ocr_sampling_state(), "loop_guard": loop_guard(),
+                         "read_floor": read_floor(), "table_agents": table_agents(),
+                         "context": backends.num_ctx(),
+                         "workspace": workspace.current_id(),
+                         "reader": llama_status() if cfg.get("mode") in ("ocr", "full") else None,
+                         "extractor": backends.extract_status() if cfg.get("mode") in ("extract", "classify", "full") else None}
+        yield from _history_stream(_stress_run(cfg, cancel), "stress", configuration)
+    except Exception as err:                        # noqa: BLE001
+        yield json.dumps({"event": "error",
+                          "error": f"{type(err).__name__}: {err}"[:300]}) + "\n"
+    finally:
+        if _batcher is not None:
+            _batcher.close()
+            _batcher = None
+        if no_cache:
+            backends.restore_prefix_cache()
+        servertime.resume_metrics()
 
 
 class _HistoryMonitor:
