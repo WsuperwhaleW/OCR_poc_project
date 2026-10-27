@@ -202,24 +202,85 @@
   $('navUpload').addEventListener('click',()=>view(false));
   $('navHistory').addEventListener('click',()=>{view(true);loadHistory();});
   function valueText(value){return typeof value==='object'&&value!==null?JSON.stringify(value,null,2):String(value??'');}
+  function docCodes(doc){return Array.isArray(doc.doc_types)&&doc.doc_types.length?doc.doc_types:doc.doc_type?[doc.doc_type]:[];}
+  function typeBadges(doc){
+    const group=node('span',undefined,'doc-type-badges'), codes=docCodes(doc);
+    for(const code of codes){const label=window.USER_DOC_TYPES?.[code]||String(code).replace(/_/g,' ').toLowerCase();
+      const badge=node('span',label,'doc-type-badge');badge.title=code;group.append(badge);}
+    if(!codes.length)group.append(node('span','ไม่ระบุประเภท','muted small'));
+    return group;
+  }
+  function documentPages(doc){return doc.pages?.length?'หน้า '+doc.pages.join(', '):'';}
+  function renderDocTypes(result){
+    const extracted=result.extracted, docs=extracted?(extracted.documents||[extracted]):result.classifications||[];
+    $('docTypesPanel').hidden=!docs.length;
+    $('docTypesSummary').replaceChildren(...docs.map((doc,index)=>{
+      const card=node('div',undefined,'doc-type-card'), header=node('div',undefined,'doc-type-heading');
+      header.append(node('strong','เอกสาร '+(doc.document||index+1)),node('span',documentPages(doc),'muted small'));card.append(header,typeBadges(doc));
+      if(doc.doc_type_heading)card.append(node('p',doc.doc_type_heading,'doc-heading-text'));
+      const source={transcript:'จำแนกจากหัวเอกสาร',model:'จำแนกโดยโมเดล',caller:'ประเภทที่กำหนดไว้',case:'ประเภทจากชุดทดสอบ'}[doc.doc_type_from];
+      if(source)card.append(node('span',source,'muted small'));
+      return card;
+    }));
+  }
+  function renderGrid(columns, rows, rowPages=[]){
+    const width=rows.reduce((n,row)=>Math.max(n,Array.isArray(row)?row.length:1),columns.length);
+    const scroll=node('div',undefined,'table-scroll extracted-grid'),table=node('table');
+    const head=node('thead'),tr=node('tr'),hasPages=rowPages.some(page=>page!==null&&page!==undefined);
+    if(hasPages)tr.append(node('th','หน้า'));
+    for(let col=0;col<width;col++)tr.append(node('th',valueText(columns[col])||'คอลัมน์ '+(col+1)));
+    head.append(tr);table.append(head);const body=node('tbody');
+    for(const [index,raw] of rows.entries()){
+      const cells=Array.isArray(raw)?raw:[raw],row=node('tr');
+      if(hasPages)row.append(node('td',valueText(rowPages[index])||'—','table-page'));
+      for(let col=0;col<width;col++){const text=valueText(cells[col]);row.append(node('td',text||'—',text.trim()&&/^[\d.,\-() ]+$/.test(text)?'num':''));}
+      body.append(row);
+    }
+    table.append(body);scroll.append(table);return scroll;
+  }
+  function renderArray(value){
+    if(value.every(row=>row&&typeof row==='object'&&!Array.isArray(row))){
+      const keys=[...new Set(value.flatMap(row=>Object.keys(row)))];
+      return renderGrid(keys.map(key=>fieldLabels[key]||key.replace(/_/g,' ')),value.map(row=>keys.map(key=>row[key])));
+    }
+    return renderGrid([],value.map(row=>Array.isArray(row)?row:[row]));
+  }
+  function renderItemTable(value){
+    const block=node('section',undefined,'item-table-section');
+    const rows=Array.isArray(value.rows)?value.rows:[],columns=Array.isArray(value.columns)?value.columns:[];
+    const title=value.is_master_table===true?'ตารางเอกสารอ้างอิง':value.is_master_table===false?'รายการสินค้า / บริการ':'รายการในตาราง';
+    block.append(node('h4',title+' · '+rows.length+' รายการ'));
+    if(value.error)block.append(node('p',value.error,'message error'));
+    if(rows.length||columns.length)block.append(renderGrid(columns,rows,Array.isArray(value.row_pages)?value.row_pages:[]));
+    if(!rows.length)block.append(node('p','ไม่มีแถวข้อมูลในตาราง','muted small'));
+    if(Array.isArray(value.footer)&&value.footer.length){
+      const footer=node('div',undefined,'table-footer');footer.append(node('h4','ข้อความท้ายตาราง'));
+      for(const entry of value.footer){const line=node('p',typeof entry==='object'&&entry!==null?valueText(entry.text):valueText(entry));
+        if(entry?.page)line.append(node('span',' · หน้า '+entry.page,'muted small'));footer.append(line);}
+      block.append(footer);
+    }
+    return block;
+  }
   function renderFields(extracted){
     const target=$('fieldsResult');target.replaceChildren();
     if(!extracted){target.append(node('p','ข้อมูลจะแสดงเมื่อ Extraction เสร็จ','muted'));return;}
     for(const [index,doc] of (extracted.documents||[extracted]).entries()){
       const section=node('section',undefined,'document'),heading=node('h3','เอกสาร '+(index+1));
-      heading.append(node('small',(doc.pages?.length?'หน้า '+doc.pages.join(', ')+' · ':'')+(doc.doc_types||[]).join(' / ')));
-      section.append(heading);if(doc.error)section.append(node('p',doc.error,'message error'));
+      heading.append(node('small',documentPages(doc)));
+      section.append(heading,typeBadges(doc));if(doc.error)section.append(node('p',doc.error,'message error'));
       for(const failed of [...(doc.steps_failed||[]),...(doc.steps_extras||[])])
         section.append(node('p',(failed.title||failed.id)+': '+failed.error,'message error'));
-      const table=node('div',undefined,'field-table');
+      const table=node('div',undefined,'field-table'),collections=[];
       for(const [key,value]of Object.entries(doc.fields||{})){
-        const row=node('div',undefined,'field-row'),text=valueText(value);
+        if(Array.isArray(value)&&value.length){const list=node('section',undefined,'field-collection');list.append(node('h4',fieldLabels[key]||key.replace(/_/g,' ')),renderArray(value));collections.push(list);continue;}
+        const row=node('div',undefined,'field-row'),text=Array.isArray(value)?'':valueText(value);
         const label=key==='subtotal' && doc.doc_types?.length===1 && doc.doc_types[0]==='BILLING_NOTE'
           ? 'ยอดวางบิล' : fieldLabels[key] || key.replace(/_/g,' ');
         row.append(node('div',label,'field-key'),node('div',text||'—','field-value'+(text?'':' empty-value')));table.append(row);
       }
-      if(!table.children.length)section.append(node('p','ไม่พบข้อมูลที่ดึงได้','muted'));else section.append(table);
-      if(doc.item_table){const detail=node('details');detail.append(node('summary','รายการในตาราง'),node('pre',valueText(doc.item_table),'transcript'));section.append(detail);}
+      if(table.children.length)section.append(table);else if(!collections.length)section.append(node('p','ไม่พบข้อมูลที่ดึงได้','muted'));
+      section.append(...collections);
+      if(doc.item_table&&typeof doc.item_table==='object')section.append(renderItemTable(doc.item_table));
       target.append(section);
     }
   }
@@ -254,7 +315,7 @@
     paintTimeline(job);
     message('jobError',job.error,true);$('warnings').replaceChildren(...(result.warnings||[]).map(text=>node('p',text,'message')));
     $('originalLink').href=API+'/jobs/'+job.id+'/file';$('exportLink').href=API+'/jobs/'+job.id+'/export';
-    window.renderUserOcr($('textResult'),result.pages,result.text);renderFields(result.extracted);
+    window.renderUserOcr($('textResult'),result.pages,result.text);renderFields(result.extracted);renderDocTypes(result);
     $('jsonResult').textContent=result.extracted?JSON.stringify(result.extracted,null,2):'ยังไม่มีผล Extraction';
     $('jobSettings').textContent=JSON.stringify(job.configuration,null,2);paintBatch();
   }

@@ -224,6 +224,41 @@ test('OCR Rendered builds headings and tables while retaining untrusted markup a
   assert.ok(all.some(e=>e.textContent?.includes('<img src=')));
 });
 
+test('Key-Value renders row tables, footer and document types without changing saved JSON',async()=>{
+  const {el,document}=dom();
+  const extracted={documents:[{pages:[1],doc_types:['RECEIPT','TAX_INVOICE'],doc_type_heading:'ใบเสร็จรับเงิน / ใบกำกับภาษี',
+    fields:{buyer_tax_id:'0123456789012',line_items:[],other_fields:[{name:'หมายเหตุ',value:'<img onerror="boom">'}]},
+    item_table:{columns:['เลขที่เอกสาร','จำนวนเงิน'],rows:[['INV-1',0],['INV-2','100.00','extra cell']],row_pages:[1,2],
+      footer:[{text:'รวม 100.00',page:2}],is_master_table:true}},
+    {pages:[2,3],doc_type:'BILLING_NOTE',fields:{subtotal:'100.00'},item_table:{error:'No table',rows:[]}}]};
+  const original=JSON.stringify(extracted);
+  const job={id:'job',filename:'test.png',created_at:'2026-10-27',status:'completed',result:{extracted}};
+  const fetch=async(url)=>{
+    if(url.endsWith('/settings'))return response({settings:config});
+    if(url.endsWith('/models'))return response({models:{ocr:{},extraction:{}}});
+    if(url.includes('/jobs?'))return response({jobs:[job],counts:{},more:false});
+    return response({job});
+  };
+  const window={USER_BASE:'/ocr',USER_DOC_TYPES:{RECEIPT:'receipt',TAX_INVOICE:'tax invoice',BILLING_NOTE:'billing note'},renderUserOcr(){},addEventListener(){}};
+  vm.runInContext(appSource,vm.createContext({document,window,fetch,Date,setTimeout:()=>1,clearTimeout(){}}));
+  for(let i=0;i<10;i++)await Promise.resolve();
+  await el('historyRows').children[0].children.at(-1).children[0].listeners.click();
+  const walk=element=>[element,...(element.children||[]).flatMap(walk)];
+  const fields=walk(el('fieldsResult')),summary=walk(el('docTypesSummary'));
+  assert.equal(el('docTypesPanel').hidden,false);
+  assert.ok(summary.some(e=>e.textContent==='receipt'));assert.ok(summary.some(e=>e.textContent==='tax invoice'));
+  assert.ok(summary.some(e=>e.textContent==='billing note'));assert.ok(summary.some(e=>e.textContent==='หน้า 2, 3'));
+  assert.equal(fields.filter(e=>e.tag==='table').length,2);
+  assert.ok(fields.some(e=>e.tag==='td'&&e.textContent==='0'));
+  assert.ok(fields.some(e=>e.tag==='td'&&e.textContent==='extra cell'));
+  assert.ok(fields.some(e=>e.tag==='th'&&e.textContent==='คอลัมน์ 3'));
+  assert.ok(fields.some(e=>e.textContent==='รวม 100.00'));assert.ok(fields.some(e=>e.textContent==='No table'));
+  assert.ok(fields.some(e=>e.textContent==='<img onerror="boom">'));assert.equal(fields.filter(e=>e.tag==='img').length,0);
+  assert.equal(fields.filter(e=>e.tag==='pre').length,0);
+  assert.equal(el('jsonResult').textContent,JSON.stringify(extracted,null,2));
+  assert.equal(JSON.stringify(extracted),original);
+});
+
 test('portal base paths support root, trailing slash and nested reverse-proxy mounts',()=>{
   for(const [path,base]of [['/user',''],['/user/',''],['/ocr/user','/ocr'],['/tools/ocr/user/','/tools/ocr']]){
     assert.equal(path.replace(/\/user\/?$/,''),base);

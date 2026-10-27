@@ -13,7 +13,8 @@ workspace.field('user_pipeline', lambda: False)
 def compact_extraction(value):
     """Keep user results, not benchmark truth, prompts or repeated raw replies."""
     keys = ('fields', 'normalized', 'mode', 'extras', 'schema_first', 'doc_types', 'doc_type',
-            'doc_type_heading', 'pages', 'document', 'documents_found', 'documents_failed',
+            'doc_type_heading', 'doc_type_from', 'doc_type_confidence',
+            'pages', 'document', 'documents_found', 'documents_failed',
             'partial', 'error', 'seconds', 'tokens', 'segments', 'split_from',
             'steps_failed', 'steps_extras', 'model', 'backend', 'url', 'normalization_version')
     out = {key: value[key] for key in keys if key in value}
@@ -152,6 +153,15 @@ class EngineAdapter:
                     elif kind in ('document', 'classified'):
                         document = event.get('document', 1)
                         completed, total = 0, 0
+                        if kind == 'classified':
+                            classified = {key: event[key] for key in ('doc_types', 'doc_type',
+                                'doc_type_heading', 'doc_type_from', 'doc_type_confidence') if key in event}
+                            classified.update(document=document, pages=event.get('pages') or
+                                              list(range(1, len(result['pages']) + 1)))
+                            previous = [row for row in result.get('classifications', [])
+                                        if row['document'] != document]
+                            result['classifications'] = sorted(previous + [classified], key=lambda row: row['document'])
+                            store.update(job['id'], result=result)
                     elif kind == 'extract_steps':
                         total, completed = event['total'], 0
                     elif kind == 'extract_step' and event.get('status') == 'done':

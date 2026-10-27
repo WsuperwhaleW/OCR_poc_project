@@ -51,7 +51,9 @@ def register(application, engine):
     @application.get('/user')
     @application.get('/user/')
     def user_index():
-        return render_template('user.html')
+        return render_template('user.html', user_doc_types={
+            code: re.sub(r'^(an|a|the) ', '', name)
+            for code, name in engine.prompts.TYPE_NAMES.items()})
 
     @application.get('/api/user/settings')
     def user_settings():

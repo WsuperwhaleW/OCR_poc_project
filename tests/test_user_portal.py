@@ -392,6 +392,9 @@ class UserWebTests(unittest.TestCase):
             self.assertNotIn('benchmarkLink', page.text)
             self.assertIn('id="ocrModelStatus"', page.text)
             self.assertIn('id="extractionModelStatus"', page.text)
+            type_names = json.loads(re.search(r'window.USER_DOC_TYPES = (.+);', page.text)[1])
+            self.assertEqual(type_names['INVOICE'], 'invoice')
+            self.assertEqual(type_names['WHT_CERTIFICATE'], 'withholding tax certificate (50 ทวิ)')
             self.assertIn('<title>OCR · เอกสารของทีม</title>', page.text)
             self.assertEqual(self.client.get(prefix + '/api/user/settings').status_code, 200)
         response = self.client.get('/user', headers={'X-Forwarded-Prefix': '/ocr'})
@@ -405,6 +408,31 @@ class UserWebTests(unittest.TestCase):
 
 
 class EngineAdapterTests(StoreCase):
+    def test_classification_is_visible_before_extraction_finishes_and_survives_failure(self):
+        batch = self.store.create_batch(1, self.store.settings())
+        job = self.store.add_job(batch, 'upload_01', 'two.pdf', b'file')
+        self.store.update(job['id'], result={'text': 'two pages', 'pages': ['a', 'b'], 'warnings': []})
+        job = self.store.get(job['id'])
+        seen = []
+        def stream(*args, **kwargs):
+            for index, code in enumerate(['RECEIPT', 'BILLING_NOTE'], 1):
+                yield {'event': 'classified', 'document': index, 'documents': 2, 'pages': [index],
+                       'doc_types': [code], 'doc_type_heading': 'Printed heading',
+                       'doc_type_from': 'transcript', 'doc_type_confidence': .9, 'raw': 'not saved'}
+                seen.append(self.store.get(job['id'])['result']['classifications'])
+            raise ValueError('extraction failed')
+        with patch.object(app.backends, 'extract_status', return_value={'text_available': True}), \
+             patch.object(app, 'extract_fields_stream', side_effect=stream), \
+             self.assertRaisesRegex(ValueError, 'extraction failed'):
+            EngineAdapter(app).extraction(job, self.store)
+        self.assertEqual(len(seen[0]), 1)
+        self.assertEqual([row['pages'] for row in seen[1]], [[1], [2]])
+        self.assertEqual(seen[1][1]['doc_types'], ['BILLING_NOTE'])
+        self.assertNotIn('raw', seen[1][0])
+        compact = userpipeline.compact_extraction({'documents': [seen[1][0] | {'fields': {}}], 'raw': 'large raw'})
+        self.assertEqual(compact['documents'][0]['doc_type_from'], 'transcript')
+        self.assertEqual(compact['documents'][0]['doc_type_confidence'], .9)
+
     def test_snapshot_follows_the_ocr_model_profile_without_changing_benchmark(self):
         adapter = EngineAdapter(app)
         models = FakeAdapter().models(self.store.settings())
