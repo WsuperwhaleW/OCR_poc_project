@@ -155,14 +155,16 @@ class StressFlagTests(unittest.TestCase):
         return rec, live.take_alerts()
 
     def test_dry_on_a_clean_page_is_one_row(self):
-        rec, alerts = self._read([(False, 4)])
+        with patch.object(app, "STRESS_DRY_RETRY", False):   # flag only
+            rec, alerts = self._read([(False, 4)])
         self.assertEqual([a["kind"] for a in alerts], ["dry"])
         self.assertEqual(alerts[0]["page"], 1)
         self.assertIn("at low: penalised 4 step(s) from output token 300", alerts[0]["message"])
         self.assertEqual((rec["dry_pages"], rec["dry_checked"]), (1, 1))
 
     def test_dry_across_retries_stays_one_row_and_grows(self):
-        rec, alerts = self._read([(True, 3), (False, 2)])
+        # medium fired too, so it climbs again (STRESS_DRY_RETRY)
+        rec, alerts = self._read([(True, 3), (False, 2), (False, 0)])
         dry = [a for a in alerts if a["kind"] == "dry"]
         self.assertEqual(len({a["id"] for a in dry}), 1)
         self.assertIn("at low:", dry[-1]["message"])

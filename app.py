@@ -164,6 +164,7 @@ from settings import (
     LOOP_MIN_REPEATS,
     LOOP_RETRY,
     LOOP_TAIL_CHARS,
+    STRESS_DRY_RETRY,
     MAX_JOBS,
     MAX_NEW_TOKENS,
     MAX_PAGES,
@@ -7689,28 +7690,42 @@ def _stress_read(pages, cancel, rec: dict, live: _StressLive,
     """
     started = time.perf_counter()
     lock = threading.Lock()
-    tally = {"retries": 0, "recovered": 0, "prep": 0.0, "dry": 0, "dry_checked": 0}
+    tally = {"retries": 0, "recovered": 0, "prep": 0.0, "dry": 0, "dry_checked": 0,
+             "dry_retries": 0, "dry_recovered": 0}
     inner = MultiCancel()                   # a failed page hangs up its siblings
     hangup = _Hangup(inner)                 # held here: `attach` keeps it weakly
     cancel.attach(hangup)
     cut = "the reading model repeated itself and the loop guard cut the page off"
 
     def read_one(number, page, stats):
-        """One page, with its loop retries. Returns `(text, tokens)`.
+        """One page, with its loop and DRY retries. Returns `(text, tokens)`.
 
         A page that loops has ONE alert however many times it is read: raised
         `retrying` (or `no retry`), and marked `resolved` or `retry failed` by
         the read that settles it. DRY firing is one alert per page the same way,
         its message growing by a Detail each attempt it fired on.
+
+        **A page DRY fired on is read again one Detail up too** (2026-10-27, at
+        the user's request; `STRESS_DRY_RETRY`), even where it did not loop: a
+        repeat the server had to break is a sign the page was going wrong, and
+        the text DRY steered out of may be damaged. The climb stops at the first
+        read that neither looped nor needed DRY. Should a retry loop where an
+        earlier read did not, the latest read that did not loop is the one kept.
         """
         page_tokens, attempts, looped_at = 0, [], []
         loop_alert = dry_alert = None
-        dry_seen, dry_checked = [], False
+        dry_seen, dry_checked, dry_message = [], False, ""
+        kept = None             # (text, stats, attempt) of the latest read that did not loop
         origin = getattr(page, "_stress_origin", None) or {}
         truth_case = case if origin.get("source", "benchmark") == "benchmark" else None
         # Every read of this page, for the Compare view of whichever alert it
         # raises (`_StressEvidence`). Kept only if it raises one.
         seen = []
+
+        def attempt_of(detail):
+            return {"detail": detail, **{key: stats.get(key) for key in
+                    ("resolution", "new_tokens", "seconds")}}
+
         while True:
             try:
                 text = read_page(page, stats, cancel=inner)
@@ -7724,27 +7739,30 @@ def _stress_read(pages, cancel, rec: dict, live: _StressLive,
             page_tokens += stats.get("new_tokens") or 0
             was = (getattr(page, "_stress_origin", None) or {}).get("detail")
             dry = stats.get("dry") or {}
+            fired, looped = bool(dry.get("fired")), bool(stats.get("looped"))
             seen.append({"detail": was, "text": text, "page": page,
-                         "looped": bool(stats.get("looped")),
+                         "looped": looped,
                          "truncated": bool(stats.get("truncated")),
-                         "dry": dry if dry.get("fired") else None})
+                         "dry": dry if fired else None})
             dry_checked = dry_checked or bool(dry.get("checked"))
-            if dry.get("fired"):
+            if fired:
                 dry_seen.append(f"at {was}: {dryreplay.describe(dry)}" if was
                                 else dryreplay.describe(dry))
-                message = "DRY penalised a repeat " + "; ".join(dry_seen)
+                dry_message = "DRY penalised a repeat " + "; ".join(dry_seen)
                 if dry_alert is None:
-                    dry_alert = live.flag("dry", job, case, message, stage="ocr",
+                    dry_alert = live.flag("dry", job, case, dry_message, stage="ocr",
                                           page=number, evidence=True)
                     _STRESS_EVIDENCE.put(dry_alert, case, number, seen, truth_case)
                 else:
-                    live.update_flag(dry_alert, message)
-            if not stats.get("looped"):
+                    live.update_flag(dry_alert, dry_message)
+            if not looped:
+                kept = (text, dict(stats), attempt_of(was))
+            redo_dry = fired and STRESS_DRY_RETRY
+            if not looped and not redo_dry:
                 break
             # Flagged first, then read again one Detail up (2026-10-26, at the
             # user's request). The retry's page is rebuilt from the file, off
             # the clock: that is this machine's work, not the server's.
-            looped_at.append(was)
             prep_began = time.perf_counter()
             try:
                 retry = _stress_retry_page(page)
@@ -7752,39 +7770,69 @@ def _stress_read(pages, cancel, rec: dict, live: _StressLive,
                 retry = None
             with lock:
                 tally["prep"] += time.perf_counter() - prep_began
-            where = _at_details(looped_at)
-            if retry is not None:
-                state = "retrying"
-                message = (f"{cut}{where}; reading it again at "
-                           f"{retry._stress_origin['detail']}")
-            elif attempts:
-                state, message = "retry failed", f"{cut}{where}; the retry failed"
-            else:
-                state, message = "no retry", cut + where
-            if loop_alert is None:
-                loop_alert = live.flag("looped", job, case, message, stage="ocr",
-                                       page=number, state=state, evidence=True)
-                _STRESS_EVIDENCE.put(loop_alert, case, number, seen, truth_case)
-            else:
-                live.update_flag(loop_alert, message, state=state)
+            higher = retry._stress_origin["detail"] if retry is not None else None
+            if looped:
+                looped_at.append(was)
+                where = _at_details(looped_at)
+                if retry is not None:
+                    state = "retrying"
+                    message = f"{cut}{where}; reading it again at {higher}"
+                elif attempts:
+                    state, message = "retry failed", f"{cut}{where}; the retry failed"
+                else:
+                    state, message = "no retry", cut + where
+                if loop_alert is None:
+                    loop_alert = live.flag("looped", job, case, message, stage="ocr",
+                                           page=number, state=state, evidence=True)
+                    _STRESS_EVIDENCE.put(loop_alert, case, number, seen, truth_case)
+                else:
+                    live.update_flag(loop_alert, message, state=state)
+            if redo_dry and retry is not None:
+                live.update_flag(dry_alert, f"{dry_message}; reading it again at "
+                                 f"{higher}", state="retrying")
             if retry is None:
                 break
-            attempts.append({"detail": was, **{key: stats.get(key) for key in
-                             ("resolution", "new_tokens", "seconds")}})
+            attempts.append(attempt_of(was))
             stats.clear()
-            stats.update(loop_retries=list(attempts),
-                         detail=retry._stress_origin["detail"])
+            stats.update(loop_retries=list(attempts), detail=higher)
             with lock:
-                tally["retries"] += 1
+                tally["retries" if looped else "dry_retries"] += 1
             page = retry
+        # A retry that looped where an earlier read did not: keep the earlier
+        # read -- only ever reachable on a climb DRY started.
+        restored = None
+        if stats.get("looped") and kept is not None:
+            final = attempt_of(stats.get("detail"))
+            text, saved, restored = kept
+            stats.clear()
+            stats.update(saved, loop_retries=[a for a in attempts + [final]
+                                              if a is not restored],
+                         detail=restored["detail"])
         with lock:
             tally["dry"] += int(dry_alert is not None)
             tally["dry_checked"] += int(dry_checked)
-        if attempts and not stats.get("looped"):
+        if loop_alert is not None and not stats.get("looped"):
             with lock:
                 tally["recovered"] += 1
-            live.update_flag(loop_alert, f"{cut}{_at_details(looped_at)}; read "
-                             f"cleanly at {stats['detail']}", state="resolved")
+            settled = (f"kept the read at {stats['detail']}, which did not loop"
+                       if restored else f"read cleanly at {stats['detail']}")
+            live.update_flag(loop_alert, f"{cut}{_at_details(looped_at)}; {settled}",
+                             state="resolved")
+        if dry_alert is not None and STRESS_DRY_RETRY:
+            now_fired = bool((stats.get("dry") or {}).get("fired"))
+            if not now_fired and not stats.get("looped"):
+                with lock:
+                    tally["dry_recovered"] += 1
+                live.update_flag(dry_alert, f"{dry_message}; read again at "
+                                 f"{stats.get('detail')} with nothing to penalise",
+                                 state="resolved")
+            elif attempts:
+                live.update_flag(dry_alert, f"{dry_message}; the retry did not clear "
+                                 f"it, kept the read at {stats.get('detail')}",
+                                 state="retry failed")
+            else:
+                live.update_flag(dry_alert, f"{dry_message}; no higher Detail to "
+                                 "read it at", state="no retry")
         if stats.get("looped"):
             pass                                # flagged above, every attempt
         elif stats.get("truncated"):
@@ -7883,7 +7931,8 @@ def _stress_read(pages, cancel, rec: dict, live: _StressLive,
     rec.pop("at_page", None)
     rec.update(loop_retries=tally["retries"], loop_recovered=tally["recovered"],
                retry_prepare_s=round(prep, 3), dry_pages=tally["dry"],
-               dry_checked=tally["dry_checked"])
+               dry_checked=tally["dry_checked"], dry_retries=tally["dry_retries"],
+               dry_recovered=tally["dry_recovered"])
     rec.update(ocr_s=round(time.perf_counter() - started - prep, 3), pages=len(pages),
                ocr_tokens=tokens, ttft_s=ttft, page_s=page_s, page_tps=page_tps,
                page_in=page_in, page_out=page_out, pages_lent=lent,

@@ -728,6 +728,12 @@ LOOP_GUARD = config.env_bool("LOOP_GUARD", True)
 # its per-page timings describing the kept read and its token totals every
 # attempt. LOOP_RETRY=0 turns it off everywhere.
 LOOP_RETRY = config.env_bool("LOOP_RETRY", True)
+# A stress page on which vLLM's DRY processor fired is read again one Detail up
+# as well, even where it did not loop (2026-10-27, at the user's request): a
+# repeat DRY had to break is a sign the read was going wrong, and the text it
+# steered out of may be damaged. Same ladder and same rebuild as a loop retry,
+# so it also needs LOOP_RETRY. STRESS_DRY_RETRY=0 only flags it.
+STRESS_DRY_RETRY = config.env_bool("STRESS_DRY_RETRY", True)
 LOOP_TAIL_CHARS = 600
 LOOP_MIN_REPEATS = 4
 # A repeated line/block that carries no actual *word* -- blank table markup

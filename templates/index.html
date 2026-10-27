@@ -13995,11 +13995,15 @@ const ST_ALERT_TEXT = {
 // A looped page's one row, by where its retries got to (`_StressLive.update_flag`).
 const ST_LOOP_STATE = { retrying: 'loop retrying', resolved: 'loop resolved',
   'retry failed': 'loop retry failed', 'no retry': 'loop, no retry' };
+// A DRY page is read again one Detail up as well (STRESS_DRY_RETRY).
+const ST_DRY_STATE = { retrying: 'DRY retrying', resolved: 'DRY resolved',
+  'retry failed': 'DRY retry failed', 'no retry': 'DRY, no retry' };
 const ST_STAGE_TEXT = { ocr: 'reading', extract: 'extracting', segment: 'splitting',
   classify: 'classifying' };
 
 function stAlertTag(a) {
   if (a.kind === 'looped' && ST_LOOP_STATE[a.state]) return ST_LOOP_STATE[a.state];
+  if (a.kind === 'dry' && ST_DRY_STATE[a.state]) return ST_DRY_STATE[a.state];
   return ST_ALERT_TEXT[a.kind] || a.kind;
 }
 
@@ -14317,7 +14321,9 @@ function stReportHtml(s, snapshot, host) {
          r.ocr && r.ocr.loop_retries ? r.ocr.loop_retries + ' loop retr' + (r.ocr.loop_retries === 1 ? 'y' : 'ies')
            + ', ' + (r.ocr.loop_recovered || 0) + ' page(s) recovered' : '',
          r.ocr && r.ocr.dry_checked ? 'DRY fired on ' + (r.ocr.dry_pages || 0) + ' of '
-           + r.ocr.dry_checked + ' page(s)' : '']
+           + r.ocr.dry_checked + ' page(s)' : '',
+         r.ocr && r.ocr.dry_retries ? r.ocr.dry_retries + ' DRY retr' + (r.ocr.dry_retries === 1 ? 'y' : 'ies')
+           + ', ' + (r.ocr.dry_recovered || 0) + ' page(s) cleared' : '']
           .filter(Boolean).join(' · ')),
       stTile('Error rate', stPct(r.error_rate), (c.error || 0) + ' error(s)',
         r.error_rate ? 'st-bad' : ''),

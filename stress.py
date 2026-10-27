@@ -376,6 +376,11 @@ def report(records: list, wall: float, mode: str, concurrency: int) -> dict:
             # could be checked on (the server sent their token ids).
             "dry_pages": total("dry_pages", attempted),
             "dry_checked": total("dry_checked", attempted),
+            # A page DRY fired on is read again one Detail up (STRESS_DRY_RETRY):
+            # retries a DRY read started, and pages a retry read with nothing
+            # left to penalise.
+            "dry_retries": total("dry_retries", attempted),
+            "dry_recovered": total("dry_recovered", attempted),
             # Pages read on a slot an idle worker lent (`split_pages`), and the
             # most pages any one job had in flight at once.
             "pages_lent": total("pages_lent", attempted),
