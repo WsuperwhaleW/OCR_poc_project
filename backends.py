@@ -556,8 +556,8 @@ def known(url: str = None) -> dict:
 
     **Never touches the network.** It exists for callers that want to DESCRIBE
     the server rather than use it -- the Summary tab's environment card, which
-    is repainted whenever the run-log card refreshes itself, every five seconds
-    while the tab is open.
+    is repainted whenever the run-log card refreshes -- every Refresh click and
+    every filter change.
 
     That is the whole reason it is not `probe(force=False)`: a miss or an expired
     entry makes `probe` go and ask, and on an unreachable endpoint asking costs

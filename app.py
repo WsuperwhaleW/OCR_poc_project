@@ -9919,8 +9919,8 @@ def _environment(rows: list, runs: dict = None) -> dict:
     card" -- which is a claim nothing in this project can make.
 
     **The server half never makes a request** -- `backends.known` returns the
-    last probe or nothing at all. This route is on a polling path: the run-log
-    card re-fetches itself every five seconds while the tab is open, and
+    last probe or nothing at all. This route is on a hot path: the run-log
+    card re-fetches it on every Refresh and every filter change, and
     `llama_status()` here took the summary from milliseconds to **5.1 s** against
     an unreachable endpoint, two connect timeouts at a time. It is also the rule
     this project has had since the beginning -- *never poll the model server*,
