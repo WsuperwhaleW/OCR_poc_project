@@ -42,6 +42,16 @@ MAX_UPLOAD_MB = config.env_int("MAX_UPLOAD_MB", 32, minimum=1, maximum=512)
 # builds the downscaled copies beside it -- ~3.6 GB peak at `medium` for 100
 # pages, measured. Lower `Detail` and `MAX_JOBS` are the levers, in that order.
 MAX_PAGES = config.env_int("MAX_PAGES", 0, minimum=0)
+# **One image frame can hold several pages** (2026-10-27): a scanner that stitches
+# a batch into a single tall TIFF frame shows as one page in a viewer, and was
+# read as one page -- two or three pages of text in one request, which is what
+# ran into the token cap. A frame longer than SPLIT_PAGE_RATIO times its width
+# (or wider than that times its height) is cut into A4-shaped pieces at the
+# blankest band near each expected boundary -- see `app.split_stacked_pages`.
+# A4 is 1.41, so 2.0 leaves every real portrait or landscape page alone. Images
+# only: a PDF page is the page its author made. SPLIT_STACKED_PAGES=0 turns it off.
+SPLIT_STACKED_PAGES = config.env_bool("SPLIT_STACKED_PAGES", True)
+SPLIT_PAGE_RATIO = config.env_float("SPLIT_PAGE_RATIO", 2.0, minimum=1.5)
 # Render PDFs above the pixel cap so the downscale resamples from real detail
 # rather than the model reading a coarsely rasterised page.
 PDF_DPI = config.env_int("PDF_DPI", 300, minimum=72, maximum=600)

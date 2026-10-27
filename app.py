@@ -173,6 +173,8 @@ from settings import (
     PDF_DPI,
     PROMPT_FIRST,
     PROMPT_FIRST_OLLAMA,
+    SPLIT_PAGE_RATIO,
+    SPLIT_STACKED_PAGES,
     SUMMARY_RUNS,
     TRIM_MARGINS,
     TRIM_PAD,
@@ -5272,6 +5274,13 @@ def load_pages(data: bytes):
             for frame in _capped(ImageSequence.Iterator(image), MAX_PAGES)
         ]
         total = int(getattr(image, "n_frames", len(frames)) or len(frames))
+        # A frame can itself hold several pages (`split_stacked_pages`). Every
+        # piece is a page from here on: the cap counts pieces, and so does the
+        # total -- each frame left undecoded still counted as one.
+        if SPLIT_STACKED_PAGES:
+            pieces = [piece for frame in frames for piece in split_stacked_pages(frame)]
+            total += len(pieces) - len(frames)
+            frames = list(_capped(pieces, MAX_PAGES))
     except UnidentifiedImageError:
         hint = "" if HEIF_OK else " (HEIC/HEIF needs: pip install pillow-heif)"
         raise ValueError(f"Unsupported or corrupt file format.{hint}") from None
@@ -5281,6 +5290,67 @@ def load_pages(data: bytes):
     if not frames:
         raise ValueError("That file contains no image data.")
     return frames, total
+
+
+# A4's height over its width, and the share of a piece either side of an expected
+# boundary that the cut may move into to find the gap between two pages.
+_PAGE_RATIO = 2 ** 0.5
+_SPLIT_WINDOW = 0.15
+
+
+def split_stacked_pages(image: Image.Image, ratio: float = None) -> list:
+    """Cut a frame that holds several pages into one image per page.
+
+    A scanner that stitches a batch into a single TIFF frame produces an image
+    two or three A4 pages tall, and it looks like one page in a viewer. Read
+    whole, every page of it lands in one request: the reply is two or three
+    pages long and runs into `MAX_NEW_TOKENS`, and the pages are downscaled to
+    one page's pixel budget on the way, so the text is half the size it should
+    be.
+
+    Only a frame longer than `ratio` times its width (default
+    `SPLIT_PAGE_RATIO`) is cut, into as many A4-shaped pieces as its length
+    holds, and the same across for one wider than `ratio` times its height.
+    Each cut is moved to the middle of the longest blank band within
+    `_SPLIT_WINDOW` of where an A4 boundary would be, so it lands in the
+    margin between two pages -- or, on a long receipt, between two lines --
+    rather than through a line of text. Anything else comes back as `[image]`.
+    """
+    ratio = ratio or SPLIT_PAGE_RATIO
+    w, h = image.size
+    if h >= w * ratio:
+        tall, length, across = True, h, w
+    elif w >= h * ratio:
+        tall, length, across = False, w, h
+    else:
+        return [image]
+    count = max(2, round(length / across / _PAGE_RATIO))
+    # Ink per row (or column), 0-255, from a 1-pixel-wide box average of the
+    # thresholded page. A row at the bottom of its window is one no text crosses.
+    ink = image.convert("L").point(lambda p: 255 if p < 160 else 0)
+    profile = list(ink.resize((1, h) if tall else (w, 1), Image.BOX).getdata())
+    step = length / count
+    reach = int(step * _SPLIT_WINDOW)
+    cuts = [0]
+    for k in range(1, count):
+        target = int(step * k)
+        lo, hi = max(cuts[-1] + 1, target - reach), min(length - 1, target + reach)
+        floor = min(profile[lo:hi + 1])
+        best, run_start = None, None
+        for at in range(lo, hi + 2):
+            blank = at <= hi and profile[at] <= floor + 2
+            if blank and run_start is None:
+                run_start = at
+            elif not blank and run_start is not None:
+                middle = (run_start + at - 1) // 2
+                key = (at - run_start, -abs(middle - target))
+                if best is None or key > best[0]:
+                    best = (key, middle)
+                run_start = None
+        cuts.append(best[1])
+    cuts.append(length)
+    return [image.crop((0, a, w, b) if tall else (a, 0, b, h))
+            for a, b in zip(cuts, cuts[1:])]
 
 
 def trim_margins(image: Image.Image, tolerance: int = TRIM_TOLERANCE,
