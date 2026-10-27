@@ -25,7 +25,8 @@ import re
 
 import segment
 
-MODES = ("ocr", "extract", "classify", "full")
+# `image` (2026-10-27): no read -- the extraction model is sent the page images.
+MODES = ("ocr", "extract", "classify", "full", "image")
 DEFAULT_MODE = "ocr"
 
 # Hard ceilings, so a typo in a box cannot start ten thousand requests.
@@ -386,7 +387,7 @@ def report(records: list, wall: float, mode: str, concurrency: int) -> dict:
             "pages_lent": total("pages_lent", attempted),
             "pages_peak": max((r.get("pages_peak") or 0 for r in attempted), default=0),
         }
-    if mode in ("extract", "full"):
+    if mode in ("extract", "full", "image"):
         rows = [r for r in done if r.get("extract_s") is not None]
         scored = [r for r in ok if r.get("field_expected") and not r.get("unscored")]
         correct = sum((r.get("field_correct") or 0) + 0.5 * (r.get("field_partial") or 0)
@@ -413,11 +414,20 @@ def report(records: list, wall: float, mode: str, concurrency: int) -> dict:
             "missing_required_jobs": sum(1 for r in rows if r.get("missing_required")),
             "missing_required_fields": sum(r.get("missing_required") or 0 for r in rows),
         }
+    if mode == "image":
+        # Pages sent to the extractor as images, and the jobs extracted again one
+        # Detail up because a Mandatory field came back empty or the reply looped
+        # (`retries`), of which this many came back with nothing missing.
+        pages = total("pages")
+        out["image"] = {"pages": pages,
+                        "pages_per_second": round(pages / wall, 3),
+                        "retries": total("image_retries", attempted),
+                        "recovered": total("image_recovered", attempted)}
     if mode in ("ocr", "full"):
         out["ocr"]["tokens_per_page"] = io_spread(
             [(i, o) for r in done
              for i, o in zip(r.get("page_in") or [], r.get("page_out") or [])])
-    if mode in ("extract", "full", "classify"):
+    if mode in ("extract", "full", "classify", "image"):
         # Per FILE, every pass-2 request it made. In classify mode the file is a
         # glued pack and its requests are the segment and classify questions.
         files = [r for r in done if "extract_in" in r or "extract_out" in r]

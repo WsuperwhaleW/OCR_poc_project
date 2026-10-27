@@ -21,7 +21,9 @@ function setup() {
     fxMode: el('fxMode'), fxSchemaFirst: el('fxSchemaFirst'), extractNote: el('extractNote'),
     esc: x => x, stMode: el('stMode'), stEl: el, stSource: 'benchmark', stBatchOn: false,
     stSelectedCases: () => ['sol001']});
-  vm.runInContext(['isStepMode', 'paintMode', 'modeLabel', 'stBody'].map(source).join('\n'), ctx);
+  const modes = page.slice(page.indexOf('const ST_EXTRACT_MODES'));
+  vm.runInContext(modes.slice(0, modes.indexOf('\n')).replace('const ', 'var ') + '\n'
+    + ['isStepMode', 'paintMode', 'modeLabel', 'stBody'].map(source).join('\n'), ctx);
   return {ctx, fields, el};
 }
 
@@ -58,4 +60,7 @@ test('Stress payload retains Hybrid and enables schema-first only for step-based
   el('stShape').value = 'single'; assert.equal(ctx.stBody().schema_first, false);
   el('stShape').value = 'hybrid'; el('stMode').value = 'ocr';
   assert.equal(ctx.stBody().schema_first, false);
+  // Image to extractor takes the shape and its schema option like Full pipeline.
+  el('stMode').value = 'image';
+  assert.equal(ctx.stBody().extract_mode, 'hybrid'); assert.equal(ctx.stBody().schema_first, true);
 });

@@ -1481,6 +1481,15 @@ EXTRACT_REMINDER = """
 Now return the JSON object described above, using exactly the keys listed.
 Do NOT transcribe the document and do NOT return a "natural_text" field."""
 
+# What stands where the transcript would, when the extraction model is sent the
+# page images themselves (the stress test's image mode, 2026-10-27, at the
+# user's request: *send the image directly to extractor if they can handle
+# image*). Every extraction prompt is used exactly as it is -- this replaces only
+# the text the prompts wrap, and the images go at the head of the same message.
+IMAGE_TRANSCRIPT = """[No transcript was made. The document is attached at the start of this
+message as {pages} page image(s), in page order. Read every value directly from the
+images, exactly as printed.]"""
+
 # The same schema as the skeleton in EXTRACT_PROMPT, in the form a server can
 # constrain decoding with. The prompt ASKS for these keys; this makes them the
 # only keys the sampler can produce, which is what finally stopped the OCR
