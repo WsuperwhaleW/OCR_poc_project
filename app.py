@@ -7645,6 +7645,10 @@ def _stress_config(body: dict) -> dict:
         # A long file reads its pages on workers left idle once the queue is
         # empty (`_StressSlots`). On unless the request says otherwise.
         "split_pages": body.get("split_pages", True) is not False,
+        # Full pipeline only: a Mandatory field left empty is asked of the page
+        # images with its Hybrid step (`_stress_fill_missing`). On unless the
+        # request says otherwise; the page's toggle sends it.
+        "fill_missing": body.get("fill_missing", True) is not False and mode == "full",
         "vllm_batch": vllm_batch,
         # Classification has no row shape: a glued pack is no benchmark case and
         # its score is a grouping, so nothing is written for it.
@@ -8828,10 +8832,11 @@ def _stress_job(spec: dict, cfg: dict, prepared: dict, cancel,
                         truth_fed=mode == "extract", extras=cfg.get("extras"),
                         schema_first=cfg.get("schema_first", False),
                         each=lambda event: live.extract_event(job, event))
-                    if mode == "full":
+                    if mode == "full" and cfg.get("fill_missing", True):
                         # A Mandatory field left empty is asked of the page
                         # images with its Hybrid step, before the form is timed,
-                        # logged or scored (`_stress_fill_missing`).
+                        # logged or scored (`_stress_fill_missing`). The page's
+                        # toggle turns it off.
                         why = (" -- the read looped, which may be why" if looped else
                                " -- the read hit the token cap, which may be why"
                                if truncated else "")
@@ -9257,6 +9262,7 @@ def _stress_run(cfg: dict, cancel):
         "run_id": cfg["run_id"] if cfg.get("save_log") else "",
         "no_cache": bool(cfg.get("no_cache")),
         "split_pages": bool(cfg.get("split_pages")) and cfg["mode"] in ("ocr", "full"),
+        "fill_missing": bool(cfg.get("fill_missing")) and cfg["mode"] == "full",
         "no_cache_effect": ({s["kind"]: backends.cache_bypass_effect(s["kind"])
                              for s in (reader, extractor) if s}
                             if cfg.get("no_cache") else {}),
