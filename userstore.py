@@ -73,6 +73,8 @@ class UserStore:
                     UNIQUE(batch_id, upload_id));
                 CREATE INDEX IF NOT EXISTS jobs_status_date ON jobs(status, created_at, id);
             ''')
+            if 'timeline' not in {r['name'] for r in db.execute('PRAGMA table_info(jobs)')}:
+                db.execute("ALTER TABLE jobs ADD COLUMN timeline TEXT NOT NULL DEFAULT '{}'")
 
     @contextmanager
     def connect(self):
@@ -136,10 +138,11 @@ class UserStore:
                 received = db.execute('SELECT COUNT(*) FROM jobs WHERE batch_id=?', (batch_id,)).fetchone()[0]
                 if received >= batch['file_count']:
                     raise ValueError('All files in this batch have already been received.')
-                db.execute('INSERT INTO jobs(id,batch_id,upload_id,filename,created_at,updated_at,status,progress,configuration) '
-                           'VALUES (?,?,?,?,?,?,?,?,?)',
+                db.execute('INSERT INTO jobs(id,batch_id,upload_id,filename,created_at,updated_at,status,progress,configuration,timeline) '
+                           'VALUES (?,?,?,?,?,?,?,?,?,?)',
                            (job_id, batch_id, upload_id, filename, at, at, 'queued_ocr',
-                            'รอ OCR', batch['configuration']))
+                            'กำลังรอคิว OCR', batch['configuration'], json.dumps({
+                                'queued_ocr': {'started_at': at, 'progress': 'กำลังรอคิว OCR'}})))
         except Exception:
             path.unlink(missing_ok=True)
             raise
@@ -150,7 +153,7 @@ class UserStore:
         if row is None:
             return None
         out = dict(row)
-        for key in ('configuration', 'result'):
+        for key in ('configuration', 'result', 'timeline'):
             if key in out:
                 out[key] = json.loads(out[key])
         out.pop('upload_id', None)
@@ -179,8 +182,28 @@ class UserStore:
             values['result'] = json.dumps(values['result'], ensure_ascii=False)
         values['updated_at'] = now()
         with self.connect() as db:
+            db.execute('BEGIN IMMEDIATE')
+            row = db.execute('SELECT * FROM jobs WHERE id=?', (job_id,)).fetchone()
+            if row is None:
+                return
+            values['timeline'] = self._timeline(row, values.get('status', row['status']),
+                                                values.get('progress', row['progress']), values['updated_at'])
             db.execute('UPDATE jobs SET ' + ','.join(f'{k}=?' for k in values) + ' WHERE id=?',
                        (*values.values(), job_id))
+
+    @staticmethod
+    def _timeline(row, status, progress, at):
+        timeline = json.loads(row['timeline'])
+        previous = row['status']
+        # Legacy history has no measured start time. Do not invent its durations.
+        if previous in timeline and previous != status:
+            timeline[previous]['finished_at'] = at
+            if status in ('failed', 'interrupted'):
+                timeline[previous]['outcome'] = status
+        if status not in timeline:
+            timeline[status] = {'started_at': at}
+        timeline[status]['progress'] = progress
+        return json.dumps(timeline, ensure_ascii=False)
 
     def claim(self, stage):
         with self.connect() as db:
@@ -188,12 +211,18 @@ class UserStore:
             row = db.execute('SELECT * FROM jobs WHERE status=? ORDER BY created_at,id LIMIT 1',
                              ('queued_' + stage,)).fetchone()
             if row:
-                db.execute('UPDATE jobs SET status=?,progress=?,updated_at=? WHERE id=?',
-                           (stage, 'กำลังอ่านเอกสาร' if stage == 'ocr' else 'กำลังดึงข้อมูล', now(), row['id']))
+                at = now()
+                progress = 'กำลังเตรียมเอกสารสำหรับ OCR' if stage == 'ocr' else 'กำลังดึงข้อมูล'
+                db.execute('UPDATE jobs SET status=?,progress=?,updated_at=?,timeline=? WHERE id=?',
+                           (stage, progress, at, self._timeline(row, stage, progress, at), row['id']))
+                row = db.execute('SELECT * FROM jobs WHERE id=?', (row['id'],)).fetchone()
         return self.decode(row)
 
     def recover(self):
         with self.connect() as db:
-            db.execute("UPDATE jobs SET status='interrupted',progress=?,error=?,updated_at=? "
-                       "WHERE status IN ('ocr','extraction')",
-                       ('งานถูกขัดจังหวะ', 'แอปรีสตาร์ตระหว่างประมวลผล กรุณาส่งไฟล์เพื่อเริ่มงานใหม่', now()))
+            db.execute('BEGIN IMMEDIATE')
+            for row in db.execute("SELECT * FROM jobs WHERE status IN ('ocr','extraction')").fetchall():
+                at, progress = now(), 'งานถูกขัดจังหวะ'
+                db.execute("UPDATE jobs SET status='interrupted',progress=?,error=?,updated_at=?,timeline=? WHERE id=?",
+                           (progress, 'แอปรีสตาร์ตระหว่างประมวลผล กรุณาส่งไฟล์เพื่อเริ่มงานใหม่', at,
+                            self._timeline(row, 'interrupted', progress, at), row['id']))

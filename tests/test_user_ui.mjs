@@ -7,6 +7,7 @@ const root = new URL('../', import.meta.url);
 const page = readFileSync(new URL('templates/index.html', root), 'utf8');
 const settingsSource = readFileSync(new URL('templates/_user_settings_script.html', root), 'utf8');
 const appSource = readFileSync(new URL('templates/_user_app_script.html', root), 'utf8');
+const renderSource = readFileSync(new URL('templates/_user_render_script.html', root), 'utf8');
 const config = {ocr_concurrency:50,extraction_concurrency:64,detail:'medium',shape:'hybrid',
   extras:false,schema_first:false,loop_guard:true,no_cache:false,user_file_max:0,max_upload_mb:32,
   ocr_url:'http://127.0.0.1:8000',extraction_url:'http://127.0.0.1:8001'};
@@ -14,16 +15,18 @@ const clean = value => JSON.parse(JSON.stringify(value));
 
 class Element {
   constructor(tag='div'){this.tag=tag;this.hidden=false;this.listeners={};this.children=[];this.value='';this.disabled=false;
+    this.style={};
     this.classList={toggle(){},add(){},remove(){}};}
   addEventListener(name,fn){this.listeners[name]=fn;}
   append(...items){this.children.push(...items);}
   replaceChildren(...items){this.children=items;}
   setAttribute(name,value){this[name]=value;}
+  removeAttribute(name){delete this[name];}
 }
 function dom(){
   const items={};
   const el=id=>items[id] ||= new Element();
-  return {items,el,document:{getElementById:el,createElement:tag=>new Element(tag),querySelectorAll:()=>[]}};
+  return {items,el,document:{getElementById:el,createElement:tag=>new Element(tag),createTextNode:text=>({textContent:text}),querySelectorAll:()=>[]}};
 }
 function response(body, ok=true){return {ok,status:ok?200:400,json:async()=>body};}
 
@@ -110,7 +113,8 @@ test('User app uploads each selected file independently and shows shared history
     if(url.includes('/jobs?'))return response({jobs:[job('shared-job')],counts:{queued_ocr:2},more:false});
     return response({job:job(url.split('/').at(-1))});
   };
-  const ctx=vm.createContext({document,window:{USER_BASE:'/ocr',USER_API_TOKEN:'page-proof',addEventListener(){}},fetch,FormData,
+  const ctx=vm.createContext({document,window:{USER_BASE:'/ocr',USER_API_TOKEN:'page-proof',renderUserOcr(target,pages,text){target.textContent=text;},addEventListener(){}},fetch,FormData,
+    URL:{createObjectURL:()=> 'blob:preview',revokeObjectURL(){}},
     setTimeout:fn=>{timers.set(++timer,fn);return timer;},clearTimeout:id=>timers.delete(id),Date,console});
   vm.runInContext(appSource,ctx);for(let i=0;i<8;i++)await Promise.resolve();
   const files=[{name:'first.png',size:20*1024*1024},{name:'second.png',size:20*1024*1024}];
@@ -160,6 +164,99 @@ test('model status uses each capability, refreshes served names and distinguishe
   const probes=calls.filter(c=>c.url.endsWith('/models'));
   assert.ok(probes.every(c=>c.url==='/ocr/api/user/models' && c.options.headers['X-OCR-User-Token']==='proof'));
   events.pagehide();assert.equal(timers.size,0);
+});
+
+test('queued jobs retain measured stages, offer three result views and preview selected files without creating jobs',async()=>{
+  const {el,document}=dom(),calls=[],revoked=[];let objectCount=0;
+  let job={id:'job-id',filename:'three.pdf',created_at:'2026-10-27T00:00:00Z',status:'queued_ocr',progress:'กำลังรอคิว OCR',
+    timeline:{queued_ocr:{started_at:'2026-10-27T00:00:00Z',progress:'กำลังรอคิว OCR'}},result:{}};
+  class Clock extends Date {static now(){return Date.parse('2026-10-27T00:00:30Z');}}
+  const fetch=async(url,options={})=>{
+    calls.push({url,options});
+    if(url.endsWith('/models'))return response({models:{ocr:{},extraction:{}}});
+    if(url.endsWith('/settings'))return response({settings:config});
+    if(url.endsWith('/previews'))return response({preview_id:'temporary',pages:3});
+    if(url.endsWith('/preview/info'))return response({pages:3});
+    if(url.includes('/jobs?'))return response({jobs:[job],counts:{queued_ocr:1},more:false});
+    return response({job});
+  };
+  const window={USER_BASE:'/ocr',USER_API_TOKEN:'proof',renderUserOcr(target,pages,text){target.textContent=text;},addEventListener(){}};
+  class FormData {constructor(){this.values={};}append(key,value){this.values[key]=value;}}
+  vm.runInContext(appSource,vm.createContext({document,window,fetch,Date:Clock,console,setTimeout:()=>1,clearTimeout(){},
+    FormData,
+    URL:{createObjectURL:()=> 'blob:local-'+(++objectCount),revokeObjectURL:url=>revoked.push(url)}}));
+  for(let i=0;i<10;i++)await Promise.resolve();
+  el('fileInput').listeners.change({target:{files:[{name:'local.pdf',size:1},{name:'picture.png',size:1}]}});
+  for(let i=0;i<10;i++)await Promise.resolve();
+  assert.equal(el('pdfPreview').children.length,3);
+  assert.equal(el('pdfPreview').children[2].children[1].src,'/ocr/api/user/previews/temporary/pages/3');
+  assert.equal(calls.filter(c=>c.url.endsWith('/jobs')||c.url.endsWith('/batches')).length,0);
+  el('selectedFiles').children[1].children[0].listeners.click();
+  assert.deepEqual(revoked,['blob:local-1']);assert.equal(el('imagePreview').hidden,false);
+  el('zoomIn').listeners.click();assert.equal(el('imagePreview').style.width,'125%');
+  const open=()=>el('historyRows').children[0].children.at(-1).children[0].listeners.click();
+  await open();
+  assert.equal(el('stageTimeline').children[0].children[0].children[1].textContent,'30.0 วิ');
+  assert.equal(el('stageTimeline').children[0].children[1].textContent,'กำลังรอคิว…');
+  for(let i=0;i<10;i++)await Promise.resolve();
+  assert.equal(el('pdfPreview').children[2].children[1].src,'/ocr/api/user/jobs/job-id/preview/pages/3');
+  job={...job,status:'ocr',progress:'กำลังอ่านเอกสารหน้า 1/3',timeline:{
+    queued_ocr:{...job.timeline.queued_ocr,finished_at:'2026-10-27T00:00:30Z'},ocr:{started_at:'2026-10-27T00:00:30Z'}}};
+  await open();
+  assert.equal(el('stageTimeline').children[0].children[0].children[1].textContent,'30.0 วิ');
+  assert.equal(el('stageTimeline').children[1].children[1].textContent,'กำลังอ่านเอกสารหน้า 1/3');
+  job={...job,status:'completed',result:{text:'# Heading',pages:['# Heading'],extracted:{fields:{subtotal:'100'}}}};
+  await open();el('jsonTab').listeners.click();
+  assert.equal(el('jsonResult').hidden,false);assert.equal(el('textResult').hidden,true);
+  assert.equal(JSON.parse(el('jsonResult').textContent).fields.subtotal,'100');
+  el('fieldsTab').listeners.click();assert.equal(el('fieldsResult').hidden,false);assert.equal(el('jsonResult').hidden,true);
+  el('textTab').listeners.click();assert.equal(el('textResult').hidden,false);assert.equal(el('textTab')['aria-selected'],'true');
+});
+
+test('OCR Rendered builds headings and tables while retaining untrusted markup as text',()=>{
+  const {document}=dom(),window={},target=new Element();
+  vm.runInContext(renderSource,vm.createContext({document,window}));
+  window.renderUserOcr(target,['# Invoice\n**Total**\n| Item | Amount |\n| --- | --- |\n| A | 100 |\n<img src="https://invalid/track" onerror="alert(1)">'],null);
+  const all=[];function visit(el){all.push(el);for(const child of el.children||[])visit(child);}visit(target);
+  assert.equal(all.filter(e=>e.tag==='table').length,1);assert.equal(all.filter(e=>e.tag==='th').length,2);
+  assert.equal(all.filter(e=>e.tag==='td').length,2);assert.equal(all.filter(e=>e.tag==='h1').length,1);
+  assert.equal(all.filter(e=>e.tag==='img'||e.tag==='script').length,0);
+  assert.ok(all.some(e=>e.textContent?.includes('<img src=')));
+});
+
+test('Key-Value renders row tables, footer and document types without changing saved JSON',async()=>{
+  const {el,document}=dom();
+  const extracted={documents:[{pages:[1],doc_types:['RECEIPT','TAX_INVOICE'],doc_type_heading:'ใบเสร็จรับเงิน / ใบกำกับภาษี',
+    fields:{buyer_tax_id:'0123456789012',line_items:[],other_fields:[{name:'หมายเหตุ',value:'<img onerror="boom">'}]},
+    item_table:{columns:['เลขที่เอกสาร','จำนวนเงิน'],rows:[['INV-1',0],['INV-2','100.00','extra cell']],row_pages:[1,2],
+      footer:[{text:'รวม 100.00',page:2}],is_master_table:true}},
+    {pages:[2,3],doc_type:'BILLING_NOTE',fields:{subtotal:'100.00'},item_table:{error:'No table',rows:[]}}]};
+  const original=JSON.stringify(extracted);
+  const job={id:'job',filename:'test.png',created_at:'2026-10-27',status:'completed',result:{extracted}};
+  const fetch=async(url)=>{
+    if(url.endsWith('/settings'))return response({settings:config});
+    if(url.endsWith('/models'))return response({models:{ocr:{},extraction:{}}});
+    if(url.includes('/jobs?'))return response({jobs:[job],counts:{},more:false});
+    return response({job});
+  };
+  const window={USER_BASE:'/ocr',USER_DOC_TYPES:{RECEIPT:'receipt',TAX_INVOICE:'tax invoice',BILLING_NOTE:'billing note'},renderUserOcr(){},addEventListener(){}};
+  vm.runInContext(appSource,vm.createContext({document,window,fetch,Date,setTimeout:()=>1,clearTimeout(){}}));
+  for(let i=0;i<10;i++)await Promise.resolve();
+  await el('historyRows').children[0].children.at(-1).children[0].listeners.click();
+  const walk=element=>[element,...(element.children||[]).flatMap(walk)];
+  const fields=walk(el('fieldsResult')),summary=walk(el('docTypesSummary'));
+  assert.equal(el('docTypesPanel').hidden,false);
+  assert.ok(summary.some(e=>e.textContent==='receipt'));assert.ok(summary.some(e=>e.textContent==='tax invoice'));
+  assert.ok(summary.some(e=>e.textContent==='billing note'));assert.ok(summary.some(e=>e.textContent==='หน้า 2, 3'));
+  assert.equal(fields.filter(e=>e.tag==='table').length,2);
+  assert.ok(fields.some(e=>e.tag==='td'&&e.textContent==='0'));
+  assert.ok(fields.some(e=>e.tag==='td'&&e.textContent==='extra cell'));
+  assert.ok(fields.some(e=>e.tag==='th'&&e.textContent==='คอลัมน์ 3'));
+  assert.ok(fields.some(e=>e.textContent==='รวม 100.00'));assert.ok(fields.some(e=>e.textContent==='No table'));
+  assert.ok(fields.some(e=>e.textContent==='<img onerror="boom">'));assert.equal(fields.filter(e=>e.tag==='img').length,0);
+  assert.equal(fields.filter(e=>e.tag==='pre').length,0);
+  assert.equal(el('jsonResult').textContent,JSON.stringify(extracted,null,2));
+  assert.equal(JSON.stringify(extracted),original);
 });
 
 test('portal base paths support root, trailing slash and nested reverse-proxy mounts',()=>{

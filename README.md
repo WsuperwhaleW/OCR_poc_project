@@ -711,9 +711,20 @@ stage, OCR page progress, extraction step progress, stage duration, transcript
 and fields per document. Original files and JSON results can be downloaded.
 Files without ground truth show no benchmark accuracy score.
 
+The result has three views: **OCR · Rendered** (headings and tables by page),
+**Key-Value**, and **JSON**. The stage timeline keeps separate OCR queue, OCR,
+extraction queue and extraction durations after completion and in history.
+Existing history without recorded timestamps does not gain invented queue times.
+PDF previews show every original page in a scrollable, zoomable viewer, both
+before starting a job and when opening history. Preparing a preview uploads a
+temporary PDF but does not run OCR or create a history entry; page images render
+on demand using the existing PyMuPDF dependency. Temporary PDFs are discarded
+when changing/clearing the preview, with expired files cleaned up on subsequent
+preview uploads after 30 minutes. Accepted job originals remain retained.
+
 | User setting | Initial value |
 |---|---|
-| OCR concurrent files / Detail / Loop guard | 50 / original / on |
+| OCR concurrent files / Detail / Loop guard | 50 / medium / on |
 | Extraction concurrent files / Shape | 64 / Hybrid |
 | Extra fields / JSON schema first / Bypass cache | off / off / off |
 | OCR / extraction endpoint | `http://127.0.0.1:8000` / `http://127.0.0.1:8001` |
@@ -761,7 +772,11 @@ limit to include the multipart envelope; each selected file is a separate reques
 
 New endpoints are `/api/user/settings` (GET/PUT), `/api/user/models` (POST),
 `/api/user/batches` (POST), `/api/user/jobs` (GET/POST), and
-`/api/user/jobs/<id>` with `/file` and `/export` downloads. Batches reserve a file
+`/api/user/jobs/<id>` with `/file` and `/export` downloads. Its `/preview`,
+`/preview/info` and `/preview/pages/<page>` routes serve original previews and
+PDF page images. `/api/user/previews` (POST), `/previews/<id>` (DELETE) and
+`/previews/<id>/pages/<page>` (GET), under the same `/api/user` prefix, manage
+temporary PDF previews. Batches reserve a file
 count and snapshot once; uploads use a batch-scoped upload ID so retrying the same
 upload does not create another processing job. Actual model accuracy/load at
 50/64 concurrent files must be evaluated on the model server; local tests use

@@ -14647,84 +14647,151 @@ async function stStart() {
     return;
   }
   stClearDetailLog();
-  stState = { draining: 0, alerts: [] };
+  stState = { draining: 0, alerts: [], received: 0 };
   stNote.textContent = 'Preparing…';
   stNote.classList.remove('err');
+  await stWatch(signal => fetch(API + '/stress/stream', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    signal, body: JSON.stringify(body)
+  }));
+}
+
+/* The run belongs to the server, not to this page (2026-10-27): it goes on in
+   the background whoever is watching, keeps every line it sends, and names
+   itself in `X-Stress-Run`. So a dropped connection is followed again from the
+   line it stopped at, and a page that reloads picks the run up where it is
+   (`stResume`). Stop is the only thing that ends a run early. */
+const ST_REATTACH_TRIES = 30;
+const ST_SEEN_KEY = 'stSeenRun';
+function stSeenRun() {
+  try { return sessionStorage.getItem(ST_SEEN_KEY); } catch { return null; }
+}
+function stMarkSeen(id) {
+  try { if (id) sessionStorage.setItem(ST_SEEN_KEY, id); } catch { /* private window */ }
+}
+
+// Read one response of a run into stState: 'done' when its report came,
+// 'ended' when the server closed it without one. A dropped connection throws
+// an error marked `lost`; anything else thrown here is a real failure.
+async function stReadStream(res) {
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '', lastPaint = 0, reported = false;
+  for (;;) {
+    let chunk;
+    try {
+      chunk = await reader.read();
+    } catch (err) {
+      if (err.name !== 'AbortError') err.lost = true;
+      throw err;
+    }
+    const { value, done } = chunk;
+    if (done) return reported ? 'done' : 'ended';
+    buffer += decoder.decode(value, { stream: true });
+    const lines = buffer.split('\n');
+    buffer = lines.pop();
+    for (const line of lines) {
+      if (!line.trim()) continue;
+      const ev = JSON.parse(line);
+      stState.received++;
+      if (['detail_log_start', 'detail_log_job', 'detail_log_end'].includes(ev.event)) {
+        stReceiveDetailLog(ev);
+        stNote.textContent = 'Preparing detail log — ' + stDetailLog.count + ' job(s)';
+        continue;
+      }
+      if (ev.history_id) stState.historyId = ev.history_id;
+      if (ev.history_error) stState.historyError = ev.history_error;
+      if (ev.event === 'plan') {
+        stState.plan = ev;
+        stEl('stSeed').value = ev.seed;
+        stNote.textContent = 'Seed ' + ev.seed + '.';
+      } else if (ev.event === 'preparing') {
+        stNote.textContent = 'Preparing ' + ev.done + ' of ' + ev.total
+          + (stMode.value === 'classify' ? ' file(s)…' : ' document(s)…');
+      } else if (ev.event === 'progress') {
+        stState.progress = ev;
+        if (ev.servers_metrics) stState.metricsNow = ev.servers_metrics;
+        stNote.textContent = (ev.phase === 'warmup' ? 'Warming up — ' : 'Running — ')
+          + ev.done + '/' + ev.total;
+      } else if (ev.event === 'done') {
+        stFinishDetailLog(ev);
+        setTestStatus('st', ev.stopped ? 'stopped' : 'completed');
+        stState.report = ev.report;
+        stState.monitor_samples = ev.monitor_samples;
+        stState.monitor_samples_total = ev.monitor_samples_total;
+        stState.draining = ev.draining || 0;
+        stNote.textContent = (ev.stopped ? 'Stopped' : 'Finished') + ' — seed ' + ev.seed
+          + (ev.history_error ? '. ' + ev.history_error
+            : ev.history_id ? '. Saved to History.' : '. No History record was saved.');
+        stNote.classList.toggle('err', !!ev.history_error);
+        if (stState.plan && stState.plan.save_log) stNote.textContent += " Each measured job was saved to the run log.";
+        stMarkSeen(stState.runId);
+        reported = true;
+      } else if (ev.event === 'alert') {
+        // The same id again is the same issue, updated (a loop retried and
+        // resolved, or not): replace its row rather than add one.
+        const at = ev.id ? stState.alerts.findIndex(a => a.id === ev.id) : -1;
+        if (at >= 0) stState.alerts[at] = ev; else stState.alerts.push(ev);
+        lastPaint = 0;
+      } else if (ev.event === 'draining') {
+        stState.draining = ev.in_flight;
+      } else if (ev.event === 'error') {
+        stMarkSeen(stState.runId);
+        throw new Error(ev.error);
+      }
+    }
+    const now = Date.now();
+    if (now - lastPaint > 300) { lastPaint = now; stPaint(); }
+  }
+}
+
+// Follow a run to its report: `open(signal)` is the first response; a
+// connection that drops is followed again, from the next line, while the run
+// goes on on the server.
+async function stWatch(open) {
   stAbort = new AbortController();
+  const signal = stAbort.signal;
   stBusy(true);
   stPaint();
   try {
-    const res = await fetch(API + '/stress/stream', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      signal: stAbort.signal, body: JSON.stringify(body)
-    });
-    if (!res.ok) {
-      const data = await res.json().catch(() => ({}));
-      throw new Error(data.error || ('HTTP ' + res.status));
-    }
-    const reader = res.body.getReader();
-    const decoder = new TextDecoder();
-    let buffer = '', lastPaint = 0;
+    let res = await open(signal), lost = 0;
     for (;;) {
-      const { value, done } = await reader.read();
-      if (done) break;
-      buffer += decoder.decode(value, { stream: true });
-      const lines = buffer.split('\n');
-      buffer = lines.pop();
-      for (const line of lines) {
-        if (!line.trim()) continue;
-        const ev = JSON.parse(line);
-        if (['detail_log_start', 'detail_log_job', 'detail_log_end'].includes(ev.event)) {
-          stReceiveDetailLog(ev);
-          stNote.textContent = 'Preparing detail log — ' + stDetailLog.count + ' job(s)';
-          continue;
+      if (res) {
+        if (!res.ok) {
+          const data = await res.json().catch(() => ({}));
+          throw new Error(data.error || ('HTTP ' + res.status));
         }
-        if (ev.history_id) stState.historyId = ev.history_id;
-        if (ev.history_error) stState.historyError = ev.history_error;
-        if (ev.event === 'plan') {
-          stState.plan = ev;
-          stEl('stSeed').value = ev.seed;
-          stNote.textContent = 'Seed ' + ev.seed + '.';
-        } else if (ev.event === 'preparing') {
-          stNote.textContent = 'Preparing ' + ev.done + ' of ' + ev.total
-            + (stMode.value === 'classify' ? ' file(s)…' : ' document(s)…');
-        } else if (ev.event === 'progress') {
-          stState.progress = ev;
-          if (ev.servers_metrics) stState.metricsNow = ev.servers_metrics;
-          stNote.textContent = (ev.phase === 'warmup' ? 'Warming up — ' : 'Running — ')
-            + ev.done + '/' + ev.total;
-        } else if (ev.event === 'done') {
-          stFinishDetailLog(ev);
-          setTestStatus('st', ev.stopped ? 'stopped' : 'completed');
-          stState.report = ev.report;
-          stState.monitor_samples = ev.monitor_samples;
-          stState.monitor_samples_total = ev.monitor_samples_total;
-          stState.draining = ev.draining || 0;
-          stNote.textContent = (ev.stopped ? 'Stopped' : 'Finished') + ' — seed ' + ev.seed
-            + (ev.history_error ? '. ' + ev.history_error
-              : ev.history_id ? '. Saved to History.' : '. No History record was saved.');
-          stNote.classList.toggle('err', !!ev.history_error);
-          if (stState.plan && stState.plan.save_log) stNote.textContent += " Each measured job was saved to the run log.";
-        } else if (ev.event === 'alert') {
-          // The same id again is the same issue, updated (a loop retried and
-          // resolved, or not): replace its row rather than add one.
-          const at = ev.id ? stState.alerts.findIndex(a => a.id === ev.id) : -1;
-          if (at >= 0) stState.alerts[at] = ev; else stState.alerts.push(ev);
-          lastPaint = 0;
-        } else if (ev.event === 'draining') {
-          stState.draining = ev.in_flight;
-        } else if (ev.event === 'error') {
-          throw new Error(ev.error);
+        stState.runId = res.headers.get('X-Stress-Run') || stState.runId;
+        const before = stState.received;
+        let outcome = 'lost';
+        try {
+          outcome = await stReadStream(res);
+        } catch (err) {
+          if (!err.lost || !stState.runId) throw err;
         }
+        if (outcome === 'done') break;
+        if (outcome === 'ended') throw new Error('The test ended without a report.');
+        if (stState.received > before) lost = 0;
       }
-      const now = Date.now();
-      if (now - lastPaint > 300) { lastPaint = now; stPaint(); }
+      if (!stState.runId || ++lost > ST_REATTACH_TRIES) {
+        throw new Error('Lost the connection to the test. It is still running on the server: '
+          + 'reload the page to follow it again.');
+      }
+      stNote.textContent = 'Connection lost — the test goes on on the server. Reconnecting…';
+      stNote.classList.add('err');
+      await new Promise(resolve => setTimeout(resolve, Math.min(10000, 1000 * lost)));
+      if (signal.aborted) throw new DOMException('Hung up', 'AbortError');
+      res = await fetch(API + '/stress/attach?id=' + encodeURIComponent(stState.runId)
+        + '&from=' + stState.received, { signal })
+        .catch(err => { if (err.name === 'AbortError') throw err; return null; });
+      if (res && res.ok) stNote.classList.remove('err');
     }
   } catch (err) {
     stFinishDetailLog({event: 'error', error: err.message});
     setTestStatus('st', 'failed');
     stNote.textContent = err.name === 'AbortError'
-      ? 'Hung up on the test; the server may still be running it.' : err.message;
+      ? 'Hung up on the test; the server may still be running it — reload the page to follow it again.'
+      : err.message;
     stNote.classList.add('err');
   } finally {
     if (['running', 'stopping'].includes(stEl('stStatus').dataset.state))
@@ -14734,6 +14801,25 @@ async function stStart() {
     stBusy(false);
     stPaint();
   }
+}
+
+// On load: this tab's run, if one is still going on the server -- or one that
+// finished while the page was away and whose report it has not shown yet.
+async function stResume() {
+  let run = null;
+  try {
+    const res = await fetch(API + '/stress/active');
+    if (res.ok) run = (await res.json()).run;
+  } catch { return; }
+  if (!run || stRunning || stAbort || (!run.running && stSeenRun() === run.id)) return;
+  if (ST_MODES.includes(run.mode) && run.mode !== stMode.value) stLoadModeDefaults(run.mode);
+  stClearDetailLog();
+  stState = { draining: 0, alerts: [], received: 0, runId: run.id };
+  stNote.textContent = run.running ? 'Reconnecting to the stress test running on the server…'
+    : 'Loading the stress test that finished while this page was away…';
+  stNote.classList.remove('err');
+  await stWatch(signal => fetch(API + '/stress/attach?id=' + encodeURIComponent(run.id)
+    + '&from=0', { signal }));
 }
 
 if (stRun) {
@@ -14803,6 +14889,7 @@ if (stRun) {
   stLoadModeDefaults(ST_MODES.includes(initialMode) ? initialMode : stMode.value);
   if (stSource !== 'realdata') stLoadReal(); // realData defaults already start the listing
   stPaintServer();
+  stResume();
 }
 
 /* ---------- live /metrics monitor ----------

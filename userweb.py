@@ -4,6 +4,7 @@ import json
 import re
 import secrets
 import threading
+import time
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -44,13 +45,15 @@ def register(application, engine):
                         and not secrets.compare_digest(proof.encode('utf-8'), page_token.encode('ascii'))):
                     return jsonify(error='ไม่สามารถยืนยันคำขอได้ กรุณาโหลดหน้าใหม่แล้วลองอีกครั้ง'), 403
             # Permit a file at the deployment limit plus the multipart envelope.
-            if request.path == '/api/user/jobs' and request.method == 'POST':
+            if request.path in ('/api/user/jobs', '/api/user/previews') and request.method == 'POST':
                 request.max_content_length = (engine.MAX_UPLOAD_MB + 1) * 1024 * 1024
 
     @application.get('/user')
     @application.get('/user/')
     def user_index():
-        return render_template('user.html')
+        return render_template('user.html', user_doc_types={
+            code: re.sub(r'^(an|a|the) ', '', name)
+            for code, name in engine.prompts.TYPE_NAMES.items()})
 
     @application.get('/api/user/settings')
     def user_settings():
@@ -121,6 +124,80 @@ def register(application, engine):
         current.start()
         return jsonify(job=job), 202
 
+    def pdf_info(path, page=None):
+        if not getattr(engine, 'fitz', None):
+            raise ValueError('ต้องติดตั้ง PyMuPDF เพื่อแสดงตัวอย่าง PDF')
+        # PyMuPDF shares the engine's rendering lock; previews never call OCR.
+        with engine._PDF_LOCK:
+            try:
+                document = engine.fitz.open(stream=path.read_bytes(), filetype='pdf')
+            except FileNotFoundError:
+                abort(404)
+            except Exception:
+                raise ValueError('ไม่สามารถเปิด PDF นี้ได้ โปรดลองเปิดต้นฉบับ') from None
+            with document:
+                if document.needs_pass:
+                    raise ValueError('PDF มีรหัสผ่าน กรุณาปลดล็อกก่อน')
+                if page is None:
+                    if not document.page_count:
+                        raise ValueError('PDF ไม่มีหน้าเอกสาร')
+                    return document.page_count
+                if page < 1 or page > document.page_count:
+                    abort(404)
+                source = document[page - 1]
+                scale = min(2, 1800 / max(source.rect.width, source.rect.height, 1))
+                return source.get_pixmap(matrix=engine.fitz.Matrix(scale, scale), alpha=False).tobytes('png')
+
+    def preview_directory():
+        directory = service().store.directory / 'previews'
+        directory.mkdir(exist_ok=True)
+        return directory
+
+    @application.post('/api/user/previews')
+    def user_prepare_preview():
+        upload = request.files.get('file')
+        if not upload or not upload.filename.lower().endswith('.pdf'):
+            return jsonify(error='รองรับตัวอย่าง PDF เท่านั้น'), 400
+        maximum = min(service().store.settings()['max_upload_mb'], engine.MAX_UPLOAD_MB) * 1024 * 1024
+        content = upload.read(maximum + 1)
+        if len(content) > maximum:
+            return jsonify(error='PDF ใหญ่เกินขนาดที่อนุญาต'), 413
+        directory = preview_directory()
+        # Temporary previews have no jobs/history. Remove expired files on use,
+        # also covering closed tabs whose best-effort DELETE never arrived.
+        for old in directory.glob('*.pdf'):
+            try:
+                if time.time() - old.stat().st_mtime > 1800:
+                    old.unlink(missing_ok=True)
+            except OSError:
+                pass
+        preview_id = secrets.token_hex(16)
+        path = directory / (preview_id + '.pdf')
+        try:
+            path.write_bytes(content)
+            pages = pdf_info(path)
+        except Exception:
+            path.unlink(missing_ok=True)
+            return jsonify(error='ไม่สามารถแสดงตัวอย่าง PDF นี้ได้ โปรดลองเปิดต้นฉบับ'), 400
+        return jsonify(preview_id=preview_id, pages=pages), 201
+
+    def temporary_preview(preview_id):
+        if not re.fullmatch('[0-9a-f]{32}', preview_id):
+            abort(404)
+        path = preview_directory() / (preview_id + '.pdf')
+        if not path.is_file():
+            abort(404)
+        return path
+
+    @application.delete('/api/user/previews/<preview_id>')
+    def user_remove_preview(preview_id):
+        temporary_preview(preview_id).unlink(missing_ok=True)
+        return '', 204
+
+    @application.get('/api/user/previews/<preview_id>/pages/<int:page>')
+    def user_temporary_page(preview_id, page):
+        return send_file(io.BytesIO(pdf_info(temporary_preview(preview_id), page)), mimetype='image/png')
+
     @application.get('/api/user/jobs')
     def user_history():
         current = service()
@@ -141,6 +218,34 @@ def register(application, engine):
     def user_file(job_id):
         job = job_or_404(job_id)
         return send_file(service().store.uploads / job['id'], as_attachment=True, download_name=job['filename'])
+
+    @application.get('/api/user/jobs/<job_id>/preview')
+    def user_preview(job_id):
+        job = job_or_404(job_id)
+        suffix = Path(job['filename']).suffix.lower()
+        types = {'.pdf': 'application/pdf', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg',
+                 '.png': 'image/png', '.webp': 'image/webp', '.gif': 'image/gif', '.bmp': 'image/bmp'}
+        if suffix not in types:
+            return jsonify(error='โปรดดาวน์โหลดต้นฉบับเพื่อเปิดไฟล์ประเภทนี้'), 415
+        return send_file(service().store.uploads / job['id'], mimetype=types[suffix],
+                         as_attachment=False, download_name=job['filename'])
+
+    @application.get('/api/user/jobs/<job_id>/preview/info')
+    def user_preview_info(job_id):
+        job = job_or_404(job_id)
+        if Path(job['filename']).suffix.lower() != '.pdf':
+            abort(415)
+        try:
+            return jsonify(pages=pdf_info(service().store.uploads / job['id']))
+        except ValueError as err:
+            return jsonify(error=str(err)), 400
+
+    @application.get('/api/user/jobs/<job_id>/preview/pages/<int:page>')
+    def user_preview_page(job_id, page):
+        job = job_or_404(job_id)
+        if Path(job['filename']).suffix.lower() != '.pdf':
+            abort(415)
+        return send_file(io.BytesIO(pdf_info(service().store.uploads / job['id'], page)), mimetype='image/png')
 
     @application.get('/api/user/jobs/<job_id>/export')
     def user_export(job_id):
