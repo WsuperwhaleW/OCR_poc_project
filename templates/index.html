@@ -2576,6 +2576,7 @@ follows your desktop; Light is the one to pick for projecting or screenshotting.
         <a id="cmpOpen" class="ghost-sm" style="margin-left:auto" target="_blank" rel="noopener">Open image</a>
         <a id="cmpDl" class="ghost-sm" download>Download</a>
       </div>
+      <div class="cmp-bar" id="cmpFlagLinks" hidden></div>
       <div class="cmp-grid" id="cmpGrid">
         <div class="cmp-col" id="cmpColImg">
           <div class="cmp-cap">Source page <span id="cmpImgCap"></span></div>
@@ -11712,7 +11713,9 @@ function truthCase() {
 /* What one read of a flagged stress page came back as, for its caption. */
 function stReadOutcome(r) {
   const parts = [r.detail || ''];
-  if (r.looped) parts.push('looped — cut off by the loop guard');
+  // A read that failed or never came back (an error or stalled flag).
+  if (r.note) parts.push(r.note);
+  else if (r.looped) parts.push('looped — cut off by the loop guard');
   else if (r.truncated) parts.push('hit the token cap');
   else parts.push('read cleanly');
   if (r.dry) parts.push('DRY fired from token ' + r.dry.first + ', longest repeat ' + r.dry.longest);
@@ -11804,6 +11807,7 @@ function effectiveView() {
   return Object.keys(CMP_VIEWS).find(viewFull) || null;
 }
 function paintCompare() {
+  stPaintFlagLinks();
   const view = effectiveView();
   const cols = view ? CMP_VIEWS[view]
                     : [cmpColImg, cmpColModel, cmpColTruth].filter(colAvailable);
@@ -11834,7 +11838,8 @@ function paintCompare() {
     const r = o.reads[o.at];
     // A loop or DRY flag steps through the reads of one page; a missing-required
     // flag through the pages of its document, each as the read that was kept.
-    const unit = o.fields ? 'Page' : 'Read';
+    // A stalled flag's reads are the pages still out, one each.
+    const unit = o.fields || o.kind === 'stalled' ? 'Page' : 'Read';
     const page = r.page || o.page;
     [cmpPrev, cmpNext, cmpLabel].forEach(el => { el.hidden = false; });
     cmpLabel.textContent = total > 1 ? `${unit} ${o.at + 1} of ${total}` : unit + ' 1';
@@ -14087,9 +14092,10 @@ const ST_ALERT_PARTS = [
   ['extract', 'Extraction', a => a.stage !== 'ocr'],
 ];
 
-function stAlertsHtml(alerts) {
+// `mode` is the run's (`plan.mode`): only a full run extracts what it read.
+function stAlertsHtml(alerts, mode) {
   return ST_ALERT_PARTS.map(([part, title, test]) =>
-    stAlertBox(alerts.filter(test), part, title)).join('');
+    stAlertBox(alerts.filter(test), part, title, mode)).join('');
 }
 
 function stAlertCounts(alerts) {
@@ -14099,7 +14105,7 @@ function stAlertCounts(alerts) {
 
 // Newest first. Only the first rows are drawn: a run where every job fails
 // would otherwise redraw thousands of rows a second.
-function stAlertBox(alerts, part, title) {
+function stAlertBox(alerts, part, title, mode) {
   if (!alerts.length) return '';
   const counts = {};
   for (const a of alerts) {
@@ -14107,7 +14113,8 @@ function stAlertBox(alerts, part, title) {
     counts[key] = (counts[key] || 0) + 1;
   }
   const shown = alerts.slice(-100).reverse();
-  return '<div class="st-alerts" data-st-part="' + part + '"><h3>' + esc(title)
+  return '<div class="st-alerts" data-st-part="' + part + '" data-st-mode="'
+    + esc(mode || '') + '"><h3>' + esc(title)
     + ' problems, as they happen · '
     + Object.entries(counts).map(([k, n]) => n + ' ' + esc(k)).join(' · ')
     + '</h3><table class="queue"><tr><th>At</th><th>Job</th><th>Document</th><th>What</th>'
@@ -14115,7 +14122,9 @@ function stAlertBox(alerts, part, title) {
     + shown.map(a => (a.evidence
         ? '<tr class="st-alert-link' + (cmpOverride && cmpOverride.alert === a.id ? ' on' : '')
           + '" data-alert-id="' + esc(String(a.id)) + '" data-alert-kind="' + esc(a.kind)
-          + '" title="Show this page in Compare below">'
+          + '" data-alert-job="' + esc(String(a.job)) + '" data-alert-part="' + part
+          + '" data-alert-page="' + esc(String(a.page || '')) + '" data-alert-tag="'
+          + esc(stAlertTag(a)) + '" title="Show this page in Compare below">'
         : '<tr>') + '<td class="n">' + stSec(a.elapsed)
       + (a.phase === 'warmup' ? ' <small>warm-up</small>' : '')
       + (a.updated !== undefined && a.updated !== null
@@ -14134,7 +14143,7 @@ function stAlertBox(alerts, part, title) {
 
 /* A flagged page into the Compare card below: the page each read was sent and
    the text it returned, starting at the read the alert is about. */
-async function stShowEvidence(alertId, kind) {
+async function stShowEvidence(alertId, kind, host, job) {
   const base = API + '/stress/evidence/' + encodeURIComponent(alertId);
   let data;
   try {
@@ -14144,16 +14153,22 @@ async function stShowEvidence(alertId, kind) {
   } catch (err) {
     stNote.textContent = err.message;
     stNote.classList.add('err');
+    // Switched to from the bar in Compare, where the reader is looking.
+    if (cmpOverride && !document.getElementById('cmpFlagLinks').hidden) {
+      stPaintFlagLinks(err.message);
+    }
     return;
   }
   // `image` is false for a read with no page (an extract-only job's transcript).
   const reads = data.attempts.map((a, n) => Object.assign({}, a,
     { src: a.image === false ? null : base + '/' + n + '.png' }));
+  // An error opens on the read that failed, which is the last.
   const first = kind === 'dry' ? reads.findIndex(r => r.dry)
-                               : reads.findIndex(r => r.looped || r.truncated);
-  cmpOverride = { alert: alertId, case: data.case, page: data.page,
+              : kind === 'error' ? reads.length - 1
+              : reads.findIndex(r => r.looped || r.truncated);
+  cmpOverride = { alert: alertId, kind, case: data.case, page: data.page,
                   truthCase: data.truth_case, reads, at: Math.max(0, first),
-                  fields: data.fields || null };
+                  fields: data.fields || null, host, job };
   // An extraction flag opens on the page beside its form, so a missing field
   // can be looked for on the image; on the transcript where no page was read.
   cmpView = !data.fields ? 'source-model'
@@ -14170,9 +14185,55 @@ async function stShowEvidence(alertId, kind) {
 for (const host of [stOut, document.getElementById('historyDetail')]) {
   host.addEventListener('click', e => {
     const row = e.target.closest('tr.st-alert-link');
-    if (row) stShowEvidence(row.dataset.alertId, row.dataset.alertKind);
+    if (row) stShowEvidence(row.dataset.alertId, row.dataset.alertKind, host,
+                            row.dataset.alertJob);
   });
 }
+
+/* Every flag of the open window's file, to switch between (2026-10-27, at the
+   user's request): a looped or failed read still goes on to extraction, so an
+   OCR flag switches to that file's extraction and an extraction flag back to
+   its reads. A file whose extraction raised no flag of its own has it kept
+   under the job's key (`_StressLive.job_key`): the alert id with its number
+   swapped for `job<n>`. Read off the rows of the box the flag was clicked in,
+   so it works the same for the live run and a saved one. */
+function stPaintFlagLinks(note) {
+  // Looked up here: `paintCompare` calls this, and can run before this point.
+  const cmpFlagLinks = document.getElementById('cmpFlagLinks');
+  const o = cmpInStress() ? cmpOverride : null;
+  const rows = o && o.host && o.job ? [...o.host.querySelectorAll('tr.st-alert-link')]
+    .filter(tr => tr.dataset.alertJob === String(o.job)) : [];
+  // The same flag can be drawn twice (a saved run in History and the live one).
+  const seen = new Set();
+  const links = rows.filter(tr => !seen.has(tr.dataset.alertId) && seen.add(tr.dataset.alertId))
+    .map(tr => ({ id: tr.dataset.alertId, kind: tr.dataset.alertKind,
+                  part: tr.dataset.alertPart, page: Number(tr.dataset.alertPage) || 0,
+                  label: (tr.dataset.alertPart === 'ocr' ? 'OCR' : 'Extraction')
+                    + (tr.dataset.alertPage ? ' p.' + tr.dataset.alertPage : '')
+                    + ' · ' + tr.dataset.alertTag }))
+    .sort((a, b) => (a.part === 'ocr' ? 0 : 1) - (b.part === 'ocr' ? 0 : 1) || a.page - b.page);
+  const ocr = links.find(l => l.part === 'ocr');
+  const box = rows.length && rows[0].closest('[data-st-mode]');
+  // A saved run from before the mode was on the box: offer it, a 404 says why.
+  const extracts = !box || !box.dataset.stMode || box.dataset.stMode === 'full';
+  if (ocr && extracts && !links.some(l => l.part !== 'ocr')) {
+    links.push({ id: String(ocr.id).replace(/\d+$/, '') + 'job' + o.job,
+                 kind: 'extraction', label: 'Extraction · no flag' });
+  }
+  cmpFlagLinks.hidden = links.length < 2 && !note;
+  if (cmpFlagLinks.hidden) return;
+  cmpFlagLinks.innerHTML = '<span>This file (job #' + esc(String(o.job)) + '):</span>'
+    + '<div class="cmp-modes">' + links.map(l => '<button class="'
+      + (l.id === String(o.alert) ? 'on' : '') + '" data-go-id="' + esc(l.id)
+      + '" data-go-kind="' + esc(l.kind) + '">' + esc(l.label) + '</button>').join('')
+    + '</div>' + (note ? '<span style="color:var(--danger)">' + esc(note) + '</span>' : '');
+}
+document.getElementById('cmpFlagLinks').addEventListener('click', e => {
+  const b = e.target.closest('button[data-go-id]');
+  if (b && cmpOverride && !b.classList.contains('on')) {
+    stShowEvidence(b.dataset.goId, b.dataset.goKind, cmpOverride.host, cmpOverride.job);
+  }
+});
 
 function stPaint() {
   paintMain();
@@ -14196,6 +14257,8 @@ function stPaint() {
     if (oldTop > 0) box.scrollTop = oldTop + (box.scrollHeight - oldHeight);
   }
   stWireChart();
+  // The open window's file may have raised more flags since, or finished extracting.
+  if (cmpOverride && cmpOverride.host === stOut) stPaintFlagLinks();
   stWireChatContext(stOut, stOutlierReport(stState || {}));
   stWireOutliers(stOut, stState, stPaint);
 }
@@ -14344,7 +14407,7 @@ function stReportHtml(s, snapshot, host) {
     if (plan.cases) html += '<details><summary>Files selected (' + plan.cases.length
       + ')</summary><p class="note">' + plan.cases.map(esc).join(', ') + '</p></details>';
   }
-  html += stAlertsHtml(s.alerts || []);
+  html += stAlertsHtml(s.alerts || [], plan && plan.mode);
   const p = s.progress;
   if (p && !s.report) {
     const frac = p.total ? p.done / p.total : 0;
