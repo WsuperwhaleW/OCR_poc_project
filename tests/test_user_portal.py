@@ -2,6 +2,7 @@
 import io
 import json
 import re
+import sqlite3
 import tempfile
 import threading
 import time
@@ -50,6 +51,45 @@ class StoreCase(unittest.TestCase):
 
 
 class StoreTests(StoreCase):
+    def test_stage_wait_and_processing_times_persist_without_resetting_on_progress(self):
+        batch = self.store.create_batch(1, self.store.settings())
+        with patch('userstore.now', return_value='2026-10-27T00:00:00+00:00'):
+            job = self.store.add_job(batch, 'upload_01', 'one.pdf', b'x')
+        with patch('userstore.now', return_value='2026-10-27T00:00:30+00:00'):
+            claimed = self.store.claim('ocr')
+        self.assertEqual(claimed['status'], 'ocr')
+        with patch('userstore.now', return_value='2026-10-27T00:00:35+00:00'):
+            self.store.update(job['id'], progress='กำลังอ่านเอกสารหน้า 2/3')
+        with patch('userstore.now', return_value='2026-10-27T00:00:40+00:00'):
+            self.store.update(job['id'], status='queued_extraction', progress='กำลังรอคิว Extraction')
+        with patch('userstore.now', return_value='2026-10-27T00:00:50+00:00'):
+            self.store.claim('extraction')
+        with patch('userstore.now', return_value='2026-10-27T00:01:00+00:00'):
+            self.store.update(job['id'], status='completed', progress='เสร็จแล้ว')
+        reopened = UserStore(self.temp.name, 32).get(job['id'])
+        timeline = reopened['timeline']
+        self.assertEqual(timeline['queued_ocr']['finished_at'], '2026-10-27T00:00:30+00:00')
+        self.assertEqual(timeline['ocr']['started_at'], '2026-10-27T00:00:30+00:00')
+        self.assertEqual(timeline['ocr']['finished_at'], '2026-10-27T00:00:40+00:00')
+        self.assertEqual(timeline['ocr']['progress'], 'กำลังอ่านเอกสารหน้า 2/3')
+        self.assertEqual(timeline['queued_extraction']['finished_at'], '2026-10-27T00:00:50+00:00')
+        self.assertEqual(timeline['extraction']['finished_at'], '2026-10-27T00:01:00+00:00')
+
+    def test_existing_database_migrates_without_inventing_old_timestamps(self):
+        legacy = Path(self.temp.name) / 'legacy'; legacy.mkdir()
+        with sqlite3.connect(legacy / 'history.sqlite3') as db:
+            db.execute('''CREATE TABLE jobs (id TEXT PRIMARY KEY, batch_id TEXT, upload_id TEXT,
+                filename TEXT, created_at TEXT, updated_at TEXT, status TEXT, progress TEXT,
+                error TEXT, configuration TEXT, result TEXT)''')
+            db.execute("INSERT INTO jobs VALUES (?,?,?,?,?,?,?,?,?,?,?)", (
+                'a' * 32, 'old', 'upload_01', 'old.pdf', '2026-10-26', '2026-10-26',
+                'completed', 'เสร็จแล้ว', '', '{}', '{}'))
+        db.close()
+        reopened = UserStore(legacy, 32)
+        with reopened.connect() as db:
+            self.assertIn('timeline', {r['name'] for r in db.execute('PRAGMA table_info(jobs)')})
+        self.assertEqual(reopened.get('a' * 32)['timeline'], {})
+
     def test_settings_persist_and_limits_can_be_raised_back_to_deployment_ceiling(self):
         self.assertEqual(self.store.settings()['ocr_concurrency'], 50)
         self.assertEqual(self.store.settings()['extraction_concurrency'], 64)
@@ -227,6 +267,55 @@ class UserWebTests(unittest.TestCase):
         self.assertEqual(self.client.post('/api/user/models', json=self.store.settings()).status_code, 200)
         self.assertEqual(self.client.put('/api/user/settings', json=[], headers={'Origin': 'http://elsewhere'}).status_code, 403)
 
+    def test_inline_preview_keeps_download_separate_and_supports_prefixed_history(self):
+        job = self.store.add_job(self.batch(), 'upload_01', 'three.pdf', b'%PDF-preview')
+        preview = self.client.get('/ocr/api/user/jobs/' + job['id'] + '/preview')
+        self.assertEqual(preview.status_code, 200)
+        self.assertEqual(preview.mimetype, 'application/pdf')
+        self.assertTrue(preview.headers['Content-Disposition'].startswith('inline;'))
+        self.assertEqual(preview.data, b'%PDF-preview'); preview.close()
+        original = self.client.get('/ocr/api/user/jobs/' + job['id'] + '/file')
+        self.assertTrue(original.headers['Content-Disposition'].startswith('attachment;')); original.close()
+        self.assertEqual(self.client.get('/ocr/api/user/jobs/invalid/preview').status_code, 404)
+        other = self.store.add_job(self.batch(), 'upload_01', 'image.tiff', b'file')
+        self.assertEqual(self.client.get('/api/user/jobs/' + other['id'] + '/preview').status_code, 415)
+
+    @unittest.skipUnless(app.PDF_OK, 'PDF input requires PyMuPDF')
+    def test_pdf_preview_renders_all_pages_without_starting_ocr_and_can_be_discarded(self):
+        with app.fitz.open() as document:
+            for index in range(3):
+                page = document.new_page()
+                page.insert_text((50, 50), f'Page {index + 1}')
+            content = document.tobytes()
+        def prepare(data=content):
+            response = self.client.post('/ocr/api/user/previews', data={'file': (io.BytesIO(data), 'three.pdf')})
+            response.request.environ['wsgi.input'].close()
+            return response
+        with patch.object(app, 'read_page') as ocr:
+            response = prepare()
+            self.assertEqual(response.status_code, 201)
+            self.assertEqual(response.json['pages'], 3)
+            preview_id = response.json['preview_id']
+            base = '/ocr/api/user/previews/' + preview_id
+            for page in (1, 2, 3):
+                result = self.client.get(base + '/pages/' + str(page))
+                self.assertEqual(result.status_code, 200)
+                self.assertEqual(result.mimetype, 'image/png')
+                with Image.open(io.BytesIO(result.data)) as image:
+                    self.assertLessEqual(max(image.size), 1800)
+            self.assertEqual(self.client.get(base + '/pages/4').status_code, 404)
+            self.assertEqual(self.store.list()['jobs'], [])
+            self.assertIsNone(self.service.thread)
+            ocr.assert_not_called()
+        self.assertEqual(self.client.delete(base).status_code, 204)
+        self.assertEqual(self.client.get(base + '/pages/1').status_code, 404)
+        self.assertEqual(prepare(b'invalid pdf').status_code, 400)
+        self.assertEqual(list((self.store.directory / 'previews').iterdir()), [])
+        job = self.store.add_job(self.batch(), 'upload_01', 'three.pdf', content)
+        self.assertEqual(self.client.get('/ocr/api/user/jobs/' + job['id'] + '/preview/info').json['pages'], 3)
+        rendered = self.client.get('/ocr/api/user/jobs/' + job['id'] + '/preview/pages/3')
+        self.assertEqual(rendered.status_code, 200)
+
     def test_page_proof_accepts_rewritten_proxy_host_but_rejects_foreign_requests(self):
         for prefix in ('', '/ocr', '/tools/ocr'):
             page = self.client.get(prefix + '/user')
@@ -338,14 +427,19 @@ class EngineAdapterTests(StoreCase):
         info = {'available': True, 'text_available': True, 'model': 'reader', 'models': [{'name': 'reader'}]}
         before = set(app._jobs)
         adapter = EngineAdapter(app)
+        progress = []
+        def read(*_args):
+            progress.append(self.store.get(job['id'])['progress'])
+            return 'first page' if len(progress) == 1 else 'second page'
         with patch.object(app.backends, 'status', return_value=info), \
              patch.object(app, '_page_parallelism', return_value=1), \
-             patch.object(app, 'read_page', side_effect=['first page', 'second page']):
+             patch.object(app, 'read_page', side_effect=read):
             result = adapter.ocr(job, self.store)
         self.assertEqual(result['pages'], ['first page', 'second page'])
         self.assertEqual(set(app._jobs), before)
         self.assertEqual(result['pages_total'], 2)
         self.assertIn('--- page 1 ---', result['text'])
+        self.assertEqual(progress, ['กำลังอ่านเอกสารหน้า 1/2', 'กำลังอ่านเอกสารหน้า 2/2'])
 
     def test_extraction_options_progress_and_compact_result_use_the_current_engine(self):
         cfg = self.store.settings(); batch = self.store.create_batch(1, cfg)

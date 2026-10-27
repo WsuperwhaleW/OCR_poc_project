@@ -23,7 +23,7 @@
     <section id="uploadView">
       <div class="intro"><span class="eyebrow">DOCUMENT WORKSPACE</span><h1>จากเอกสาร สู่ข้อมูล</h1><p class="muted">เลือกไฟล์ แล้วรัน OCR และดึงข้อมูลในครั้งเดียว ผลลัพธ์จะบันทึกให้ทีมดูย้อนหลังโดยอัตโนมัติ</p></div>
       <div class="workspace">
-        <div class="card upload-card">
+        <div id="uploadCard" class="card upload-card">
           <h2><span class="number">01</span> เอกสารของคุณ</h2>
           <form id="uploadForm">
             <label id="dropzone" class="dropzone" for="fileInput" tabindex="0"><span class="upload-icon" aria-hidden="true">↥</span><strong>ลากไฟล์มาวาง หรือคลิกเพื่อเลือก</strong><span class="muted">PDF · JPG · PNG · TIFF · HEIC และรูปภาพอื่น ๆ</span></label>
@@ -35,17 +35,24 @@
           <p id="uploadMessage" role="status" aria-live="polite" class="message" hidden></p>
           <p class="muted small">ไฟล์ที่ส่งถึง server แล้วจะทำงานต่อได้แม้ปิดหน้านี้ ไฟล์ที่ยังส่งไม่ถึงต้องเปิดหน้านี้ไว้จนส่งครบ</p>
           <div id="batchJobs" class="batch-jobs" aria-live="polite"></div>
+          <section id="previewPanel" class="preview-panel" hidden aria-label="ตัวอย่างเอกสาร">
+            <div class="toolbar"><h3>ตัวอย่างเอกสาร</h3><a id="previewOpen" target="_blank" rel="noopener">เปิดเต็มหน้าต่าง ↗</a></div>
+            <p id="previewName" class="filename small"></p>
+            <div id="imageZoomTools" class="toolbar" hidden><button id="zoomOut" type="button" aria-label="ย่อเอกสาร">−</button><button id="zoomReset" type="button">100%</button><button id="zoomIn" type="button" aria-label="ขยายเอกสาร">+</button><span id="previewPageCount" class="muted small"></span></div>
+            <div id="previewViewport" class="preview-viewport"><div id="pdfPreview" class="pdf-pages" hidden></div><img id="imagePreview" alt="ตัวอย่างเอกสารที่เลือก" hidden></div>
+            <p id="previewHint" class="muted small"></p>
+          </section>
         </div>
         <section class="card result-card" aria-labelledby="resultTitle">
           <div class="result-heading"><h2 id="resultTitle"><span class="number">02</span> ผลลัพธ์</h2><span id="resultStatus" class="badge" hidden></span></div>
           <div id="emptyResult" class="empty"><span class="empty-icon" aria-hidden="true">▤</span><h3>เริ่มจากไฟล์ของคุณ</h3><p class="muted">ดูข้อความ OCR และข้อมูลที่ดึงได้<br>พร้อมสถานะแต่ละขั้นตอน</p></div>
           <div id="jobResult" hidden>
             <h3 id="resultFile" class="filename"></h3><p id="resultDate" class="muted small"></p>
-            <ol class="steps"><li id="ocrStep">1 · OCR</li><li id="extractionStep">2 · Extraction</li><li id="finishedStep">3 · บันทึกผล</li></ol>
+            <ol id="stageTimeline" class="stage-timeline" aria-label="ขั้นตอนและเวลาประมวลผล"></ol>
             <p id="progress" role="status" aria-live="polite"></p><p id="timing" class="muted small"></p>
             <p id="jobError" class="message error" hidden role="alert"></p><div id="warnings"></div>
-            <div class="toolbar result-tools"><div class="tabs"><button id="fieldsTab" class="selected">ข้อมูลที่ดึงได้</button><button id="textTab">ข้อความ OCR</button></div><div class="downloads"><a id="originalLink">ต้นฉบับ ↓</a><a id="exportLink">JSON ↓</a></div></div>
-            <div id="fieldsResult"></div><pre id="textResult" class="transcript" hidden></pre>
+            <div class="toolbar result-tools"><div class="tabs" role="tablist" aria-label="รูปแบบผลลัพธ์"><button id="textTab" role="tab" aria-controls="textResult" aria-selected="true" class="selected">OCR · Rendered</button><button id="fieldsTab" role="tab" aria-controls="fieldsResult" aria-selected="false">Key-Value</button><button id="jsonTab" role="tab" aria-controls="jsonResult" aria-selected="false">JSON</button></div><div class="downloads"><a id="originalLink">ต้นฉบับ ↓</a><a id="exportLink">JSON ↓</a></div></div>
+            <div id="textResult" class="ocr-rendered" role="tabpanel" aria-labelledby="textTab"></div><div id="fieldsResult" role="tabpanel" aria-labelledby="fieldsTab" hidden></div><pre id="jsonResult" class="transcript" role="tabpanel" aria-labelledby="jsonTab" hidden></pre>
             <details class="saved-settings"><summary>โมเดลและการตั้งค่าของงานนี้</summary><pre id="jobSettings" class="transcript"></pre></details>
           </div>
         </section>
@@ -64,6 +71,7 @@
   </main>
   <footer>OCR <span>ผลลัพธ์จาก AI ควรตรวจสอบกับเอกสารต้นฉบับ</span></footer>
   <script>
+    {% include '_user_render_script.html' %}
     {% include '_user_app_script.html' %}
   </script>
 </body>

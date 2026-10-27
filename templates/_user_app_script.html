@@ -20,6 +20,7 @@
   let files = [], settings = null, sending = false, jobs = [], batchJobs = [], selected = null;
   let historyTimer, detailTimer, batchTimer, historyLoading = false, batchLoading = false, more = false;
   let modelsTimer, modelsLoading = false, pageClosed = false;
+  let previewKey = null, previewObjectUrl = null, previewId = null, imageZoom = 100;
   $('homeLink').href = window.USER_BASE + '/user';
   function node(tag, text, className) {
     const element = document.createElement(tag); if (text !== undefined) element.textContent = text;
@@ -32,6 +33,7 @@
     if (options.method && !['GET', 'HEAD', 'OPTIONS'].includes(options.method.toUpperCase()))
       options = {...options, headers: {...options.headers, 'X-OCR-User-Token': window.USER_API_TOKEN}};
     const response = await fetch(API + path, options);
+    if(response.status===204)return {};
     let body; try { body = await response.json(); } catch (_) { throw new Error('Server ไม่ตอบกลับเป็น JSON (' + response.status + ')'); }
     if (!response.ok) throw new Error(body.error || 'ดำเนินการไม่สำเร็จ (' + response.status + ')');
     return body;
@@ -71,10 +73,12 @@
   }
   function paintFiles() {
     $('selectedFiles').replaceChildren(...files.map((file, index) => {
-      const row = node('li'); row.append(node('span', file.name), node('span', (file.size/1024/1024).toFixed(2)+' MB','muted'));
+      const row = node('li'), name = node('button', file.name, 'file-preview-link'); name.type = 'button';
+      name.addEventListener('click', () => previewFile(file));
+      row.append(name, node('span', (file.size/1024/1024).toFixed(2)+' MB','muted'));
       const remove = node('button','×','subtle'); remove.type='button'; remove.disabled=sending;
       remove.setAttribute('aria-label','นำ '+file.name+' ออก');
-      remove.addEventListener('click',()=>{files.splice(index,1);paintFiles();});row.append(remove);return row;
+      remove.addEventListener('click',()=>{files.splice(index,1);paintFiles();if(previewKey===file){if(files.length)previewFile(files[0]);else clearPreview();}});row.append(remove);return row;
     }));
     $('runButton').disabled = sending || !settings || !files.length;
     $('clearFiles').disabled = sending; $('fileInput').disabled = sending;
@@ -82,9 +86,67 @@
   function choose(list) {
     if (sending) return;
     files = [...list]; paintFiles(); message('uploadMessage','');
+    if(files.length)previewFile(files[0]);else clearPreview();
   }
+  function clearPreview() {
+    $('pdfPreview').replaceChildren(); $('imagePreview').removeAttribute('src');
+    if(previewObjectUrl)URL.revokeObjectURL(previewObjectUrl);
+    if(previewId)api('/previews/'+previewId,{method:'DELETE',keepalive:true}).catch(()=>{});
+    previewId=null;
+    previewObjectUrl=null;previewKey=null;$('previewPanel').hidden=true;
+    $('uploadCard').classList.remove('has-preview');
+  }
+  function showPreview(url, name, key) {
+    previewKey=key;imageZoom=100;$('zoomReset').textContent='100%';$('imagePreview').style.width='100%';$('pdfPreview').style.width='100%';$('previewPageCount').textContent='';
+    $('uploadCard').classList.add('has-preview');
+    const pdf=/\.pdf$/i.test(name), image=/\.(png|jpe?g|webp|gif|bmp)$/i.test(name);
+    $('previewPanel').hidden=false;$('previewName').textContent=name;$('previewOpen').href=url;
+    $('pdfPreview').hidden=!pdf;$('imagePreview').hidden=!image;$('imageZoomTools').hidden=!image&&!pdf;
+    $('previewViewport').hidden=!pdf&&!image;
+    if(image)$('imagePreview').src=url;
+    $('previewHint').textContent=pdf?'กำลังเตรียมตัวอย่าง PDF…':
+      image?'เลื่อนดูภาพและใช้ปุ่ม − / + เพื่อซูม':'เปิดเต็มหน้าต่างหรือดาวน์โหลดต้นฉบับเพื่อดูไฟล์ประเภทนี้';
+  }
+  function previewFile(file) {
+    if(previewKey===file)return;
+    clearPreview();previewObjectUrl=URL.createObjectURL(file);showPreview(previewObjectUrl,file.name,file);
+    if(/\.pdf$/i.test(file.name))preparePdf(file);
+  }
+  async function preparePdf(file) {
+    try {
+      const data=new FormData();data.append('file',file);
+      const body=await api('/previews',{method:'POST',body:data});
+      if(previewKey!==file){api('/previews/'+body.preview_id,{method:'DELETE'}).catch(()=>{});return;}
+      previewId=body.preview_id;paintPdfPages(body.pages,API+'/previews/'+previewId+'/pages/');
+    }catch(err){if(previewKey===file)$('previewHint').textContent=err.message;}
+  }
+  function paintPdfPages(count, base) {
+    const fragment=[];
+    for(let page=1;page<=count;page++){
+      const section=node('div',undefined,'pdf-page'),label=node('div','หน้า '+page+' / '+count,'pdf-page-label');
+      const image=node('img');image.alt='เอกสารหน้า '+page;image.loading='lazy';image.decoding='async';image.src=base+page;
+      image.addEventListener('error',()=>{label.textContent='หน้า '+page+' · โหลดตัวอย่างไม่ได้ กรุณาเปิดต้นฉบับ';});
+      section.append(label,image);fragment.push(section);
+    }
+    $('pdfPreview').replaceChildren(...fragment);$('previewPageCount').textContent=count+' หน้า';
+    $('previewHint').textContent='เลื่อนดูทุกหน้า · ใช้ปุ่ม − / + เพื่อซูม';
+  }
+  function previewJob(job) {
+    if(previewKey===job.id)return;
+    clearPreview();const supported=/\.(pdf|png|jpe?g|webp|gif|bmp)$/i.test(job.filename);
+    showPreview(API+'/jobs/'+job.id+(supported?'/preview':'/file'),job.filename,job.id);
+    if(/\.pdf$/i.test(job.filename))api('/jobs/'+job.id+'/preview/info').then(body=>{
+      if(previewKey===job.id)paintPdfPages(body.pages,API+'/jobs/'+job.id+'/preview/pages/');
+    }).catch(err=>{if(previewKey===job.id)$('previewHint').textContent=err.message;});
+  }
+  function zoomImage(amount) {
+    imageZoom=amount===0?100:Math.max(25,Math.min(300,imageZoom+amount));
+    $('imagePreview').style.width=imageZoom+'%';$('zoomReset').textContent=imageZoom+'%';
+    $('pdfPreview').style.width=imageZoom+'%';
+  }
+  $('zoomOut').addEventListener('click',()=>zoomImage(-25));$('zoomIn').addEventListener('click',()=>zoomImage(25));$('zoomReset').addEventListener('click',()=>zoomImage(0));
   $('fileInput').addEventListener('change', event => choose(event.target.files));
-  $('clearFiles').addEventListener('click',()=>{files=[];$('fileInput').value='';paintFiles();});
+  $('clearFiles').addEventListener('click',()=>{files=[];$('fileInput').value='';paintFiles();clearPreview();});
   $('dropzone').addEventListener('keydown', event => {if(event.key==='Enter'||event.key===' '){event.preventDefault();if(!sending)$('fileInput').click();}});
   for (const name of ['dragenter','dragover']) $('dropzone').addEventListener(name,event=>{event.preventDefault();$('dropzone').classList.add('drag');});
   $('dropzone').addEventListener('dragleave',()=>$('dropzone').classList.remove('drag'));
@@ -161,23 +223,44 @@
       target.append(section);
     }
   }
+  function paintTimeline(job) {
+    const stages=[['queued_ocr','รอคิว OCR'],['ocr','อ่านเอกสาร'],['queued_extraction','รอคิว Extraction'],['extraction','ดึงข้อมูล']];
+    const timeline=job.timeline||{}, timing=job.result?.timing||{}, rows=[];
+    for(const [key,label] of stages){
+      const saved=timeline[key], running=job.status===key, row=node('li',undefined,saved?.outcome?'stage-error':running?'current':saved?.finished_at?'done':'');
+      const head=node('div',undefined,'stage-heading');head.append(node('strong',label));
+      let seconds=saved?.started_at ? ((saved.finished_at?Date.parse(saved.finished_at):Date.now())-Date.parse(saved.started_at))/1000 : timing[key];
+      const measured=Number.isFinite(seconds);
+      head.append(node('span', measured?Math.max(0,seconds).toFixed(1)+' วิ':'—','stage-duration'));row.append(head);
+      let detail=running?(key.startsWith('queued_')?'กำลังรอคิว…':job.progress):saved?.finished_at?saved.progress:
+        typeof timing[key]==='number'?'เสร็จแล้ว':!Object.keys(timeline).length?'ไม่ได้บันทึกขั้นตอนนี้':'ยังไม่เริ่ม';
+      if(saved?.finished_at&&!saved.outcome){
+        if(key.startsWith('queued_'))detail='ผ่านคิวแล้ว';
+        else if(key==='ocr')detail='อ่านแล้ว '+(job.result?.pages?.length||0)+' หน้า';
+        else if(!detail||detail.startsWith('กำลัง'))detail='ดึงข้อมูลเสร็จแล้ว';
+      }
+      if(saved&&!saved.finished_at&&!running)detail='ไม่มีเวลาสิ้นสุดที่บันทึกไว้';
+      if(saved?.outcome)detail=(saved.outcome==='failed'?'ไม่สำเร็จ':'ถูกขัดจังหวะ')+' · '+saved.progress;
+      row.append(node('span',detail,'muted small'));rows.push(row);
+    }
+    $('stageTimeline').replaceChildren(...rows);
+  }
   function paintJob(job){
     $('emptyResult').hidden=true;$('jobResult').hidden=false;$('resultStatus').hidden=false;
     $('resultFile').textContent=job.filename;$('resultDate').textContent=dates(job.created_at);
     $('resultStatus').textContent=labels[job.status]||job.status;$('resultStatus').className='badge '+job.status;
     $('progress').textContent=job.progress;const result=job.result||{},timing=result.timing||{};
     $('timing').textContent=[['ocr','OCR'],['extraction','Extraction']].filter(([key])=>timing[key]!==undefined).map(([key,name])=>name+' '+timing[key].toFixed(1)+' วินาที').join(' · ');
-    $('ocrStep').className=job.status==='ocr'?'current':result.pages?.length?'done':'';
-    $('extractionStep').className=job.status==='extraction'?'current':result.extracted?'done':'';
-    $('finishedStep').className=['completed','partial'].includes(job.status)?'done':'';
+    paintTimeline(job);
     message('jobError',job.error,true);$('warnings').replaceChildren(...(result.warnings||[]).map(text=>node('p',text,'message')));
     $('originalLink').href=API+'/jobs/'+job.id+'/file';$('exportLink').href=API+'/jobs/'+job.id+'/export';
-    $('textResult').textContent=result.text||'ยังไม่มีข้อความ OCR';renderFields(result.extracted);
+    window.renderUserOcr($('textResult'),result.pages,result.text);renderFields(result.extracted);
+    $('jsonResult').textContent=result.extracted?JSON.stringify(result.extracted,null,2):'ยังไม่มีผล Extraction';
     $('jobSettings').textContent=JSON.stringify(job.configuration,null,2);paintBatch();
   }
   async function openJob(id,show=true){
     clearTimeout(detailTimer);selected=id;if(show)view(false);
-    try{const {job}=await api('/jobs/'+id);if(selected!==id)return;paintJob(job);
+    try{const {job}=await api('/jobs/'+id);if(selected!==id)return;paintJob(job);if(show)previewJob(job);
       if(show)$('resultTitle').scrollIntoView?.({behavior:'smooth',block:'start'});
       if(active(job.status))detailTimer=setTimeout(()=>openJob(id,false),1200);
     }catch(err){message('jobError',err.message,true);detailTimer=setTimeout(()=>{if(selected===id)openJob(id,false);},4000);}
@@ -197,10 +280,10 @@
     finally{historyLoading=false;if(jobs.length<=50)historyTimer=setTimeout(()=>loadHistory(),5000);}
   }
   $('refreshHistory').addEventListener('click',()=>loadHistory());$('moreHistory').addEventListener('click',()=>loadHistory(true));
-  function tab(fields){$('fieldsResult').hidden=!fields;$('textResult').hidden=fields;$('fieldsTab').classList.toggle('selected',fields);$('textTab').classList.toggle('selected',!fields);}
-  $('fieldsTab').addEventListener('click',()=>tab(true));$('textTab').addEventListener('click',()=>tab(false));
+  function tab(mode){for(const key of ['text','fields','json']){const on=mode===key;$(key+'Result').hidden=!on;$(key+'Tab').classList.toggle('selected',on);$(key+'Tab').setAttribute('aria-selected',String(on));}}
+  $('fieldsTab').addEventListener('click',()=>tab('fields'));$('textTab').addEventListener('click',()=>tab('text'));$('jsonTab').addEventListener('click',()=>tab('json'));
   window.addEventListener('beforeunload',event=>{if(sending){event.preventDefault();event.returnValue='';}});
-  window.addEventListener('pagehide',()=>{pageClosed=true;clearTimeout(historyTimer);clearTimeout(detailTimer);clearTimeout(batchTimer);clearTimeout(modelsTimer);});
+  window.addEventListener('pagehide',event=>{pageClosed=true;clearTimeout(historyTimer);clearTimeout(detailTimer);clearTimeout(batchTimer);clearTimeout(modelsTimer);if(!event?.persisted)clearPreview();});
   window.addEventListener('pageshow',()=>{if(pageClosed){pageClosed=false;refreshModels();}});
   loadSettings();loadHistory();refreshModels();
 })();
