@@ -7173,6 +7173,7 @@ class _StressLive:
         # Alert ids are `<prefix><n>`, the prefix unique to the run and phase, so
         # an id names one page of one run -- what `_STRESS_EVIDENCE` keys on.
         self._prefix = prefix
+        self._ocr_flagged = set()  # jobs with an OCR flag that opens a window
         self._active = {}        # job number -> {case, stage, last, flagged}
         # The run's `_StressSlots` where a long file may borrow idle workers
         # for its pages (`split_pages`), else None.
@@ -7186,12 +7187,24 @@ class _StressLive:
         with self._lock:
             return self.stages["queued"]
 
+    def job_key(self, job: int) -> str:
+        """Where a job's extraction is kept when an OCR flag of it has nothing
+        else to switch to: `<prefix>job<n>`, which no alert id is. The page
+        builds the same key from an alert's id."""
+        return f"{self._prefix}job{job}"
+
+    def ocr_flagged(self, job: int) -> bool:
+        with self._lock:
+            return job in self._ocr_flagged
+
     def flag(self, kind: str, job: int, case: str, message: str, **extra) -> int:
         """Raise an alert; returns its id, for `update_flag`."""
         with self._lock:
             alert = {"id": self._new_id(), "kind": kind, "job": job, "case": case,
                      "message": (message or kind)[:300],
                      "at": time.perf_counter(), **extra}
+            if extra.get("evidence") and extra.get("stage") == "ocr":
+                self._ocr_flagged.add(job)
             self._issues[alert["id"]] = alert
             self._alerts.append(dict(alert))
             return alert["id"]
@@ -7217,7 +7230,18 @@ class _StressLive:
         with self._lock:
             self._active[job] = {"case": case, "stage": stage,
                                  "last": time.perf_counter(), "flagged": False,
-                                 "document": None, "requests": {}}
+                                 "document": None, "requests": {}, "reading": {}}
+
+    def reading(self, job: int, number: int, page=None):
+        """The page `job` is waiting on the server for (None once it is back),
+        so a stalled flag can show the pages it stalled on."""
+        with self._lock:
+            active = self._active.get(job)
+            if active:
+                if page is None:
+                    active["reading"].pop(number, None)
+                else:
+                    active["reading"][number] = page
 
     def touch(self, job: int, stage: str = None):
         with self._lock:
@@ -7282,14 +7306,31 @@ class _StressLive:
                     if names:
                         more = f"; {len(names) - 3} more" if len(names) > 3 else ""
                         waiting = f" (waiting on {'; '.join(names[:3])}{more})"
-                    self._alerts.append({
+                    alert = {
                         "id": self._new_id(),
                         "kind": "stalled", "job": job, "case": active["case"],
                         "stage": active["stage"], "at": now,
                         "message": f"nothing back for {now - active['last']:.0f} s "
                                    f"while {verb}{waiting}"
                                    " -- the request may be hung or the server "
-                                   "stopped answering"})
+                                   "stopped answering"}
+                    if active["stage"] == "ocr":
+                        # Every OCR flag opens a window (2026-10-27, at the
+                        # user's request): here, the pages still out.
+                        reads = [{"number": n, "text": "", "page": p,
+                                  "detail": (getattr(p, "_stress_origin", None)
+                                             or {}).get("detail"),
+                                  "looped": False, "truncated": False, "dry": None,
+                                  "note": "nothing back yet"}
+                                 for n, p in sorted(active["reading"].items())]
+                        if len(reads) == 1:
+                            alert["page"] = reads[0]["number"]
+                        alert["evidence"] = True
+                        self._ocr_flagged.add(job)
+                        _STRESS_EVIDENCE.put(
+                            alert["id"], active["case"], alert.get("page"),
+                            reads or [_note_read(alert["message"])], None)
+                    self._alerts.append(alert)
 
     def move(self, frm, to):
         with self._lock:
@@ -7658,6 +7699,13 @@ class _StressEvidence:
 _STRESS_EVIDENCE = _StressEvidence(STRESS_EVIDENCE_MAX)
 
 
+def _note_read(note: str, page=None, detail=None) -> dict:
+    """A read with no text, only what happened to it -- for a flag whose page
+    failed or never came back. `page` is None where no page was read."""
+    return {"detail": detail, "text": "", "page": page, "looped": False,
+            "truncated": False, "dry": None, "note": note[:300]}
+
+
 def _page_png(page) -> bytes:
     """The PNG the model was sent for a stress page."""
     uri = getattr(page, "_data_uri", "") or ""
@@ -7736,17 +7784,27 @@ def _stress_read(pages, cancel, rec: dict, live: _StressLive,
                     ("resolution", "new_tokens", "seconds")}}
 
         while True:
+            was = (getattr(page, "_stress_origin", None) or {}).get("detail")
+            live.reading(job, number, page)
             try:
                 text = read_page(page, stats, cancel=inner)
-            except Exception:
+            except Exception as err:
                 if cancel.is_set() or inner.is_set():
                     raise SweepCancelled("stopped")
+                # Every read of the page, the one that failed last, for the
+                # error flag's window (`_stress_job`).
+                try:
+                    err.stress_reads = seen + [_note_read(
+                        f"failed: {type(err).__name__}: {err}", page, was)]
+                except AttributeError:
+                    pass
                 raise
+            finally:
+                live.reading(job, number)
             if cancel.is_set():
                 raise SweepCancelled("stopped")
             live.touch(job)
             page_tokens += stats.get("new_tokens") or 0
-            was = (getattr(page, "_stress_origin", None) or {}).get("detail")
             dry = stats.get("dry") or {}
             fired, looped = bool(dry.get("fired")), bool(stats.get("looped"))
             seen.append({"detail": was, "text": text, "page": page,
@@ -7845,8 +7903,10 @@ def _stress_read(pages, cancel, rec: dict, live: _StressLive,
         if stats.get("looped"):
             pass                                # flagged above, every attempt
         elif stats.get("truncated"):
-            live.flag("truncated", job, case, "the page read hit the token cap "
-                      "before it finished", stage="ocr", page=number)
+            cap_alert = live.flag("truncated", job, case, "the page read hit the "
+                                  "token cap before it finished", stage="ocr",
+                                  page=number, evidence=True)
+            _STRESS_EVIDENCE.put(cap_alert, case, number, seen, truth_case)
         # Every attempt's tokens: the server generated them.
         live.page(page_tokens)
         return text, page_tokens, page
@@ -8149,6 +8209,11 @@ def _stress_job(spec: dict, cfg: dict, prepared: dict, cancel,
     # Where an extraction flag puts its Compare window, once there is a
     # transcript to extract from (set below); None before that.
     fields_window = None
+    kept = []                   # each page's kept read, for Fields evidence
+    # The first extraction flag with a window, and what the extraction gave:
+    # what an OCR flag of this file switches to (see `finally`).
+    extract_alert = result = None
+    missing = []
     # Every pass-2 request this job makes resets its stall clock as it streams
     # and when it ends -- not only the extraction as a whole (see `_progress`).
     previous_hook = _progress_swap(live.hook(job))
@@ -8167,7 +8232,6 @@ def _stress_job(spec: dict, cfg: dict, prepared: dict, cancel,
                 began += rec["prepare_s"]
                 live.touch(job)
             texts, looped, truncated, truth = None, False, False, None
-            kept = []                   # each page's kept read, for Fields evidence
             if mode in ("ocr", "full"):
                 read_began = time.perf_counter()
                 texts, looped, truncated = _stress_read(
@@ -8203,6 +8267,8 @@ def _stress_job(spec: dict, cfg: dict, prepared: dict, cancel,
                     *show image with a field extracted so I can see the missing
                     field*): the pages and their text in full mode, the
                     transcript it was fed in extract mode (no page was read)."""
+                    nonlocal extract_alert
+                    extract_alert = extract_alert or alert
                     _STRESS_EVIDENCE.put(
                         alert, who, None,
                         kept or [{"number": None, "text": text, "page": None,
@@ -8303,15 +8369,31 @@ def _stress_job(spec: dict, cfg: dict, prepared: dict, cancel,
                 window = fields_window if stage == "extract" else None
                 alert = live.flag("error", job, who, rec["error"], stage=stage,
                                   **({"page": page} if page else {}),
-                                  **({"evidence": True} if window else {}))
+                                  **({"evidence": True}
+                                     if window or stage == "ocr" else {}))
                 if window:
                     window(alert, {"error": rec["error"]})
+                elif stage == "ocr":
+                    # A read that failed opens on the page it failed on; one
+                    # that failed before any page was read, on what went wrong.
+                    _STRESS_EVIDENCE.put(
+                        alert, who, page,
+                        getattr(err, "stress_reads", None)
+                        or kept + [_note_read("failed: " + rec["error"])],
+                        None if cfg.get("source") == "realdata" else spec["case"])
             # A job that failed is saved as the failure it was. A cancelled or
             # skipped one is not: nobody let it finish, so it measured nothing.
             if log and not logged and mode != "classify":
                 _stress_log_error(mode, spec, prepared, all_stats, read_began,
                                   cfg, tag, err)
     finally:
+        # A flagged read still goes on to extraction, so an OCR flag's window
+        # can switch to this file's extraction (2026-10-27, at the user's
+        # request). An extraction flag is that window already; with none, the
+        # extraction is kept under the job's key.
+        if (fields_window is not None and extract_alert is None
+                and result is not None and live.ocr_flagged(job)):
+            fields_window(live.job_key(job), result, missing)
         _progress_swap(previous_hook)
         if live.slots is not None:
             live.slots.release()
@@ -8945,6 +9027,11 @@ def stress_evidence(alert_id: str):
     """A flagged stress page for the Compare view: each read of it, in order,
     with its text. Read `n`'s page image is `<this URL>/<n>.png`."""
     item = _STRESS_EVIDENCE.get(alert_id)
+    if item is None and "job" in alert_id:          # `_StressLive.job_key`
+        return jsonify(error="This file's extraction is not kept: it has not "
+                             "finished yet, the run did not extract, or it is "
+                             f"older than the newest {STRESS_EVIDENCE_MAX} "
+                             "flagged pages."), 404
     if item is None:
         return jsonify(error="This page is no longer kept -- only the newest "
                              f"{STRESS_EVIDENCE_MAX} flagged pages since this "
@@ -8954,6 +9041,7 @@ def stress_evidence(alert_id: str):
                    attempts=[{"detail": a["detail"], "text": a["text"],
                               "looped": a["looped"], "truncated": a["truncated"],
                               "dry": a["dry"], "page": a.get("number"),
+                              "note": a.get("note"),
                               "image": a.get("page") is not None}
                              for a in item["attempts"]])
 

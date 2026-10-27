@@ -248,6 +248,45 @@ class EvidenceTests(unittest.TestCase):
     def test_a_clean_page_keeps_nothing(self):
         self.assertEqual(self._read([(False, 0)]), [])
 
+    def test_a_token_cap_row_opens_its_page(self):
+        def read(page, stats, cancel=None):
+            stats.update(truncated=True, new_tokens=10)
+            return "cut short"
+        live = app._StressLive(1, prefix="run-cap-")
+        with patch.object(app, "read_page", side_effect=read):
+            app._stress_read([_page("low")], app.MultiCancel(), {}, live,
+                             job=1, case="sol003")
+        cap = next(a for a in live.take_alerts() if a["kind"] == "truncated")
+        self.assertTrue(cap["evidence"])
+        got = app.app.test_client().get(f"/api/stress/evidence/{cap['id']}").get_json()
+        self.assertEqual([(a["truncated"], a["text"]) for a in got["attempts"]],
+                         [(True, "cut short")])
+
+    def test_a_failed_read_carries_the_page_it_failed_on(self):
+        live = app._StressLive(1, prefix="run-err-")
+        with patch.object(app, "read_page", side_effect=RuntimeError("server gone")):
+            with self.assertRaises(RuntimeError) as caught:
+                app._stress_read([_page("low")], app.MultiCancel(), {}, live,
+                                 job=1, case="sol003")
+        [read] = caught.exception.stress_reads
+        self.assertEqual((read["detail"], read["text"]), ("low", ""))
+        self.assertIsNotNone(read["page"])
+        self.assertIn("server gone", read["note"])
+
+    def test_a_stalled_read_opens_the_pages_still_out(self):
+        live = app._StressLive(1, prefix="run-stall-")
+        live.begin(1, "sol003", "ocr")
+        live.reading(1, 2, _page("low"))
+        live.flag_stalled(0)
+        stalled = live.take_alerts()[0]
+        self.assertEqual((stalled["kind"], stalled["page"], stalled["evidence"]),
+                         ("stalled", 2, True))
+        got = app.app.test_client().get(f"/api/stress/evidence/{stalled['id']}").get_json()
+        self.assertEqual([(a["page"], a["note"]) for a in got["attempts"]],
+                         [(2, "nothing back yet")])
+        live.reading(1, 2)                              # back: nothing left out
+        self.assertEqual(live._active[1]["reading"], {})
+
     def test_an_unknown_or_dropped_page_is_a_404(self):
         client = app.app.test_client()
         self.assertEqual(client.get("/api/stress/evidence/nope").status_code, 404)

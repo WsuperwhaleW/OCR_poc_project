@@ -131,6 +131,53 @@ class FullPipelineLoopTests(unittest.TestCase):
         self.assertEqual(report["extract"]["missing_required_fields"], 1)
 
 
+class OcrFlagToExtractionTests(unittest.TestCase):
+    """An OCR flag's window switches to its file's extraction, flagged or not."""
+
+    def _run(self, result, ocr_flag=True):
+        def read(pages, cancel, rec, live, stats_out=None, job=0, case="", kept=None):
+            if ocr_flag:
+                live.flag("looped", job, case, "looped", stage="ocr", page=1,
+                          state="resolved", evidence=True)
+            rec.update(ocr_s=1.0, pages=1, ocr_tokens=10)
+            kept.append({"number": 1, "text": "text", "page": Image.new("RGB", (4, 4)),
+                         "detail": "medium", "looped": False, "truncated": False,
+                         "dry": None})
+            return ["text"], False, False
+
+        live = app._StressLive(1, prefix="measured-test01-")
+        cfg = {"mode": "full", "concurrency": 1, "extract_mode": "single",
+               "detail": "low"}
+        spec = {"index": 0, "case": "sol002", "submitted": time.perf_counter()}
+        prepared = {"pages": {"sol002": ["page"]}, "sources": {"sol002": "x"}}
+        with patch.object(app, "_STRESS_EVIDENCE", app._StressEvidence(10)), \
+                patch.object(app, "_stress_read", side_effect=read), \
+                patch.object(app, "extract_fields", return_value=result):
+            app._stress_job(spec, cfg, prepared, app.MultiCancel(), live)
+            with app.app.test_client() as client:
+                res = client.get("/api/stress/evidence/measured-test01-job1")
+        return live.take_alerts(), res
+
+    def test_an_unflagged_extraction_is_kept_under_the_job(self):
+        alerts, res = self._run(_doc({"issue_date": "2026-01-01"}, ["issue_date"]))
+        self.assertEqual([a["stage"] for a in alerts], ["ocr"])
+        self.assertEqual(res.status_code, 200)
+        body = res.get_json()
+        self.assertEqual(body["fields"][0]["rows"][0]["value"], "2026-01-01")
+        self.assertEqual([(a["text"], a["image"]) for a in body["attempts"]],
+                         [("text", True)])
+
+    def test_a_flagged_extraction_is_its_own_row_and_not_kept_twice(self):
+        alerts, res = self._run(_doc({"vat_total": ""}, ["vat_total"]))
+        self.assertEqual([a["kind"] for a in alerts], ["looped", "missing"])
+        self.assertEqual(res.status_code, 404)
+
+    def test_a_file_with_no_ocr_flag_keeps_nothing(self):
+        _, res = self._run(_doc({"issue_date": "x"}, ["issue_date"]), ocr_flag=False)
+        self.assertEqual(res.status_code, 404)
+        self.assertIn("extraction", res.get_json()["error"])
+
+
 class ExtractionFlagWindowTests(unittest.TestCase):
     """Every extraction flag opens the page image beside the form, not only
     missing required."""
