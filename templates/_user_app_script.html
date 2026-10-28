@@ -21,6 +21,7 @@
   let historyTimer, detailTimer, batchTimer, historyLoading = false, batchLoading = false, more = false;
   let modelsTimer, modelsLoading = false, pageClosed = false;
   let previewKey = null, previewObjectUrl = null, previewId = null, imageZoom = 100;
+  let typesLoaded = false, typesLoading = false;
   $('homeLink').href = window.USER_BASE + '/user';
   function node(tag, text, className) {
     const element = document.createElement(tag); if (text !== undefined) element.textContent = text;
@@ -197,10 +198,74 @@
     finally{batchLoading=false;}
     if(batchJobs.some(job=>active(job.status)))batchTimer=setTimeout(pollBatch,2000);
   }
-  function view(history){$('uploadView').hidden=history;$('historyView').hidden=!history;
-    $('navUpload').classList.toggle('selected',!history);$('navHistory').classList.toggle('selected',history);}
+  function view(page){
+    const name=typeof page==='boolean'?(page?'history':'upload'):page;
+    for(const [key,id] of [['upload','navUpload'],['history','navHistory'],['types','navTypes']]){
+      $(key+'View').hidden=name!==key;$(id).classList.toggle('selected',name===key);$(id).setAttribute('aria-pressed',String(name===key));
+    }
+    if(name==='types')loadTypes();
+  }
   $('navUpload').addEventListener('click',()=>view(false));
   $('navHistory').addEventListener('click',()=>{view(true);loadHistory();});
+  $('navTypes').addEventListener('click',()=>view('types'));
+  $('typesRetry').addEventListener('click',()=>loadTypes());
+  const fieldName=key=>fieldLabels[key]||key.replace(/_/g,' ');
+  const typeName=name=>(name||'').replace(/^(an|a|the) /,'');
+  function renderTypes(schema){
+    const content=$('typesContent');content.replaceChildren();
+    const required=schema.types.filter(type=>type.has_requirement), unknown=schema.unknown;
+    $('typesNotice').textContent=schema.types.length+' ประเภท · '+required.length+' ประเภทมีข้อกำหนดฟิลด์เฉพาะ · '+schema.keys.length+' ฟิลด์ใน schema';
+    const note=node('p','เอกสารหนึ่งฉบับอาจมีหลายประเภท ระบบจะรวมฟิลด์ของทุกประเภทเข้าด้วยกัน หากไม่มีประเภทใดมีข้อกำหนดเฉพาะ จะใช้ชุดฟิลด์พื้นฐานโดยไม่มีฟิลด์บังคับ','catalog-note');
+    content.append(note,node('h2','ตารางฟิลด์ตามประเภทเอกสาร'));
+    const legend=node('p',undefined,'catalog-legend');
+    legend.append(node('span','Required · ฟิลด์บังคับ','catalog-required'),node('span','Optional · ถาม แต่ไม่บังคับ','catalog-optional'),node('span','— ไม่ได้ถาม','muted'));content.append(legend);
+    const columns=required.map(type=>({name:typeName(type.name),fields:type.fields,mandatory:type.mandatory,
+      items:type.items||[],mandatory_items:type.mandatory_items||[]}));
+    columns.push({name:'ชุดฟิลด์พื้นฐาน / Unknown type',fields:unknown.fields,mandatory:unknown.mandatory||[],items:unknown.items||[],mandatory_items:[]});
+    const scroll=node('div',undefined,'table-scroll catalog-matrix-wrap'),table=node('table',undefined,'catalog-matrix');
+    const head=node('thead'),header=node('tr');header.append(node('th','ฟิลด์'));
+    for(const col of columns)header.append(node('th',col.name));head.append(header);table.append(head);
+    const body=node('tbody');
+    function matrixRow(key,items=false){
+      const row=node('tr'),label=node('th');label.setAttribute('scope','row');
+      label.append(node('span',fieldName(key)),node('code',key));row.append(label);
+      for(const col of columns){
+        const asked=(items?col.items:col.fields).includes(key),mandatory=(items?col.mandatory_items:col.mandatory).includes(key);
+        const cell=node('td');cell.append(node('span',mandatory?'Required':asked?'Optional':'—',mandatory?'catalog-required':asked?'catalog-optional':'muted'));row.append(cell);
+      }
+      body.append(row);
+    }
+    for(const key of schema.keys)matrixRow(key);
+    if(schema.item_keys?.length){const row=node('tr'),label=node('th','รายการเงินได้ · '+schema.items_key);label.colSpan=columns.length+1;row.append(label);body.append(row);
+      for(const key of schema.item_keys)matrixRow(key,true);}
+    table.append(body);scroll.append(table);content.append(scroll,node('h2','ประเภทเอกสารทั้งหมด'));
+    const cards=node('div',undefined,'catalog-cards');
+    for(const type of schema.types){
+      const card=node('section',undefined,'catalog-type');card.append(node('h3',typeName(type.name)),node('code',type.code));
+      if(type.headings?.length){const headings=node('p',undefined,'catalog-headings');
+        for(const heading of type.headings)headings.append(node('span',heading,'doc-type-badge'));card.append(headings);}
+      if(type.has_requirement){
+        card.append(node('p',type.fields.length+' ฟิลด์ · '+type.mandatory.length+' Required','muted small'));
+        const fields=node('ul',undefined,'catalog-fields');
+        for(const key of type.fields){const item=node('li');item.append(node('span',fieldName(key)),node('code',key));
+          if(type.mandatory.includes(key))item.append(node('span','Required','catalog-required'));fields.append(item);}
+        card.append(fields);
+        if(type.items?.length)card.append(node('p','มีตาราง '+schema.items_key+' เพิ่มเติม: '+type.items.join(', '),'muted small'));
+      }else card.append(node('p','จำแนกประเภทนี้ได้ แต่ยังไม่มีข้อกำหนดฟิลด์เฉพาะ หากเป็นประเภทนี้อย่างเดียว จะใช้ชุดฟิลด์พื้นฐานในตารางด้านบน','muted small'));
+      cards.append(card);
+    }
+    content.append(cards);
+  }
+  async function loadTypes(){
+    if(typesLoaded||typesLoading)return;
+    typesLoading=true;$('typesNotice').textContent='กำลังโหลดประเภทเอกสาร…';message('typesError','');$('typesRetry').hidden=true;
+    try{
+      const response=await fetch(window.USER_BASE+'/api/schema');
+      if(!response.ok)throw new Error('โหลดประเภทเอกสารไม่สำเร็จ ('+response.status+')');
+      const schema=await response.json();renderTypes(schema);typesLoaded=true;
+    }catch(err){message('typesError',err.message,true);$('typesNotice').textContent='';$('typesRetry').hidden=false;}
+    finally{typesLoading=false;}
+  }
   function valueText(value){return typeof value==='object'&&value!==null?JSON.stringify(value,null,2):String(value??'');}
   function docCodes(doc){return Array.isArray(doc.doc_types)&&doc.doc_types.length?doc.doc_types:doc.doc_type?[doc.doc_type]:[];}
   function typeBadges(doc){

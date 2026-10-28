@@ -20,7 +20,7 @@
     </div>
   </header>
   <main>
-    <nav aria-label="หน้าหลัก"><button id="navUpload" class="selected">ทดสอบเอกสาร</button><button id="navHistory">ประวัติของทีม</button></nav>
+    <nav aria-label="หน้าหลัก"><button id="navUpload" class="selected">ทดสอบเอกสาร</button><button id="navHistory">ประวัติของทีม</button><button id="navTypes">Doc types</button></nav>
     <section id="uploadView">
       <div class="intro"><span class="eyebrow">DOCUMENT WORKSPACE</span><h1>จากเอกสาร สู่ข้อมูล</h1><p class="muted">เลือกไฟล์ แล้วรัน OCR และดึงข้อมูลในครั้งเดียว ผลลัพธ์จะบันทึกให้ทีมดูย้อนหลังโดยอัตโนมัติ</p></div>
       <div class="workspace">
@@ -68,6 +68,14 @@
         <div class="table-scroll"><table><thead><tr><th>ไฟล์</th><th>วันที่</th><th>สถานะ</th><th></th></tr></thead><tbody id="historyRows"></tbody></table></div>
         <p id="emptyHistory" class="empty muted" hidden>ยังไม่มีประวัติเอกสาร</p>
         <button id="moreHistory" class="subtle" hidden>โหลดรายการก่อนหน้า</button>
+      </div>
+    </section>
+    <section id="typesView" hidden aria-labelledby="typesTitle">
+      <div class="intro"><span class="eyebrow">DOCUMENT TYPES</span><h1 id="typesTitle">Doc types</h1><p class="muted">ประเภทเอกสารและฟิลด์ที่ระบบรองรับ ใช้ข้อกำหนดชุดเดียวกับหน้า Benchmark</p></div>
+      <div class="card">
+        <p id="typesNotice" class="muted small" role="status"></p>
+        <p id="typesError" class="message error" role="alert" hidden></p><button id="typesRetry" type="button" class="subtle" hidden>ลองโหลดอีกครั้ง</button>
+        <div id="typesContent"></div>
       </div>
     </section>
   </main>
