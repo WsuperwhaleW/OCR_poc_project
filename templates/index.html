@@ -2072,6 +2072,17 @@ follows your desktop; Light is the one to pick for projecting or screenshotting.
             Lock extract model
             <select id="rtLockExtract"><option value="">&mdash; random &mdash;</option></select>
           </label>
+          <!-- The Detail is a lock too: a model comparison that lets the pixel
+               budget vary is also a Detail comparison. -->
+          <label class="field" style="flex:1;min-width:120px" id="rtLockDetailField">
+            Lock detail
+            <select id="rtLockDetail">
+              <option value="">&mdash; random &mdash;</option>
+              {% for d in details %}
+              <option value="{{ d }}">{{ d }}</option>
+              {% endfor %}
+            </select>
+          </label>
           <!-- The shape is a lock like any other: single and agentic are two
                shapes with different failure modes, not two samples of one, so a
                sweep of anything else has to hold it still. -->
@@ -9227,6 +9238,8 @@ function rtPaintLocks() {
   // A read-only run never extracts, and a fields run never reads.
   rtLockReaderField.style.display = rtScope.value === 'fields' ? 'none' : 'flex';
   rtLockExtractField.style.display = rtScope.value === 'ocr' ? 'none' : 'flex';
+  // A fields run makes no image, so it has no Detail to pin.
+  rtLockDetailField.style.display = rtScope.value === 'fields' ? 'none' : 'flex';
   // A read-only run never extracts, so it has no shape to pin.
   rtLockModeField.style.display = rtScope.value === 'ocr' ? 'none' : 'flex';
   // The chips are painted from the same two pools as the locks, so a model this
@@ -9485,7 +9498,8 @@ async function rtStart() {
         strategy: rtStrategy.value,
         lock: { case: rtStrategy.value === 'sequential' ? '' : rtLockCase.value,
                 reader: rtLockReader.value,
-                extractor: rtLockExtract.value, mode: rtLockMode.value }
+                extractor: rtLockExtract.value, mode: rtLockMode.value,
+                detail: rtScope.value === 'fields' ? '' : rtLockDetail.value }
       })
     });
     if (!res.ok) {
@@ -11706,6 +11720,8 @@ function colAvailable(col) {
     || !!window.StressLocalPreview?.hasCandidate(cmpOverride.filename);
   return cmpInStress() ? cmpTotal() > 0 : hasRun();
 }
+const ST_WRONG_TEXT = { wrong: 'wrong', partial: 'partly right',
+  missed: 'not returned', spurious: 'invented' };
 /* Each document's form: every key asked, its value, Required where the
    requirement demands it, and the flagged ones marked. */
 function cmpFieldsHtml(docs) {
@@ -11717,11 +11733,20 @@ function cmpFieldsHtml(docs) {
       + (d.error ? ' · <span style="color:var(--danger)">' + esc(d.error) + '</span>' : '')
       + '</h4>' : '';
     if (!d.rows.length) return head + '<p class="note">No fields came back.</p>';
+    // A value that does not match the ground truth (`wrong`) shows what the
+    // truth says under it, and who lost it where that is known.
+    const lost = { ocr: 'read lost it', extract: 'extraction lost it', unknown: 'unclear' };
     return head + '<table><tr><th>Field</th><th>Value</th><th></th></tr>'
-      + d.rows.map(r => '<tr' + (r.missing ? ' class="miss"' : '') + '><td>' + esc(r.key)
-        + '</td><td class="v">' + (r.value ? esc(r.value) : r.missing ? 'missing' : '—')
+      + d.rows.map(r => '<tr' + (r.missing || r.wrong ? ' class="miss"' : '') + '><td>'
+        + esc(r.key) + '</td><td class="v">'
+        + (r.value ? esc(r.value) : r.missing ? 'missing' : '—')
+        + (r.wrong ? '<br><small>ground truth: '
+          + (r.expected ? esc(r.expected) : 'nothing printed') + '</small>' : '')
         + '</td><td>' + (r.required ? '<span class="st-tag '
           + (r.missing ? 'st-bad' : 'st-info') + '">required</span>' : '')
+        + (r.wrong ? ' <span class="st-tag st-bad">'
+          + esc(ST_WRONG_TEXT[r.wrong] || r.wrong) + '</span>'
+          + (lost[r.blame] ? ' <small>' + lost[r.blame] + '</small>' : '') : '')
         + '</td></tr>').join('') + '</table>';
   }).join('');
 }
@@ -11797,7 +11822,9 @@ function paintCompare() {
   if (cols.includes(cmpColFields)) {
     const docs = cmpOverride.fields;
     const gaps = docs.reduce((n, d) => n + d.rows.filter(r => r.missing).length, 0);
-    cmpFieldsCap.textContent = '· ' + gaps + ' required missing';
+    const bad = docs.reduce((n, d) => n + d.rows.filter(r => r.wrong).length, 0);
+    cmpFieldsCap.textContent = '· ' + gaps + ' required missing'
+      + (bad ? ' · ' + bad + ' wrong against the ground truth' : '');
     cmpFieldsPane.innerHTML = cmpFieldsHtml(docs);
   }
 
@@ -14070,8 +14097,27 @@ function stMetricsTable(view, title, since) {
 const ST_ALERT_TEXT = {
   error: 'error', looped: 'loop', truncated: 'token cap', partial: 'partial reply',
   stalled: 'stalled', recovered: 'retry read cleanly', dry: 'DRY',
-  missing: 'missing required'
+  missing: 'missing required', wrong: 'wrong field'
 };
+
+/* The running score (`_StressLive.score`): what the jobs finished so far
+   scored, the same populations the report uses. Nothing where no job could be
+   scored -- a realData run, or none finished yet. */
+function stLiveScore(sc) {
+  if (!sc) return '';
+  const parts = [];
+  if (sc.char_scored) parts.push('transcript <b>' + stPct(sc.char_accuracy) + '</b> of '
+    + sc.char_scored + ' read(s)');
+  if (sc.field_scored) parts.push('fields <b>' + stPct(sc.field_accuracy) + '</b> of '
+    + sc.field_scored + ' job(s) · pooled ' + stPct(sc.field_pooled) + ' of '
+    + sc.field_values + ' values');
+  if (sc.wrong_fields) parts.push('<span style="color:var(--danger)">' + sc.wrong_fields
+    + ' wrong field(s) in ' + sc.wrong_jobs + ' job(s)</span>');
+  if (sc.files) parts.push(sc.doc_sets_extracted + ' of ' + sc.doc_sets
+    + ' document set(s) extracted from ' + sc.files + ' file(s)');
+  return parts.length ? '<div class="st-live"><b>Score so far</b> · '
+    + parts.join(' · ') + '</div>' : '';
+}
 // A looped page's one row, by where its retries got to (`_StressLive.update_flag`).
 const ST_LOOP_STATE = { retrying: 'loop retrying', resolved: 'loop resolved',
   'retry failed': 'loop retry failed', 'no retry': 'loop, no retry' };
@@ -14096,7 +14142,7 @@ function stAlertTag(a) {
 }
 
 function stAlertClass(a) {
-  if (a.kind === 'error' || a.state === 'retry failed') return 'st-bad';
+  if (a.kind === 'error' || a.kind === 'wrong' || a.state === 'retry failed') return 'st-bad';
   if (a.kind === 'recovered' || a.state === 'resolved') return 'st-good';
   if (a.kind === 'dry') return 'st-info';
   return 'st-warn';
@@ -14453,7 +14499,7 @@ function stReportHtml(s, snapshot, host) {
         + ' flagged</span>' : '')
       + (p.pages ? ' · ' + stNum(p.pages_per_second, 2) + ' pages/s · '
         + stNum(p.tokens_per_second, 0) + ' tok/s' : '')
-      + '</div></div>';
+      + '</div>' + stLiveScore(p.score) + '</div>';
     if (s.metricsNow) {
       // The last sample of each server, kept between ticks: only every Nth
       // progress event carries one, and drawing only those made the line flicker.
@@ -14510,13 +14556,29 @@ function stReportHtml(s, snapshot, host) {
     if (r.extract) tiles.push(stTile('Field score', stPct(r.extract.field_accuracy),
       'mean of ' + r.extract.field_scored + ' job(s) · pooled ' + stPct(r.extract.field_pooled)
       + ' of ' + r.extract.field_values + ' values'
-      + (r.extract.unscored ? ' · ' + r.extract.unscored + ' under the read floor' : '')));
+      + (r.extract.unscored ? ' · ' + r.extract.unscored + ' under the read floor' : '')
+      + (r.extract.wrong_fields ? ' · ' + r.extract.wrong_fields + ' wrong field(s) in '
+        + r.extract.wrong_field_jobs + ' job(s)' : ''),
+      r.extract.wrong_fields ? 'st-warn' : ''));
     if (r.extract && r.extract.missing_required_jobs !== undefined) tiles.push(stTile(
       'Missing required', r.extract.missing_required_jobs + '<small> job(s)</small>',
       r.extract.missing_required_fields + ' required field(s) came back empty'
         + (r.extract.fill_jobs ? ' · ' + r.extract.fill_filled + ' of ' + r.extract.fill_asked
           + ' filled from the page images (Hybrid)' : ''),
       r.extract.missing_required_jobs ? 'st-warn' : ''));
+    // Document sets: one file can hold several documents, each extracted on
+    // its own (stress.doc_sets).
+    const ds = r.extract && r.extract.documents;
+    if (ds && ds.files) tiles.push(stTile('Document sets',
+      ds.extracted + '<small> / ' + ds.found + ' extracted</small>',
+      [ds.found + ' found in ' + ds.files + ' file(s)',
+       ds.multi_files ? ds.multi_files + ' file(s) held more than one' : '',
+       (ds.per_file || {}).max > 1 ? 'up to ' + ds.per_file.max + ' per file' : '',
+       ds.failed ? ds.failed + ' failed' : '',
+       ds.split_checked ? 'split matched the manifest on ' + ds.split_matched + ' of '
+         + ds.split_checked + ' file(s) (' + ds.expected + ' expected)' : '']
+        .filter(Boolean).join(' · '),
+      ds.failed ? 'st-bad' : ds.split_checked && ds.split_matched < ds.split_checked ? 'st-warn' : ''));
     if (r.classify) {
       tiles.push(stTile('Grouped exactly', stPct(r.classify.grouping_exact),
         r.classify.documents_found + ' found of ' + r.classify.documents_expected + ' documents'));
