@@ -82,6 +82,12 @@ def register(application, engine):
         except ValueError as err:
             return jsonify(error=str(err)), 400
 
+    @application.get('/api/user/stress')
+    def user_stress():
+        # In-process state only; no model server is asked anything.
+        runs = engine.stress_runs_live()
+        return jsonify(running=bool(runs), runs=runs)
+
     @application.post('/api/user/batches')
     def user_batch():
         body = request.get_json(silent=True)

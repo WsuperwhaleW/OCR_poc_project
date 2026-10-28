@@ -19,7 +19,7 @@
   const dates = value => new Date(value).toLocaleString('th-TH');
   let files = [], settings = null, sending = false, jobs = [], batchJobs = [], selected = null;
   let historyTimer, detailTimer, batchTimer, historyLoading = false, batchLoading = false, more = false;
-  let modelsTimer, modelsLoading = false, pageClosed = false;
+  let modelsTimer, modelsLoading = false, pageClosed = false, lastModels = {};
   let previewKey = null, previewObjectUrl = null, previewId = null, imageZoom = 100;
   $('homeLink').href = window.USER_BASE + '/user';
   function node(tag, text, className) {
@@ -39,7 +39,7 @@
     return body;
   }
   function paintModel(role, info, error) {
-    const target = $(role === 'ocr' ? 'ocrModelStatus' : 'extractionModelStatus');
+    const target = $(role === 'ocr' ? 'ocrModelStatus' : 'extractionModelStatus'); lastModels[role] = info || {};
     const online = !!(info?.model && info[role === 'ocr' ? 'available' : 'text_available']);
     const state = error ? 'unknown' : online ? 'online' : 'offline';
     target.className = 'model-status ' + state;
@@ -62,7 +62,44 @@
       if (!pageClosed) modelsTimer = setTimeout(refreshModels, 30000);
     }
   }
-  $('refreshModels').addEventListener('click', refreshModels);
+  // A stress test in any tab loads the same model servers this page's jobs use.
+  // In-process state on our own server, so it is cheap to ask every 10 s.
+  let stressTimer, stressLoading = false;
+  const stressPhase = {starting:'กำลังเริ่ม', preparing:'เตรียมไฟล์', warmup:'warm-up', run:'กำลังรัน', draining:'รอคำขอค้างจบ'};
+  function stressLabel(run) {
+    const phase = stressPhase[run.phase] || run.phase || '';
+    const progress = run.total ? ' ' + (run.done || 0) + '/' + run.total : '';
+    return (run.mode || 'stress') + ' · ' + phase + progress;
+  }
+  function paintStress(body, error) {
+    const target = $('stressStatus'), runs = body?.runs || [];
+    const state = error ? 'unknown' : runs.length ? 'busy' : 'idle';
+    const name = error ? 'ตรวจสอบไม่ได้' : !runs.length ? 'ไม่มีการทดสอบ'
+      : runs.length === 1 ? stressLabel(runs[0]) : runs.length + ' รายการ · ' + stressLabel(runs[0]);
+    const shared = new Set([lastModels.ocr?.url, lastModels.extraction?.url].filter(Boolean));
+    target.className = 'model-status ' + state;
+    target.title = error || (!runs.length ? 'ไม่มี stress test กำลังรันบน server นี้'
+      : runs.map(run => [stressLabel(run), run.concurrency ? 'concurrency ' + run.concurrency : '',
+          run.reader ? 'OCR ' + run.reader : '', run.extractor ? 'Extraction ' + run.extractor : '',
+          run.server, Math.round(run.elapsed || 0) + ' s',
+          run.server && shared.has(run.server) ? 'ใช้ server เดียวกับงานของหน้านี้ งานอาจช้าลง' : '']
+        .filter(Boolean).join(' · ')).join('\n'));
+    target.replaceChildren(node('span', '', 'model-dot'), node('strong', 'Stress test'),
+      node('span', name, 'model-name'),
+      node('span', error ? 'Unknown' : runs.length ? 'Running' : 'Idle', 'model-state'));
+    target.children[0].setAttribute('aria-hidden', 'true');
+  }
+  async function refreshStress() {
+    if (stressLoading || pageClosed) return;
+    clearTimeout(stressTimer); stressLoading = true;
+    try { paintStress(await api('/stress')); }
+    catch (err) { paintStress(null, err.message); }
+    finally {
+      stressLoading = false;
+      if (!pageClosed) stressTimer = setTimeout(refreshStress, 10000);
+    }
+  }
+  $('refreshModels').addEventListener('click', () => { refreshStress(); return refreshModels(); });
   async function loadSettings() {
     try {
       settings = (await api('/settings')).settings;
@@ -344,7 +381,7 @@
   function tab(mode){for(const key of ['text','fields','json']){const on=mode===key;$(key+'Result').hidden=!on;$(key+'Tab').classList.toggle('selected',on);$(key+'Tab').setAttribute('aria-selected',String(on));}}
   $('fieldsTab').addEventListener('click',()=>tab('fields'));$('textTab').addEventListener('click',()=>tab('text'));$('jsonTab').addEventListener('click',()=>tab('json'));
   window.addEventListener('beforeunload',event=>{if(sending){event.preventDefault();event.returnValue='';}});
-  window.addEventListener('pagehide',event=>{pageClosed=true;clearTimeout(historyTimer);clearTimeout(detailTimer);clearTimeout(batchTimer);clearTimeout(modelsTimer);if(!event?.persisted)clearPreview();});
-  window.addEventListener('pageshow',()=>{if(pageClosed){pageClosed=false;refreshModels();}});
-  loadSettings();loadHistory();refreshModels();
+  window.addEventListener('pagehide',event=>{pageClosed=true;clearTimeout(historyTimer);clearTimeout(detailTimer);clearTimeout(batchTimer);clearTimeout(modelsTimer);clearTimeout(stressTimer);if(!event?.persisted)clearPreview();});
+  window.addEventListener('pageshow',()=>{if(pageClosed){pageClosed=false;refreshModels();refreshStress();}});
+  loadSettings();loadHistory();refreshModels();refreshStress();
 })();

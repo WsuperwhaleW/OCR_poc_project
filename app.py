@@ -9391,11 +9391,51 @@ class _StressBackground:
         self.finished = None
         self.lines = []
         self._cond = threading.Condition()
+        # What `stress_runs_live` reports: the plan, then the latest
+        # phase and progress, picked off the events the run sends anyway.
+        self.status = {"phase": "starting"}
+
+    # Events whose content is worth keeping for `public`. Every line is
+    # `json.dumps({"event": ...})`, so the name sits at a fixed offset.
+    _STATUS_EVENTS = ("plan", "preparing", "progress", "draining", "done")
 
     def emit(self, line: str):
+        name = line[11:line.find('"', 11)] if line.startswith('{"event": "') else ""
+        update = None
+        if name in self._STATUS_EVENTS:
+            try:
+                update = json.loads(line)
+            except ValueError:
+                update = None
         with self._cond:
             self.lines.append(line)
+            if update is not None:
+                self._note(name, update)
             self._cond.notify_all()
+
+    def _note(self, name: str, event: dict):
+        if name == "plan":
+            self.status.update({
+                "concurrency": event.get("concurrency"), "jobs": event.get("jobs"),
+                "warmup": event.get("warmup"), "reader": event.get("reader") or "",
+                "extractor": event.get("extractor") or "",
+                "server": (event.get("server") or {}).get("url") or ""})
+        elif name == "preparing":
+            self.status["phase"] = "preparing"
+        elif name == "progress":
+            self.status.update({"phase": event.get("phase") or "run",
+                                "done": event.get("done"), "total": event.get("total"),
+                                "failed": event.get("failed")})
+        elif name == "draining":
+            self.status.update({"phase": "draining", "in_flight": event.get("in_flight")})
+        elif name == "done":
+            self.status["phase"] = "draining"
+
+    def public(self) -> dict:
+        """What another workspace may see of this run: no request body."""
+        with self._cond:
+            return {"id": self.id, "mode": self.mode, "started": self.started,
+                    "elapsed": round(time.time() - self.started, 1), **self.status}
 
     def finish(self):
         with self._cond:
@@ -9429,6 +9469,18 @@ class _StressBackground:
 
 _stress_background = None
 _stress_start_lock = threading.Lock()
+# Every stress run still going, in ANY workspace (2026-10-28, for the user
+# page: a stress test elsewhere loads the same model servers its jobs use).
+# `_stress_job_here` is per workspace and cannot answer that.
+_stress_live = []
+_stress_live_lock = threading.Lock()
+
+
+def stress_runs_live() -> list:
+    """Every stress run in this process that has not finished, oldest first."""
+    with _stress_live_lock:
+        jobs = [job for job in _stress_live if job.finished is None]
+    return [job.public() for job in jobs]
 workspace.field("stress_background", lambda: None, fresh=True)
 
 
@@ -9512,6 +9564,8 @@ def _stress_background_run(job, cfg, started):
         cancel = begin_sweep(MultiCancel())
     finally:
         started.set()
+    with _stress_live_lock:
+        _stress_live.append(job)
     try:
         for line in _stress_generate(cfg, cancel):
             job.emit(line)
@@ -9521,6 +9575,9 @@ def _stress_background_run(job, cfg, started):
     finally:
         end_sweep()
         job.finish()
+        with _stress_live_lock:
+            if job in _stress_live:
+                _stress_live.remove(job)
 
 
 def _stress_generate(cfg, cancel):
