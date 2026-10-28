@@ -413,6 +413,12 @@ def report(records: list, wall: float, mode: str, concurrency: int) -> dict:
             # included: that is the extraction half of what a loop cost.
             "missing_required_jobs": sum(1 for r in rows if r.get("missing_required")),
             "missing_required_fields": sum(r.get("missing_required") or 0 for r in rows),
+            "documents": doc_sets(attempted),
+            # Values that did not match the ground truth, each flagged as it was
+            # scored -- over every job that reached a score, a looped read's
+            # included, like `missing_required_*`.
+            "wrong_field_jobs": sum(1 for r in attempted if r.get("wrong_fields")),
+            "wrong_fields": sum(r.get("wrong_fields") or 0 for r in attempted),
         }
         if mode == "full":
             # Jobs whose empty Mandatory fields were asked of the page images
@@ -526,6 +532,33 @@ def without_longest(records: list, wall: float, mode: str, concurrency: int,
     return out
 
 
+def doc_sets(records: list) -> dict:
+    """How many document sets the extracted files held, since one file can hold
+    several (2026-10-28, at the user's request).
+
+    Over every attempted job that reached extraction -- a file whose every
+    document failed raised an error, and it still held those documents. `found`
+    is what pass 2 split the files into, `extracted` the ones that came back
+    without an error. `split_matched` counts the benchmark files whose split
+    gave the manifest's number of documents, of `split_checked` (realData files
+    have no manifest entry and are in neither).
+    """
+    files = [r for r in records if r.get("doc_sets") is not None]
+    found = sum(r["doc_sets"] for r in files)
+    failed = sum(r.get("doc_sets_failed") or 0 for r in files)
+    checked = [r for r in files if r.get("doc_sets_expected")]
+    return {"files": len(files),
+            "found": found,
+            "extracted": found - failed,
+            "failed": failed,
+            "multi_files": sum(1 for r in files if r["doc_sets"] > 1),
+            "per_file": distribution(r["doc_sets"] for r in files),
+            "expected": sum(r["doc_sets_expected"] for r in checked),
+            "split_checked": len(checked),
+            "split_matched": sum(1 for r in checked
+                                 if r["doc_sets"] == r["doc_sets_expected"])}
+
+
 def io_spread(pairs) -> dict:
     """Min, max and mean of the in and the out tokens over `(in, out)` pairs.
 
@@ -597,6 +630,13 @@ def _selftest():
                   {"status": "cancelled"}], 4.0, "ocr", 2)
     assert rep["attempted"] == 2 and rep["error_rate"] == .5
     assert rep["ocr"]["char_accuracy"] == .9 and rep["errors"][0]["count"] == 1
+    docs = doc_sets([{"doc_sets": 7, "doc_sets_failed": 1, "doc_sets_expected": 7},
+                     {"doc_sets": 1, "doc_sets_failed": 0, "doc_sets_expected": 2},
+                     {"doc_sets": 2, "doc_sets_failed": 0, "doc_sets_expected": None},
+                     {"status": "cancelled"}])
+    assert docs["files"] == 3 and docs["found"] == 10 and docs["extracted"] == 9
+    assert docs["multi_files"] == 2 and docs["expected"] == 9
+    assert docs["split_checked"] == 2 and docs["split_matched"] == 1
 
 
 _selftest()

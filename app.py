@@ -7325,6 +7325,10 @@ class _StressLive:
         self.stages = {name: 0 for name in stress.STAGES}
         self.stages["queued"] = queued
         self.done = self.failed = self.pages = self.tokens = 0
+        # The running score (`score`), summed as jobs finish.
+        self._score = {"char_sum": 0.0, "char_n": 0, "rate_sum": 0.0, "rate_n": 0,
+                       "correct": 0.0, "expected": 0, "wrong": 0, "wrong_jobs": 0,
+                       "docs": 0, "docs_extracted": 0, "files": 0}
         self._alerts = []
         self._issues = {}        # id -> the alert as it stands now
         self._next_id = 0
@@ -7507,11 +7511,51 @@ class _StressLive:
             self.done += 1
             self.failed += int(bool(failed))
 
+    def score(self, rec: dict):
+        """Add a finished job to the running score (2026-10-28, at the user's
+        request: *if the file can be scored, report the score in real time*).
+
+        The report's own populations, so the live figure lands where the report
+        does: transcript and field scores over jobs that finished `ok` and were
+        scored (not under the read floor); wrong fields and document sets over
+        every job that reached them.
+        """
+        with self._lock:
+            s = self._score
+            ok = rec.get("status") == "ok"
+            if ok and rec.get("char_accuracy") is not None:
+                s["char_sum"] += rec["char_accuracy"]
+                s["char_n"] += 1
+            if ok and rec.get("field_expected") and not rec.get("unscored"):
+                if rec.get("field_rate") is not None:
+                    s["rate_sum"] += rec["field_rate"]
+                    s["rate_n"] += 1
+                s["correct"] += ((rec.get("field_correct") or 0)
+                                 + 0.5 * (rec.get("field_partial") or 0))
+                s["expected"] += rec["field_expected"]
+            if rec.get("wrong_fields"):
+                s["wrong"] += rec["wrong_fields"]
+                s["wrong_jobs"] += 1
+            if rec.get("doc_sets") is not None:
+                s["files"] += 1
+                s["docs"] += rec["doc_sets"]
+                s["docs_extracted"] += rec["doc_sets"] - (rec.get("doc_sets_failed") or 0)
+
     def snapshot(self) -> dict:
         with self._lock:
+            s = self._score
+            score = {
+                "char_accuracy": round(s["char_sum"] / s["char_n"], 4) if s["char_n"] else None,
+                "char_scored": s["char_n"],
+                "field_accuracy": round(s["rate_sum"] / s["rate_n"], 4) if s["rate_n"] else None,
+                "field_pooled": round(s["correct"] / s["expected"], 4) if s["expected"] else None,
+                "field_scored": s["rate_n"], "field_values": s["expected"],
+                "wrong_fields": s["wrong"], "wrong_jobs": s["wrong_jobs"],
+                "files": s["files"], "doc_sets": s["docs"],
+                "doc_sets_extracted": s["docs_extracted"]}
             return {"stages": dict(self.stages), "done": self.done,
                     "failed": self.failed, "pages": self.pages,
-                    "tokens": self.tokens}
+                    "tokens": self.tokens, "score": score}
 
 
 def _vllm_metrics(url: str) -> dict:
@@ -8665,6 +8709,79 @@ def _field_value(value) -> str:
     return json.dumps(value, ensure_ascii=False)
 
 
+# Field-score verdicts that make an extracted value wrong (2026-10-28, at the
+# user's request: *if the extraction is wrong in a field, flag it instantly*).
+_WRONG_STATUS = {"wrong": "wrong", "partial": "partly right", "missed": "not returned",
+                 "spurious": "invented"}
+
+
+def _wrong_fields(result: dict, missing=()) -> list:
+    """Each document's fields that do not match its ground truth:
+    `[(document, [{"key", "status", "expected", "actual", "blame"}])]`.
+
+    Read off the document's own `field_score` -- its scalars and its table
+    cells -- so nothing is scored a second time. Only the values the score is
+    taken over (`required`), plus a value invented where the page states none.
+    A `missed` value the missing-required flag already names is left to it, so
+    one empty field is not flagged twice. `blame` is who lost it -- `ocr`,
+    `extract` or `unknown` -- where `blame.check` attributed it (never on a
+    truth-fed run, whose transcript IS the truth).
+    """
+    named = {n: set(keys) for n, keys in missing}
+    documents = [d for d in (result.get("documents") or []) if isinstance(d, dict)]
+    out = []
+    for doc in documents or [result]:
+        score = doc.get("field_score")
+        if not isinstance(score, dict) or score.get("error"):
+            continue
+        number = doc.get("document") or 1
+        culprits = ((doc.get("blame") or {}).get("fields") or {})
+        rows = list((score.get("scalars") or {}).get("rows") or [])
+        for table in ("line_items", "income_items"):
+            rows += (score.get(table) or {}).get("rows") or []
+        wrong = []
+        for row in rows:
+            status, path = row.get("status"), row.get("path")
+            if status not in _WRONG_STATUS or not path:
+                continue
+            if row.get("required") is False and status != "spurious":
+                continue
+            if status == "missed" and path in named.get(number, ()):
+                continue
+            wrong.append({"key": path, "status": status,
+                          "expected": _field_value(row.get("expected")),
+                          "actual": _field_value(row.get("actual")),
+                          "blame": (culprits.get(path) or {}).get("blame")})
+        if wrong:
+            out.append((number, wrong))
+    return out
+
+
+def _wrong_message(wrong: list, several: bool, limit: int = 230) -> str:
+    """One line naming each wrong field, what was wrong and who lost it."""
+    who = {"ocr": "read", "extract": "extraction", "unknown": "unclear"}
+    parts = []
+    for number, rows in wrong:
+        for row in rows:
+            tags = [t for t in (_WRONG_STATUS[row["status"]] if row["status"] != "wrong"
+                                else "", who.get(row["blame"] or "")) if t]
+            parts.append((f"doc {number} " if several else "") + row["key"]
+                         + (f" ({', '.join(tags)})" if tags else ""))
+    count = sum(len(rows) for _, rows in wrong)
+    head = f"{count} field(s) do not match the ground truth: "
+    # An alert keeps 300 characters. Cut at a field, never mid-name; the whole
+    # list rides on the flag's `fields` and in its window.
+    shown = []
+    for part in parts:
+        rest = len(parts) - len(shown) - 1
+        tail = f"; and {rest} more" if rest else ""
+        if len(head) + len("; ".join(shown + [part])) + len(tail) > limit:
+            break
+        shown.append(part)
+    more = len(parts) - len(shown)
+    return head + "; ".join(shown) + (f"; and {more} more" if more else "")
+
+
 def _fields_evidence(result: dict, missing: list) -> list:
     """The form of each document, for the Compare view of a missing-required flag.
 
@@ -8675,6 +8792,10 @@ def _fields_evidence(result: dict, missing: list) -> list:
     it and whether it is one of the ones flagged.
     """
     flagged = {n: set(keys) for n, keys in missing}
+    # Values that do not match the ground truth, marked in the same table
+    # (`_wrong_fields`): the verdict, what the truth says, and who lost it.
+    wrong = {n: {row["key"]: row for row in rows}
+             for n, rows in _wrong_fields(result, missing)}
     documents = [d for d in (result.get("documents") or []) if isinstance(d, dict)]
     out = []
     for doc in documents or [result]:
@@ -8683,6 +8804,7 @@ def _fields_evidence(result: dict, missing: list) -> list:
         fields = doc.get("fields") if isinstance(doc.get("fields"), dict) else {}
         required = set(classified.get("mandatory") or [])
         gaps = flagged.get(number, set())
+        bad = wrong.get(number, {})
         asked = list(doc.get("fields_asked") or classified.get("fields") or fields)
         if doc.get("items_asked") and prompts.INCOME_ITEMS_KEY not in asked:
             asked.append(prompts.INCOME_ITEMS_KEY)
@@ -8694,6 +8816,15 @@ def _fields_evidence(result: dict, missing: list) -> list:
         # A blank table cell is flagged by its path, which no asked key names.
         rows += [{"key": key, "value": "", "required": True, "missing": True}
                  for key in sorted(gaps) if key not in asked]
+        # So is a wrong table cell.
+        rows += [{"key": key, "value": bad[key]["actual"], "required": True,
+                  "missing": False} for key in bad
+                 if key not in asked and key not in gaps]
+        for row in rows:
+            if row["key"] in bad:
+                row.update(wrong=bad[row["key"]]["status"],
+                           expected=bad[row["key"]]["expected"],
+                           blame=bad[row["key"]]["blame"])
         out.append({"document": number, "pages": list(doc.get("pages") or []),
                     "doc_types": list(doc.get("doc_types") or []),
                     "error": doc.get("error") or "", "rows": rows})
@@ -8849,6 +8980,11 @@ def _stress_job(spec: dict, cfg: dict, prepared: dict, cancel,
                     # Hold the existing result; format and send it after timing ends.
                     rec["_extraction_result"] = result
                 rec["extract_tokens"] = result.get("tokens") or 0
+                # How many document sets the file was split into and extracted,
+                # since one file can hold several (2026-10-28, at the user's
+                # request). Set before an error is raised, so a file whose every
+                # document failed still says how many it held.
+                rec.update(_stress_doc_sets(result, case))
                 # Every pass-2 request of this file: classify, segment, steps or
                 # the single request, table agents (servertime's tally).
                 served = result.get("server_time") or {}
@@ -8917,6 +9053,23 @@ def _stress_job(spec: dict, cfg: dict, prepared: dict, cancel,
                            field_expected=summary["expected"],
                            unscored=bool(summary["unscored"]),
                            partial_reply=summary["partial_reply"])
+                # A value that does not match the ground truth is flagged the
+                # moment the job is scored (2026-10-28, at the user's request),
+                # naming the field and who lost it; its window marks it in the
+                # form with what the truth says. Scored files only.
+                wrong = [] if real else _wrong_fields(result, missing)
+                rec["wrong_fields"] = sum(len(rows) for _, rows in wrong)
+                if wrong:
+                    several = len(wrong) > 1 or (result.get("documents_found") or 1) > 1
+                    alert = live.flag(
+                        "wrong", job, who,
+                        _wrong_message(wrong, several)
+                        + (" -- the read scored under the read floor, so this score "
+                           "is not counted" if summary["unscored"] else ""),
+                        stage="extract", evidence=True,
+                        fields=[f"doc{n}.{row['key']}" if several else row["key"]
+                                for n, rows in wrong for row in rows])
+                    fields_window(alert, result, missing)
             if row is not None and not logged:      # read only
                 logged = True
                 log_run(row, prepared["sources"][case_id])
@@ -8977,8 +9130,31 @@ def _stress_job(spec: dict, cfg: dict, prepared: dict, cancel,
     # be taken again without the longest jobs (`stress.without_longest`).
     rec["end_s"] = round(time.perf_counter() - spec["submitted"], 3)
     rec["job"], rec["who"] = job, who
+    live.score(rec)
     live.finish(rec["status"] == "error")
     return rec
+
+
+def _stress_doc_sets(result: dict, case) -> dict:
+    """A job's document sets: found in the file, extracted, failed, and expected.
+
+    `found` is how many documents pass 2 split the file into
+    (`documents_found`, 1 for a file read as one). `failed` is the documents that
+    came back with an error -- `documents_failed` on a split file, the result's
+    own error on a single one. `expected` is the manifest's split for a benchmark
+    case (1 where it lists none), and None for a realData file, which has no
+    manifest entry to compare with.
+    """
+    found = int(result.get("documents_found") or 1)
+    if found > 1:
+        failed = int(result.get("documents_failed") or 0)
+    else:
+        failed = 1 if result.get("error") else 0
+    expected = None
+    if case:
+        expected = len(case.get("documents") or []) or 1
+    return {"doc_sets": found, "doc_sets_failed": failed,
+            "doc_sets_expected": expected}
 
 
 def _stress_log_error(mode, spec, prepared, all_stats, read_began, cfg, tag,

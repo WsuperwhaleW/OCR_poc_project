@@ -328,7 +328,8 @@ def _axes(scope: str, readers: list, extractors: list, details: list,
     else:
         axes.append(("reader", [lock["reader"]] if lock.get("reader")
                      else list(readers or []), bool(lock.get("reader"))))
-        axes.append(("detail", list(details or []), False))
+        axes.append(("detail", [lock["detail"]] if lock.get("detail")
+                     else list(details or []), bool(lock.get("detail"))))
         if scope == "full":
             axes.append(("extractor", [lock["extractor"]] if "extractor" in lock
                          else list(extractors or [""]), "extractor" in lock))
@@ -430,8 +431,9 @@ def plan(rounds: int, cases: list, readers: list, extractors: list,
     always states what it ran.
 
     **`lock` pins an axis instead of drawing it** -- `{"case": ..., "reader":
-    ..., "extractor": ..., "mode": ...}`, any subset, added 2026-08-21 at the
-    user's request and extended to the extraction shape on 2026-08-24.
+    ..., "extractor": ..., "mode": ..., "detail": ...}`, any subset, added
+    2026-08-21 at the user's request, extended to the extraction shape on
+    2026-08-24 and to the Detail on 2026-10-28.
     A locked axis is not randomness with a preference; it is that axis removed
     from the experiment, which is what makes a run answer a question about the
     others. Locking the document is how a model comparison stops being a
@@ -486,6 +488,7 @@ def plan(rounds: int, cases: list, readers: list, extractors: list,
     pinned_reader = lock.get("reader")
     pinned_extractor = lock.get("extractor")
     pinned_mode = lock.get("mode")
+    pinned_detail = lock.get("detail")
     if pinned_case and pinned_case not in cases:
         raise ValueError(f"{pinned_case} is not a document that can be scored "
                          "on both passes here, so it cannot be locked.")
@@ -511,6 +514,17 @@ def plan(rounds: int, cases: list, readers: list, extractors: list,
     if pinned_mode and scope != "ocr" and pinned_mode not in (modes or []):
         raise ValueError(f"{pinned_mode} is not an extraction shape: "
                          f"{', '.join(modes or [])}.")
+
+    # The Detail is a lock too: a model or shape comparison that lets the pixel
+    # budget vary is also a Detail comparison. A fields round makes no image,
+    # so a Detail lock there has nothing to pin and is dropped rather than
+    # reported on rounds it did not shape.
+    if pinned_detail and scope == "fields":
+        lock.pop("detail")
+        pinned_detail = None
+    if pinned_detail and pinned_detail not in (details or []):
+        raise ValueError(f"{pinned_detail} is not a Detail preset: "
+                         f"{', '.join(details or [])}.")
 
     rounds = max(MIN_ROUNDS, min(int(rounds or DEFAULT_ROUNDS), MAX_ROUNDS))
     seed = int(time.time()) if seed in (None, "") else int(seed)
@@ -1101,13 +1115,17 @@ def main(argv=None):
                         help="read every page with this model")
     parser.add_argument("--lock-extractor", default=None,
                         help="extract with this model in every round")
+    parser.add_argument("--lock-detail", default=None,
+                        help="read every page at this Detail (low, medium, "
+                             "original)")
     parser.add_argument("--lock-mode", choices=("single", "agentic", "hybrid"), default=None,
                         help="extract in this shape in every round")
     args = parser.parse_args(argv)
 
     lock = {key: value for key, value in
             (("case", args.lock_case), ("reader", args.lock_reader),
-             ("extractor", args.lock_extractor), ("mode", args.lock_mode))
+             ("extractor", args.lock_extractor), ("mode", args.lock_mode),
+             ("detail", args.lock_detail))
             if value}
     # Sent with both shapes, like the page does: an exclusion is a statement
     # about the run, not about which button started it.
