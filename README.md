@@ -1825,6 +1825,39 @@ transcript is a record of what happened, not a measurement — and rounds that f
 the stop keep their rows and their scores.
 
 
+## Doc types: comparison with the User contract
+
+Both Doc types menus include a reference mapping against the User v7 JSON
+contract supplied in RunLog (`d3afa0b`). Switch between document types and fields,
+then filter existing, combined, partial, missing or additional entries. The
+comparison uses snapshots in `schemas/user_document_*.json` and the current
+engine field lists; deployment packages include both snapshots.
+
+This is a coverage reference, not an output converter or extraction setting.
+RTV remains its own internal type, branch locations remain additional fields,
+and `userScope` is displayed without filtering or blocking documents. A matched
+field may still need value normalization, and a recognized type does not imply
+that every User field is asked on that type. The existing requirements matrix
+remains below the comparison.
+
+The `/user` result also has a separate **User JSON** tab. It converts a saved
+extraction on demand at `GET /api/user/jobs/<id>/user-json`; no model is called
+and the original JSON/export and job history are not changed. The response
+contains `data` (the v7 candidate), `schema_valid`, `schema_errors`, `warnings`,
+`missing_fields` and `unmapped`. `?download=1` downloads only the candidate as a
+`.user-v7.preview.json` file. The UI labels nonconforming candidates **Draft**.
+
+Mapping keeps numeric IDs as strings, normalizes explicit branch codes and
+dates, and converts unambiguous amounts into numbers. Unknown references use
+`OTHER`; item rows need explicit column headings, and ambiguous tables remain
+in the separate source/unmapped report. No missing amount is replaced by zero,
+and net amounts are not inferred from VAT totals. Branch locations remain in
+the unmapped data; RTV keeps its original identity and is flagged as outside the
+User schema. JSON Schema validation checks structure rather than extraction
+accuracy. Install the updated `requirements.txt` for the `jsonschema` validator;
+an existing deployment without it can still open the preview, but reports that
+schema validation is unavailable.
+
 ## Stress test
 
 **Choose PC folder** selects a local folder and its subfolders for on-demand

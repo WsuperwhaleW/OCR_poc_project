@@ -1,0 +1,295 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:crc:supplier:document-bundle:7.0",
+  "title": "CRC Supplier AI Extraction JSON v7",
+  "type": "object",
+  "required": [
+    "schemaVersion",
+    "file",
+    "documents"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": "7.0"
+    },
+    "file": {
+      "type": "object",
+      "required": [
+        "fileName",
+        "fileType"
+      ],
+      "properties": {
+        "fileName": {
+          "type": "string"
+        },
+        "fileType": {
+          "type": "string"
+        },
+        "pageCount": {
+          "type": "integer",
+          "minimum": 1
+        }
+      },
+      "additionalProperties": false
+    },
+    "documents": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/document"
+      }
+    }
+  },
+  "$defs": {
+    "documentType": {
+      "type": "object",
+      "required": [
+        "code",
+        "name"
+      ],
+      "properties": {
+        "code": {
+          "type": "string",
+          "enum": [
+            "80",
+            "81",
+            "380",
+            "388",
+            "T01",
+            "T02",
+            "T03",
+            "T04",
+            "T05",
+            "T06",
+            "T07"
+          ]
+        },
+        "name": {
+          "type": "string",
+          "enum": [
+            "DEBIT_NOTE",
+            "CREDIT_NOTE",
+            "INVOICE",
+            "TAX_INVOICE",
+            "RECEIPT",
+            "INVOICE_TAX_INVOICE",
+            "RECEIPT_TAX_INVOICE",
+            "DELIVERY_TAX_INVOICE",
+            "ABBREVIATED_TAX_INVOICE",
+            "RECEIPT_ABBREVIATED_TAX_INVOICE",
+            "CANCELLATION_NOTE"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "party": {
+      "type": "object",
+      "properties": {
+        "code": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "taxId": {
+          "type": "string"
+        },
+        "branchCode": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "reference": {
+      "type": "object",
+      "required": [
+        "type",
+        "code"
+      ],
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": [
+            "GR",
+            "RTV",
+            "PO",
+            "INVOICE",
+            "DEBIT_NOTE",
+            "CREDIT_NOTE",
+            "TAX_INVOICE",
+            "RECEIPT",
+            "DELIVERY_NOTE",
+            "CONTRACT",
+            "PAYMENT",
+            "OTHER"
+          ]
+        },
+        "code": {
+          "type": "string"
+        },
+        "date": {
+          "type": "string"
+        },
+        "relationType": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "item": {
+      "type": "object",
+      "required": [
+        "itemNo",
+        "itemCode"
+      ],
+      "properties": {
+        "itemNo": {
+          "type": [
+            "integer",
+            "number",
+            "string"
+          ]
+        },
+        "itemCode": {
+          "type": "string"
+        },
+        "itemName": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "qty": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "unit": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "price": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "amount": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "vatRate": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "termDescription": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "remarks": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "document": {
+      "type": "object",
+      "required": [
+        "documentType",
+        "documentNo",
+        "itemType",
+        "items"
+      ],
+      "properties": {
+        "pageFrom": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "pageTo": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "documentType": {
+          "$ref": "#/$defs/documentType"
+        },
+        "documentNo": {
+          "type": "string"
+        },
+        "documentDate": {
+          "type": "string"
+        },
+        "seller": {
+          "$ref": "#/$defs/party"
+        },
+        "buyer": {
+          "$ref": "#/$defs/party"
+        },
+        "salesman": {
+          "type": "string"
+        },
+        "references": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/reference"
+          }
+        },
+        "discount": {
+          "type": "number"
+        },
+        "extraCharge": {
+          "type": "number"
+        },
+        "amountExcludeVat": {
+          "type": "number"
+        },
+        "vatAmount": {
+          "type": "number"
+        },
+        "amountIncludeVat": {
+          "type": "number"
+        },
+        "netAmount": {
+          "type": "number"
+        },
+        "taxBasisTotalAmount": {
+          "type": "number"
+        },
+        "remarks": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "itemType": {
+          "type": "string",
+          "enum": [
+            "ITEM",
+            "INVOICE"
+          ],
+          "description": "Document/table-level item type. All rows in items[] use the same semantic."
+        },
+        "items": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/item"
+          }
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

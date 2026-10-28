@@ -254,6 +254,10 @@ test('Key-Value renders row tables, footer and document types without changing s
   assert.ok(fields.some(e=>e.tag==='th'&&e.textContent==='คอลัมน์ 3'));
   assert.ok(fields.some(e=>e.textContent==='รวม 100.00'));assert.ok(fields.some(e=>e.textContent==='No table'));
   assert.ok(fields.some(e=>e.textContent==='<img onerror="boom">'));assert.equal(fields.filter(e=>e.tag==='img').length,0);
+  assert.ok(fields.some(e=>e.className==='field-key'&&e.textContent==='Buyer tax ID'));
+  assert.ok(fields.some(e=>e.className==='field-key'&&e.textContent==='Billed amount'));
+  assert.ok(fields.some(e=>e.textContent==='Other fields'));
+  assert.ok(fields.some(e=>e.textContent==='หมายเหตุ'));
   assert.equal(fields.filter(e=>e.tag==='pre').length,0);
   assert.equal(el('jsonResult').textContent,JSON.stringify(extracted,null,2));
   assert.equal(JSON.stringify(extracted),original);
@@ -265,6 +269,56 @@ test('portal base paths support root, trailing slash and nested reverse-proxy mo
   }
   assert.ok(!appSource.includes("fetch('/api/"));
   assert.ok(!settingsSource.includes("fetch('/api/"));
+});
+
+test('User JSON loads only on selection, reports Draft and preserves the legacy JSON and prefixed download',async()=>{
+  const {el,document}=dom();let conversions=0,fail=true;
+  const extracted={doc_types:['RTV_SHIP_CREDIT'],fields:{document_number:'RTV-1',seller_branch_location:'มหาชัย'}};
+  const job={id:'job',filename:'test.png',status:'completed',result:{extracted}};
+  const candidate={schemaVersion:'7.0',file:{fileName:'test.png'},documents:[]};
+  const fetch=async url=>{
+    if(url.endsWith('/settings'))return response({settings:config});
+    if(url.endsWith('/models'))return response({models:{ocr:{},extraction:{}}});
+    if(url.includes('/jobs?'))return response({jobs:[job],counts:{},more:false});
+    if(url.endsWith('/user-json')){conversions++;if(fail)return response({error:'retry conversion'},false);
+      return response({data:candidate,schema_valid:false,schema_errors:[{path:'documents',message:'missing documents'}],
+        warnings:[],missing_fields:['documents[0].buyer.name'],unmapped:[{seller_branch_location:'มหาชัย'}]});}
+    return response({job});
+  };
+  vm.runInContext(appSource,vm.createContext({document,window:{USER_BASE:'/ocr',renderUserOcr(){},addEventListener(){}},fetch,Date,setTimeout:()=>1,clearTimeout(){}}));
+  const settle=async()=>{for(let i=0;i<15;i++)await Promise.resolve();};
+  await settle();await el('historyRows').children[0].children.at(-1).children[0].listeners.click();
+  assert.equal(conversions,0);
+  const original=el('jsonResult').textContent;
+  el('userJsonTab').listeners.click();await settle();assert.equal(el('userJsonRetry').hidden,false);
+  fail=false;el('userJsonRetry').listeners.click();await settle();
+  assert.equal(el('userJsonResult').hidden,false);assert.equal(el('jsonResult').hidden,true);
+  assert.match(el('userJsonNotice').textContent,/Draft/);assert.equal(el('userJsonDetails').hidden,false);
+  assert.equal(el('userJsonCode').textContent,JSON.stringify(candidate,null,2));
+  assert.equal(el('userJsonDownload').href,'/ocr/api/user/jobs/job/user-json?download=1');
+  assert.match(el('userJsonUnmapped').textContent,/มหาชัย/);assert.equal(el('jsonResult').textContent,original);
+  el('jsonTab').listeners.click();el('userJsonTab').listeners.click();await settle();assert.equal(conversions,2);
+});
+
+test('a slow User JSON conversion cannot replace a different selected file, including returning to the previous file',async()=>{
+  const {el,document}=dom();let release;const pending=new Promise(resolve=>{release=resolve;});
+  const jobs=['a','b'].map(id=>({id,filename:id+'.png',status:'completed',result:{extracted:{fields:{document_number:id}}}}));
+  const report=id=>({data:{file:id},schema_valid:true,warnings:[],schema_errors:[],missing_fields:[],unmapped:[]});
+  const fetch=async url=>{
+    if(url.endsWith('/settings'))return response({settings:config});
+    if(url.endsWith('/models'))return response({models:{ocr:{},extraction:{}}});
+    if(url.includes('/jobs?'))return response({jobs,counts:{},more:false});
+    if(url.endsWith('/b/user-json'))return pending;
+    if(url.endsWith('/a/user-json'))return response(report('a'));
+    return response({job:url.endsWith('/b')?jobs[1]:jobs[0]});
+  };
+  vm.runInContext(appSource,vm.createContext({document,window:{USER_BASE:'/ocr',renderUserOcr(){},addEventListener(){}},fetch,Date,setTimeout:()=>1,clearTimeout(){}}));
+  const settle=async()=>{for(let i=0;i<15;i++)await Promise.resolve();};
+  await settle();const open=index=>el('historyRows').children[index].children.at(-1).children[0].listeners.click();
+  await open(0);el('userJsonTab').listeners.click();await settle();
+  await open(1);await settle();assert.equal(el('userJsonCode').textContent,'');
+  await open(0);await settle();release(response(report('b')));await settle();
+  assert.equal(el('userJsonCode').textContent,JSON.stringify(report('a').data,null,2));
 });
 
 test('Doc types menu loads the shared schema on demand, retries failures and preserves selected files',async()=>{

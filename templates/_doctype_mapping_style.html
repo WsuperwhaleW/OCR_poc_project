@@ -1,0 +1,13 @@
+.dm-panel{margin:18px 0 26px;border:1px solid var(--border,var(--line));border-radius:10px;padding:16px;min-width:0}
+.dm-panel h3{margin:0 0 8px;font-size:1rem}.dm-note{color:var(--muted);font-size:.8rem;line-height:1.6;margin:8px 0 14px}
+.dm-tools,.dm-tabs,.dm-summary{display:flex;align-items:center;gap:8px;flex-wrap:wrap}.dm-tools{justify-content:space-between;margin:12px 0}
+.dm-tools label{display:flex;align-items:center;gap:8px;font-size:.8rem}.dm-tools select{max-width:100%;width:auto;min-height:36px;padding:7px 10px;border:1px solid var(--border,var(--line));border-radius:8px;background:var(--bg);color:var(--text);font:inherit}
+.dm-tabs button{padding:7px 12px;font-size:.8rem}.dm-tabs button[aria-pressed="true"]{border-color:var(--accent);color:var(--accent);background:var(--accent-soft,var(--soft))}
+.dm-summary{margin:8px 0 12px}.dm-badge{display:inline-block;font-size:.72rem;padding:3px 7px;border:1px solid var(--border,var(--line));border-radius:5px;white-space:nowrap}
+.dm-mapped,.dm-system,.dm-combined{color:var(--accent)}.dm-partial{color:var(--warn,#be8c37)}.dm-missing{color:var(--danger,#ce6262)}.dm-extra{color:var(--muted)}
+.dm-scroll{overflow:auto;max-height:640px;border:1px solid var(--border,var(--line));border-radius:8px;overscroll-behavior:contain}
+.dm-table{width:100%;min-width:720px;border-collapse:collapse;font-size:.8rem;margin:0}.dm-table th,.dm-table td{text-align:left;vertical-align:top;padding:10px 12px;border-bottom:1px solid var(--border,var(--line));white-space:normal}
+.dm-table th{position:sticky;top:0;z-index:1;background:var(--panel,var(--surface));color:var(--text);font-size:.75rem}
+.dm-table td:first-child{min-width:190px}.dm-table td:last-child{min-width:250px}.dm-table code{font-size:.75rem;overflow-wrap:anywhere;white-space:normal}.dm-source{display:block;margin-top:4px;color:var(--muted);font-size:.7rem}
+.dm-table tr[hidden],.dm-panel [data-dm-view][hidden],.dm-empty[hidden]{display:none}.dm-empty{color:var(--muted);font-size:.8rem;margin:10px 0}
+@media(max-width:600px){.dm-panel{padding:12px}.dm-tools{align-items:flex-start}.dm-tools label{flex-wrap:wrap}.dm-table{min-width:680px}}

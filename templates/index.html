@@ -1606,6 +1606,7 @@ document.addEventListener("DOMContentLoaded", function () {
   .sc-legend { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 10px;
     font-size: .74rem; color: var(--muted); align-items: center; }
   .sc-legend b { color: var(--text); font-weight: 600; }
+{% include '_doctype_mapping_style.html' %}
 </style>
 </head>
 <body>
@@ -13463,7 +13464,8 @@ function scRender() {
   }).join('');
 
   document.getElementById('scOut').innerHTML =
-    '<div class="sc-grid"><table class="sc-matrix"><thead>' + head
+    (window.renderDocTypeMapping?.(d.user_mapping) || '')
+    + '<div class="sc-grid"><table class="sc-matrix"><thead>' + head
     + '</thead><tbody>' + rows + '</tbody></table></div>'
     + '<div class="sc-types">' + cards + '</div>'
     + '<p class="note">These requirements are the whole of what is extracted. '
@@ -15448,6 +15450,7 @@ document.addEventListener('change', event => {
 </script>
 <script>
 {% include '_stress_local_script.html' %}
+{% include '_doctype_mapping_script.html' %}
 </script>
 <script>
 window.USER_API_TOKEN = {{ user_api_token|tojson }};

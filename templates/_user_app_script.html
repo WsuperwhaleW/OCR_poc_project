@@ -5,23 +5,29 @@
   const labels = {queued_ocr:'รอ OCR',ocr:'กำลัง OCR',queued_extraction:'รอ Extraction',
     extraction:'กำลังดึงข้อมูล',completed:'เสร็จแล้ว',partial:'เสร็จบางส่วน',failed:'ไม่สำเร็จ',interrupted:'ถูกขัดจังหวะ'};
   const active = status => ['queued_ocr','ocr','queued_extraction','extraction'].includes(status);
-  const fieldLabels = {document_type:'ประเภทเอกสาร',document_number:'เลขที่เอกสาร',issue_date:'วันที่เอกสาร',
-    seller_tax_id:'เลขประจำตัวผู้เสียภาษีผู้ขาย',seller_branch:'สาขาที่ผู้ขาย',seller_branch_location:'ชื่อ/ตำแหน่งสาขาผู้ขาย',
-    buyer_tax_id:'เลขประจำตัวผู้เสียภาษีผู้ซื้อ',buyer_branch:'สาขาที่ผู้ซื้อ',buyer_branch_location:'ชื่อ/ตำแหน่งสาขาผู้ซื้อ',
-    seller_name:'ชื่อผู้ขาย',buyer_name:'ชื่อผู้ซื้อ',subtotal:'ยอดก่อน VAT',vat_total:'ภาษีมูลค่าเพิ่ม',
-    amount_incl_vat:'ยอดรวม VAT',currency:'สกุลเงิน',payment_date:'วันที่ชำระเงิน',cheque_number:'เลขที่เช็ค',
-    po_gr_rtv_number:'เลขที่ PO / GR / RTV',inv_rtv_cnr_number:'เลขที่เอกสารอ้างอิง INV / RTV / CNR',
-    remaining_amount:'ยอดคงค้าง',remaining_vat_amount:'ภาษีคงค้าง',payer_name:'ชื่อผู้จ่ายเงิน',payee_name:'ชื่อผู้รับเงิน',
-    payer_tax_id:'เลขประจำตัวผู้เสียภาษีผู้จ่ายเงิน',payee_tax_id:'เลขประจำตัวผู้เสียภาษีผู้รับเงิน',
-    payer_address:'ที่อยู่ผู้จ่ายเงิน',payee_address:'ที่อยู่ผู้รับเงิน',payer_branch:'สาขาที่ผู้จ่ายเงิน',payee_branch:'สาขาที่ผู้รับเงิน',
-    payer_branch_location:'ชื่อ/ตำแหน่งสาขาผู้จ่ายเงิน',payee_branch_location:'ชื่อ/ตำแหน่งสาขาผู้รับเงิน',
-    income_items:'รายการเงินได้',line_items:'รายการสินค้า',other_fields:'ข้อมูลอื่น ๆ'};
+  // Display labels are English; extracted values and printed table headings
+  // stay in the document's language, and the saved/exported JSON is untouched.
+  const fieldLabels = {document_type:'Document type',document_number:'Document no.',issue_date:'Document date',
+    seller_tax_id:'Seller tax ID',seller_branch:'Seller branch code',seller_branch_location:'Seller branch location',
+    buyer_tax_id:'Buyer tax ID',buyer_branch:'Buyer branch code',buyer_branch_location:'Buyer branch location',
+    seller_name:'Seller name',buyer_name:'Buyer name',subtotal:'Amount ex VAT',vat_total:'VAT amount',
+    amount_incl_vat:'Amount incl. VAT',currency:'Currency',payment_date:'Payment date',cheque_number:'Cheque no.',
+    po_gr_rtv_number:'PO / GR / RTV no.',inv_rtv_cnr_number:'INV / RTV / CNR no.',
+    remaining_amount:'Remaining amount',remaining_vat_amount:'Remaining VAT',payer_name:'Payer name',payee_name:'Payee name',
+    payer_tax_id:'Payer tax ID',payee_tax_id:'Payee tax ID',
+    payer_address:'Payer address',payee_address:'Payee address',payer_branch:'Payer branch code',payee_branch:'Payee branch code',
+    payer_branch_location:'Payer branch location',payee_branch_location:'Payee branch location',
+    book_no:'Book no.',certificate_no:'Certificate no.',sequence_no:'Sequence in P.N.D.',
+    dividend_rate_option:'Dividend rate option',total_amount_paid:'Total amount paid',total_wht_amount:'Total WHT amount',
+    income_items:'Income items',income_type:'Income type',amount_paid:'Amount paid',wht_amount:'WHT amount',
+    line_items:'Line items',other_fields:'Other fields',label:'Label',name:'Name',value:'Value'};
   const dates = value => new Date(value).toLocaleString('th-TH');
   let files = [], settings = null, sending = false, jobs = [], batchJobs = [], selected = null;
   let historyTimer, detailTimer, batchTimer, historyLoading = false, batchLoading = false, more = false;
   let modelsTimer, modelsLoading = false, pageClosed = false, lastModels = {};
   let previewKey = null, previewObjectUrl = null, previewId = null, imageZoom = 100;
   let typesLoaded = false, typesLoading = false;
+  let userJsonJob=null, userJsonLoadedKey='', userJsonPendingKey='', userJsonTicket=0, resultMode='text';
   $('homeLink').href = window.USER_BASE + '/user';
   function node(tag, text, className) {
     const element = document.createElement(tag); if (text !== undefined) element.textContent = text;
@@ -250,6 +256,9 @@
   const typeName=name=>(name||'').replace(/^(an|a|the) /,'');
   function renderTypes(schema){
     const content=$('typesContent');content.replaceChildren();
+    if(schema.user_mapping && window.renderDocTypeMapping){
+      const mapping=node('div');mapping.innerHTML=window.renderDocTypeMapping(schema.user_mapping);content.append(mapping);
+    }
     const required=schema.types.filter(type=>type.has_requirement), unknown=schema.unknown;
     $('typesNotice').textContent=schema.types.length+' ประเภท · '+required.length+' ประเภทมีข้อกำหนดฟิลด์เฉพาะ · '+schema.keys.length+' ฟิลด์ใน schema';
     const note=node('p','เอกสารหนึ่งฉบับอาจมีหลายประเภท ระบบจะรวมฟิลด์ของทุกประเภทเข้าด้วยกัน หากไม่มีประเภทใดมีข้อกำหนดเฉพาะ จะใช้ชุดฟิลด์พื้นฐานโดยไม่มีฟิลด์บังคับ','catalog-note');
@@ -367,6 +376,7 @@
     const target=$('fieldsResult');target.replaceChildren();
     if(!extracted){target.append(node('p','ข้อมูลจะแสดงเมื่อ Extraction เสร็จ','muted'));return;}
     for(const [index,doc] of (extracted.documents||[extracted]).entries()){
+      const codes=docCodes(doc);
       const section=node('section',undefined,'document'),heading=node('h3','เอกสาร '+(index+1));
       heading.append(node('small',documentPages(doc)));
       section.append(heading,typeBadges(doc));if(doc.error)section.append(node('p',doc.error,'message error'));
@@ -376,8 +386,8 @@
       for(const [key,value]of Object.entries(doc.fields||{})){
         if(Array.isArray(value)&&value.length){const list=node('section',undefined,'field-collection');list.append(node('h4',fieldLabels[key]||key.replace(/_/g,' ')),renderArray(value));collections.push(list);continue;}
         const row=node('div',undefined,'field-row'),text=Array.isArray(value)?'':valueText(value);
-        const label=key==='subtotal' && doc.doc_types?.length===1 && doc.doc_types[0]==='BILLING_NOTE'
-          ? 'ยอดวางบิล' : fieldLabels[key] || key.replace(/_/g,' ');
+        const label=key==='subtotal' && codes.length===1 && codes[0]==='BILLING_NOTE'
+          ? 'Billed amount' : fieldLabels[key] || key.replace(/_/g,' ');
         row.append(node('div',label,'field-key'),node('div',text||'—','field-value'+(text?'':' empty-value')));table.append(row);
       }
       if(table.children.length)section.append(table);else if(!collections.length)section.append(node('p','ไม่พบข้อมูลที่ดึงได้','muted'));
@@ -409,6 +419,7 @@
     $('stageTimeline').replaceChildren(...rows);
   }
   function paintJob(job){
+    userJsonJob=job;
     $('emptyResult').hidden=true;$('jobResult').hidden=false;$('resultStatus').hidden=false;
     $('resultFile').textContent=job.filename;$('resultDate').textContent=dates(job.created_at);
     $('resultStatus').textContent=labels[job.status]||job.status;$('resultStatus').className='badge '+job.status;
@@ -420,7 +431,39 @@
     window.renderUserOcr($('textResult'),result.pages,result.text);renderFields(result.extracted);renderDocTypes(result);
     $('jsonResult').textContent=result.extracted?JSON.stringify(result.extracted,null,2):'ยังไม่มีผล Extraction';
     $('jobSettings').textContent=JSON.stringify(job.configuration,null,2);paintBatch();
+    if(resultMode==='userJson')loadUserJson();
   }
+  function userJsonKey(job){return job ? [job.id,job.updated_at,job.status].join('|') : '';}
+  async function loadUserJson(){
+    const job=userJsonJob, key=userJsonKey(job);
+    if(!job || userJsonLoadedKey===key || userJsonPendingKey===key)return;
+    const ticket=++userJsonTicket;userJsonPendingKey=key;userJsonLoadedKey='';
+    $('userJsonDownload').hidden=true;$('userJsonDetails').hidden=true;$('userJsonExtra').hidden=true;$('userJsonRetry').hidden=true;
+    $('userJsonCode').textContent='';
+    $('userJsonNotice').className='message';
+    if(!job.result?.extracted){$('userJsonNotice').textContent='ยังไม่มีผล Extraction ให้แปลง';userJsonPendingKey='';return;}
+    $('userJsonNotice').textContent='กำลังแปลงเป็น User JSON…';
+    try{
+      const report=await api('/jobs/'+encodeURIComponent(job.id)+'/user-json');
+      if(ticket!==userJsonTicket || userJsonKey(userJsonJob)!==key)return;
+      $('userJsonCode').textContent=JSON.stringify(report.data,null,2);
+      $('userJsonNotice').textContent=report.schema_valid===true?'ผ่านโครงสร้าง schema User v7'
+        :report.schema_valid===false?'Draft · ยังไม่ผ่าน schema User v7':'Draft · ยังไม่ได้ตรวจ schema';
+      if(report.schema_valid!==true)$('userJsonNotice').className='message error';
+      const issues=[...(report.warnings||[]),...(report.schema_errors||[]),
+        ...(report.missing_fields||[]).map(path=>({path,message:'ยังไม่มีข้อมูลฟิลด์นี้'}))];
+      if(issues.length)$('userJsonNotice').textContent+=' · '+issues.length+' รายการให้ตรวจดู';
+      $('userJsonIssues').replaceChildren(...issues.map(issue=>node('li',(issue.path?issue.path+': ':'')+issue.message)));
+      $('userJsonDetails').hidden=!issues.length;
+      $('userJsonUnmapped').textContent=JSON.stringify(report.unmapped||[],null,2);$('userJsonExtra').hidden=!report.unmapped?.length;
+      $('userJsonDownload').href=API+'/jobs/'+encodeURIComponent(job.id)+'/user-json?download=1';$('userJsonDownload').hidden=false;
+      userJsonLoadedKey=key;
+    }catch(err){
+      if(ticket!==userJsonTicket || userJsonKey(userJsonJob)!==key)return;
+      $('userJsonNotice').textContent=err.message;$('userJsonNotice').className='message error';$('userJsonRetry').hidden=false;
+    }finally{if(ticket===userJsonTicket)userJsonPendingKey='';}
+  }
+  $('userJsonRetry').addEventListener('click',()=>{userJsonLoadedKey='';loadUserJson();});
   async function openJob(id,show=true){
     clearTimeout(detailTimer);selected=id;if(show)view(false);
     try{const {job}=await api('/jobs/'+id);if(selected!==id)return;paintJob(job);if(show)previewJob(job);
@@ -443,8 +486,9 @@
     finally{historyLoading=false;if(jobs.length<=50)historyTimer=setTimeout(()=>loadHistory(),5000);}
   }
   $('refreshHistory').addEventListener('click',()=>loadHistory());$('moreHistory').addEventListener('click',()=>loadHistory(true));
-  function tab(mode){for(const key of ['text','fields','json']){const on=mode===key;$(key+'Result').hidden=!on;$(key+'Tab').classList.toggle('selected',on);$(key+'Tab').setAttribute('aria-selected',String(on));}}
+  function tab(mode){resultMode=mode;for(const key of ['text','fields','json','userJson']){const on=mode===key;$(key+'Result').hidden=!on;$(key+'Tab').classList.toggle('selected',on);$(key+'Tab').setAttribute('aria-selected',String(on));}if(mode==='userJson')loadUserJson();}
   $('fieldsTab').addEventListener('click',()=>tab('fields'));$('textTab').addEventListener('click',()=>tab('text'));$('jsonTab').addEventListener('click',()=>tab('json'));
+  $('userJsonTab').addEventListener('click',()=>tab('userJson'));
   window.addEventListener('beforeunload',event=>{if(sending){event.preventDefault();event.returnValue='';}});
   window.addEventListener('pagehide',event=>{pageClosed=true;clearTimeout(historyTimer);clearTimeout(detailTimer);clearTimeout(batchTimer);clearTimeout(modelsTimer);clearTimeout(stressTimer);if(!event?.persisted)clearPreview();});
   window.addEventListener('pageshow',()=>{if(pageClosed){pageClosed=false;refreshModels();refreshStress();}});

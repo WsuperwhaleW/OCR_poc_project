@@ -11,6 +11,7 @@ from urllib.parse import urlsplit
 from flask import abort, jsonify, render_template, request, send_file
 
 import config
+import userjson
 from userpipeline import EngineAdapter, UserService
 from userstore import UserStore, validate_settings
 
@@ -259,6 +260,16 @@ def register(application, engine):
         output = json.dumps(job, ensure_ascii=False, indent=2).encode('utf-8')
         return send_file(io.BytesIO(output), mimetype='application/json', as_attachment=True,
                          download_name=Path(job['filename']).stem + '.json')
+
+    @application.get('/api/user/jobs/<job_id>/user-json')
+    def user_json_preview(job_id):
+        job = job_or_404(job_id)
+        report = userjson.convert(job)
+        if request.args.get('download') == '1':
+            output = json.dumps(report['data'], ensure_ascii=False, indent=2, allow_nan=False).encode('utf-8')
+            return send_file(io.BytesIO(output), mimetype='application/json', as_attachment=True,
+                             download_name=Path(job['filename']).stem + '.user-v7.preview.json')
+        return jsonify(report)
 
     @application.after_request
     def user_headers(response):

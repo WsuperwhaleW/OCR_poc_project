@@ -1,0 +1,108 @@
+{
+  "standard": {
+    "activeBaseline": "ETDA Recommendation ขมธอ. 3-2560, Trade Services Message Standard v2.0",
+    "note": "ETDA published a v2.1 draft for public consultation; treat it as draft until officially adopted for your integration."
+  },
+  "documentTypes": [
+    {
+      "code": "80",
+      "nameTh": "ใบเพิ่มหนี้",
+      "nameEn": "Debit note",
+      "messageType": "DCN",
+      "xmlRoot": "DebitCreditNote_CrossIndustryInvoice",
+      "xsd": "DebitCreditNote_CrossIndustryInvoice_2p0.xsd",
+      "userScope": true
+    },
+    {
+      "code": "81",
+      "nameTh": "ใบลดหนี้",
+      "nameEn": "Credit note",
+      "messageType": "DCN",
+      "xmlRoot": "DebitCreditNote_CrossIndustryInvoice",
+      "xsd": "DebitCreditNote_CrossIndustryInvoice_2p0.xsd",
+      "userScope": true
+    },
+    {
+      "code": "380",
+      "nameTh": "ใบแจ้งหนี้",
+      "nameEn": "Invoice",
+      "messageType": "INV",
+      "xmlRoot": "Invoice_CrossIndustryInvoice",
+      "xsd": "Invoice_CrossIndustryInvoice_2p0.xsd",
+      "userScope": true
+    },
+    {
+      "code": "388",
+      "nameTh": "ใบกำกับภาษี",
+      "nameEn": "Tax Invoice",
+      "messageType": "TIV",
+      "xmlRoot": "TaxInvoice_CrossIndustryInvoice",
+      "xsd": "TaxInvoice_CrossIndustryInvoice_2p0.xsd",
+      "userScope": true
+    },
+    {
+      "code": "T01",
+      "nameTh": "ใบรับ",
+      "businessAliasTh": "ใบเสร็จรับเงิน",
+      "nameEn": "Receipt",
+      "messageType": "RCT",
+      "xmlRoot": "Receipt_CrossIndustryInvoice",
+      "xsd": "Receipt_CrossIndustryInvoice_2p0.xsd",
+      "userScope": true
+    },
+    {
+      "code": "T02",
+      "nameTh": "ใบแจ้งหนี้/ใบกำกับภาษี",
+      "nameEn": "Invoice/Tax Invoice",
+      "messageType": "TIV",
+      "xmlRoot": "TaxInvoice_CrossIndustryInvoice",
+      "xsd": "TaxInvoice_CrossIndustryInvoice_2p0.xsd",
+      "userScope": true
+    },
+    {
+      "code": "T03",
+      "nameTh": "ใบเสร็จรับเงิน/ใบกำกับภาษี",
+      "nameEn": "Receipt/Tax Invoice",
+      "messageType": "TIV",
+      "xmlRoot": "TaxInvoice_CrossIndustryInvoice",
+      "xsd": "TaxInvoice_CrossIndustryInvoice_2p0.xsd",
+      "userScope": false
+    },
+    {
+      "code": "T04",
+      "nameTh": "ใบส่งของ/ใบกำกับภาษี",
+      "nameEn": "Delivery order/Tax Invoice",
+      "messageType": "TIV",
+      "xmlRoot": "TaxInvoice_CrossIndustryInvoice",
+      "xsd": "TaxInvoice_CrossIndustryInvoice_2p0.xsd",
+      "userScope": true
+    },
+    {
+      "code": "T05",
+      "nameTh": "ใบกำกับภาษีอย่างย่อ",
+      "nameEn": "Abbreviated Tax Invoice",
+      "messageType": "ABB",
+      "xmlRoot": "AbbreviatedTaxInvoice_CrossIndustryInvoice",
+      "xsd": "AbbreviatedTaxInvoice_CrossIndustryInvoice_2p0.xsd",
+      "userScope": true
+    },
+    {
+      "code": "T06",
+      "nameTh": "ใบเสร็จรับเงิน/ใบกำกับภาษีอย่างย่อ",
+      "nameEn": "Receipt/Abbreviated Tax Invoice",
+      "messageType": "ABB",
+      "xmlRoot": "AbbreviatedTaxInvoice_CrossIndustryInvoice",
+      "xsd": "AbbreviatedTaxInvoice_CrossIndustryInvoice_2p0.xsd",
+      "userScope": true
+    },
+    {
+      "code": "T07",
+      "nameTh": "ใบแจ้งยกเลิก",
+      "nameEn": "Cancellation note",
+      "messageType": "CLN",
+      "xmlRoot": "CancellationNote_CrossIndustryInvoice",
+      "xsd": "CancellationNote_CrossIndustryInvoice_2p0.xsd",
+      "userScope": true
+    }
+  ]
+}

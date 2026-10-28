@@ -47,6 +47,7 @@ FILES = [
     "runlog.py",
     "runhistory.py",
     "userweb.py",
+    "userjson.py",
     "userpipeline.py",
     "userstore.py",
     "extractionlog.py",
@@ -62,6 +63,7 @@ FILES = [
     "test.py",
     "ocrflag.py",
     "dryreplay.py",
+    "doctype_mapping.py",
     "randomtest.py",
     "stress.py",
     "vllmbatch.py",
@@ -73,6 +75,7 @@ FILES = [
 # in one of these does not travel.
 TREES = [
     ("templates", "*.html"),
+    ("schemas", "user_*.json"),
     ("vendor/pdfjs/6.4.299", "**/*"),
 ]
 

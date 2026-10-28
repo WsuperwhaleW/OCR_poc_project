@@ -1,0 +1,54 @@
+/* One reference renderer on both Doc types pages. No extraction/export hooks. */
+(() => {
+  const escape = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  const labels = {mapped:'มีฟิลด์/ประเภทเดิม',combined:'เทียบจากหลายประเภท',system:'ข้อมูลระบบ',partial:'บางส่วน / ต้องแปลงเพิ่ม',missing:'ยังขาด',extra:'เรามีเพิ่ม'};
+  const badge = (status, count='') => '<span class="dm-badge dm-'+escape(status)+'">'+escape(labels[status] || status)+(count!==''?' '+escape(count):'')+'</span>';
+  function rows(items, fields) {
+    return items.map(row => '<tr data-dm-status="'+escape(row.status)+'"><td>'
+      +(fields ? (row.user_field ? '<code>'+escape(row.user_field)+'</code><span class="dm-source">'+escape(row.value_type)+'</span>' : '—')
+        : row.user_code ? '<code>'+escape(row.user_code)+'</code> · '+escape(row.user_name)
+          +'<span class="dm-source">userScope: '+escape(row.user_scope)+'</span>' : '—')
+      +'</td><td>'+(row.ours.length ? row.ours.map(key=>'<code>'+escape(key)+'</code>').join('<br>'):'—')
+      +'</td><td>'+badge(row.status)+'</td><td>'+escape(row.note)+'</td></tr>').join('');
+  }
+  window.renderDocTypeMapping = mapping => {
+    if (!mapping) return '';
+    const table = (name, items, fields) => '<div data-dm-view="'+name+'"'+(fields?' hidden':'')+'>'
+      +'<div class="dm-summary">'+Object.keys(labels).filter(status=>mapping.counts[name]?.[status]).map(status=>badge(status,mapping.counts[name][status])).join('')+'</div>'
+      +'<div class="dm-scroll"><table class="dm-table"><thead><tr><th>'+(fields?'Field ของ User':'ประเภทเอกสาร User')+'</th>'
+      +'<th>ของระบบเรา</th><th>สถานะ</th><th>รายละเอียด</th></tr></thead><tbody>'+rows(items,fields)+'</tbody></table></div>'
+      +'<p class="dm-empty" hidden>ไม่มีรายการในสถานะที่เลือก</p></div>';
+    return '<section class="dm-panel" data-dm-root><h3>Mapping ระบบเรา ↔ User v'+escape(mapping.version)+'</h3>'
+      +'<p class="dm-note">ตารางเทียบเพื่อดูสิ่งที่ตรงกัน ขาด และมีเพิ่ม แท็บ User JSON ใช้ทดลองแปลงผลเดิมโดยไม่เปลี่ยน prompt '
+      +'RTV และฟิลด์เดิมยังคงไว้ สถานะมีฟิลด์/ประเภทเดิมไม่ได้รับประกันว่าทุกประเภทจะถามฟิลด์นั้น หรือผลโมเดลจะถูกต้อง '
+      +'จำนวนเงินเดิมเป็นข้อความ ต้องแปลงเป็น number เมื่อทำ JSON ตาม User</p>'
+      +'<div class="dm-tools"><div class="dm-tabs" role="group" aria-label="ชุด mapping">'
+      +'<button type="button" data-dm-tab="types" aria-pressed="true">ประเภทเอกสาร</button>'
+      +'<button type="button" data-dm-tab="fields" aria-pressed="false">Fields</button></div>'
+      +'<label>สถานะ <select data-dm-filter aria-label="กรองสถานะ mapping"><option value="all">ทั้งหมด</option>'
+      +Object.entries(labels).map(([value,label])=>'<option value="'+value+'">'+escape(label)+'</option>').join('')+'</select></label></div>'
+      +table('types',mapping.types,false)+table('fields',mapping.fields,true)
+      +'<p class="dm-note">อ้างอิง '+escape(mapping.source)+' · userScope แสดงตามไฟล์อ้างอิง ไม่มีผลปิดกั้นเอกสาร</p></section>';
+  };
+  function filter(root, status) {
+    for (const group of root.querySelectorAll('[data-dm-view]')) {
+      let count = 0;
+      for (const row of group.querySelectorAll('tbody tr[data-dm-status]')) {
+        row.hidden = status !== 'all' && row.dataset.dmStatus !== status;
+        if (!row.hidden) count++;
+      }
+      group.querySelector('.dm-empty').hidden = count > 0;
+    }
+  }
+  document.addEventListener('click', event => {
+    const button = event.target.closest('[data-dm-tab]');
+    if (!button) return;
+    const root = button.closest('[data-dm-root]');
+    if (!root) return;
+    for (const tab of root.querySelectorAll('[data-dm-tab]')) tab.setAttribute('aria-pressed', String(tab === button));
+    for (const group of root.querySelectorAll('[data-dm-view]')) group.hidden = group.dataset.dmView !== button.dataset.dmTab;
+  });
+  document.addEventListener('change', event => {
+    if (event.target.matches('[data-dm-filter]')) filter(event.target.closest('[data-dm-root]'), event.target.value);
+  });
+})();

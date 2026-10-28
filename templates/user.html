@@ -54,8 +54,15 @@
             <p id="progress" role="status" aria-live="polite"></p><p id="timing" class="muted small"></p>
             <p id="jobError" class="message error" hidden role="alert"></p><div id="warnings"></div>
             <section id="docTypesPanel" class="doc-types-panel" aria-label="ประเภทเอกสาร" hidden><h3>Doc type</h3><div id="docTypesSummary" class="doc-types-summary"></div></section>
-            <div class="toolbar result-tools"><div class="tabs" role="tablist" aria-label="รูปแบบผลลัพธ์"><button id="textTab" role="tab" aria-controls="textResult" aria-selected="true" class="selected">OCR · Rendered</button><button id="fieldsTab" role="tab" aria-controls="fieldsResult" aria-selected="false">Key-Value</button><button id="jsonTab" role="tab" aria-controls="jsonResult" aria-selected="false">JSON</button></div><div class="downloads"><a id="originalLink">ต้นฉบับ ↓</a><a id="exportLink">JSON ↓</a></div></div>
+            <div class="toolbar result-tools"><div class="tabs" role="tablist" aria-label="รูปแบบผลลัพธ์"><button id="textTab" role="tab" aria-controls="textResult" aria-selected="true" class="selected">OCR · Rendered</button><button id="fieldsTab" role="tab" aria-controls="fieldsResult" aria-selected="false">Key-Value</button><button id="jsonTab" role="tab" aria-controls="jsonResult" aria-selected="false">JSON</button><button id="userJsonTab" role="tab" aria-controls="userJsonResult" aria-selected="false">User JSON</button></div><div class="downloads"><a id="originalLink">ต้นฉบับ ↓</a><a id="exportLink">JSON ↓</a></div></div>
             <div id="textResult" class="ocr-rendered result-pane" role="tabpanel" aria-labelledby="textTab"></div><div id="fieldsResult" class="result-pane" role="tabpanel" aria-labelledby="fieldsTab" hidden></div><pre id="jsonResult" class="transcript result-pane" role="tabpanel" aria-labelledby="jsonTab" hidden></pre>
+            <section id="userJsonResult" role="tabpanel" aria-labelledby="userJsonTab" hidden>
+              <div class="toolbar"><p id="userJsonNotice" class="message" role="status"></p><a id="userJsonDownload" hidden>User JSON ↓</a><button id="userJsonRetry" type="button" class="subtle" hidden>ลองแปลงอีกครั้ง</button></div>
+              <p class="muted small">Preview จากผลที่บันทึกไว้ ไม่มีการเรียกโมเดลเพิ่ม การผ่าน schema ตรวจเฉพาะโครงสร้าง ส่วนค่าข้อมูลต้องตรวจเทียบต้นฉบับ</p>
+              <pre id="userJsonCode" class="transcript result-pane"></pre>
+              <details id="userJsonDetails" class="saved-settings" hidden><summary>ข้อมูลที่ขาด / ข้อควรตรวจในการแปลง</summary><ul id="userJsonIssues" class="user-json-issues"></ul></details>
+              <details id="userJsonExtra" class="saved-settings" hidden><summary>ข้อมูลเดิมที่อยู่นอก User JSON เช่น branchLocation และประเภทเดิม</summary><pre id="userJsonUnmapped" class="transcript result-pane"></pre></details>
+            </section>
             <details class="saved-settings"><summary>โมเดลและการตั้งค่าของงานนี้</summary><pre id="jobSettings" class="transcript"></pre></details>
           </div>
         </section>
@@ -82,6 +89,7 @@
   </main>
   <footer>OCR <span>ผลลัพธ์จาก AI ควรตรวจสอบกับเอกสารต้นฉบับ</span></footer>
   <script>
+    {% include '_doctype_mapping_script.html' %}
     {% include '_user_render_script.html' %}
     {% include '_user_app_script.html' %}
   </script>

@@ -267,6 +267,27 @@ class UserWebTests(unittest.TestCase):
         self.assertEqual(self.client.post('/api/user/models', json=self.store.settings()).status_code, 200)
         self.assertEqual(self.client.put('/api/user/settings', json=[], headers={'Origin': 'http://elsewhere'}).status_code, 403)
 
+    def test_user_json_is_read_only_prefix_safe_and_downloads_separately(self):
+        stored=self.store.add_job(self.batch(), 'upload_01', 'source.pdf', b'file')
+        extracted={'doc_types':['RTV_SHIP_CREDIT'], 'fields':{'document_number':'RTV-1','seller_branch_location':'มหาชัย'}}
+        self.store.update(stored['id'],status='completed',result={'page_count':1,'extracted':extracted})
+        before=self.store.get(stored['id'])
+        with patch('requests.sessions.Session.request',side_effect=AssertionError('No inference')):
+            for prefix in ('','/ocr'):
+                url=prefix+'/api/user/jobs/'+stored['id']+'/user-json'
+                report=self.client.get(url)
+                self.assertEqual(report.status_code,200)
+                self.assertFalse(report.json['schema_valid'])
+                self.assertEqual(report.json['data']['file']['fileName'],'source.pdf')
+                download=self.client.get(url+'?download=1')
+                self.assertEqual(json.loads(download.data),report.json['data'])
+                self.assertIn('user-v7.preview.json',download.headers['Content-Disposition'])
+                download.close()
+        self.assertEqual(self.store.get(stored['id']),before)
+        legacy=json.loads(self.client.get('/api/user/jobs/'+stored['id']+'/export').data)
+        self.assertEqual(legacy['result']['extracted'],extracted)
+        self.assertEqual(self.client.get('/api/user/jobs/absent/user-json').status_code,404)
+
     def test_inline_preview_keeps_download_separate_and_supports_prefixed_history(self):
         job = self.store.add_job(self.batch(), 'upload_01', 'three.pdf', b'%PDF-preview')
         preview = self.client.get('/ocr/api/user/jobs/' + job['id'] + '/preview')

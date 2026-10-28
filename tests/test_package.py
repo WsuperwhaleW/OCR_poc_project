@@ -31,6 +31,9 @@ class DeploymentPackageTests(unittest.TestCase):
         self.assertFalse(any(name.startswith(('logs/', '.work/', 'outputs/')) for name in picked))
         self.assertNotIn('.env', picked)
         for name in ('templates/_stress_local_script.html',
+                     'templates/_doctype_mapping_script.html',
+                     'schemas/user_document_type_catalog.json',
+                     'schemas/user_document_bundle_v7.schema.json',
                      'vendor/pdfjs/6.4.299/LICENSE',
                      'vendor/pdfjs/6.4.299/legacy/build/pdf.min.mjs',
                      'vendor/pdfjs/6.4.299/legacy/build/pdf.worker.min.mjs',
@@ -62,6 +65,9 @@ with patch('requests.sessions.Session.request', side_effect=AssertionError('No n
         assert '/static/user/' not in text
         assert 'Whale' not in text
     for prefix in ('', '/ocr'):
+        schema = client.get(prefix + '/api/schema')
+        assert schema.status_code == 200
+        assert schema.get_json()['user_mapping']['version'] == '7.0'
         response = client.get(prefix + '/api/local-preview/pdfjs/6.4.299/legacy/build/pdf.worker.min.mjs')
         assert response.status_code == 200
         assert response.mimetype == 'text/javascript'

@@ -38,6 +38,7 @@ import settings
 import blame
 import config
 import dryreplay
+import doctype_mapping
 import fieldscore
 import extractionlog
 import fixscore
@@ -6226,7 +6227,8 @@ def schema():
         # page can draw a matrix in reading order without sorting it itself.
         keys=list(prompts._SCALAR_KEYS),
         item_keys=list(prompts.INCOME_ITEM_KEYS),
-        items_key=INCOME_ITEMS_KEY)
+        items_key=INCOME_ITEMS_KEY,
+        user_mapping=doctype_mapping.comparison())
 
 
 @app.get("/api/truth/<case_id>")
