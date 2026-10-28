@@ -29,6 +29,7 @@ import time
 import requests
 
 import config
+import priority  # imports just workspace, so no cycle
 import prompts  # constants only, no imports of its own beyond the standard library
 import runlog  # for the model ranking a default is taken from; imports config, grounding and settings, so no cycle
 import settings  # for OLLAMA_SYSTEM and OLLAMA_REASONING_EFFORT; imports just config and jobs, so no cycle
@@ -496,7 +497,23 @@ def _http_session():
 
 
 def http_post(url: str, info: dict = None, **kwargs):
-    """`requests.post`, on the pooled connection when `info` is vLLM/OpenAI."""
+    """`requests.post`, on the pooled connection when `info` is vLLM/OpenAI.
+
+    A vLLM chat request from anything but the User portal carries a later
+    `priority`, so the server's scheduler puts User jobs first (priority.py).
+    A server without priority scheduling refuses the field; the request is then
+    sent again as it was.
+    """
+    body = priority.tagged(url, kwargs.get("json")) if (info or {}).get("kind") == "vllm" else None
+    if body is not None:
+        res = _post(url, info, **{**kwargs, "json": body})
+        if not priority.refused(url, res):
+            return res
+        res.close()
+    return _post(url, info, **kwargs)
+
+
+def _post(url: str, info: dict = None, **kwargs):
     if _pooled(info):
         return _http_session().post(url, **kwargs)
     return requests.post(url, **kwargs)
