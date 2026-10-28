@@ -1952,6 +1952,21 @@ and the row says so. The **Fill missing from images** toggle button (shown in Fu
 pipeline, on by default, saved with the mode's defaults) turns it off; the API takes
 `"fill_missing": false`. With it off, an empty required field is only flagged.
 
+**Recheck validation from images** is a separate, opt-in checkbox in **Full pipeline**
+(off by default; remembered by **Save as default**). Runtime validation failures or
+warnings trigger one image recheck per affected document using the owning Hybrid steps.
+Related totals are read together, even when their original values are nonempty. Only
+that document's pages are sent; a blank printed cell must remain blank. The candidate
+replaces the affected group only if validation improves without new findings or missing
+required values. An incomplete answer, failed request or unchanged validation keeps the
+original values. Benchmark ground truth never triggers or selects a correction, and
+passing validation does not guarantee accuracy. The API option is `"validation_retry": true`.
+Compare shows the original, candidate and retained values with the checks and decision;
+**Save detail log** includes the same audit. The report counts jobs, fields requested,
+fields changed and documents accepted/resolved. Retry time and tokens count toward the run.
+The extraction model must support images. This does not alter Extract only or Image to
+extractor mode, or the independent **Fill missing from images** setting.
+
 **Every new Stress test is saved to History.** Open **Stress test → History** to select a run
 and inspect its Concurrent, Queue, Warm-up, time limit, seed, document strategy,
 selected file IDs, models, servers, sampling and extraction settings, together with its complete report,

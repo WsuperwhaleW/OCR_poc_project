@@ -28,7 +28,7 @@ function setup(storage = new Map(), failStorage = false) {
   control('stShape', 'single', 'select', ['single', 'agentic', 'hybrid']);
   control('stStrategy', 'balanced', 'select', ['balanced', 'uniform', 'sequential']);
   control('stDetail', 'original', 'select', ['original', 'medium', 'low']);
-  for (const id of ['stExtras', 'stSchemaFirst', 'stNoCache', 'stSaveLog', 'stSaveDetails', 'stHistoryMonitor']) {
+  for (const id of ['stExtras', 'stSchemaFirst', 'stNoCache', 'stSaveLog', 'stSaveDetails', 'stHistoryMonitor', 'stValidationImages']) {
     control(id, id === 'stExtras' || id === 'stHistoryMonitor', 'checkbox');
   }
   const controls = Object.values(fields);
@@ -74,7 +74,7 @@ test('explicit Save restores every setting and file selection after a fresh page
     stSeed: '123', stShape: 'agentic', stStrategy: 'sequential', stDetail: 'low', stPages: '25'})) {
     first.fields[id].value = value;
   }
-  for (const id of ['stSchemaFirst', 'stNoCache', 'stSaveLog', 'stSaveDetails']) first.fields[id].checked = true;
+  for (const id of ['stSchemaFirst', 'stNoCache', 'stSaveLog', 'stSaveDetails', 'stValidationImages']) first.fields[id].checked = true;
   first.fields.stExtras.checked = first.fields.stHistoryMonitor.checked = false;
   first.fields.stFiles.boxes[0].checked = false;
   first.ctx.stBatchOn = true;
@@ -115,6 +115,16 @@ test('Hybrid and its schema option survive Save as default and a fresh page', ()
   const next = setup(first.storage); next.api.load('extract');
   assert.equal(next.fields.stShape.value, 'hybrid');
   assert.equal(next.fields.stSchemaFirst.checked, true);
+});
+
+test('validation image recheck is remembered separately for Full pipeline', () => {
+  const first = setup(); first.api.load('full');
+  assert.equal(first.fields.stValidationImages.checked, false);
+  first.fields.stValidationImages.checked = true; first.api.save();
+  const next = setup(first.storage); next.api.load('full');
+  assert.equal(next.fields.stValidationImages.checked, true);
+  next.api.load('ocr'); assert.equal(next.fields.stValidationImages.checked, false);
+  next.api.load('full'); assert.equal(next.fields.stValidationImages.checked, true);
 });
 
 test('realData selection waits for asynchronous listing and survives a failed listing', () => {

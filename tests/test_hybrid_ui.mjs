@@ -64,3 +64,42 @@ test('Stress payload retains Hybrid and enables schema-first only for step-based
   el('stMode').value = 'image';
   assert.equal(ctx.stBody().extract_mode, 'hybrid'); assert.equal(ctx.stBody().schema_first, true);
 });
+
+test('validation image recheck is opt-in, full-pipeline-only and disabled during a run', () => {
+  const {ctx, el} = setup();
+  ctx.stRunning = false;
+  ctx.document = {getElementById: el};
+  el('stFillImages').setAttribute = () => {};
+  vm.runInContext(source('stPaintFill'), ctx);
+  assert.match(page, /#stValidationField\[hidden\]\s*\{\s*display:\s*none/);
+  const input = page.match(/<input id="stValidationImages"[^>]*>/)[0];
+  assert.doesNotMatch(input, /checked/);
+  for (const mode of ['full', 'ocr', 'extract', 'classify', 'image']) {
+    el('stMode').value = mode;
+    el('stValidationImages').checked = true;
+    ctx.stPaintFill();
+    assert.equal(el('stValidationField').hidden, mode !== 'full');
+    assert.equal(el('stValidationImages').disabled, mode !== 'full');
+    assert.equal(ctx.stBody().validation_retry, mode === 'full');
+  }
+  el('stMode').value = 'full'; ctx.stRunning = true; ctx.stPaintFill();
+  assert.equal(el('stValidationImages').disabled, true);
+  el('stValidationImages').checked = false;
+  assert.equal(ctx.stBody().validation_retry, false);
+});
+
+test('Compare includes escaped before/candidate/after audit and the retained decision', () => {
+  const ctx = vm.createContext({ST_WRONG_TEXT: {}, esc: value => String(value)
+    .replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;')});
+  vm.runInContext(source('cmpFieldsHtml'), ctx);
+  const retry = {accepted: false, before: {subtotal: 'bad'}, candidate: {subtotal: '<script>bad</script>'},
+    after: {subtotal: 'bad'}, reason: 'Validation did not improve', chats: [{hidden: 'request statistics'}]};
+  const output = ctx.cmpFieldsHtml([{rows: [{key: 'subtotal', value: 'bad'}], validation_rechecks: [retry]}]);
+  assert.match(output, /original values kept/);
+  for (const field of ['before', 'candidate', 'after', 'reason']) assert.ok(output.includes('"' + field + '"'));
+  assert.ok(output.includes('&lt;script&gt;bad&lt;/script&gt;'));
+  assert.ok(!output.includes('<script>'));
+  assert.ok(!output.includes('request statistics'));
+  retry.accepted = true;
+  assert.match(ctx.cmpFieldsHtml([{rows: [{key: 'subtotal', value: 'good'}], validation_rechecks: [retry]}]), /accepted/);
+});

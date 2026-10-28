@@ -896,6 +896,7 @@ document.addEventListener("DOMContentLoaded", function () {
     accent-color: var(--accent); flex-shrink: 0; }
   .st-option:has(input:checked) { background: var(--accent-soft); border-color: var(--accent); }
   .st-option:has(input:disabled) { opacity: .55; cursor: not-allowed; }
+  #stValidationField[hidden] { display: none; }
   .st-check { display: inline-flex; align-items: center; gap: 6px; font-size: .78rem;
     color: var(--muted); }
   .st-plan { font-size: .8rem; color: var(--muted); margin: 10px 0 0; line-height: 1.5; }
@@ -2318,6 +2319,10 @@ follows your desktop; Light is the one to pick for projecting or screenshotting.
           <button id="stFillImages" type="button" class="ghost-sm" aria-pressed="true"
                   title="When a required field comes back empty, send that document's page images to the extractor and ask for just that field with its Hybrid step">Fill missing from images: on</button>
         </div>
+        <label class="st-option" id="stValidationField" hidden
+               title="Full pipeline only. Recheck failed/warning validation fields from this document's images with their Hybrid steps. Keep original values unless validation improves without new findings.">
+          <input id="stValidationImages" type="checkbox"> Recheck validation from images
+        </label>
         </div>
         <div id="stHistoryPanel" hidden>
         <h2>Stress test history</h2>
@@ -11748,7 +11753,11 @@ function cmpFieldsHtml(docs) {
         + (r.wrong ? ' <span class="st-tag st-bad">'
           + esc(ST_WRONG_TEXT[r.wrong] || r.wrong) + '</span>'
           + (lost[r.blame] ? ' <small>' + lost[r.blame] + '</small>' : '') : '')
-        + '</td></tr>').join('') + '</table>';
+        + '</td></tr>').join('') + '</table>'
+      + ((d.validation_rechecks || []).map(retry => '<details><summary>Validation image recheck · '
+          + (retry.accepted ? 'accepted' : 'original values kept') + '</summary><pre>'
+          + esc(JSON.stringify(retry, (key, value) => key === 'chats' ? undefined : value, 2))
+          + '</pre></details>').join(''));
   }).join('');
 }
 function viewFull(view) { return CMP_VIEWS[view].every(colAvailable); }
@@ -13906,6 +13915,10 @@ function stPaintFill() {
   btn.classList.toggle('on', stFillOn);
   btn.setAttribute('aria-pressed', String(stFillOn));
   btn.textContent = 'Fill missing from images: ' + (stFillOn ? 'on' : 'off');
+  const validation = document.getElementById('stValidationField');
+  if (validation) validation.hidden = mode.value !== 'full';
+  const input = document.getElementById('stValidationImages');
+  if (input) input.disabled = stRunning || mode.value !== 'full';
 }
 
 /* Live monitoring and saved snapshots are offered only for vLLM servers. */
@@ -14099,7 +14112,7 @@ function stMetricsTable(view, title, since) {
 const ST_ALERT_TEXT = {
   error: 'error', looped: 'loop', truncated: 'token cap', partial: 'partial reply',
   stalled: 'stalled', recovered: 'retry read cleanly', dry: 'DRY',
-  missing: 'missing required', wrong: 'wrong field'
+  missing: 'missing required', wrong: 'wrong field', validation: 'validation image recheck'
 };
 
 /* The running score (`_StressLive.score`): what the jobs finished so far
@@ -14140,6 +14153,7 @@ function stAlertTag(a) {
   if (a.kind === 'dry' && ST_DRY_STATE[a.state]) return ST_DRY_STATE[a.state];
   if (a.kind === 'missing' && ST_MISSING_STATE[a.state]) return ST_MISSING_STATE[a.state];
   if (a.kind === 'truncated' && ST_CAP_STATE[a.state]) return ST_CAP_STATE[a.state];
+  if (a.kind === 'validation') return 'validation · ' + (a.state || 'flagged');
   return ST_ALERT_TEXT[a.kind] || a.kind;
 }
 
@@ -14474,6 +14488,7 @@ function stReportHtml(s, snapshot, host) {
       + (plan.mode === 'full' ? (plan.fill_missing
           ? ' · missing required fields asked of the page images (Hybrid)'
           : ' · <b>no fill from images</b>') : '')
+      + (plan.validation_retry ? ' · validation findings rechecked from images (Hybrid)' : '')
       + (plan.vllm_batch ? ' · <b>batched</b>, up to ' + plan.batch_size
           + ' per /batch request on ' + (plan.batch_servers || []).map(esc).join(' and ') : '')
       + (plan.save_log ? ' · saving each job to the run log as stress run <b>'
@@ -14568,6 +14583,12 @@ function stReportHtml(s, snapshot, host) {
         + (r.extract.fill_jobs ? ' · ' + r.extract.fill_filled + ' of ' + r.extract.fill_asked
           + ' filled from the page images (Hybrid)' : ''),
       r.extract.missing_required_jobs ? 'st-warn' : ''));
+    if (r.extract?.validation_retry_jobs) tiles.push(stTile('Validation image recheck',
+      r.extract.validation_retry_changed + '<small> field(s) changed</small>',
+      r.extract.validation_retry_jobs + ' job(s) · ' + r.extract.validation_retry_asked + ' fields asked'
+      + ' · ' + r.extract.validation_retry_accepted + ' document(s) accepted'
+      + ' · ' + r.extract.validation_retry_resolved + ' resolved'
+      + ' · ' + stSec(r.extract.validation_retry_s) + ' additional work'));
     // Document sets: one file can hold several documents, each extracted on
     // its own (stress.doc_sets).
     const ds = r.extract && r.extract.documents;
@@ -14681,6 +14702,7 @@ function stBody() {
     no_cache: stEl('stNoCache').checked,
     split_pages: stEl('stSplitPages').checked,
     fill_missing: stFillOn && stMode.value === 'full',
+    validation_retry: !!stEl('stValidationImages')?.checked && stMode.value === 'full',
     vllm_batch: stBatchOn && !stEl('stBatch').disabled,
     save_log: stEl('stSaveLog').checked && !['classify', 'image'].includes(stMode.value),
     save_details: stEl('stSaveDetails').checked && ST_EXTRACT_MODES.includes(stMode.value),
@@ -15373,6 +15395,7 @@ function historyRender(item) {
     ['Extraction GPU exporter', cfg.gpu_extract_url || 'Default / local'],
     ['Bypass prompt cache', cfg.no_cache], ['Batch requests (vLLM /batch)', cfg.vllm_batch ?? false],
     ['Fill missing from images (Hybrid)', cfg.mode === 'full' ? cfg.fill_missing ?? true : undefined],
+    ['Recheck validation from images (Hybrid)', cfg.mode === 'full' ? cfg.validation_retry ?? false : undefined],
     ['Save per-job accuracy rows', cfg.save_log],
     ['Detail log destination', cfg.save_details ? 'Browser download only; not stored here' : 'Off'],
     ['Workspace', cfg.workspace || 'Default'],
