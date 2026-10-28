@@ -437,6 +437,9 @@ def report(records: list, wall: float, mode: str, concurrency: int) -> dict:
                 fill_jobs=sum(r.get("fill_jobs") or 0 for r in rows),
                 fill_asked=sum(r.get("fill_asked") or 0 for r in rows),
                 fill_filled=sum(r.get("fill_filled") or 0 for r in rows))
+            out["extract"].update({"validation_retry_" + key:
+                sum(r.get("validation_retry_" + key) or 0 for r in rows)
+                for key in ("jobs", "asked", "changed", "accepted", "resolved", "s", "tokens")})
     if mode == "image":
         # Pages sent to the extractor as images, and the jobs extracted again one
         # Detail up because a Mandatory field came back empty or the reply looped

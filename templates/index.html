@@ -896,6 +896,8 @@ document.addEventListener("DOMContentLoaded", function () {
     accent-color: var(--accent); flex-shrink: 0; }
   .st-option:has(input:checked) { background: var(--accent-soft); border-color: var(--accent); }
   .st-option:has(input:disabled) { opacity: .55; cursor: not-allowed; }
+  #stValidationField[hidden] { display: none; }
+  #realPickRow[hidden] { display: none; }
   .st-check { display: inline-flex; align-items: center; gap: 6px; font-size: .78rem;
     color: var(--muted); }
   .st-plan { font-size: .8rem; color: var(--muted); margin: 10px 0 0; line-height: 1.5; }
@@ -1769,6 +1771,22 @@ follows your desktop; Light is the one to pick for projecting or screenshotting.
       </div>
 
       <div class="pane on" id="paneSource">
+      <div class="row">
+        <label class="field" style="flex:1;min-width:200px">Test files
+          <select id="workspaceCase"><option value="">&mdash; select a test file &mdash;</option>
+            {% for doc_type, group in cases|groupby('doc_type') %}
+            <optgroup label="{{ doc_type or 'unclassified' }}">
+              {% for c in group %}<option value="{{ c.id }}">{{ c.id }} · {{ c.kind }}</option>{% endfor %}
+            </optgroup>
+            {% endfor %}
+          </select>
+        </label>
+      </div>
+      <div class="row" id="realPickRow" hidden>
+        <label class="field" style="flex:1;min-width:200px">Real files · realData/
+          <select id="realPick"><option value="">&mdash; select a real file &mdash;</option></select>
+        </label>
+      </div>
       <div id="drop">
         <p><strong>Drop a file here</strong></p>
         <p class="hint">or click to browse · or paste with Ctrl+V</p>
@@ -1787,14 +1805,6 @@ follows your desktop; Light is the one to pick for projecting or screenshotting.
       <p class="note warn" id="prepTrunc" hidden></p>
       <div id="filechip"><strong>📄</strong><span id="filechipname"></span></div>
       <div id="mapchip"></div>
-      <!-- Files in realData/ (no solution), loaded as if dropped. Hidden while
-           the folder is empty. -->
-      <div class="row" id="realPickRow" hidden>
-        <label class="field" style="flex:1;min-width:200px">
-          Or read a file from realData/
-          <select id="realPick"><option value="">&mdash; pick a realData file &mdash;</option></select>
-        </label>
-      </div>
 
 
         <div class="row">
@@ -1895,6 +1905,11 @@ follows your desktop; Light is the one to pick for projecting or screenshotting.
         </label>
       </div>
       <p class="note" id="extrasNote"></p>
+      <div class="st-options" id="workspaceImageOptions">
+        <label class="st-option"><input id="workspaceFillImages" type="checkbox" checked> Fill missing from images</label>
+        <label class="st-option"><input id="workspaceValidationImages" type="checkbox"> Recheck validation from images</label>
+      </div>
+      <p class="note">Image rechecks use the extraction model and Hybrid steps. Requires a model that supports images.</p>
       <div class="row">
         <button id="run" class="primary" disabled>Read document</button>
         <button id="stop" disabled>Stop</button>
@@ -2318,6 +2333,10 @@ follows your desktop; Light is the one to pick for projecting or screenshotting.
           <button id="stFillImages" type="button" class="ghost-sm" aria-pressed="true"
                   title="When a required field comes back empty, send that document's page images to the extractor and ask for just that field with its Hybrid step">Fill missing from images: on</button>
         </div>
+        <label class="st-option" id="stValidationField" hidden
+               title="Full pipeline only. Recheck failed/warning validation fields from this document's images with their Hybrid steps. Keep original values unless validation improves without new findings.">
+          <input id="stValidationImages" type="checkbox"> Recheck validation from images
+        </label>
         </div>
         <div id="stHistoryPanel" hidden>
         <h2>Stress test history</h2>
@@ -3106,6 +3125,7 @@ const truthCache = {};
 // replaces it -- reading a document is a measurement, and they are tested one at
 // a time. Several documents go through compare.py or randomtest.py.
 let current = null, controller = null, text = '';
+let workspaceCase = '', workspaceSourceSeq = 0;
 
 /* ---------- left-hand panes ---------- */
 const sideTabs = document.getElementById('sideTabs');
@@ -5513,6 +5533,16 @@ function paintFields() {
      four of the five would vanish on whichever path nobody tested. */
   const strip = docStrip();
   if (strip) fldBody.insertAdjacentHTML('afterbegin', strip);
+  if (extracted && !extracted.pending) {
+    if (extracted.image_filled?.length) fldBody.insertAdjacentHTML('beforeend',
+      '<p class="note">Filled from images: ' + extracted.image_filled.map(esc).join(', ') + '</p>');
+    for (const retry of extracted.validation_image_rechecks || []) fldBody.insertAdjacentHTML('beforeend',
+      '<details><summary>Validation image recheck · ' + (retry.accepted ? 'accepted' : 'original values kept')
+      + '</summary><pre>' + esc(JSON.stringify(retry, (key, value) => key === 'chats' ? undefined : value, 2)) + '</pre></details>');
+    const rechecks = (extractedFile || extracted).image_rechecks;
+    if (rechecks) fldBody.insertAdjacentHTML('beforeend', '<details><summary>Image recheck summary</summary><pre>'
+      + esc(JSON.stringify(rechecks, null, 2)) + '</pre></details>');
+  }
   // Left on the normal body until there is a reply to show: an empty pane while
   // the pass is still running reads as "the model returned nothing", when the
   // body underneath is saying it has not been asked yet.
@@ -11748,7 +11778,11 @@ function cmpFieldsHtml(docs) {
         + (r.wrong ? ' <span class="st-tag st-bad">'
           + esc(ST_WRONG_TEXT[r.wrong] || r.wrong) + '</span>'
           + (lost[r.blame] ? ' <small>' + lost[r.blame] + '</small>' : '') : '')
-        + '</td></tr>').join('') + '</table>';
+        + '</td></tr>').join('') + '</table>'
+      + ((d.validation_rechecks || []).map(retry => '<details><summary>Validation image recheck · '
+          + (retry.accepted ? 'accepted' : 'original values kept') + '</summary><pre>'
+          + esc(JSON.stringify(retry, (key, value) => key === 'chats' ? undefined : value, 2))
+          + '</pre></details>').join(''));
   }).join('');
 }
 function viewFull(view) { return CMP_VIEWS[view].every(colAvailable); }
@@ -12347,18 +12381,14 @@ function paintServer() {
                     : 'No model server at ' + server.url);
   serverReason.textContent = ok ? '' : ('⚠ ' + (server.reason || ''));
   paintGlobalModels();
-  runBtn.disabled = !ok || !current;
+  runBtn.disabled = !ok || (!current && !workspaceCase);
   // Whether the context picker does anything depends on which kind is active.
   paintCtx();
   paintFieldsOnly();
   paintOcrOnly();
 }
-/* The mockOcr folder and benchmark-case pickers were removed on 2026-09-09 at
-   the user's request. The Workspace reads what is DROPPED on it and scores it
-   when `POST /api/match` recognises the file by name, alias or content hash; a
-   case is read by name on the OCR only tab, and extracted by name on Fields
-   only. `request_input` still resolves all three shapes server-side, because
-   `compare.py` and the random test name cases that way. */
+/* Workspace can read a named benchmark case, a realData file or a local upload.
+   All three use the same full pipeline and prepared-image preview. */
 
 async function refreshServer() {
   recheckBtn.disabled = true;
@@ -12614,7 +12644,11 @@ function dropPreview() {
 function localPreview() {
   paintPrepTruncated(1, 1, 0);      // a banner from the last file is about that file
   dropPreview();
-  if (!current) { chip.style.display = 'none'; return; }
+  if (!current) {
+    if (workspaceCase) showChip(workspaceCase + ' · test file');
+    else chip.style.display = 'none';
+    return;
+  }
   if (current.type === 'application/pdf' || /\.(pdf|heic|heif)$/i.test(current.name)) {
     showChip(current.name);
     return;
@@ -12659,12 +12693,13 @@ function prepBody() {
   // button chooses them, so the preview cannot be of a different document.
   const body = new FormData();
   if (current) body.append('image', current);
+  else if (workspaceCase) body.append('case', workspaceCase);
   else return null;
   body.append('detail', detailSel.value);
   return body;
 }
 function prepStem() {
-  const raw = (current && current.name) || 'page';
+  const raw = (current && current.name) || workspaceCase || 'page';
   // Only the extension comes off. The browser sanitises a `download` name
   // itself, and these documents have Thai names worth keeping.
   return raw.replace(/\.[^.]+$/, '');
@@ -12743,6 +12778,7 @@ async function refreshPrepared() {
    documents belong in the Queue tab, which is built for batches and starts on its
    own Run. */
 function addFiles(list) {
+  if (controller) return;
   const incoming = [...(list || [])].filter(Boolean);
   if (!incoming.length) return;
   // The first of a multi-file drop is kept, and the rest are named rather than
@@ -12750,6 +12786,10 @@ function addFiles(list) {
   const file = incoming[0];
   const ignored = incoming.length - 1;
   // Hand-picked files override the folder and benchmark pickers.
+  workspaceSourceSeq++;
+  workspaceCase = '';
+  document.getElementById('workspaceCase').value = '';
+  document.getElementById('realPick').value = '';
   current = file;
   previewOne(file);
   paintRun();
@@ -12760,6 +12800,10 @@ function addFiles(list) {
     : '';
 }
 function clearWorkspaceFile() {
+  workspaceSourceSeq++;
+  workspaceCase = '';
+  document.getElementById('workspaceCase').value = '';
+  document.getElementById('realPick').value = '';
   current = null;
   dropPreview();
   hidePrepared();
@@ -12776,6 +12820,19 @@ function paintRun() {
 
 drop.addEventListener('click', () => fileInput.click());
 fileInput.addEventListener('change', e => { addFiles(e.target.files); fileInput.value = ''; });
+document.getElementById('workspaceCase').addEventListener('change', e => {
+  const value = e.target.value;
+  if (controller) return;
+  clearWorkspaceFile();
+  workspaceCase = value;
+  e.target.value = value;
+  if (value) {
+    matchedCase = value;
+    mapChip.textContent = 'Ground truth ' + value + ' — will be scored';
+    localPreview(); refreshPrepared();
+  }
+  paintServer(); enableCompare();
+});
 document.getElementById('realPick').addEventListener('change', e => {
   if (e.target.value) realPickLoad(e.target.value);
 });
@@ -12874,6 +12931,10 @@ async function startRead(opts) {
   // are blank because nothing extracted -- not because an extraction returned
   // nothing. Those are different states and the run log has to keep them apart.
   if (opts.extract === false) body.append('extract', '0');
+  else {
+    body.append('fill_missing', document.getElementById('workspaceFillImages').checked ? '1' : '0');
+    body.append('validation_retry', document.getElementById('workspaceValidationImages').checked ? '1' : '0');
+  }
   controller = new AbortController();
 
   try {
@@ -12995,6 +13056,8 @@ async function startRead(opts) {
           tabFields.disabled = false;
           pagebar.innerHTML = '<span class="spin"></span> Extracting fields…';
           if (tabFields.classList.contains('on')) paintFields();
+        } else if (msg.event === 'image_recheck') {
+          pagebar.innerHTML = '<span class="spin"></span> ' + esc(msg.message);
         } else if (msg.event === 'table_agent') {
           stepEvent(msg);
         } else if (msg.event === 'segmented' || msg.event === 'document'
@@ -13085,6 +13148,8 @@ async function startRead(opts) {
 function readBusy(on) {
   if (on) setReadStatus('running');
   clearBtn.disabled = on;
+  for (const id of ['workspaceCase', 'realPick', 'workspaceFillImages', 'workspaceValidationImages'])
+    document.getElementById(id).disabled = on;
   if (on) { runBtn.disabled = true; if (ocRun) ocRun.disabled = true; }
   else { paintServer(); paintOcrOnly(); }
   stopBtn.disabled = !on;
@@ -13092,9 +13157,25 @@ function readBusy(on) {
 }
 
 runBtn.addEventListener('click', () => {
-  if (!current) return;
-  startRead({ image: current, detail: detailSel.value, extract: true });
+  if (!current && !workspaceCase) return;
+  startRead({ case: workspaceCase, image: current, detail: detailSel.value, extract: true });
 });
+
+/* Workspace preferences are separate from Stress defaults and server User settings. */
+const workspaceImageDefaultsKey = 'ocrWorkspaceImageRechecks:v1:' + API;
+for (const id of ['workspaceFillImages', 'workspaceValidationImages']) {
+  const input = document.getElementById(id);
+  try {
+    const saved = JSON.parse(localStorage.getItem(workspaceImageDefaultsKey) || '{}');
+    if (typeof saved[id] === 'boolean') input.checked = saved[id];
+  } catch { /* Defaults still work if browser storage is unavailable. */ }
+  input.addEventListener('change', () => {
+    try { localStorage.setItem(workspaceImageDefaultsKey, JSON.stringify({
+      workspaceFillImages: document.getElementById('workspaceFillImages').checked,
+      workspaceValidationImages: document.getElementById('workspaceValidationImages').checked
+    })); } catch { /* Keep the current page's selection. */ }
+  });
+}
 
 /* ---------- Fields only: pass 2 against the hand-written transcript ---------
    `compare.py --fields-only --from-truth` with a button on it. Feeding
@@ -13770,6 +13851,7 @@ function stSetSource(source) {
 function realPickPaint() {
   const sel = document.getElementById('realPick');
   if (!sel || !stReal) return;
+  const selected = sel.value;
   document.getElementById('realPickRow').hidden = !stReal.files.length;
   const groups = stReal.types.map(type => {
     const group = document.createElement('optgroup');
@@ -13779,10 +13861,16 @@ function realPickPaint() {
     }
     return group;
   });
-  sel.replaceChildren(new Option('— pick a realData file —', ''), ...groups);
+  sel.replaceChildren(new Option('— select a real file —', ''), ...groups);
+  sel.value = selected;
 }
 async function realPickLoad(name) {
   const sel = document.getElementById('realPick');
+  if (controller) return;
+  clearWorkspaceFile();
+  const mine = workspaceSourceSeq;
+  let applied = false;
+  sel.value = name;
   sel.disabled = true;
   runNote.textContent = 'Loading ' + name + ' from realData…';
   try {
@@ -13792,12 +13880,17 @@ async function realPickLoad(name) {
       throw new Error(data.error || ('HTTP ' + res.status));
     }
     const blob = await res.blob();
+    if (mine !== workspaceSourceSeq) return;
     addFiles([new File([blob], name.split('/').pop(), { type: blob.type })]);
+    sel.value = name;
+    applied = true;
   } catch (err) {
-    runNote.textContent = 'Could not load ' + name + ': ' + err.message;
+    if (mine === workspaceSourceSeq) runNote.textContent = 'Could not load ' + name + ': ' + err.message;
   } finally {
-    sel.disabled = false;
-    sel.value = '';
+    if (applied || mine === workspaceSourceSeq) {
+      sel.disabled = !!controller;
+      if (!applied) sel.value = '';
+    }
   }
 }
 
@@ -13906,6 +13999,10 @@ function stPaintFill() {
   btn.classList.toggle('on', stFillOn);
   btn.setAttribute('aria-pressed', String(stFillOn));
   btn.textContent = 'Fill missing from images: ' + (stFillOn ? 'on' : 'off');
+  const validation = document.getElementById('stValidationField');
+  if (validation) validation.hidden = mode.value !== 'full';
+  const input = document.getElementById('stValidationImages');
+  if (input) input.disabled = stRunning || mode.value !== 'full';
 }
 
 /* Live monitoring and saved snapshots are offered only for vLLM servers. */
@@ -14099,7 +14196,7 @@ function stMetricsTable(view, title, since) {
 const ST_ALERT_TEXT = {
   error: 'error', looped: 'loop', truncated: 'token cap', partial: 'partial reply',
   stalled: 'stalled', recovered: 'retry read cleanly', dry: 'DRY',
-  missing: 'missing required', wrong: 'wrong field'
+  missing: 'missing required', wrong: 'wrong field', validation: 'validation image recheck'
 };
 
 /* The running score (`_StressLive.score`): what the jobs finished so far
@@ -14140,6 +14237,7 @@ function stAlertTag(a) {
   if (a.kind === 'dry' && ST_DRY_STATE[a.state]) return ST_DRY_STATE[a.state];
   if (a.kind === 'missing' && ST_MISSING_STATE[a.state]) return ST_MISSING_STATE[a.state];
   if (a.kind === 'truncated' && ST_CAP_STATE[a.state]) return ST_CAP_STATE[a.state];
+  if (a.kind === 'validation') return 'validation · ' + (a.state || 'flagged');
   return ST_ALERT_TEXT[a.kind] || a.kind;
 }
 
@@ -14474,6 +14572,7 @@ function stReportHtml(s, snapshot, host) {
       + (plan.mode === 'full' ? (plan.fill_missing
           ? ' · missing required fields asked of the page images (Hybrid)'
           : ' · <b>no fill from images</b>') : '')
+      + (plan.validation_retry ? ' · validation findings rechecked from images (Hybrid)' : '')
       + (plan.vllm_batch ? ' · <b>batched</b>, up to ' + plan.batch_size
           + ' per /batch request on ' + (plan.batch_servers || []).map(esc).join(' and ') : '')
       + (plan.save_log ? ' · saving each job to the run log as stress run <b>'
@@ -14568,6 +14667,12 @@ function stReportHtml(s, snapshot, host) {
         + (r.extract.fill_jobs ? ' · ' + r.extract.fill_filled + ' of ' + r.extract.fill_asked
           + ' filled from the page images (Hybrid)' : ''),
       r.extract.missing_required_jobs ? 'st-warn' : ''));
+    if (r.extract?.validation_retry_jobs) tiles.push(stTile('Validation image recheck',
+      r.extract.validation_retry_changed + '<small> field(s) changed</small>',
+      r.extract.validation_retry_jobs + ' job(s) · ' + r.extract.validation_retry_asked + ' fields asked'
+      + ' · ' + r.extract.validation_retry_accepted + ' document(s) accepted'
+      + ' · ' + r.extract.validation_retry_resolved + ' resolved'
+      + ' · ' + stSec(r.extract.validation_retry_s) + ' additional work'));
     // Document sets: one file can hold several documents, each extracted on
     // its own (stress.doc_sets).
     const ds = r.extract && r.extract.documents;
@@ -14681,6 +14786,7 @@ function stBody() {
     no_cache: stEl('stNoCache').checked,
     split_pages: stEl('stSplitPages').checked,
     fill_missing: stFillOn && stMode.value === 'full',
+    validation_retry: !!stEl('stValidationImages')?.checked && stMode.value === 'full',
     vllm_batch: stBatchOn && !stEl('stBatch').disabled,
     save_log: stEl('stSaveLog').checked && !['classify', 'image'].includes(stMode.value),
     save_details: stEl('stSaveDetails').checked && ST_EXTRACT_MODES.includes(stMode.value),
@@ -15373,6 +15479,7 @@ function historyRender(item) {
     ['Extraction GPU exporter', cfg.gpu_extract_url || 'Default / local'],
     ['Bypass prompt cache', cfg.no_cache], ['Batch requests (vLLM /batch)', cfg.vllm_batch ?? false],
     ['Fill missing from images (Hybrid)', cfg.mode === 'full' ? cfg.fill_missing ?? true : undefined],
+    ['Recheck validation from images (Hybrid)', cfg.mode === 'full' ? cfg.validation_retry ?? false : undefined],
     ['Save per-job accuracy rows', cfg.save_log],
     ['Detail log destination', cfg.save_details ? 'Browser download only; not stored here' : 'Off'],
     ['Workspace', cfg.workspace || 'Default'],

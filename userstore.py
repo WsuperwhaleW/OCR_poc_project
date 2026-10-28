@@ -16,7 +16,8 @@ def now():
 def defaults(max_upload_mb):
     return dict(ocr_concurrency=50, detail='medium', loop_guard=True,
                 extraction_concurrency=64, shape='hybrid', extras=False,
-                schema_first=False, ocr_url='http://127.0.0.1:8000',
+                schema_first=False, fill_missing=True, validation_retry=False,
+                ocr_url='http://127.0.0.1:8000',
                 extraction_url='http://127.0.0.1:8001', no_cache=False,
                 user_file_max=0, max_upload_mb=max_upload_mb)
 
@@ -30,7 +31,7 @@ def validate_settings(body, initial):
         value = out[key]
         if isinstance(value, bool) or not isinstance(value, int) or not low <= value <= high:
             raise ValueError(f'{key} must be a whole number from {low} to {high}.')
-    for key in ('loop_guard', 'extras', 'schema_first', 'no_cache'):
+    for key in ('loop_guard', 'extras', 'schema_first', 'no_cache', 'fill_missing', 'validation_retry'):
         if not isinstance(out[key], bool):
             raise ValueError(f'{key} must be true or false.')
     if out['detail'] not in ('original', 'medium', 'low'):

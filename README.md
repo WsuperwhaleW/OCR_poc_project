@@ -82,12 +82,13 @@ python -m pip install --no-index --find-links wheelhouse -r requirements.txt
 `wheelhouse/` or fails immediately and says which package was missing — rather than
 hanging on a network timeout on a box that has no network.
 
-**The bundled wheels are built for Linux x86_64 on CPython 3.9** (the deployment server's version). Eleven of the sixteen
-are pure Python and install anywhere; the other five are compiled and are not portable:
+**The bundled wheels are built for Linux x86_64 on CPython 3.9** (the deployment server's version).
+The bundle now includes `jsonschema==4.25.1` and its dependencies for User JSON v7.
+Native wheels are compiled for the target and are not portable:
 
 | Wheel | Runs on |
 |---|---|
-| `pillow`, `pillow_heif`, `markupsafe`, `charset_normalizer` | Linux x86_64, CPython **3.9 only** |
+| `pillow`, `pillow_heif`, `markupsafe`, `charset_normalizer`, `rpds-py` | Linux x86_64, CPython **3.9 only** |
 | `pymupdf` | Linux x86_64, CPython 3.9 or newer (`abi3`) |
 
 So the general "Python 3.9 or newer" in [step 1](#1-what-you-need-first) narrows to
@@ -99,15 +100,15 @@ rebuild it for the target.
 ### Windows offline install
 
 Separate bundles are available for **Windows x64 and standard CPython**, including
-PDF and HEIC/HEIF support. Each contains 16 wheels, a pinned package list, and a
-SHA-256 manifest. Optional PaddleOCR/EasyOCR dependencies and model weights are
+PDF and HEIC/HEIF support, plus JSON Schema validation for User JSON v7. Each contains
+a pinned package list and a SHA-256 manifest. Optional PaddleOCR/EasyOCR dependencies and model weights are
 not included.
 
 | Python target | Bundle and installation instructions | Size |
 |---|---|---|
-| 3.12.10 | [`wheelhouse-windows-python-3.12.10/`](wheelhouse-windows-python-3.12.10/README.md) | 33.7 MiB |
-| 3.13.x | [`wheelhouse-windows/`](wheelhouse-windows/README.md) | 33.7 MiB |
-| 3.14.8 | [`wheelhouse-windows-python-3.14.8/`](wheelhouse-windows-python-3.14.8/README.md) | 31.0 MiB |
+| 3.12.10 | [`wheelhouse-windows-python-3.12.10/`](wheelhouse-windows-python-3.12.10/README.md) | 34.14 MiB |
+| 3.13.x | [`wheelhouse-windows/`](wheelhouse-windows/README.md) | 34.09 MiB |
+| 3.14.8 | [`wheelhouse-windows-python-3.14.8/`](wheelhouse-windows-python-3.14.8/README.md) | 31.36 MiB |
 
 The 3.14 bundle uses **pillow-heif 1.1.0** because the original `<1.0` requirement
 has no compatible Windows cp314 wheel. Install with that folder's
@@ -1950,6 +1951,38 @@ the images filled. The extraction model must take images; one that cannot fails 
 and the row says so. The **Fill missing from images** toggle button (shown in Full
 pipeline, on by default, saved with the mode's defaults) turns it off; the API takes
 `"fill_missing": false`. With it off, an empty required field is only flagged.
+
+**Recheck validation from images** is a separate, opt-in checkbox in **Full pipeline**
+(off by default; remembered by **Save as default**). Runtime validation failures or
+warnings trigger one image recheck per affected document using the owning Hybrid steps.
+Related totals are read together, even when their original values are nonempty. Only
+that document's pages are sent; a blank printed cell must remain blank. The candidate
+replaces the affected group only if validation improves without new findings or missing
+required values. An incomplete answer, failed request or unchanged validation keeps the
+original values. Benchmark ground truth never triggers or selects a correction, and
+passing validation does not guarantee accuracy. The API option is `"validation_retry": true`.
+Compare shows the original, candidate and retained values with the checks and decision;
+**Save detail log** includes the same audit. The report counts jobs, fields requested,
+fields changed and documents accepted/resolved. Retry time and tokens count toward the run.
+The extraction model must support images. This does not alter Extract only or Image to
+extractor mode, or the independent **Fill missing from images** setting.
+
+**Workspace** also offers **Test files** (the benchmark cases), then **Real files**
+from `realData/` when that folder contains documents, followed by the local upload area.
+Selecting a test file loads it on the server for the same full pipeline as an upload;
+the preview and read use the same selected source. A new source replaces the old one.
+Workspace's **Fill missing from images** and **Recheck validation from images** use the
+same Hybrid retries as Stress test. Their switches are remembered independently in this
+browser. The multipart `/api/ocr` and `/api/ocr/stream` APIs accept `fill_missing=1` and
+`validation_retry=1`; omitting them keeps the existing API behavior. OCR-only skips both.
+
+**Settings → Extraction** has the same two options for the User app, saved on the server
+and captured with each new upload batch. Missing-field retries default on; validation
+retries default off. Existing uploaded jobs keep their captured configuration. User jobs
+reload the original into prepared page images only when a retry is needed, without
+adding to the benchmark preview cache. A failed image retry keeps the OCR and existing
+fields available, with a warning. Key-Value and JSON retain the correction audit. Settings
+for User, Workspace and Stress remain independent; changing one does not change another.
 
 **Every new Stress test is saved to History.** Open **Stress test → History** to select a run
 and inspect its Concurrent, Queue, Warm-up, time limit, seed, document strategy,

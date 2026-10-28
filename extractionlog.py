@@ -152,6 +152,8 @@ def job_detail(record, spec, source, warmup=0, catalog=None, benchmark=None):
                      "steps": [_step_detail(step, catalog) for step in evidence]}
             if score:
                 entry["score"] = _score_summary(score)
+            if document.get("validation_image_rechecks"):
+                entry["validation_image_rechecks"] = document["validation_image_rechecks"]
             form = document.get("classified") or {}
             entry["form"] = {key: value for key, value in {
                 "keys": document.get("fields_asked", form.get("fields")),

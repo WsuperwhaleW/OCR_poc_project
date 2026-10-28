@@ -13,6 +13,7 @@ Accepts any raster format Pillow can open, plus PDFs (PyMuPDF), HEIC/HEIF
 """
 
 import base64
+import copy
 import gzip
 import io
 import json
@@ -7697,6 +7698,7 @@ def _stress_config(body: dict) -> dict:
         # images with its Hybrid step (`_stress_fill_missing`). On unless the
         # request says otherwise; the page's toggle sends it.
         "fill_missing": body.get("fill_missing", True) is not False and mode == "full",
+        "validation_retry": body.get("validation_retry") is True and mode == "full",
         "vllm_batch": vllm_batch,
         # Classification has no row shape: a glued pack is no benchmark case and
         # its score is a grouping, so nothing is written for it.
@@ -7999,6 +8001,12 @@ def _fill_ask(pages, form: dict, ids) -> dict:
     if not status["text_available"]:
         return {"error": status["text_reason"]}
     text = prompts.IMAGE_TRANSCRIPT.format(pages=len(pages))
+    if form.get("validation_recheck"):
+        text += ("\nRe-read the requested fields directly from these images. Preserve the "
+                 "association of each printed label with its own row and cell. A blank "
+                 "cell must stay blank; never carry a value from a neighbouring row "
+                 "into it. Inspect totals together, but copy only printed values. "
+                 "Never calculate or change a value to make arithmetic or validation pass.")
     with _feeding_images([getattr(p, "_data_uri", None) or image_data_uri(p)
                           for p in pages]):
         return _drain(_extract_agentic(text, status, form, only=list(ids), mode="hybrid"))
@@ -8103,8 +8111,12 @@ def _stress_fill_missing(result: dict, images, texts, case_id, rec: dict,
         for number, doc, form, keys, ids in plan:
             if cancel.is_set():
                 break
-            numbers = [p for p in (doc.get("pages") or []) if 1 <= p <= len(images)]
-            numbers = numbers or list(range(1, len(images) + 1))
+            numbers = doc.get("pages") or ([] if documents else list(range(1, len(images) + 1)))
+            if (not numbers or any(isinstance(p, bool) or not isinstance(p, int)
+                                   or not 1 <= p <= len(images) for p in numbers)):
+                errors.append(f"doc{number}: page boundaries unavailable; no other document's images were used")
+                continue
+            numbers = list(dict.fromkeys(numbers))
             # This document's own transcript, which validation checks against.
             own = [texts[p - 1] for p in numbers if p <= len(texts)]
             text = join_page_texts(own) if len(own) > 1 else "".join(own)
@@ -8155,6 +8167,255 @@ def _stress_fill_missing(result: dict, images, texts, case_id, rec: dict,
                                 + f", still empty: {listed}{note}",
                          state="retry failed")
     return alert
+
+
+def _validation_bad(doc):
+    """Runtime validation findings only: never use benchmark truth to trigger a retry."""
+    return [row for row in ((doc.get("validation") or {}).get("checks") or [])
+            if row.get("state") in (validate.FAILED, validate.WARNING) and row.get("field")]
+
+
+def _validation_retry_keys(doc, form):
+    asked = set(form["keys"])
+    found = [row["field"] for row in _validation_bad(doc)
+             if row["field"].split("[", 1)[0] in asked]
+    # Arithmetic cannot say which operand was misplaced. Re-read the complete
+    # requested money group together, rather than silently retaining a wrong base.
+    totals = ("subtotal", "vat_total", "amount_incl_vat")
+    if any(key in totals for key in found):
+        found += [key for key in totals if key in asked]
+    balance = ("remaining_amount", "remaining_vat_amount")
+    if any(key in balance for key in found):
+        found += [key for key in balance if key in asked]
+    if any(key in ("total_amount_paid", "total_wht_amount") or key.startswith("income_items[") for key in found):
+        found += [key for key in ("total_amount_paid", "total_wht_amount", prompts.INCOME_ITEMS_KEY)
+                  if key in asked]
+    return list(dict.fromkeys(found))
+
+
+def _retry_value(fields, key):
+    """Scalar or a checked income-table cell, with presence distinct from blank."""
+    if key in fields:
+        return True, fields[key]
+    match = re.fullmatch(r"(\w+)\[(\d+)\]\.(\w+)", key)
+    if match:
+        table, index, cell = match[1], int(match[2]), match[3]
+        rows = fields.get(table)
+        if isinstance(rows, list) and index < len(rows) and isinstance(rows[index], dict) and cell in rows[index]:
+            return True, rows[index][cell]
+    return False, None
+
+
+def _validation_candidate(doc, keys, answer, form, text, audit=None):
+    """Atomic group replacement; reject incomplete or non-improving answers."""
+    got = answer.get("fields")
+    if answer.get("error") or not isinstance(got, dict):
+        return None, str(answer.get("error") or "No field object returned")
+    if any(not _retry_value(got, key)[0] for key in keys):
+        return None, "The image answer did not return every requested field"
+    trial = dict(doc, fields=copy.deepcopy(doc.get("fields") or {}))
+    for key in keys:
+        value = copy.deepcopy(_retry_value(got, key)[1])
+        if key != prompts.INCOME_ITEMS_KEY and (isinstance(value, (dict, list, bool))):
+            return None, "The image answer returned a non-scalar field value"
+        if value is None:
+            value = ""
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            value = str(value)  # Scalar extraction fields use strings, including zero.
+        if key in got:
+            trial["fields"][key] = value
+        else:
+            match = re.fullmatch(r"(\w+)\[(\d+)\]\.(\w+)", key)
+            # A table-level recheck already copied this cell with its whole table.
+            if match[1] not in keys:
+                trial["fields"][match[1]][int(match[2])][match[3]] = value
+    _revalidate(trial, form, text)
+    if audit is not None:
+        audit["checks_candidate"] = copy.deepcopy(_validation_bad(trial))
+    if (trial.get("validation") or {}).get("error"):
+        return None, "Could not validate the image answer"
+    before, after = _validation_bad(doc), _validation_bad(trial)
+    identity = lambda rows: {(r["field"], r.get("rule")) for r in rows}
+    gaps = lambda value: {key for _, keys in _missing_required(value) for key in keys}
+    if gaps(trial) - gaps(doc):
+        return None, "The image answer introduced missing required fields"
+    if identity(after) - identity(before):
+        return None, "The image answer introduced new validation findings"
+    rank = lambda rows: (sum(r["state"] == validate.FAILED for r in rows),
+                         sum(r["state"] == validate.WARNING for r in rows))
+    if rank(after) >= rank(before):
+        return None, "Validation did not improve; original values kept"
+    return trial, "Validation improved without introducing new findings"
+
+
+def _stress_recheck_validation(result, images, texts, case_id, rec, live, job, who, window, cancel):
+    """One bounded image recheck per suspicious document, using its Hybrid steps."""
+    if result.get("error") or cancel.is_set():
+        return None
+    documents = [d for d in (result.get("documents") or []) if isinstance(d, dict)]
+    plan = []
+    for doc in documents or [result]:
+        if doc.get("error"):
+            continue
+        form = _fill_form(doc)
+        form["keys"] = form["keys"] or list(doc.get("fields") or {})
+        if (form["items"] or form["mandatory_items"]) and prompts.INCOME_ITEMS_KEY not in form["keys"]:
+            form["keys"].append(prompts.INCOME_ITEMS_KEY)
+        keys = _validation_retry_keys(doc, form)
+        if keys:
+            plan.append((doc, form, keys))
+    if not plan:
+        return None
+    started = time.perf_counter()
+    rec["validation_retry_jobs"] = 1
+    for name in ("asked", "changed", "accepted", "resolved"):
+        rec["validation_retry_" + name] = 0
+    names = [f"doc{doc.get('document') or 1}.{key}" for doc, _, keys in plan for key in keys]
+    alert = live.flag("validation", job, who,
+                      "Validation findings: " + ", ".join(names) + " -- asking the page images (Hybrid)",
+                      stage="extract", state="retrying", evidence=True, fields=names)
+    window(alert, result, _missing_required(result))
+    tokens, errors = 0, []
+    previous = servertime.open_tally()
+    try:
+        for doc, form, keys in plan:
+            if cancel.is_set():
+                errors.append("stopped before the next image request")
+                break
+            before = copy.deepcopy(doc.get("fields") or {})
+            audit = {"fields": list(keys), "before": {k: _retry_value(before, k)[1] for k in keys},
+                     "checks_before": copy.deepcopy(_validation_bad(doc)), "accepted": False}
+            doc.setdefault("validation_image_rechecks", []).append(audit)
+            began = time.perf_counter()
+            try:
+                ids, lost = _fill_steps(form["doc_types"], keys)
+                audit["steps"] = ids
+                if lost:
+                    raise ValueError("No Hybrid step asks for " + ", ".join(lost))
+                numbers = doc.get("pages") or ([] if documents else list(range(1, len(images) + 1)))
+                if (not numbers or any(isinstance(p, bool) or not isinstance(p, int)
+                                       or not 1 <= p <= len(images) for p in numbers)):
+                    raise ValueError("This document's page boundaries are unavailable; no other document's images were used")
+                numbers = list(dict.fromkeys(numbers))
+                audit["pages"] = numbers
+                own = [texts[p - 1] for p in numbers if p <= len(texts)]
+                text = join_page_texts(own) if len(own) > 1 else "".join(own)
+                # Recompute checks from this document's current fields. It may
+                # have just had a blank filled by the independent missing toggle.
+                _revalidate(doc, form, text)
+                audit["checks_before"] = copy.deepcopy(_validation_bad(doc))
+                form["validation_recheck"] = True
+                rec["validation_retry_asked"] += len(keys)
+                answer = _fill_ask([images[p - 1] for p in numbers], form, ids)
+                tokens += answer.get("tokens") or 0
+                audit["tokens"] = answer.get("tokens") or 0
+                audit["candidate"] = {k: _retry_value(answer.get("fields") or {}, k)[1] for k in keys}
+                audit["chats"] = list(_agentic_chats(answer))
+                trial, reason = _validation_candidate(doc, keys, answer, form, text, audit)
+                audit["reason"] = reason
+                if trial is not None:
+                    changed = [key for key in keys if _retry_value(before, key)[1] != _retry_value(trial["fields"], key)[1]]
+                    doc.update(fields=trial["fields"], normalized=trial["normalized"], validation=trial["validation"])
+                    audit.update(accepted=True, changed=changed)
+                    rec["validation_retry_changed"] += len(changed)
+                    rec["validation_retry_accepted"] += 1
+                    if not _validation_bad(doc):
+                        rec["validation_retry_resolved"] += 1
+                    if case_id:
+                        _score_fields(doc, case_id, form, numbers if documents else None, text)
+                else:
+                    errors.append(reason)
+            except Exception as err:  # noqa: BLE001 - an optional recheck cannot fail the job
+                audit["error"] = f"{type(err).__name__}: {err}"
+                errors.append(audit["error"])
+            finally:
+                audit["after"] = {k: _retry_value(doc.get("fields") or {}, k)[1] for k in keys}
+                audit["checks_after"] = copy.deepcopy(_validation_bad(doc))
+                audit["seconds"] = round(time.perf_counter() - began, 3)
+                live.touch(job)
+    finally:
+        served = servertime.close_tally(previous)
+    if documents and rec["validation_retry_accepted"]:
+        scored = [d for d in documents if d.get("field_score")]
+        if scored:
+            result["field_score"] = _merge_field_scores(scored, len(documents))
+    result["tokens"] = (result.get("tokens") or 0) + tokens
+    if served:
+        result["server_time"] = dict(result.get("server_time") or {})
+        for key in ("in_tokens", "out_tokens"):
+            values = [v for v in (result["server_time"].get(key), served.get(key)) if v is not None]
+            result["server_time"][key] = sum(values) if values else None
+    rec["validation_retry_s"] = round(time.perf_counter() - started, 3)
+    rec["validation_retry_tokens"] = tokens
+    remaining = sum(len(_validation_bad(doc)) for doc, _, _ in plan)
+    note = (" -- " + "; ".join(errors)) if errors else ""
+    state = "resolved" if not remaining and not errors else "retry failed"
+    live.update_flag(alert, f"Validation image recheck: {rec['validation_retry_changed']} field(s) changed; "
+                     f"{remaining} finding(s) remain{note}", state=state)
+    window(alert, result, _missing_required(result))
+    return alert
+
+
+def image_rechecks_needed(result, fill_missing=False, validation_retry=False):
+    """Decide before loading images; runtime findings only, with no truth lookup."""
+    if not isinstance(result, dict) or result.get("error"):
+        return False
+    return bool((fill_missing and _missing_required(result)) or
+                (validation_retry and any(_validation_bad(doc) for doc in
+                                          result.get("documents") or [result])))
+
+
+class _ImageRecheckProgress:
+    """Adapt the same retries used by Stress to a single-file progress callback."""
+    def __init__(self, each):
+        self.each, self.flags = each, []
+
+    def _emit(self, flag):
+        if self.each:
+            self.each({"event": "image_recheck", **flag})
+
+    def flag(self, kind, job, who, message, **extra):
+        flag = {"id": len(self.flags), "kind": kind, "message": message,
+                "state": extra.get("state", "retrying")}
+        self.flags.append(flag)
+        self._emit(flag)
+        return flag["id"]
+
+    def update_flag(self, alert_id, message=None, **changes):
+        flag = self.flags[alert_id]
+        if message is not None:
+            flag["message"] = message
+        flag.update(changes)
+        self._emit(flag)
+
+    def touch(self, job):
+        pass
+
+
+def recheck_fields_from_images(result, images, texts, *, fill_missing=False,
+                               validation_retry=False, case_id=None, each=None):
+    """Workspace and User pipeline reuse Stress's missing/validation policies.
+
+    Mutates only the fields accepted by those policies. No global toggle or
+    benchmark history is touched; the result carries the decisions and cost.
+    """
+    if not image_rechecks_needed(result, fill_missing, validation_retry):
+        return
+    started = time.perf_counter()
+    live, metrics, cancel = _ImageRecheckProgress(each), {}, MultiCancel()
+    window = lambda *_args: None
+    summary = {"fill_missing": bool(fill_missing), "validation_retry": bool(validation_retry),
+               "metrics": metrics, "flags": live.flags}
+    result["image_rechecks"] = summary
+    try:
+        if fill_missing:
+            _stress_fill_missing(result, images, texts, case_id, metrics, live, 1, "", window, cancel)
+        if validation_retry:
+            _stress_recheck_validation(result, images, texts, case_id, metrics, live, 1, "", window, cancel)
+    except Exception as err:  # optional rescue must retain the original extraction
+        summary["error"] = f"Image recheck failed: {err}"
+    summary["seconds"] = round(time.perf_counter() - started, 3)
+    result["seconds"] = round((result.get("seconds") or 0) + summary["seconds"], 3)
 
 
 class _StressPages:
@@ -8664,6 +8925,11 @@ def _agentic_chats(result):
             for chat in step.get("chats") or []:
                 yield {**chat, "step": step["id"], "title": step.get("title", ""),
                        "keys": step.get("keys") or [], "document": document.get("document", 1)}
+        for retry in document.get("validation_image_rechecks") or []:
+            for chat in retry.get("chats") or []:
+                yield {**chat, "step": "validation_image." + chat.get("step", ""),
+                       "title": "Validation image recheck · " + chat.get("title", ""),
+                       "document": document.get("document", 1)}
 
 
 def _missing_required(result: dict) -> list:
@@ -8831,7 +9097,8 @@ def _fields_evidence(result: dict, missing: list) -> list:
                            blame=bad[row["key"]]["blame"])
         out.append({"document": number, "pages": list(doc.get("pages") or []),
                     "doc_types": list(doc.get("doc_types") or []),
-                    "error": doc.get("error") or "", "rows": rows})
+                    "error": doc.get("error") or "", "rows": rows,
+                    "validation_rechecks": doc.get("validation_image_rechecks") or []})
     return out
 
 
@@ -9029,6 +9296,10 @@ def _stress_job_steps(spec: dict, cfg: dict, prepared: dict, cancel,
                             result, prepared["pages"][case_id], texts,
                             None if real else case_id, rec, live, job, who,
                             fields_window, cancel, why)
+                    if mode == "full" and cfg.get("validation_retry"):
+                        _stress_recheck_validation(
+                            result, prepared["pages"][case_id], texts,
+                            None if real else case_id, rec, live, job, who, fields_window, cancel)
                 rec["extract_s"] = round(time.perf_counter() - started, 3)
                 if spec.get("detail"):
                     # Hold the existing result; format and send it after timing ends.
@@ -9566,6 +9837,7 @@ def _stress_run(cfg: dict, cancel):
         "no_cache": bool(cfg.get("no_cache")),
         "split_pages": bool(cfg.get("split_pages")) and cfg["mode"] in ("ocr", "full"),
         "fill_missing": bool(cfg.get("fill_missing")) and cfg["mode"] == "full",
+        "validation_retry": bool(cfg.get("validation_retry")) and cfg["mode"] == "full",
         "no_cache_effect": ({s["kind"]: backends.cache_bypass_effect(s["kind"])
                              for s in (reader, extractor) if s}
                             if cfg.get("no_cache") else {}),
@@ -10342,6 +10614,10 @@ def ocr():
     if EXTRACT and request.form.get("extract", "1") != "0" and text.strip():
         payload["extracted"] = extract_fields(
             text, case_id=case["id"] if case else None, pages=page_texts)
+        recheck_fields_from_images(payload["extracted"], pages, page_texts,
+                                  fill_missing=request.form.get("fill_missing") == "1",
+                                  validation_retry=request.form.get("validation_retry") == "1",
+                                  case_id=case["id"] if case else None)
     log_run(payload, source)
     return jsonify(text=text, pages=page_texts, **payload)
 
@@ -10384,6 +10660,8 @@ def ocr_stream():
     except ValueError as err:
         return jsonify(error=str(err)), 400
     want_extract = request.form.get("extract", "1") != "0"
+    fill_missing = request.form.get("fill_missing") == "1"
+    validation_retry = request.form.get("validation_retry") == "1"
 
     def page_started(index, page):
         return json.dumps(
@@ -10480,6 +10758,12 @@ def ocr_stream():
                     except StopIteration as stop:
                         result = stop.value
                         break
+                if image_rechecks_needed(result, fill_missing, validation_retry):
+                    yield json.dumps({"event": "image_recheck", "state": "retrying",
+                                      "message": "Rechecking fields from document images…"}) + "\n"
+                    recheck_fields_from_images(result, pages, collected,
+                                              fill_missing=fill_missing, validation_retry=validation_retry,
+                                              case_id=case["id"] if case else None)
                 summary["extracted"] = result
                 # Applied before the event rather than left to `log_run` below:
                 # this is the one path that hands the fields to the browser

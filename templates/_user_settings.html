@@ -17,6 +17,9 @@
           <label class="field">Shape<select name="shape"><option value="single">Single</option><option value="agentic">Agentic</option><option value="hybrid">Hybrid</option></select></label>
           <label class="user-settings-check"><input name="extras" type="checkbox"> Extra fields</label>
           <label class="user-settings-check"><input name="schema_first" type="checkbox"> JSON schema first</label>
+          <label class="user-settings-check"><input name="fill_missing" type="checkbox"> Fill missing from images</label>
+          <label class="user-settings-check"><input name="validation_retry" type="checkbox"> Recheck validation from images</label>
+          <p class="note">Uses the same Hybrid image rechecks as Workspace and Stress test. The extraction model must support images.</p>
         </section>
         <section class="user-settings-group"><h3>Models</h3>
           <label class="field">OCR endpoint<input name="ocr_url" type="url" required></label>

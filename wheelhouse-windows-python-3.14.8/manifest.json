@@ -6,7 +6,7 @@
   "python_abi_series": "3.14",
   "abi": "cp314",
   "source_requirements": "requirements-target.txt",
-  "source_requirements_sha256": "404531fa6830db75c4f29b08fa7c1b1a8d4bb6ef95fcc3f1f7409610e36c6092",
+  "source_requirements_sha256": "097aaf1dcca2ac5f1cd68276e310f98516e59d67dfd9a0ffe6597f3200ffd2a9",
   "version_overrides": {
     "pillow-heif": {
       "previous": "0.22.0",
@@ -14,18 +14,29 @@
       "reason": "No cp314 Windows wheel satisfies the original >=0.16,<1.0 requirement."
     }
   },
-  "wheel_count": 16,
-  "total_bytes": 32460186,
+  "wheel_count": 21,
+  "total_bytes": 32887857,
   "validation": {
     "wheel_zip_integrity": "passed",
     "target_wheel_tags": "passed",
     "requires_python": "passed",
     "target_dependency_closure": "passed",
     "target_requirements": "passed",
-    "runtime_import_test": "not run: target interpreter is not installed on the build machine",
-    "offline_pip_dry_run": "passed: all 16 candidates resolved from local files with --no-index"
+    "runtime_import_test": "not run: target platform/interpreter is not available on the Windows CPython 3.13 build machine",
+    "offline_pip_dry_run": "passed: all 21 candidates resolved from local files with --no-index"
   },
   "wheels": [
+    {
+      "file": "attrs-25.3.0-py3-none-any.whl",
+      "name": "attrs",
+      "version": "25.3.0",
+      "requires_python": ">=3.8",
+      "wheel_tags": [
+        "py3-none-any"
+      ],
+      "bytes": 63815,
+      "sha256": "427318ce031701fea540783410126f03899a97ffc6f61596ad581ac2e40e3bc3"
+    },
     {
       "file": "blinker-1.9.0-py3-none-any.whl",
       "name": "blinker",
@@ -127,6 +138,28 @@
       "sha256": "85ece4451f492d0c13c5dd7c13a64681a86afae63a5f347908daf103ce6d2f67"
     },
     {
+      "file": "jsonschema-4.25.1-py3-none-any.whl",
+      "name": "jsonschema",
+      "version": "4.25.1",
+      "requires_python": ">=3.9",
+      "wheel_tags": [
+        "py3-none-any"
+      ],
+      "bytes": 90040,
+      "sha256": "3fba0169e345c7175110351d456342c364814cfcf3b964ba4587f22915230a63"
+    },
+    {
+      "file": "jsonschema_specifications-2025.9.1-py3-none-any.whl",
+      "name": "jsonschema-specifications",
+      "version": "2025.9.1",
+      "requires_python": ">=3.9",
+      "wheel_tags": [
+        "py3-none-any"
+      ],
+      "bytes": 18437,
+      "sha256": "98802fee3a11ee76ecaca44429fda8a41bff98b00a0f2838151b113f210cc6fe"
+    },
+    {
       "file": "markupsafe-3.0.4-cp314-cp314-win_amd64.whl",
       "name": "MarkupSafe",
       "version": "3.0.4",
@@ -171,6 +204,17 @@
       "sha256": "e39cc74ff030d773c4e76b9e5c5919cc4683895b73bd63bfd7a349a53ab5e8d7"
     },
     {
+      "file": "referencing-0.36.2-py3-none-any.whl",
+      "name": "referencing",
+      "version": "0.36.2",
+      "requires_python": ">=3.9",
+      "wheel_tags": [
+        "py3-none-any"
+      ],
+      "bytes": 26775,
+      "sha256": "e8699adbbf8b5c7de96d8ffa0eb5c158b3beafce084968e2ea8bb08c6794dcd0"
+    },
+    {
       "file": "requests-2.32.5-py3-none-any.whl",
       "name": "requests",
       "version": "2.32.5",
@@ -180,6 +224,17 @@
       ],
       "bytes": 64738,
       "sha256": "2462f94637a34fd532264295e186976db0f5d453d1cdd31473c85a6a161affb6"
+    },
+    {
+      "file": "rpds_py-0.30.0-cp314-cp314-win_amd64.whl",
+      "name": "rpds-py",
+      "version": "0.30.0",
+      "requires_python": ">=3.10",
+      "wheel_tags": [
+        "cp314-cp314-win_amd64"
+      ],
+      "bytes": 228604,
+      "sha256": "95f0802447ac2d10bcc69f6dc28fe95fdf17940367b21d34e34c737870758950"
     },
     {
       "file": "urllib3-2.6.3-py3-none-any.whl",
@@ -203,5 +258,6 @@
       "bytes": 228700,
       "sha256": "6392e50c78460ba618e5b21f08a71f59c99ce99cdc6cf6e3dd7e6ccca8754fab"
     }
-  ]
+  ],
+  "updated_on": "2026-10-28"
 }

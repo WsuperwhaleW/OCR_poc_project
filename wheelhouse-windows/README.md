@@ -1,6 +1,6 @@
 # Windows offline wheelhouse
 
-Target: **Windows x64 (AMD64), standard CPython 3.13**. Built on 2026-10-05.
+Target: **Windows x64 (AMD64), standard CPython 3.13**. Built on 2026-10-05. Updated on 2026-10-28.
 
 This folder contains the application dependencies from `requirements.txt`, including
 PDF support (PyMuPDF) and HEIC/HEIF support (pillow-heif). Package versions match
@@ -17,7 +17,7 @@ project directory with Python 3.13 x64 installed:
 ```powershell
 py -3.13 -m venv .venv
 .\.venv\Scripts\python.exe -m pip install --no-index --find-links .\wheelhouse-windows -r .\wheelhouse-windows\requirements-lock.txt
-.\.venv\Scripts\python.exe -c "import flask, requests, PIL, pymupdf, pillow_heif; print('dependencies OK')"
+.\.venv\Scripts\python.exe -c "import flask, requests, PIL, pymupdf, pillow_heif, jsonschema; print('dependencies OK')"
 .\.venv\Scripts\python.exe app.py
 ```
 
@@ -45,3 +45,13 @@ python -m pip --isolated download --index-url https://pypi.org/simple --only-bin
 
 `manifest.json` records each wheel's package name, version, byte size, and SHA-256
 checksum. It also identifies the intended platform and Python version.
+
+## User JSON validation update (2026-10-28)
+
+Includes jsonschema 4.25.1, attrs, jsonschema-specifications, referencing and
+rpds-py, plus typing-extensions where the target Python requires it. The
+requirements lock, target requirements and SHA-256 manifest include this update.
+
+Verified by installing all 21 pinned packages offline into an isolated directory
+and importing the application dependencies on Windows CPython 3.13 with global
+site-packages disabled. A User JSON v7 candidate also passed schema validation.

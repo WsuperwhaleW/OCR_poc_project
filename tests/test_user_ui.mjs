@@ -9,7 +9,7 @@ const settingsSource = readFileSync(new URL('templates/_user_settings_script.htm
 const appSource = readFileSync(new URL('templates/_user_app_script.html', root), 'utf8');
 const renderSource = readFileSync(new URL('templates/_user_render_script.html', root), 'utf8');
 const config = {ocr_concurrency:50,extraction_concurrency:64,detail:'medium',shape:'hybrid',
-  extras:false,schema_first:false,loop_guard:true,no_cache:false,user_file_max:0,max_upload_mb:32,
+  extras:false,schema_first:false,fill_missing:true,validation_retry:false,loop_guard:true,no_cache:false,user_file_max:0,max_upload_mb:32,
   ocr_url:'http://127.0.0.1:8000',extraction_url:'http://127.0.0.1:8001'};
 const clean = value => JSON.parse(JSON.stringify(value));
 
@@ -77,9 +77,11 @@ test('Settings load and Save round-trip numeric and checkbox values to the prefi
   assert.equal(controls.ocr_concurrency.value,50);assert.equal(controls.loop_guard.checked,true);
   assert.equal(el('userSettingsFields').disabled,false);
   controls.ocr_concurrency.value='12';controls.extras.checked=true;
+  controls.fill_missing.checked=false;controls.validation_retry.checked=true;
   await form.listeners.submit({preventDefault(){}});
   const saved=JSON.parse(calls[1].options.body);
   assert.equal(saved.ocr_concurrency,12);assert.equal(saved.extras,true);assert.equal(saved.no_cache,false);
+  assert.equal(saved.fill_missing,false);assert.equal(saved.validation_retry,true);
   assert.equal(calls[1].url,'/ocr/api/user/settings');assert.match(el('userSettingsNotice').textContent,/Saved/);
   assert.equal(calls[1].options.headers['X-OCR-User-Token'],'page-proof');
   controls.shape.value='single';controls.shape.listeners.change();assert.equal(controls.schema_first.disabled,true);
