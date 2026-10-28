@@ -41,6 +41,39 @@ class SharedRecheckTests(unittest.TestCase):
         ask.assert_not_called()
         self.assertEqual(value, before)
 
+    def test_fill_records_what_it_asked_what_the_images_said_and_what_it_took(self):
+        value = document({**GOOD, 'vat_total': ''})
+        with patch.object(app, '_fill_ask', return_value={'fields': GOOD, 'tokens': 7}):
+            app.recheck_fields_from_images(value, [page()], ['OCR'], fill_missing=True)
+        audit, = value['image_fills']
+        self.assertEqual(audit['fields'], ['vat_total'])
+        self.assertEqual(audit['steps'], ['totals']); self.assertEqual(audit['pages'], [1])
+        self.assertEqual(audit['candidate'], {'vat_total': GOOD['vat_total']})
+        self.assertEqual(audit['filled'], ['vat_total']); self.assertTrue(audit['accepted'])
+        self.assertEqual(audit['still_empty'], []); self.assertEqual(audit['tokens'], 7)
+
+    def test_a_fill_the_images_cannot_answer_is_recorded_as_still_empty(self):
+        value = document({**GOOD, 'vat_total': ''})
+        with patch.object(app, '_fill_ask', return_value={'fields': {'vat_total': ''}}):
+            app.recheck_fields_from_images(value, [page()], ['OCR'], fill_missing=True)
+        audit, = value['image_fills']
+        self.assertFalse(audit['accepted']); self.assertEqual(audit['still_empty'], ['vat_total'])
+        with patch.object(app, '_fill_ask', return_value={'error': 'server down'}):
+            value = document({**GOOD, 'vat_total': ''})
+            app.recheck_fields_from_images(value, [page()], ['OCR'], fill_missing=True)
+        self.assertEqual(value['image_fills'][0]['error'], 'server down')
+
+    def test_a_switch_that_found_nothing_to_do_says_so(self):
+        value = document(GOOD)
+        with patch.object(app, '_fill_ask') as ask:
+            app.recheck_fields_from_images(value, [page()], ['OCR'], fill_missing=True,
+                                           validation_retry=True)
+        ask.assert_not_called()
+        self.assertEqual(value['fields'], GOOD)
+        self.assertEqual(value['image_rechecks']['skipped'],
+                         {'fill_missing': True, 'validation_retry': True})
+        self.assertEqual(value['image_rechecks']['flags'], [])
+
     def test_missing_retry_does_not_send_other_documents_pages_when_boundaries_are_unknown(self):
         value = {'documents': [document(GOOD, document=1, pages=[1]),
                                document({**GOOD, 'vat_total': ''}, document=2)]}
@@ -84,6 +117,10 @@ class WorkspaceRouteTests(unittest.TestCase):
                 if stream:
                     kinds = [e['event'] for e in events]
                     self.assertLess(kinds.index('image_recheck'), kinds.index('fields'))
+                    # Each recheck's own flag is streamed as it is raised and as it ends.
+                    flags = [e for e in events if e['event'] == 'image_recheck' and e.get('kind')]
+                    self.assertEqual([(f['kind'], f['state']) for f in flags],
+                                     [('validation', 'retrying'), ('validation', 'resolved')])
 
     def test_an_ordinary_api_call_or_ocr_only_never_enables_the_recheck_implicitly(self):
         for stream in (False, True):

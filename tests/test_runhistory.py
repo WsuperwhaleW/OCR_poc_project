@@ -13,6 +13,12 @@ import config
 import runhistory
 
 
+def _ok_job(*_args):
+    """A stress job (`_stress_job_steps` is a generator) that finishes at once."""
+    return {"status": "ok"}
+    yield                                   # makes it a generator
+
+
 class HistoryTests(unittest.TestCase):
     def setUp(self):
         self.directory = tempfile.TemporaryDirectory()
@@ -224,7 +230,7 @@ class HistoryTests(unittest.TestCase):
 
                 with patch.object(app, "_HistoryMonitor", side_effect=make_sampler), \
                      patch.object(app, "_monitor_scrape", side_effect=slow_scrape), \
-                     patch.object(app, "_stress_job", return_value={"status": "ok"}), \
+                     patch.object(app, "_stress_job_steps", _ok_job), \
                      ThreadPoolExecutor(max_workers=1) as pool:
                     consumer = pool.submit(consume)
                     try:

@@ -24,6 +24,7 @@ import sys
 import tempfile
 import threading
 import time
+import queue
 import uuid
 import weakref
 from collections import OrderedDict, deque
@@ -8120,15 +8121,33 @@ def _stress_fill_missing(result: dict, images, texts, case_id, rec: dict,
             # This document's own transcript, which validation checks against.
             own = [texts[p - 1] for p in numbers if p <= len(texts)]
             text = join_page_texts(own) if len(own) > 1 else "".join(own)
+            # What the page shows for this attempt: the keys asked, what the
+            # images answered for them and which of those were taken. Built the
+            # way the validation recheck's audit is, so both read alike.
+            audit = {"fields": list(keys), "steps": list(ids), "pages": numbers,
+                     "filled": [], "accepted": False}
+            doc.setdefault("image_fills", []).append(audit)
+            began = time.perf_counter()
             try:
                 answer = _fill_ask([images[p - 1] for p in numbers], form, ids)
             except Exception as err:            # noqa: BLE001
                 answer = {"error": f"{type(err).__name__}: {err}"}
             tokens += answer.get("tokens") or 0
+            audit["tokens"] = answer.get("tokens") or 0
+            audit["seconds"] = round(time.perf_counter() - began, 3)
             if answer.get("error"):
+                audit["error"] = str(answer["error"])[:300]
+                audit["still_empty"] = list(keys)
                 errors.append(str(answer["error"])[:160])
                 continue
+            audit["candidate"] = {k: _retry_value(answer.get("fields") or {}, k)[1]
+                                  for k in keys}
             got = _fill_document(doc, keys, answer, form, text)
+            audit["filled"] = list(got)
+            audit["accepted"] = bool(got)
+            gaps_now = {k for _, ks in _missing_required(doc) for k in ks}
+            audit["still_empty"] = [k for k in keys if k in gaps_now]
+            audit["after"] = {k: _retry_value(doc.get("fields") or {}, k)[1] for k in keys}
             filled += [f"doc{number}.{k}" if several else k for k in got]
             if got:
                 doc["image_filled"] = list(doc.get("image_filled") or []) + got
@@ -8400,6 +8419,15 @@ def recheck_fields_from_images(result, images, texts, *, fill_missing=False,
     benchmark history is touched; the result carries the decisions and cost.
     """
     if not image_rechecks_needed(result, fill_missing, validation_retry):
+        # Said rather than left out: a toggle that was on and found nothing to do
+        # is otherwise indistinguishable on the page from a toggle that was off.
+        if isinstance(result, dict) and not result.get("error") and (fill_missing or validation_retry):
+            result["image_rechecks"] = {
+                "fill_missing": bool(fill_missing), "validation_retry": bool(validation_retry),
+                "metrics": {}, "flags": [], "seconds": 0,
+                "skipped": {"fill_missing": bool(fill_missing) and not _missing_required(result),
+                            "validation_retry": bool(validation_retry) and not any(
+                                _validation_bad(doc) for doc in result.get("documents") or [result])}}
         return
     started = time.perf_counter()
     live, metrics, cancel = _ImageRecheckProgress(each), {}, MultiCancel()
@@ -8416,6 +8444,36 @@ def recheck_fields_from_images(result, images, texts, *, fill_missing=False,
         summary["error"] = f"Image recheck failed: {err}"
     summary["seconds"] = round(time.perf_counter() - started, 3)
     result["seconds"] = round((result.get("seconds") or 0) + summary["seconds"], 3)
+
+
+def _recheck_events(result, images, texts, fill_missing, validation_retry, case_id):
+    """`recheck_fields_from_images`, with each flag streamed as it is raised or updated.
+
+    The rechecks run on a thread so the stream can say which of the two is asking
+    the images and how it ended, rather than one spinner for both. The callback
+    only queues; the generator does the yielding.
+    """
+    if not image_rechecks_needed(result, fill_missing, validation_retry):
+        recheck_fields_from_images(result, images, texts, fill_missing=fill_missing,
+                                   validation_retry=validation_retry, case_id=case_id)
+        return
+    events, done = queue.Queue(), object()
+
+    def work():
+        try:
+            recheck_fields_from_images(result, images, texts, fill_missing=fill_missing,
+                                       validation_retry=validation_retry, case_id=case_id,
+                                       each=lambda e: events.put(copy.deepcopy(e)))
+        finally:
+            events.put(done)
+
+    # Bound to this request's workspace: the model, extraction mode and agents
+    # the recheck asks with are per-workspace settings.
+    threading.Thread(target=workspace.bind(work), daemon=True).start()
+    yield json.dumps({"event": "image_recheck", "state": "starting",
+                      "message": "Rechecking fields from the page images"}) + "\n"
+    while (event := events.get()) is not done:
+        yield json.dumps(event) + "\n"
 
 
 class _StressPages:
@@ -9098,7 +9156,8 @@ def _fields_evidence(result: dict, missing: list) -> list:
         out.append({"document": number, "pages": list(doc.get("pages") or []),
                     "doc_types": list(doc.get("doc_types") or []),
                     "error": doc.get("error") or "", "rows": rows,
-                    "validation_rechecks": doc.get("validation_image_rechecks") or []})
+                    "validation_rechecks": doc.get("validation_image_rechecks") or [],
+                    "image_fills": doc.get("image_fills") or []})
     return out
 
 
@@ -9622,7 +9681,7 @@ def _stress_phase(specs: list, cfg: dict, prepared: dict, cancel, phase: str,
                               thread_name_prefix="stress")
     second = (ThreadPoolExecutor(max_workers=cfg["concurrency"],
                                  thread_name_prefix="stress-extract")
-              if cfg["mode"] == "full" else None)
+              if cfg.get("mode") == "full" else None)
     started = time.perf_counter()
     deadline = started + cfg["max_seconds"] if cfg["max_seconds"] and phase == "run" else None
     for spec in specs:
@@ -10758,12 +10817,9 @@ def ocr_stream():
                     except StopIteration as stop:
                         result = stop.value
                         break
-                if image_rechecks_needed(result, fill_missing, validation_retry):
-                    yield json.dumps({"event": "image_recheck", "state": "retrying",
-                                      "message": "Rechecking fields from document images…"}) + "\n"
-                    recheck_fields_from_images(result, pages, collected,
-                                              fill_missing=fill_missing, validation_retry=validation_retry,
-                                              case_id=case["id"] if case else None)
+                if fill_missing or validation_retry:
+                    yield from _recheck_events(result, pages, collected, fill_missing,
+                                               validation_retry, case["id"] if case else None)
                 summary["extracted"] = result
                 # Applied before the event rather than left to `log_run` below:
                 # this is the one path that hands the fields to the browser

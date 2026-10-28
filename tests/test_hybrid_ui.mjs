@@ -88,18 +88,28 @@ test('validation image recheck is opt-in, full-pipeline-only and disabled during
   assert.equal(ctx.stBody().validation_retry, false);
 });
 
-test('Compare includes escaped before/candidate/after audit and the retained decision', () => {
-  const ctx = vm.createContext({ST_WRONG_TEXT: {}, esc: value => String(value)
+test('Compare shows the before/answer/after audit and the decision, escaped, without the chats', () => {
+  const ctx = vm.createContext({ST_WRONG_TEXT: {}, FIELD_LABELS: {subtotal: 'Subtotal'}, esc: value => String(value)
     .replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;')});
-  vm.runInContext(source('cmpFieldsHtml'), ctx);
-  const retry = {accepted: false, before: {subtotal: 'bad'}, candidate: {subtotal: '<script>bad</script>'},
-    after: {subtotal: 'bad'}, reason: 'Validation did not improve', chats: [{hidden: 'request statistics'}]};
+  const rules = page.slice(page.indexOf('const IMGRC_RULE'));
+  const NL = String.fromCharCode(10);
+  vm.runInContext(rules.slice(0, rules.indexOf(NL + '};') + 3).replace('const ', 'var ') + NL
+    + ['cmpFieldsHtml', 'imgrcFieldName', 'imgrcVal', 'imgrcSame', 'imgrcChip', 'imgrcFindings',
+       'imgrcFillTable', 'imgrcValidationTable', 'imgrcMeta', 'imageRecheckHtml'].map(source).join(NL), ctx);
+  const retry = {fields: ['subtotal'], accepted: false, before: {subtotal: 'bad'},
+    candidate: {subtotal: '<script>bad</script>'}, after: {subtotal: 'bad'},
+    checks_before: [{field: 'subtotal', rule: 'vat_calculation', state: 'failed'}],
+    reason: 'Validation did not improve', chats: [{hidden: 'request statistics'}]};
   const output = ctx.cmpFieldsHtml([{rows: [{key: 'subtotal', value: 'bad'}], validation_rechecks: [retry]}]);
-  assert.match(output, /original values kept/);
-  for (const field of ['before', 'candidate', 'after', 'reason']) assert.ok(output.includes('"' + field + '"'));
+  assert.match(output, /Validation recheck from images/);
+  assert.match(output, /Not applied: Validation did not improve/);
+  assert.match(output, /Triggered by: Subtotal vat_calculation \(failed\)/);
+  assert.match(output, /original kept/);
   assert.ok(output.includes('&lt;script&gt;bad&lt;/script&gt;'));
   assert.ok(!output.includes('<script>'));
   assert.ok(!output.includes('request statistics'));
-  retry.accepted = true;
-  assert.match(ctx.cmpFieldsHtml([{rows: [{key: 'subtotal', value: 'good'}], validation_rechecks: [retry]}]), /accepted/);
+  retry.accepted = true; retry.changed = ['subtotal']; retry.after = {subtotal: 'good'};
+  const applied = ctx.cmpFieldsHtml([{rows: [{key: 'subtotal', value: 'good'}], validation_rechecks: [retry]}]);
+  assert.match(applied, /Applied: /);
+  assert.match(applied, /replaced/);
 });

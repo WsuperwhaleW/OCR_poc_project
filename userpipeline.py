@@ -17,7 +17,7 @@ def compact_extraction(value):
             'pages', 'document', 'documents_found', 'documents_failed',
             'partial', 'error', 'seconds', 'tokens', 'segments', 'split_from',
             'steps_failed', 'steps_extras', 'model', 'backend', 'url', 'normalization_version',
-            'validation', 'image_filled', 'validation_image_rechecks', 'image_rechecks')
+            'validation', 'image_filled', 'image_fills', 'validation_image_rechecks', 'image_rechecks')
     out = {key: value[key] for key in keys if key in value}
     if isinstance(value.get('item_table'), dict):
         table = value['item_table']
