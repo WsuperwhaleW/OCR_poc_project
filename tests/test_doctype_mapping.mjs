@@ -1,3 +1,4 @@
+import {benchmarkSource} from './benchmark_source.mjs';
 import {readFileSync} from 'node:fs';
 import vm from 'node:vm';
 import test from 'node:test';
@@ -42,7 +43,7 @@ test('switching mapping tables stays inside the clicked panel', () => {
   assert.equal(tabs[1]['aria-pressed'],'true');
 });
 test('both Doc types views reuse the reference renderer; it has no model or storage calls', () => {
-  const index=readFileSync(new URL('../templates/index.html',import.meta.url),'utf8');
+  const index=benchmarkSource();
   const user=readFileSync(new URL('../templates/user.html',import.meta.url),'utf8');
   const app=readFileSync(new URL('../templates/_user_app_script.html',import.meta.url),'utf8');
   assert.match(index,/_doctype_mapping_script.html/);assert.match(user,/_doctype_mapping_script.html/);

@@ -1,3 +1,4 @@
+import {benchmarkSource} from './benchmark_source.mjs';
 import {readFileSync} from 'node:fs';
 import vm from 'node:vm';
 import assert from 'node:assert/strict';
@@ -5,7 +6,7 @@ import test from 'node:test';
 
 const source = readFileSync(new URL('../templates/_stress_local_script.html', import.meta.url), 'utf8');
 const factory = source.split('// Page integration.')[0];
-const page = readFileSync(new URL('../templates/index.html', import.meta.url), 'utf8');
+const page = benchmarkSource();
 function file(name, size=100) {
   return {name, size, lastModified: 0, reads: 0,
     get webkitRelativePath() { throw new Error('Paths must not be inspected'); },
@@ -112,4 +113,121 @@ test('integration uses real page metadata and versioned same-origin assets with 
   assert.match(source,/isEvalSupported: false/);
   assert.match(page,/webkitdirectory multiple hidden/);
   assert.ok(page.indexOf('id="stLocalFolder"') < page.indexOf('id="stSetup"'));
+});
+
+function evidenceSetup(local=true) {
+  const pending=[],opened=[],notes=[];
+  const rows=['a','b'].map((id,i)=>({dataset:{alertId:id,alertCase:'folder/'+id+'.pdf',alertPage:String(i+2)}}));
+  const host={querySelectorAll:()=>rows};
+  const ctx=vm.createContext({API:'/ocr/api',stEvidenceRequest:0,cmpOverride:null,cmpView:'',FX_CASES:[],
+    window:{StressLocalPreview:{hasCandidate:()=>local}},
+    stNote:{textContent:'',classList:{add(){}}},
+    document:{getElementById:()=>({hidden:false})},
+    loadStressEvidence:url=>new Promise((resolve,reject)=>pending.push({url,resolve,reject})),
+    stOpenEvidenceCompare(id,scroll=true){opened.push({id,scroll,source:ctx.cmpOverride});},
+    enableCompare(){},stPaintFlagLinks:message=>notes.push(message)});
+  const start=page.indexOf('async function stShowEvidence(');
+  const end=page.indexOf('\nfunction stOpenEvidenceCompare(',start);
+  vm.runInContext(page.slice(start,end),ctx);
+  const finish=(index,id)=>pending[index].resolve({case:'folder/'+id+'.pdf',filename:id+'.pdf',
+    page:2,truth_case:null,fields:[{document:1,rows:[]}],attempts:[{page:2,text:'OCR '+id,image:true}]});
+  return {ctx,host,pending,opened,notes,finish};
+}
+
+test('PC original opens before the slow evidence request completes, then fields arrive without scrolling again',async()=>{
+  const s=evidenceSetup();const request=s.ctx.stShowEvidence('a','missing',s.host,'1');
+  assert.equal(s.opened.length,1,'must open before awaiting any server response');
+  assert.equal(s.ctx.cmpOverride.filename,'folder/a.pdf');
+  assert.equal(s.ctx.cmpOverride.reads[0].page,2);
+  assert.equal(s.ctx.cmpOverride.reads[0].src,null);
+  assert.equal(s.ctx.cmpOverride.loading,true);
+  s.finish(0,'a');await request;
+  assert.equal(s.ctx.cmpOverride.reads[0].text,'OCR a');
+  assert.equal(s.ctx.cmpView,'source-fields');
+  assert.equal(s.opened[1].scroll,false);
+});
+
+test('out-of-order evidence replies and errors cannot replace the newer PC selection',async()=>{
+  for(const fail of [false,true]){
+    const s=evidenceSetup();const first=s.ctx.stShowEvidence('a','loop',s.host,'1');
+    const second=s.ctx.stShowEvidence('b','loop',s.host,'2');s.finish(1,'b');await second;
+    if(fail)s.pending[0].reject(Error('old failed'));else s.finish(0,'a');await first;
+    assert.equal(s.ctx.cmpOverride.alert,'b');assert.equal(s.ctx.cmpOverride.filename,'b.pdf');
+    assert.equal(s.opened.length,3);assert.equal(s.notes.length,0);
+  }
+});
+
+test('an unavailable evidence record leaves the local original open with an explicit results error',async()=>{
+  const s=evidenceSetup();const request=s.ctx.stShowEvidence('a','loop',s.host,'1');
+  s.pending[0].reject(Error('Server unavailable'));await request;
+  assert.equal(s.ctx.cmpOverride.filename,'folder/a.pdf');
+  assert.equal(s.ctx.cmpOverride.loading,false);
+  assert.match(s.ctx.cmpOverride.loadError,/Server unavailable/);
+  assert.equal(s.opened.length,1);
+});
+
+test('without a selected local file the prepared server image still uses its evidence URL',async()=>{
+  const s=evidenceSetup(false);const request=s.ctx.stShowEvidence('a','loop',s.host,'1');
+  assert.equal(s.opened.length,0);s.finish(0,'a');await request;
+  assert.equal(s.ctx.cmpOverride.reads[0].src,'/ocr/api/stress/evidence/a/0.png');
+  assert.equal(s.opened[0].scroll,true);
+});
+
+test('benchmark case names resolve to the manifest filename before requesting evidence',async()=>{
+  const s=evidenceSetup();s.ctx.FX_CASES=[{id:'sol014',pdf:'credit-note.pdf'}];
+  s.host.querySelectorAll=()=>[{dataset:{alertId:'a',alertCase:'sol014',alertPage:'3'}}];
+  const request=s.ctx.stShowEvidence('a','loop',s.host,'1');
+  assert.equal(s.ctx.cmpOverride.filename,'credit-note.pdf');assert.equal(s.ctx.cmpOverride.page,3);
+  s.finish(0,'a');await request;
+});
+
+test('selecting another folder rebuilds the filename index without retaining old candidates',()=>{
+  const s=setup();s.api.setFiles([file('old.pdf')]);s.api.setFiles([file('new.pdf')]);
+  assert.equal(s.api.hasCandidate('old.pdf'),false);assert.equal(s.api.hasCandidate('folder/new.pdf'),true);
+});
+
+test('PDF pages can be chosen independently of the recorded read and survive comparison refreshes',async()=>{
+  const s=setup();s.api.setFiles([file('a.pdf')]);
+  await s.show('a.pdf',{selection:'alert:0'});
+  assert.equal(s.last().pdfPages,3);assert.equal(s.last().pdfPage,2);
+  await s.api.setPage(1);assert.equal(s.last().pdfPage,1);
+  await s.api.setPage(3);assert.equal(s.last().pdfPage,3);
+  await s.show('a.pdf',{selection:'alert:0',remote:'/results-arrived.png'});
+  assert.equal(s.last().pdfPage,3);assert.match(s.last().caption,/page 3/);
+  assert.match(s.last().download,/-p3-local.png$/);
+  assert.deepEqual(s.rendered,[2,1,3]);assert.equal(s.opened.length,1);
+});
+
+test('switching recorded reads or files resets the manual PDF page but server image remains exact',async()=>{
+  const s=setup();s.api.setFiles([file('a.pdf'),file('b.pdf')]);
+  await s.show('a.pdf',{selection:'alert:0'});await s.api.setPage(3);
+  await s.api.setSource('server');assert.equal(s.last().url,'/ocr/api/model.png');
+  assert.match(s.last().caption,/page 2/);assert.equal(s.last().pdfPages,undefined);
+  await s.api.setSource('pc');assert.equal(s.last().pdfPage,3);
+  await s.show('a.pdf',{selection:'alert:1',page:1});assert.equal(s.last().pdfPage,1);
+  await s.api.setPage(3);await s.show('b.pdf',{selection:'other:0',page:2});
+  assert.equal(s.last().pdfPage,2);
+});
+
+test('invalid page numbers do not render outside the PDF and restore the selected page',async()=>{
+  const s=setup();s.api.setFiles([file('a.pdf')]);await s.show('a.pdf');
+  for(const value of ['',0,-1,4,1.5,'text',Infinity]){
+    await s.api.setPage(value);assert.equal(s.last().pdfPage,2);
+  }
+  assert.deepEqual(s.rendered,[2]);
+  await s.api.setPage('3');assert.equal(s.last().pdfPage,3);
+});
+
+test('a failed manual PDF page leaves page controls usable instead of showing a different server page',async()=>{
+  const s=setup({renderPDF:async(_doc,page)=>{if(page===3)throw Error('broken page');return {page};}});
+  s.api.setFiles([file('a.pdf')]);await s.show('a.pdf');await s.api.setPage(3);
+  assert.equal(s.last().source,'pc');assert.equal(s.last().url,'');assert.equal(s.last().pdfPages,3);
+  assert.match(s.last().status,/Choose another page/);
+  await s.api.setPage(2);assert.equal(s.last().pdfPage,2);assert.match(s.last().url,/^blob:/);
+});
+
+test('rapid PDF page changes only publish the newest selected page',async()=>{
+  const s=setup();s.api.setFiles([file('a.pdf')]);await s.show('a.pdf');
+  const first=s.api.setPage(1),last=s.api.setPage(3);await Promise.all([first,last]);
+  assert.equal(s.last().pdfPage,3);assert.deepEqual(s.rendered,[2,3]);
 });

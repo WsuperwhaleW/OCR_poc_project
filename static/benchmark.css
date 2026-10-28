@@ -1,0 +1,1592 @@
+
+  /* ---- theme ----
+     **Three states, not two** (2026-08-25, at the user's request: *allow toggle
+     white background for more clean look*). The page followed the OS and nothing
+     else until now, which is no use to somebody on a dark desktop who wants a
+     white page to project or screenshot.
+
+     - bare `:root` is the dark palette and the fallback for everything
+     - `prefers-color-scheme: light` flips it for a light desktop, but ONLY while
+       no explicit choice has been made -- hence the `:not([data-theme="dark"])`,
+       without which choosing dark on a light desktop would do nothing
+     - `[data-theme]` on the root wins over both, in either direction
+
+     Every colour is defined on the bare `:root` and only REDEFINED in the two
+     blocks below, so no variable has its single definition inside a conditional
+     -- a rule that would otherwise leave a token undefined on one path. */
+  :root {
+    /* Native widgets (the option popup above all) are painted by the OS, not by
+       this stylesheet. color-scheme is what tells it which set to paint. */
+    color-scheme: dark;
+    --bg: #0f1115;
+    --panel: #171a21;
+    /* The card's own ground, for anything that has to HIDE what scrolls under
+       it -- every sticky table header and row header on this page. It is an
+       alias rather than a colour: `var(--panel)` is resolved against whatever
+       :root holds, and both light blocks below redefine `--panel` on :root, so
+       one definition follows the theme.
+
+       **It was used in five places and defined in none until 2026-09-14**, so
+       it resolved to nothing and every sticky header in this app was
+       TRANSPARENT -- scroll a wide grid sideways and the cells slid visibly
+       under the first column. A background that must be opaque may not be a
+       token that might not exist; if this is ever renamed, grep for `--card`. */
+    --card: var(--panel);
+    --border: #272b35;
+    --text: #e8eaed;
+    --muted: #949bab;
+    --accent: #4f8cff;
+    --accent-soft: rgba(79, 140, 255, 0.12);
+    --danger: #ff6b6b;
+    --code-bg: rgba(127, 140, 170, 0.14);
+    /* A faint wash over the page, for the chips and blocks that want to sit a
+       shade off the card without a border. **It has to flip with the theme**:
+       white at 6% is invisible on a white card, which is what every one of these
+       looked like the first time the toggle was tried. */
+    --tint: rgba(255, 255, 255, 0.06);
+    /* The amber of the accuracy scale, which is the one hard-coded colour that
+       does not survive the flip: #d9a441 on white is a pale smear at the size
+       these numbers are printed. Darkened for light, and named so the scale is
+       set in one place rather than at each of its call sites. */
+    --warn: #d9a441;
+    --ok: #3fb950;
+    /* The neutral half of the scale: time, cost and volume, which are neither
+       good nor bad in themselves. Kept apart from the red/amber/green so a
+       clock can be coloured without implying a verdict on it. */
+    --info: #4fb3c4;
+    /* WHO LOST A VALUE -- one hue each, so a column of flags is readable without
+       reading a word of it. Deliberately OFF the red/amber/green scale: the score
+       mark beside them already says how bad the value is, and an attribution is
+       not a severity. Named for the job, because the next person reading
+       `--blame-read` knows what it marks where `--teal` would not. */
+    --blame-read: #4fb3c4;
+    --blame-extract: #b98cf5;
+    /* The stress test's two pipeline stages, stacked in its in-flight chart.
+       Blue and orange from the validated categorical order: they must read
+       apart under colour-vision deficiency, which the teal/violet pair above
+       does not (deutan dE 7.2). */
+    --st-1: #3987e5;
+    --st-2: #d95926;
+  }
+  @media (prefers-color-scheme: light) {
+    :root:not([data-theme="dark"]) {
+      color-scheme: light;
+      --bg: #e4e7ec; --panel: #f4f6f8; --border: #ccd2db;
+      --text: #232936; --muted: #5c6675; --accent: #2f6fe0;
+      --accent-soft: rgba(47, 111, 224, 0.11);
+      --tint: rgba(16, 24, 40, 0.055);
+      --warn: #9a6410; --ok: #1a7f37; --danger: #c0392f; --info: #2a6f7a;
+      --blame-read: #1d5560; --blame-extract: #56309f;
+      --st-1: #2a78d6; --st-2: #eb6834;
+      --code-bg: rgba(16, 24, 40, 0.07);
+    }
+  }
+  :root[data-theme="light"] {
+    color-scheme: light;
+    --bg: #e4e7ec; --panel: #f4f6f8; --border: #ccd2db;
+    --text: #232936; --muted: #5c6675; --accent: #2f6fe0;
+    --accent-soft: rgba(47, 111, 224, 0.11);
+    --tint: rgba(16, 24, 40, 0.055);
+    --warn: #9a6410; --ok: #1a7f37; --danger: #c0392f; --info: #2a6f7a;
+      --blame-read: #1d5560; --blame-extract: #56309f;
+      --st-1: #2a78d6; --st-2: #eb6834;
+    --code-bg: rgba(16, 24, 40, 0.07);
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 20px 18px 40px;
+    background: var(--bg); color: var(--text);
+    font-family: "Segoe UI", "Noto Sans Thai", system-ui, sans-serif;
+    line-height: 1.55;
+  }
+  /* Leave room for the result beside the adjustable controls. */
+  .wrap { max-width: 1720px; margin: 0 auto; }
+  header { margin-bottom: 16px; }
+  .page-head { position: sticky; top: 0; z-index: 40; display: flex; align-items: flex-start;
+    gap: 16px; flex-wrap: wrap; justify-content: space-between; padding: 12px 0;
+    background: var(--bg); border-bottom: 1px solid var(--border); }
+  .global-model-area { position: relative; flex: 1 1 680px; max-width: 940px; min-width: 0; }
+  .model-toolbar { display: flex; align-items: stretch; gap: 8px; }
+  .model-summaries { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); flex: 1; min-width: 0; gap: 8px; }
+  .model-summary { display: flex; align-items: center; gap: 8px; min-width: 0; height: 38px;
+    padding: 0 10px; border: 1px solid var(--border); border-radius: 8px; background: transparent; }
+  .model-summary-head { display: contents;
+    font-size: .68rem; color: var(--muted); font-weight: 600; }
+  .model-summary-head > span:first-child { flex-shrink: 0; white-space: nowrap; }
+  .model-health { order: 3; flex-shrink: 0; width: 7px; height: 7px; border-radius: 50%;
+    background: currentColor; font-size: 0; }
+  .model-summary strong, .model-summary code { display: block; overflow: hidden; text-overflow: ellipsis;
+    white-space: nowrap; }
+  .model-summary strong { order: 1; flex: 1; min-width: 0; font-size: .78rem; margin: 0; }
+  .model-summary code { order: 2; max-width: 36%; flex-shrink: 1; font-size: .65rem; color: var(--muted); }
+  .model-health[data-ready="true"] { color: var(--ok); }
+  .model-health[data-ready="false"] { color: var(--danger); }
+  #recheck { align-self: center; min-height: 38px; font-size: .78rem; }
+  .model-settings { position: static; }
+  .model-settings > summary { list-style: none; cursor: pointer; font-size: .78rem; padding: 6px 12px;
+    border: 1px solid var(--border); border-radius: 8px; }
+  .model-settings > summary::-webkit-details-marker { display: none; }
+  .model-settings[open] > summary { border-color: var(--accent); background: var(--accent-soft); }
+  .model-settings-panel { position: absolute; right: 0; top: calc(100% + 8px);
+    width: min(740px, calc(100vw - 36px)); max-height: 60dvh; overflow: auto;
+    padding: 18px; background: var(--panel); border: 1px solid var(--border);
+    border-radius: 12px; box-shadow: 0 12px 32px rgba(0,0,0,.25); }
+  .model-settings-panel .pipe-h { margin-top: 0; padding-top: 0; border-top: 0; }
+  .model-settings-panel #serverGroupNote { display: none; }
+  @media (max-width: 700px) {
+    .page-head { gap: 8px; padding: 8px 0; }
+    .page-head h1 { font-size: 1.1rem; }
+    .page-head .sub { display: none; }
+    .global-model-area { flex-basis: 100%; }
+    .model-toolbar, .model-summaries { gap: 6px; }
+    .model-summaries { grid-template-columns: minmax(0, 1fr); }
+    .model-summary { padding: 0 8px; }
+    .model-summary-head { font-size: .62rem; gap: 4px; }
+    .model-summary strong { font-size: .76rem; }
+    .model-summary code { font-size: .64rem; }
+    #recheck { padding: 6px 8px; font-size: .72rem; }
+    .model-settings-panel { width: 100%; }
+  }
+  .theme-seg button { padding: 5px 12px; font-size: .78rem; }
+  .page-actions { display: flex; align-items: center; justify-content: flex-end;
+    gap: 10px; flex-wrap: wrap; margin-top: 8px; }
+  #monToggle { padding: 5px 12px; font-size: .78rem; }
+  #monToggle.on { background: var(--accent-soft); border-color: var(--accent); }
+  @media (max-width: 700px) {
+    .page-actions { gap: 6px; margin-top: 6px; }
+    .model-settings > summary, #monToggle { padding: 5px 8px; font-size: .72rem; }
+    .theme-seg button { padding: 4px 8px; font-size: .72rem; }
+  }
+  .monitor-card { margin-bottom: 18px; }
+  .monitor-head { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+  .monitor-settings { margin-top: 10px; }
+  .monitor-gpus { display: grid; gap: 12px; grid-template-columns: repeat(auto-fit, minmax(min(100%, 260px), 1fr)); }
+  #stMon { display: grid; gap: 18px; grid-template-columns: repeat(auto-fit, minmax(min(100%, 560px), 1fr)); }
+  #stMon .mon-server { min-width: 0; overflow-wrap: anywhere; }
+  #stMon .mon-tiles { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+  @media (max-width: 600px) { #stMon .mon-tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+  h1 { font-size: 1.4rem; margin: 0 0 4px; }
+  .sub { color: var(--muted); font-size: 0.9rem; }
+  .sub code { background: var(--accent-soft); padding: 2px 6px; border-radius: 5px; }
+  /* minmax(0, 1fr), not 1fr: an auto minimum lets wide cell content stretch the page. */
+  .grid { --sidebar-size: clamp(320px, var(--sidebar-width, 420px), min(640px, calc(100% - 498px)));
+    position: relative; display: grid; grid-template-columns: var(--sidebar-size) minmax(0, 1fr);
+    gap: 18px; align-items: start; }
+  .sidebar-resize { position: absolute; left: calc(var(--sidebar-size) + 3px);
+    top: 0; bottom: 0; width: 12px; cursor: col-resize; touch-action: none;
+    border-radius: 6px; z-index: 2; }
+  .sidebar-resize::before { content: ''; position: absolute; left: 5px; width: 2px;
+    top: 12px; bottom: 12px; background: var(--border); border-radius: 2px; }
+  .sidebar-resize::after { content: ''; position: absolute; top: 28px; left: 3px;
+    width: 6px; height: 28px; border-left: 2px solid var(--muted);
+    border-right: 2px solid var(--muted); border-radius: 2px; }
+  .sidebar-resize:hover, .sidebar-resize:focus-visible,
+  .resizing-sidebar .sidebar-resize { background: var(--accent-soft); }
+  .sidebar-resize:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+  .resizing-sidebar, .resizing-sidebar * { cursor: col-resize !important; user-select: none !important; }
+  @media (max-width: 1080px) {
+    .grid { grid-template-columns: minmax(0, 1fr); }
+    .sidebar-resize { display: none; }
+  }
+  .card {
+    background: var(--panel); border: 1px solid var(--border);
+    border-radius: 14px; padding: 18px;
+  }
+  /* The controls follow the result down the page: the side pane stays in view while
+     a long transcript is being read. */
+  .side { min-width: 0; position: sticky; top: var(--sidebar-top, 18px); max-height: var(--side-height, calc(100dvh - 36px));
+    display: flex; flex-direction: column; overflow: hidden; }
+  .side-scroll { min-height: 0; overflow-y: auto; }
+  .test-actions { flex-shrink: 0; margin: 14px -18px -18px; padding: 12px 18px;
+    border-top: 1px solid var(--border); background: var(--panel); }
+  .test-action-row { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+  .test-action-row button { white-space: nowrap; }
+  .test-action-row .primary { flex: 1; }
+  .test-status { display: inline-flex; align-items: center; gap: 6px; font-size: .76rem;
+    margin-bottom: 8px; color: var(--muted); }
+  .test-status::before { content: ''; width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
+  .test-status[data-state="running"] { color: var(--accent); }
+  .test-status[data-state="stopping"] { color: var(--warn); }
+  .test-status[data-state="completed"] { color: var(--ok); }
+  .test-status[data-state="failed"] { color: var(--danger); }
+  @media (max-width: 1080px) { .side { position: static; max-height: none; } }
+  @media (max-width: 1080px) {
+    body.has-test-actions { padding-bottom: var(--run-actions-space, 150px); }
+    .side-scroll { overflow: visible; }
+    .test-actions { position: fixed; bottom: 0; left: 0; right: 0; z-index: 30;
+      margin: 0; padding: 10px 18px max(12px, env(safe-area-inset-bottom));
+      box-shadow: 0 -4px 18px rgba(0,0,0,.12); }
+  }
+  .side-tabs { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 6px; margin-bottom: 14px; }
+  .side-tabs button { min-width: 0; padding: 8px 10px; font-size: .84rem;
+    border-radius: 8px; white-space: normal; overflow-wrap: anywhere; }
+  .side-tabs button.on { background: var(--accent-soft); border-color: var(--accent); font-weight: 600; }
+  .st-views { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 6px; margin-bottom: 14px; }
+  .st-views button { min-width: 0; padding: 8px 10px; font-size: .84rem; }
+  .st-views button.on { background: var(--accent-soft); border-color: var(--accent); font-weight: 600; }
+  .st-local-files { margin: 12px 0 16px; padding: 12px; border: 1px solid var(--border); border-radius: 10px; }
+  .st-local-files .row { flex-wrap: wrap; margin-bottom: 6px; }
+  #cmpLocalBar { align-items: center; flex-wrap: wrap; }
+  #cmpLocalBar .note { flex: 1 1 240px; margin: 0; }
+  #cmpLocalChoiceLabel { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; min-width: 0; max-width: 100%; }
+  #cmpLocalChoiceLabel[hidden] { display: none; }
+  #cmpPdfPages { align-items: center; flex-wrap: wrap; gap: 6px; }
+  #cmpPdfPages[hidden] { display: none; }
+  #cmpLocalChoice { max-width: min(440px, 100%); min-width: 0; }
+  .history-list { display: grid; gap: 8px; margin-top: 12px;
+    max-height: 55vh; overflow-y: auto; }
+  .history-item { text-align: left; min-width: 0; padding: 10px;
+    overflow-wrap: anywhere; font-size: .82rem; }
+  .history-item.on { background: var(--accent-soft); border-color: var(--accent); }
+  .history-item span { display: block; color: var(--muted); font-size: .76rem; margin-top: 3px; }
+  .history-head { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; }
+  .history-config { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(190px, 100%), 1fr));
+    gap: 8px; margin: 14px 0; }
+  .history-config div { padding: 9px 11px; border: 1px solid var(--border);
+    border-radius: 8px; overflow-wrap: anywhere; font-size: .85rem; }
+  .history-config dt { color: var(--muted); font-size: .75rem; }
+  .history-config dd { margin: 2px 0 0; }
+  .history-report { min-width: 0; overflow-x: auto; }
+  .history-json { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 60vh;
+    overflow: auto; font-size: .76rem; }
+  .side-tabs .count {
+    display: none; margin-left: 6px; font-size: .7rem; font-weight: 700;
+    background: var(--accent); color: #fff; border-radius: 9px; padding: 0 6px;
+  }
+  .side-tabs .count.show { display: inline-block; }
+  .pane { display: none; }
+  .pane.on { display: block; }
+  #drop {
+    border: 2px dashed var(--border); border-radius: 12px;
+    padding: 22px 16px; text-align: center; cursor: pointer;
+    transition: border-color .15s, background .15s;
+  }
+  #drop:hover, #drop.over {
+    border-color: var(--accent); background: var(--accent-soft);
+  }
+  #drop p { margin: 5px 0; }
+  #drop .hint { color: var(--muted); font-size: 0.82rem; }
+  #preview { display: none; margin-top: 14px; width: 100%; border-radius: 10px; border: 1px solid var(--border); }
+  #filechip {
+    display: none; margin-top: 14px; padding: 18px; border-radius: 10px;
+    border: 1px solid var(--border); background: var(--accent-soft);
+    font-size: .9rem; word-break: break-all;
+  }
+  #filechip strong { display: block; font-size: 1.5rem; margin-bottom: 4px; }
+  /* The prepared-page bar under the workspace preview. It is a statement ABOUT
+     the picture above it, so it reads as a caption rather than as another
+     control -- the only thing on it that clicks is the download. */
+  #prepBar { display: none; margin-top: 6px; gap: 10px; align-items: baseline; flex-wrap: wrap; }
+  #prepBar.on { display: flex; }
+  #prepCap { font-size: .78rem; color: var(--muted); flex: 1; min-width: 140px; }
+  #prepCap.err { color: var(--danger); }
+  #prepCap b { color: var(--text); font-weight: 600; }
+  #prepDl[hidden] { display: none; }
+  #mapchip:empty { display: none; }
+  #mapchip {
+    margin-top: 8px; padding: 8px 11px; border-radius: 8px; font-size: .8rem;
+    border: 1px solid var(--ok); background: rgba(63, 185, 80, .10); color: var(--ok);
+  }
+  #mapchip.none { border-color: var(--border); background: transparent; color: var(--muted); }
+  #mapchip .how { opacity: .8; }
+  .row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 16px; }
+  .pipe-h {
+    font-size: 13px; font-weight: 600; letter-spacing: .02em;
+    margin: 22px 0 0; padding-top: 16px; border-top: 1px solid var(--border);
+    color: var(--text);
+  }
+  .eng-tag {
+    display: inline-block; font-size: 10px; line-height: 1.6; padding: 0 6px;
+    border-radius: 5px; border: 1px solid var(--border); color: var(--muted);
+    background: var(--tint); margin-left: 6px; vertical-align: 1px;
+    white-space: nowrap;
+  }
+  .eng-tag.library { border-color: var(--info); color: var(--info); }
+  button, select {
+    font: inherit; border-radius: 9px; padding: 9px 16px;
+    border: 1px solid var(--border); background: transparent; color: var(--text); cursor: pointer;
+  }
+  /* Long option labels (filenames) would otherwise push the select past its row. */
+  select { min-width: 0; max-width: 100%; text-overflow: ellipsis; background: var(--panel); }
+  /* The dropped-open list is a native popup: without explicit colours it takes
+     the light system background but keeps the select's near-white text, which
+     is unreadable. Both sides are stated so neither theme can end up matching. */
+  select option, select optgroup { background: var(--panel); color: var(--text); }
+  input[type=text] {
+    font: inherit; border-radius: 9px; padding: 9px 12px; min-width: 0;
+    border: 1px solid var(--border); background: transparent; color: var(--text);
+  }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
+  button:disabled { opacity: .5; cursor: not-allowed; }
+  .field { display: flex; flex-direction: column; gap: 5px; font-size: .8rem; color: var(--muted); min-width: 0; }
+  .card h2 { font-size: 0.8rem; text-transform: uppercase; letter-spacing: .07em; color: var(--muted); margin: 0 0 12px; }
+  .tabs { display: flex; gap: 6px; margin-left: auto; flex-wrap: wrap; align-items: center; }
+  .tabs button { padding: 5px 12px; font-size: .82rem; border-radius: 7px; }
+  .tabs button.on { background: var(--accent-soft); border-color: var(--accent); color: var(--text); }
+  /* The tab strip reads as a pipeline: each step consumes the previous one. */
+  .tabs.flow { gap: 2px; }
+  .tabs.flow button b {
+    display: inline-block; margin-right: 6px; font-size: .7rem; opacity: .6;
+    border: 1px solid currentColor; border-radius: 50%; width: 15px; height: 15px;
+    line-height: 13px; text-align: center; font-weight: 700;
+  }
+  .tabs.flow button.on b { opacity: 1; }
+  .tabs.flow button:disabled b { opacity: .35; }
+  .flow-arrow { color: var(--muted); opacity: .5; font-size: .9rem; padding: 0 1px; }
+  #render, #raw { min-height: 420px; max-height: calc(100vh - 230px); overflow: auto; margin: 0; }
+  #raw { display: none; white-space: pre-wrap; word-break: break-word; font-family: ui-monospace, Consolas, monospace; font-size: .86rem; }
+  #render.empty, #raw.empty { color: var(--muted); font-size: .92rem; font-family: inherit; }
+  #render table { border-collapse: collapse; margin: 12px 0; font-size: .9rem; }
+  #render th, #render td { border: 1px solid var(--border); padding: 6px 10px; text-align: left; }
+  #render th { background: var(--accent-soft); }
+  /* Verbatim text: keep the document's own line breaks and column spacing. */
+  #render .txt, #cmpRender .txt, #cmpTruthRender .txt {
+    white-space: pre-wrap; word-break: break-word; margin: 8px 0;
+    font-family: "Segoe UI", "Noto Sans Thai", system-ui, sans-serif;
+    tab-size: 4;
+  }
+  #render table, #cmpRender table, #cmpTruthRender table { table-layout: auto; }
+  /* Scoped to [hidden] on purpose: the toggle works by setting the attribute,
+     and a bare `display: none` here outranks removing it, so the panel could
+     never open. */
+  #compare[hidden] { display: none; }
+  .cmp-bar {
+    display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+    font-size: .82rem; color: var(--muted); margin-bottom: 10px;
+  }
+  .cmp-bar #cmpLabel { min-width: 92px; text-align: center; }
+  .cmp-opt { display: flex; align-items: center; gap: 5px; cursor: pointer; }
+  /* Matches button.ghost-sm exactly -- these sit side by side in the same bars,
+     so the anchor must not render a size larger than the buttons beside it. The
+     right-alignment is per use site, not baked in here: the run-log bar already
+     pushes its own button, and a second auto margin would split the gap. */
+  a.ghost-sm {
+    text-decoration: none; color: var(--text); font-size: .78rem;
+    border: 1px solid var(--border); border-radius: 6px; padding: 4px 10px;
+  }
+  /* Which two of the three columns are shown is the view mode; the hidden one
+     keeps its scroll position and its rendered content, so flipping back is
+     instant and does not re-fetch. */
+  .cmp-modes { display: flex; gap: 4px; margin-right: 4px; }
+  .cmp-modes button { padding: 4px 10px; font-size: .78rem; border-radius: 6px; }
+  .cmp-modes button.on { background: var(--accent-soft); border-color: var(--accent); color: var(--text); }
+  .cmp-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 12px; }
+  /* One column left to show (ground truth before anything has been run): it
+     takes the full width rather than sitting beside an empty half. */
+  .cmp-grid.one { grid-template-columns: minmax(0, 1fr); }
+  @media (max-width: 900px) { .cmp-grid { grid-template-columns: minmax(0, 1fr); } }
+  .cmp-col { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+  /* Same reason as #compare[hidden] above: the display rule on .cmp-col would
+     otherwise outrank the hidden attribute and every column would stay on. */
+  .cmp-col[hidden] { display: none; }
+  .cmp-cap {
+    font-size: .74rem; text-transform: uppercase; letter-spacing: .06em;
+    color: var(--muted); padding-left: 2px;
+  }
+  .cmp-cap span { text-transform: none; letter-spacing: 0; opacity: .8; }
+  .cmp-pane {
+    border: 1px solid var(--border); border-radius: 10px; padding: 10px;
+    height: 68vh; overflow: auto; background: var(--bg);
+  }
+  #cmpImg { width: 100%; display: block; border-radius: 6px; }
+  #cmpRawText, #cmpTruthText {
+    white-space: pre-wrap; word-break: break-word; margin: 0;
+    font-family: ui-monospace, Consolas, monospace; font-size: .82rem;
+  }
+  #cmpRender table, #cmpTruthRender table { border-collapse: collapse; margin: 10px 0; font-size: .82rem; }
+  #cmpRender th, #cmpRender td,
+  #cmpTruthRender th, #cmpTruthRender td { border: 1px solid var(--border); padding: 5px 8px; }
+  #cmpRender figure, #cmpTruthRender figure {
+    margin: 10px 0; padding: 10px; border-left: 3px solid var(--accent);
+    background: var(--accent-soft); border-radius: 0 8px 8px 0; font-size: .85rem;
+  }
+  /* A missing-required stress flag's form, beside its pages (`cmpFieldsHtml`). */
+  #cmpFieldsPane h4 { margin: 4px 0 6px; font-size: .82rem; }
+  #cmpFieldsPane table { border-collapse: collapse; width: 100%; font-size: .8rem; margin-bottom: 12px; }
+  #cmpFieldsPane th, #cmpFieldsPane td { border: 1px solid var(--border); padding: 4px 7px;
+    text-align: left; vertical-align: top; }
+  #cmpFieldsPane td.v { word-break: break-word; }
+  #cmpFieldsPane tr.miss td { background: rgba(255, 107, 107, .14); }
+  #cmpFieldsPane tr.miss td.v { color: var(--danger); font-style: italic; }
+  #fields { display: none; }
+  /* The Grouping view (2026-09-16): which pages of the file are becoming which
+     documents, page by page as the walk goes, with each group's pages on hand
+     to check. */
+  #grouping { display: none; }
+  /* The Table tab: the item table step by step. Who changed a cell is a colour,
+     one per hand -- the read (grey), the AI agents (violet), the code (teal) and
+     the ground truth (green) -- named for the job rather than the hue, and
+     aliased onto the blame tokens so both themes come for free. */
+  #tableview { display: none; }
+  :root { --by-read: var(--muted); --by-agent: var(--blame-extract);
+          --by-code: var(--blame-read); --by-truth: var(--ok); }
+  .tv-head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px;
+             margin: 4px 0 8px; }
+  .tv-head h3 { margin: 0; font-size: .95rem; }
+  .tv-head .spacer { flex: 1; }
+  .tv-sw { font-size: .78rem; color: var(--muted); display: flex; gap: 12px; align-items: center; }
+  .tv-sw label { display: inline-flex; gap: 4px; align-items: center; cursor: pointer; }
+  .tv-who { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
+            gap: 10px; margin: 6px 0 14px; }
+  .tv-who > div { border: 1px solid var(--border); border-top: 3px solid var(--by);
+                  border-radius: 8px; padding: 8px 11px; font-size: .8rem; }
+  .tv-who h4 { margin: 0 0 5px; font-size: .78rem; text-transform: uppercase;
+               letter-spacing: .06em; color: var(--by); }
+  .tv-who ul { margin: 0; padding-left: 16px; }
+  .tv-who li { margin: 2px 0; }
+  .tv-who .none { color: var(--muted); }
+  .tv-who q { font-family: ui-monospace, Consolas, monospace; font-size: .76rem; }
+  .tv-steps { display: flex; flex-wrap: wrap; gap: 6px; margin: 4px 0 10px; }
+  .tv-steps button { border-left: 4px solid var(--by); text-align: left; padding: 5px 10px;
+                     font-size: .8rem; line-height: 1.25; }
+  .tv-steps button small { display: block; color: var(--muted); font-size: .7rem; }
+  .tv-steps button.on { background: var(--accent-soft); box-shadow: inset 0 0 0 1px var(--accent); }
+  .tv-steps .arrow { align-self: center; color: var(--muted); }
+  .tv-what { font-size: .78rem; color: var(--muted); margin: 0 0 8px; }
+  #tableview td.tv-ch { box-shadow: inset 3px 0 0 var(--by);
+                        background: color-mix(in srgb, var(--by) 14%, transparent); }
+  #tableview td .was { display: block; color: var(--muted); font-size: .74rem;
+                       text-decoration: line-through; }
+  #tableview tr.tv-before td { color: var(--muted); font-size: .74rem; padding-top: 2px;
+                               text-decoration: line-through; border-top-style: dashed; }
+  #tableview tr.tv-before td span { text-decoration: none; display: inline-block;
+                                    margin-right: 6px; font-weight: 600; }
+  #tableview tr.tv-before td b { font-weight: 400; opacity: .6; }
+  #tableview tr.tv-gone td { color: var(--muted); text-decoration: line-through; opacity: .7; }
+  #tableview tr.tv-missed td { border-style: dashed; }
+  .tv-side { display: flex; flex-wrap: wrap; gap: 14px; }
+  .tv-side > div { flex: 1 1 340px; min-width: 0; overflow-x: auto; }
+  .tv-side h4 { margin: 0 0 6px; font-size: .78rem; color: var(--by);
+                text-transform: uppercase; letter-spacing: .06em; }
+  .grp-head { display: flex; gap: 12px; align-items: baseline; flex-wrap: wrap;
+              margin: 4px 0 6px; font-size: .9rem; }
+  .grp-head .muted-inline { font-size: .8rem; }
+  .grp-bar { height: 6px; background: var(--tint); border-radius: 3px;
+             overflow: hidden; margin: 0 0 10px; }
+  .grp-bar > span { display: block; height: 100%; background: var(--accent);
+                    transition: width .2s; }
+  .grp-bar.done > span { background: var(--ok); }
+  .grp-now { border: 1px solid var(--accent); border-radius: 8px; padding: 8px 10px;
+             margin: 0 0 10px; font-size: .85rem; display: flex; gap: 10px;
+             align-items: baseline; flex-wrap: wrap; }
+  .grp-now b { font-weight: 600; }
+  .grp-now .grp-why { flex: 1 1 260px; }
+  .grp-scroll { max-height: 62vh; overflow: auto; border: 1px solid var(--border);
+                border-radius: 8px; }
+  table.grp { width: 100%; border-collapse: collapse; font-size: .82rem; }
+  table.grp th { position: sticky; top: 0; background: var(--card); z-index: 1;
+                 text-align: left; font-weight: 600; color: var(--muted); }
+  table.grp th, table.grp td { padding: 6px 9px; border-bottom: 1px solid var(--border);
+                               vertical-align: top; text-align: left; }
+  table.grp tr.grp-row { cursor: pointer; }
+  table.grp tr.grp-row:hover td { background: var(--tint); }
+  table.grp tr.cur td { background: var(--accent-soft); }
+  table.grp tr.open td { background: var(--tint); }
+  table.grp td.grp-why { color: var(--muted); }
+  .grp-badge { font-size: .7rem; padding: 1px 7px; border-radius: 9px; white-space: nowrap;
+               border: 1px solid var(--border); color: var(--muted); }
+  .grp-badge.rules { color: var(--ok); border-color: var(--ok); }
+  .grp-badge.asked { color: var(--accent); border-color: var(--accent); }
+  .grp-badge.guess { color: var(--warn); border-color: var(--warn); }
+  .grp-pages { display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr));
+               gap: 10px; padding: 4px 0 6px; }
+  .grp-page { border: 1px solid var(--border); border-radius: 8px; padding: 6px;
+              background: var(--card); }
+  .grp-page img { width: 100%; display: block; border-radius: 4px; background: #fff;
+                  min-height: 60px; }
+  .grp-pn { display: flex; justify-content: space-between; gap: 6px; align-items: baseline;
+            font-weight: 600; font-size: .8rem; margin: 0 0 5px; }
+  .grp-page .grp-why { font-size: .72rem; color: var(--muted); margin: 5px 0 3px; }
+  .grp-page summary { font-size: .72rem; cursor: pointer; color: var(--muted); }
+  .grp-page pre { white-space: pre-wrap; font-size: .72rem; max-height: 180px;
+                  overflow: auto; margin: 4px 0 0; }
+  .fld-bar { display: flex; align-items: center; gap: 10px; margin-bottom: 12px;
+             font-size: .82rem; color: var(--muted); }
+  .fld-bar #fldStatus { flex: 1; }
+
+  /* The three stages of a run: read the page, decide what it is, ask for the
+     fields that follow. Drawn as a strip rather than as three paragraphs
+     because the ORDER is the thing being shown -- stage 2 chooses the form
+     stage 3 is asked for, and a reader who does not know that reads a wrong
+     value in stage 3 as the model's mistake when it is stage 2's. */
+  .pipe { display: flex; align-items: stretch; gap: 0; flex-wrap: wrap;
+          margin: 0 0 10px; }
+  .pipe:empty { display: none; }
+  .pipe-st { flex: 1 1 0; min-width: 150px; border: 1px solid var(--border);
+             border-radius: 6px; padding: 7px 10px; background: var(--tint);
+             position: relative; }
+  .pipe-st + .pipe-st { margin-left: 18px; }
+  /* The arrow between two stages, drawn in the gap the margin leaves. */
+  .pipe-st + .pipe-st::before { content: '\2192'; position: absolute;
+             left: -15px; top: 50%; transform: translateY(-50%);
+             color: var(--muted); font-size: 13px; }
+  .pipe-h { display: flex; align-items: center; gap: 6px; font-size: 11px;
+            text-transform: uppercase; letter-spacing: .04em;
+            color: var(--muted); }
+  .pipe-n { display: inline-flex; align-items: center; justify-content: center;
+            width: 15px; height: 15px; border-radius: 50%; font-size: 10px;
+            background: var(--border); color: var(--text); letter-spacing: 0; }
+  .pipe-v { font-size: 13px; margin-top: 3px; }
+  .pipe-d { font-size: 11px; color: var(--muted); margin-top: 2px;
+            overflow-wrap: anywhere; }
+  /* done / running / waiting / skipped. Only `done` is coloured: three green
+     boxes would make the strip the loudest thing on a tab whose subject is the
+     values below it. */
+  .pipe-st.done .pipe-n { background: var(--ok); color: var(--bg); }
+  .pipe-st.run { border-color: var(--accent); }
+  .pipe-st.run .pipe-n { background: var(--accent); color: var(--bg); }
+  .pipe-st.wait { opacity: .55; }
+  .pipe-st.skip .pipe-v { color: var(--muted); }
+  /* Stage 0 disagreed with a person. Amber rather than red: the run is sound and
+     its answer may well be the better one -- what is being flagged is that two
+     authorities differ and the reader is the one who can settle it. */
+  .pipe-st.warn { border-color: var(--warn); }
+  .pipe-st.warn .pipe-n { background: var(--warn); color: var(--bg); }
+  .pipe-warn { color: var(--warn); }
+  .pipe-sure { color: var(--ok); }
+  .fld-grid { display: grid; grid-template-columns: 200px minmax(0, 1fr); gap: 2px 14px; font-size: .88rem; }
+  @media (max-width: 620px) { .fld-grid { grid-template-columns: minmax(0, 1fr); } }
+  .fld-grid dt { color: var(--muted); padding: 6px 0; font-size: .82rem; }
+  /* A label that carries a definition says so, or nobody hovers it. Dotted
+     underline is the long-standing convention for exactly this and costs no
+     layout; `help` is the cursor that matches it. */
+  .has-hint { text-decoration: underline dotted var(--muted); text-underline-offset: 3px; cursor: help; }
+  th.has-hint { text-decoration-color: currentColor; }
+  .fld-grid dd { margin: 0; padding: 6px 0; word-break: break-word; }
+  .fld-grid dd.empty { color: var(--muted); opacity: .55; }
+  .fld-grid dd.money { font-variant-numeric: tabular-nums; font-weight: 600; }
+  .fld-raw { margin-top: 4px; color: var(--muted); font-size: .76rem; font-weight: 400; }
+  .fld-raw summary { cursor: pointer; }
+  .fld-raw div { padding: 3px 0; overflow-wrap: anywhere; }
+  /* Grounding: a value the transcript does not carry must not read like one it
+     does, so it is marked at the value rather than only in a summary above. */
+  .fld-grid dd.ungrounded, .fld-grid dd.computed { color: var(--danger); }
+  .fld-grid dd.computed { color: var(--warn); }
+  .fld-tag { font-size: .68rem; font-weight: 700; padding: 1px 6px; border-radius: 4px;
+             margin-left: 7px; white-space: nowrap; vertical-align: 1px;
+             text-transform: uppercase; letter-spacing: .04em; }
+  .fld-tag.missing { background: var(--border); color: var(--muted); margin-left: 0; }
+  .fld-tag.ungrounded { background: rgba(255,107,107,.18); color: var(--danger); }
+  /* Tier marks. Muted on purpose: which delivery tier a field belongs to is
+     context for the label, never a verdict on the value beside it. */
+  .tier { font-size: .6rem; font-weight: 700; letter-spacing: .03em;
+          padding: .05rem .28rem; border-radius: 3px; margin-left: .35rem;
+          vertical-align: .08rem; }
+  .tier.p1 { background: rgba(110,168,254,.18); color: #6ea8fe; }
+  .tier.p2 { background: var(--tint); color: var(--muted); }
+  .tier.p3 { background: var(--tint); color: var(--muted); }
+  /* Mandatory in the requirement. Louder than a tier mark and quieter than a
+     verdict: it qualifies the LABEL -- this field has to be filled -- and says
+     nothing about the value beside it, until the value is missing, which is the
+     one case where the requirement itself makes the empty row a finding. */
+  .req { font-size: .6rem; font-weight: 700; letter-spacing: .03em;
+         padding: .05rem .28rem; border-radius: 3px; margin-left: .35rem;
+         vertical-align: .08rem; text-transform: uppercase;
+         background: rgba(217,164,65,.18); color: var(--warn); }
+  .fld-grid dd.req-missing { color: var(--danger); opacity: 1; }
+  .fld-tag.req-missing { background: rgba(255,107,107,.18); color: var(--danger); }
+  #fields th .req { margin-left: .3rem; }
+  .fld-tag.computed { background: rgba(217,164,65,.18); color: var(--warn); }
+  #fields td.ungrounded { color: var(--danger); text-decoration: underline wavy var(--danger); }
+  /* Scored against the hand-written truth file, marked at the value itself. A
+     list of paths below the fields says a value is wrong; a mark beside it says
+     WHICH one while you are reading it, which is the question you actually have
+     with the document open. Green is the only place on this tab that claims a
+     value is right -- grounding can only say it is printed somewhere. */
+  .sc { font-size: .68rem; font-weight: 700; padding: 1px 6px; border-radius: 4px;
+        margin-left: 7px; white-space: nowrap; vertical-align: 1px;
+        text-transform: uppercase; letter-spacing: .04em; }
+  .sc.correct { background: rgba(63,185,80,.16); color: var(--ok); }
+  .sc.partial { background: rgba(217,164,65,.18); color: var(--warn); }
+  .sc.wrong, .sc.missed, .sc.spurious { background: rgba(255,107,107,.18); color: var(--danger); }
+  .sc.absent { background: var(--border); color: var(--muted); }
+  /* A verdict on a value the requirement does not demand. Judged, shown, and
+     outside the headline -- so it is drawn back rather than in the danger
+     colours, which on this tab mean "this cost you something". */
+  .sc.unscored { background: var(--tint); color: var(--muted); font-weight: 600; }
+  /* The value the truth says belongs there, under the one that came back. */
+  /* A validation finding, under the value it is about. Deliberately the same
+     size and place as `.truth` -- both answer "what is wrong with this value" --
+     but coloured rather than muted, because a ground-truth line is context and
+     this is a rule the document failed. Only `failed` and `warning` are ever
+     drawn; a rule that passed or could not run says nothing here. */
+  .val-note { font-size: .78rem; margin-top: 2px; }
+  .val-note.failed { color: var(--danger); }
+  .val-note.warning { color: var(--warn); }
+  /* WHICH PASS lost a value, beside the mark that says what went wrong.
+     Deliberately NOT on the red/amber/green scale: an attribution is not a
+     severity, and the value has already been marked for what it cost. It is the
+     neutral `--info` for that reason, and the words are the STAGE NAMES on the
+     pipeline strip above -- read, extract -- so the chip points at a box on
+     screen rather than naming a pass in a vocabulary of its own. */
+  .bl { font-size: .66rem; font-weight: 700; padding: 1px 7px; border-radius: 4px;
+        margin-left: 6px; white-space: nowrap; vertical-align: 1px;
+        text-transform: uppercase; letter-spacing: .04em;
+        background: color-mix(in srgb, var(--flag) 18%, transparent);
+        color: var(--flag); border: 1px solid color-mix(in srgb, var(--flag) 45%, transparent); }
+  /* The attribution refused: the two ground truths disagree about the key, so
+     neither pass is named. Drawn back, because it is a finding about the answer
+     sheet rather than about this run. */
+  .bl.unknown { font-weight: 600; }
+  #fields td .bl { display: block; margin-top: 2px; margin-left: 0; width: max-content; }
+  /* WHICH CULPRIT, as one custom property the row and its flag both read, so a
+     stripe and the chip inside it can never disagree about who is named. */
+  .blame-ocr { --flag: var(--blame-read); }
+  .blame-extraction { --flag: var(--blame-extract); }
+  .blame-unknown { --flag: var(--muted); }
+  /* THE FLAG ITSELF: a stripe down the failing row, in the culprit's colour.
+     The chip says who in a word; this is what makes the row findable while
+     scanning a form of fourteen, which a chip at the end of a value is not.
+     It marks the LABEL because that is the edge the eye runs down. */
+  .fld-grid dt.blamed { box-shadow: inset 3px 0 0 var(--flag); padding-left: 9px; }
+  .fld-grid dd.blamed { box-shadow: inset 3px 0 0 color-mix(in srgb, var(--flag) 35%, transparent);
+                        padding-left: 9px; }
+  #fields td.blamed { box-shadow: inset 3px 0 0 var(--flag); }
+  /* The same attribution on the pipeline strip, where it names a stage rather
+     than a value. Neutral for the reason the chip is. */
+  .pipe-bl { color: var(--info); font-weight: 600; }
+  /* The same culprits in the summary sentence, so it and the stripes
+     below it are one statement rather than two. */
+  .bl-count { color: var(--flag); font-weight: 700; }
+  .truth { font-size: .78rem; color: var(--muted); margin-top: 2px; }
+  .truth b { color: var(--text); font-weight: 600; }
+  .truth i { font-style: normal; opacity: .8; }
+  :is(#fields, #tableview) td.sc-wrong, :is(#fields, #tableview) td.sc-missed, :is(#fields, #tableview) td.sc-spurious { color: var(--danger); }
+  :is(#fields, #tableview) td.sc-partial { color: var(--warn); }
+  :is(#fields, #tableview) td .truth { display: block; }
+  /* A row the page prints and the extraction never returned. Dashed, because
+     nothing in it came from the model -- it is the truth file talking. */
+  :is(#fields, #tableview) tr.row-missed td { border-style: dashed; color: var(--danger); opacity: .8; }
+  .ground-note { font-size: .8rem; border-radius: 8px; padding: 9px 12px; margin: 0 0 4px;
+                 border: 1px solid var(--border); background: var(--accent-soft); }
+  .ground-note.bad { border-color: var(--danger); background: rgba(255,107,107,.1); }
+  .ground-note ul { margin: 6px 0 0; padding-left: 18px; }
+  .ground-note li { margin: 2px 0; }
+  .ground-note code { background: var(--code-bg); padding: 1px 5px; border-radius: 4px; }
+  .fld-sec { font-size: .78rem; text-transform: uppercase; letter-spacing: .07em;
+             color: var(--muted); margin: 22px 0 8px; }
+  :is(#fields, #tableview) table { width: 100%; border-collapse: collapse; font-size: .82rem; }
+  :is(#fields, #tableview) th, :is(#fields, #tableview) td { border: 1px solid var(--border); padding: 6px 9px; text-align: left; }
+  :is(#fields, #tableview) th { background: var(--accent-soft); font-weight: 600; }
+  :is(#fields, #tableview) td.num { text-align: right; font-variant-numeric: tabular-nums; }
+  /* The one column on this tab that is NOT on the page: the derived WHT
+     rate. Muted, because every other cell beside it is text the document
+     printed and grounding vouched for, and a computed figure sitting in
+     the same weight would read as one of them. */
+  #fields td.derived { color: var(--muted); }
+  /* The item table: read out of the transcript, so every cell is the read's.
+     The chip says what KIND of table it is, which is the one judgement on it;
+     green is not used, because neither answer is the good one. */
+  .tbl-kind { font-size: .68rem; font-weight: 700; letter-spacing: .02em;
+              padding: .1rem .4rem; border-radius: 4px; margin-left: .5rem;
+              text-transform: none; font-family: ui-monospace, Consolas, monospace;
+              vertical-align: .06rem; }
+  .tbl-kind.master { background: var(--accent-soft); color: var(--text);
+                     box-shadow: inset 0 0 0 1px var(--accent); }
+  .tbl-kind.items { background: var(--tint); color: var(--muted); }
+  .tbl-kind.unsure { background: rgba(217,164,65,.18); color: var(--warn); }
+  /* A row the read cut into the wrong number of cells. Blue where it has been
+     put back under its headings -- nothing is wrong with it now, and a reader
+     should still be able to see that the cuts are not the read's own -- and
+     amber where nothing could settle it and it is drawn as read. */
+  :is(#fields, #tableview) tr.row-recut td:first-child { box-shadow: inset 3px 0 0 var(--info); }
+  :is(#fields, #tableview) tr.row-ragged td:first-child { box-shadow: inset 3px 0 0 var(--warn); }
+  :is(#fields, #tableview) tr.row-ragged td { color: var(--warn); }
+  .tbl-note { font-size: .78rem; color: var(--muted); margin: 6px 0 0; }
+  .tbl-note summary { cursor: pointer; }
+  .tbl-note table { margin-top: 6px; opacity: .85; }
+  /* The document strip: one button per document a split file was read as.
+     Drawn ONLY where there is more than one -- a strip of one button over an
+     ordinary receipt would be a control that says nothing and a claim that
+     something happened. */
+  .docs { display: flex; gap: 6px; flex-wrap: wrap; margin: 0 0 10px; }
+  .docs button { padding: 6px 11px; font-size: .8rem; border-radius: 8px;
+                 text-align: left; line-height: 1.3; }
+  .docs button.on { background: var(--accent-soft); border-color: var(--accent);
+                    font-weight: 600; }
+  .docs button small { display: block; font-weight: 400; color: var(--muted);
+                       font-size: .72rem; }
+  .docs button.bad { border-color: var(--danger); }
+  /* A boundary the rules could not settle and nothing else confirmed. Amber
+     rather than red: the document is real and its fields are real, and what is
+     uncertain is only where it begins. */
+  .docs button.guess small { color: var(--warn); }
+  .split-note { font-size: .8rem; color: var(--muted); margin: 0 0 12px; }
+  .seg { display: flex; gap: 6px; }
+  .seg button { flex: 1; padding: 8px 10px; font-size: .84rem; border-radius: 8px; }
+  .seg button.on { background: var(--accent-soft); border-color: var(--accent); font-weight: 600; }
+  .seg button:disabled { opacity: .45; cursor: not-allowed; }
+
+  #compareCard { margin-top: 20px; }
+  #runlogCard { margin-top: 20px; }
+  #runBody:empty::after {
+    content: 'Nothing logged yet — the first read writes a row.';
+    color: var(--muted); font-size: .85rem; display: block; padding: 10px 0;
+  }
+  #runBody { overflow-x: auto; }
+  #runBody table.queue { min-width: 900px; }
+  #runBody td.acc { font-weight: 600; }
+  #runPath { word-break: break-all; }
+  /* Per-document summary: one row per ground-truth case, the settings that read
+     it best and quickest side by side. A block of its own rather than more chips
+     on `.run-best`, because every figure here carries the setting that produced
+     it and a setting does not fit on a chip. */
+  #caseSum, #ocrSum, #extractSum, #weakSum, #typeSum { overflow-x: auto; margin-top: 16px; }
+  /* ---- the log view: what the tables below are compiled under ----
+     Two numbers and a set of filters, none of which write anything. The raw
+     rows are the log and are never filtered -- a row hidden there is a row
+     nobody could find to delete. */
+  .lv-bar { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 10px 14px;
+            margin-top: 12px; padding: 10px 12px; border: 1px solid var(--border);
+            border-radius: 10px; background: var(--bg); }
+  .lv-num { display: flex; flex-direction: column; gap: 4px; font-size: .74rem;
+            color: var(--muted); }
+  .lv-num input { width: 88px; padding: 5px 7px; font-size: .82rem; }
+  .lv-num .u { color: var(--muted); }
+  /* A view-affecting checkbox, aligned to the bottom of the bar like the numeric
+     controls (the labels above them push those down, so it needs the padding). */
+  .lv-check { display: inline-flex; align-items: center; gap: 6px; font-size: .78rem;
+              color: var(--muted); cursor: pointer; padding-bottom: 5px; }
+  .lv-check input { cursor: pointer; }
+  .lv-bar .sp { flex: 1; }
+  #lvNote, #rawSel { font-size: .76rem; }
+  button.ghost-sm.danger { border-color: var(--danger); color: var(--danger); }
+  button.ghost-sm.danger:disabled { opacity: .4; border-color: var(--border);
+                                    color: var(--muted); }
+  /* A filter chip is tri-state: neutral, kept, dropped. One control rather than
+     two lists, because "only sol001" and "anything but dots.ocr" are the same
+     question asked from opposite ends and a reader switching between them
+     should not have to find a different widget. */
+  .lv-field { margin-top: 10px; }
+  .lv-field > b { font-size: .74rem; font-weight: 600; color: var(--muted);
+                  text-transform: uppercase; letter-spacing: .05em; }
+  .lv-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 5px; }
+  .lv-chip { font-size: .74rem; border: 1px solid var(--border); border-radius: 999px;
+             padding: 3px 10px; cursor: pointer; user-select: none;
+             background: var(--card); color: var(--text); max-width: 100%;
+             white-space: normal; overflow-wrap: anywhere; text-align: left; }
+  .lv-chip .n { color: var(--muted); font-size: .68rem; margin-left: 4px; }
+  .lv-chip.inc { border-color: var(--accent); background: var(--accent-soft);
+                 font-weight: 600; }
+  .lv-chip.exc { border-color: var(--danger); opacity: .55;
+                 text-decoration: line-through; }
+  /* Sortable headers. Every column on this card sorts, including the accuracy
+     the tables are ranked by: the server's order is a default, not a lock. */
+  table.queue th.lv-th { cursor: pointer; user-select: none; }
+  table.queue th.lv-th:hover { color: var(--text); }
+  table.queue th.lv-on { color: var(--text); }
+  .lv-arrow { font-size: .6rem; margin-left: 4px; }
+  .lv-panel { margin-top: 4px; min-width: 0; overflow-x: auto; }
+  .log-groups { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr));
+                gap: 8px; margin-top: 18px; }
+  .log-groups button { white-space: normal; min-width: 0; }
+  #logTabs { flex-wrap: wrap; }
+  #logTabs[hidden], #logTabs button[hidden] { display: none; }
+  .lv-main-facets { display: grid; gap: 4px 18px;
+                   grid-template-columns: repeat(auto-fit, minmax(min(100%, 240px), 1fr)); }
+  .log-filter-details { margin-top: 14px; border: 1px solid var(--border);
+                        border-radius: 10px; }
+  .log-filter-details > summary { padding: 10px 12px; cursor: pointer; font-size: .83rem; }
+  .log-filter-body { padding: 0 12px 12px; }
+  .log-filter-body .lv-bar { margin-top: 6px; }
+  .lv-filter-help { margin-top: 14px; font-size: .78rem; color: var(--muted); }
+  .lv-filter-help summary { cursor: pointer; }
+  .lv-applied { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 12px;
+                font-size: .74rem; color: var(--muted); }
+  .lv-applied > span { border: 1px solid var(--border); border-radius: 6px;
+                       padding: 4px 8px; overflow-wrap: anywhere; max-width: 100%; }
+  .lv-applied > .active { border-color: var(--accent); background: var(--accent-soft);
+                          color: var(--text); }
+  .run-detail td { white-space: normal; background: var(--bg); }
+  .run-detail dl { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr));
+                   gap: 12px 20px; margin: 8px 0 14px; }
+  .run-detail dt { color: var(--muted); font-size: .72rem; }
+  .run-detail dd { margin: 4px 0 0; overflow-wrap: anywhere; font-size: .8rem; }
+  .run-detail pre { max-height: 360px; overflow: auto; white-space: pre-wrap;
+                    overflow-wrap: anywhere; font-size: .75rem; }
+  @media (max-width: 600px) {
+    .log-groups { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .run-detail dl { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    #lvPipe { flex-wrap: wrap; }
+  }
+  #logTabs button { flex: none; padding: 6px 12px; font-size: .8rem; }
+  .lv-seg button { flex: none; padding: 5px 9px; font-size: .76rem; border-radius: 6px; }
+  #lvEmpty:not(:empty) { margin-top: 12px; padding: 12px 14px; border-radius: 10px;
+    border: 1px solid var(--danger); background: rgba(255,107,107,.07);
+    font-size: .82rem; }
+  #lvEmpty b { color: var(--text); }
+  #runBody td.pick, #runBody th.pick { width: 26px; padding-right: 0; }
+  #rtOut { margin-top: 10px; }
+  /* Include/exclude chips. An excluded model stays visible and greyed rather
+     than disappearing: a pool you cannot see is a pool you cannot put back. */
+  .st-settings-title { font-size: .78rem; margin: 16px 0 8px; color: var(--muted); }
+  :is(.side-scroll, .model-settings-panel, .monitor-card) .row { align-items: flex-end; gap: 12px; }
+  #stSetup > .row { margin-top: 12px; }
+  :is(.side-scroll, .model-settings-panel, .monitor-card) .field { gap: 6px; }
+  :is(.side-scroll, .model-settings-panel, .monitor-card) :is(input[type=number], input[type=text], select) {
+    width: 100%; min-width: 0; height: 40px; padding: 8px 12px;
+    font: inherit; font-variant-numeric: tabular-nums; line-height: 1.4;
+    color: var(--text); background: var(--tint);
+    border: 1px solid var(--border); border-radius: 9px;
+  }
+  :is(.side-scroll, .model-settings-panel, .monitor-card) input::placeholder { color: var(--muted); opacity: .8; }
+  :is(.side-scroll, .model-settings-panel, .monitor-card) button { min-height: 40px; padding: 8px 12px; font-size: .8rem; font-weight: 600; }
+  :is(.side-scroll, .model-settings-panel, .monitor-card) :is(input[type=number], input[type=text], select):hover:not(:disabled),
+  :is(.side-scroll, .model-settings-panel, .monitor-card) button:hover:not(:disabled):not(.on) { border-color: var(--muted); }
+  :is(.side-scroll, .model-settings-panel, .monitor-card) :is(input, select, button):focus-visible,
+  .model-settings > summary:focus-visible {
+    outline: 2px solid var(--accent); outline-offset: 2px;
+  }
+  :is(.side-scroll, .model-settings-panel, .monitor-card) :is(input[type=number], input[type=text], select):disabled { opacity: .5; cursor: not-allowed; }
+  .side-scroll label.check { min-height: 40px; padding: 8px 12px; border: 1px solid var(--border);
+    border-radius: 9px; background: var(--tint); color: var(--text); cursor: pointer; }
+  .side-scroll label.check:has(input:checked) { background: var(--accent-soft); border-color: var(--accent); }
+  .side-scroll input[type=checkbox] { width: 17px; height: 17px; accent-color: var(--accent); flex-shrink: 0; }
+  #stExtrasField { align-self: flex-end; min-height: 40px; padding: 8px 12px; gap: 10px;
+    border: 1px solid var(--border); border-radius: 9px; background: var(--tint);
+    color: var(--text); font-size: .8rem; cursor: pointer; }
+  #stExtrasField:has(input:checked) { background: var(--accent-soft); border-color: var(--accent); }
+  #stExtrasField:has(input:disabled) { opacity: .55; cursor: not-allowed; }
+  #stSetup .row:has(#stExtrasField) > label { flex-basis: 110px !important; }
+  #stFilesField > .row { margin-top: 8px; }
+  .st-file-sets { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; }
+  .st-file-sets button { min-width: 0; white-space: normal; }
+  .st-file-controls { display: flex; align-items: stretch; gap: 6px; }
+  .st-file-controls .st-file-sets { flex: 1; }
+  #stFileAdvanced { flex-shrink: 0; }
+  #stFileAdvanced.on { background: var(--accent-soft); border-color: var(--accent); }
+  .st-options { display: grid; gap: 8px; margin-top: 16px; }
+  .st-option { display: flex; align-items: center; gap: 10px; padding: 10px 12px;
+    border: 1px solid var(--border); border-radius: 8px; font-size: .82rem; cursor: pointer; }
+  .st-option input, #stExtras { width: 17px; height: 17px; margin: 0;
+    accent-color: var(--accent); flex-shrink: 0; }
+  .st-option:has(input:checked) { background: var(--accent-soft); border-color: var(--accent); }
+  .st-option:has(input:disabled) { opacity: .55; cursor: not-allowed; }
+  #stValidationField[hidden] { display: none; }
+  #realPickRow[hidden] { display: none; }
+  .st-check { display: inline-flex; align-items: center; gap: 6px; font-size: .78rem;
+    color: var(--muted); }
+  .st-plan { font-size: .8rem; color: var(--muted); margin: 10px 0 0; line-height: 1.5; }
+  .st-progress { margin-top: 12px; }
+  .st-bar { height: 8px; border-radius: 4px; background: var(--tint); overflow: hidden; }
+  .st-bar i { display: block; height: 100%; background: var(--accent); border-radius: 4px;
+    transition: width .3s; }
+  .st-live { font-size: .82rem; margin-top: 8px; font-variant-numeric: tabular-nums; }
+  .st-tiles { display: grid; gap: 10px; margin-top: 14px;
+    grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); }
+  .st-tile { border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px; }
+  .st-tile-label { font-size: .72rem; color: var(--muted); text-transform: uppercase;
+    letter-spacing: .04em; }
+  .st-tile-num { font-size: 1.45rem; font-weight: 700; margin-top: 4px;
+    font-variant-numeric: tabular-nums; }
+  .st-tile-num small { font-size: .78rem; font-weight: 500; color: var(--muted); }
+  .st-tile-sub { font-size: .74rem; color: var(--muted); margin-top: 4px; line-height: 1.4; }
+  .st-tile.st-bad .st-tile-num { color: var(--danger); }
+  .st-h { font-size: .9rem; margin: 18px 0 0; }
+  table.st-kv td:first-child { color: var(--muted); }
+  .st-chart-wrap { position: relative; margin-top: 16px; }
+  .st-legend { display: flex; flex-wrap: wrap; gap: 14px; font-size: .76rem; color: var(--muted); }
+  .st-key { display: inline-flex; align-items: center; gap: 6px; }
+  .st-sw { display: inline-block; width: 12px; height: 12px; border-radius: 3px; }
+  .st-sw.st-s1 { background: var(--st-1); }
+  .st-sw.st-s2 { background: var(--st-2); }
+  .st-sw.st-dash { height: 0; border-top: 2px dashed var(--muted); border-radius: 0; }
+  .st-chart { width: 100%; height: 190px; display: block; margin-top: 6px; }
+  .st-area.st-s1 { fill: var(--st-1); fill-opacity: .8; stroke: var(--panel); stroke-width: 1; }
+  .st-area.st-s2 { fill: var(--st-2); fill-opacity: .8; stroke: var(--panel); stroke-width: 1; }
+  .st-grid { stroke: var(--border); stroke-width: 1; vector-effect: non-scaling-stroke; }
+  .st-conc { stroke: var(--muted); stroke-width: 1.5; stroke-dasharray: 5 4;
+    vector-effect: non-scaling-stroke; }
+  .st-cross { stroke: var(--text); stroke-width: 1; opacity: .5; vector-effect: non-scaling-stroke; }
+  .st-axis { fill: var(--muted); font-size: 10px; }
+  .st-tip { position: absolute; top: 30px; background: var(--panel); border: 1px solid var(--border);
+    border-radius: 8px; padding: 6px 9px; font-size: .76rem; pointer-events: none;
+    box-shadow: 0 4px 14px rgba(0,0,0,.25); min-width: 120px; }
+  .tr-bar { flex-wrap: wrap; gap: 8px; }
+  .tr-seg button { flex: none; padding: 4px 10px; font-size: .76rem; }
+  .tr-sw-err { height: 0; width: 14px; border-top: 2px dashed var(--st-2); border-radius: 0; background: none; }
+  .tr-grid { display: grid; gap: 10px; margin-top: 10px;
+    grid-template-columns: repeat(auto-fill, minmax(270px, 1fr)); }
+  .tr-card { position: relative; border: 1px solid var(--border); border-radius: 10px;
+    padding: 8px 10px 4px; min-width: 0; }
+  .tr-card.tr-all { margin-top: 12px; }
+  .tr-name { font-size: .82rem; font-weight: 600; white-space: nowrap; overflow: hidden;
+    text-overflow: ellipsis; }
+  .tr-sub { font-size: .72rem; color: var(--muted); margin-top: 1px;
+    font-variant-numeric: tabular-nums; }
+  .tr-svg { display: block; width: 100%; height: auto; margin-top: 4px; overflow: visible; }
+  .tr-acc { fill: none; stroke: var(--st-1); stroke-width: 2; stroke-linejoin: round;
+    vector-effect: non-scaling-stroke; }
+  .tr-err { fill: none; stroke: var(--st-2); stroke-width: 2; stroke-dasharray: 5 3;
+    stroke-linejoin: round; vector-effect: non-scaling-stroke; }
+  .tr-dot-acc { fill: var(--st-1); stroke: var(--panel); stroke-width: 1.5; }
+  .tr-dot-err { fill: var(--st-2); stroke: var(--panel); stroke-width: 1.5; }
+  .tr-tip { top: 34px; z-index: 3; }
+  .tr-per { font-size: .76rem; color: var(--muted); display: inline-flex; align-items: center; gap: 6px; }
+  .tr-per input { width: 64px; }
+  .mon-head { font-size: .82rem; margin-top: 12px; display: flex; align-items: center;
+    gap: 6px; flex-wrap: wrap; color: var(--muted); }
+  .mon-head b { color: var(--text); }
+  .mon-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--ok);
+    display: inline-block; animation: monPulse 1.6s ease-in-out infinite; }
+  @keyframes monPulse { 50% { opacity: .35; } }
+  @media (prefers-reduced-motion: reduce) { .mon-dot { animation: none; } }
+  .mon-tile .st-tile-num { font-size: 1.6rem; }
+  .mon-tile.mon-warn .st-tile-num { color: var(--warn); }
+  .mon-tile.mon-bad .st-tile-num { color: var(--danger); }
+  .mon-spark { display: block; width: 100%; height: 30px; margin-top: 8px; }
+  .mon-spark polyline { fill: none; stroke: var(--st-1); stroke-width: 2;
+    stroke-linejoin: round; vector-effect: non-scaling-stroke; }
+  .mon-spark-empty { border-bottom: 1px dashed var(--border); height: 22px; }
+  .rt-ex { margin-top: 10px; }
+  .rt-ex-label { display: block; font-size: .74rem; color: var(--muted);
+                 margin-bottom: 5px; }
+  .rt-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+  .rt-chip { display: inline-flex; align-items: center; gap: 5px; font-size: .74rem;
+             border: 1px solid var(--border); border-radius: 999px;
+             padding: 3px 9px 3px 7px; cursor: pointer; user-select: none; }
+  .rt-chip input { margin: 0; }
+  .rt-chip.off { opacity: .45; text-decoration: line-through; }
+  /* Five document rows, with wheel scrolling contained inside the picker. */
+  .rt-files { display: grid; grid-template-columns: minmax(0, 1fr); grid-auto-rows: 32px;
+              gap: 6px; max-height: 184px; overflow-y: auto; overscroll-behavior-y: contain;
+              margin-top: 8px; }
+  .rt-files .rt-chip { min-width: 0; border-radius: 6px; }
+  .rt-files .rt-chip span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .rt-files .rt-chip input { flex-shrink: 0; }
+  /* The bottom toggle sits in a row of fields, so it has to line up with
+     their boxes rather than with their labels. */
+  label.check { display: flex; align-items: center; gap: 6px; font-size: .82rem;
+                padding-bottom: 7px; }
+  label.check input { margin: 0; }
+  #rtOut table.queue { min-width: 100%; margin-top: 6px; }
+  #rtOut .rt-plan { color: var(--muted); font-size: .72rem; display: block; }
+  /* The per-case read count in a planned round. Deliberately quiet: it explains
+     why that document was chosen, it is not a result. */
+  #rtOut .rt-seen {
+    margin-left: 6px; font-size: .68rem; font-weight: 400; color: var(--muted);
+    border: 1px solid var(--border); border-radius: 8px; padding: 0 5px;
+  }
+  #rtOut tr.rt-bad td { background: rgba(255, 107, 107, .09); }
+  #rtOut tr.rt-now td { background: var(--accent-soft); }
+  /* Best and worst, four ways. A grid rather than a fifth wide table: each
+     block is a different question, and side by side is what makes "worst at
+     reading" and "worst at extracting" legible as different findings about the
+     same model. */
+  #standoutSum, #errorSum { margin-top: 16px; }
+  .st-grid { display: grid; gap: 12px; margin-top: 6px;
+             grid-template-columns: repeat(auto-fit, minmax(310px, 1fr)); }
+  /* The error table reuses the standouts box shell. A single-source row -- every
+     failure from one contributor on the other axis -- is HIGHLIGHTED, not hidden:
+     it is the finding, dominated by one pairing rather than a hard model or
+     document. The toggle it drives removes those failures from every OTHER table
+     on the card, but leaves them on display here where they are pointed at. */
+  #errorSum tr.err-dom td { background: rgba(255,107,107,.10); }
+  #errorSum tr.err-dom td:first-child { box-shadow: inset 3px 0 0 var(--danger); }
+  .err-dom-tag { font-size: .64rem; text-transform: uppercase; letter-spacing: .05em;
+    border-radius: 6px; padding: 1px 6px; background: rgba(255,107,107,.14);
+    color: var(--danger); }
+  .err-head { font-size: .82rem; font-weight: 600; margin: 14px 0 2px; }
+  .st-box { border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px; }
+  .st-box h4 { margin: 0 0 6px; font-size: .8rem; font-weight: 600; }
+  .st-line { font-size: .78rem; margin: 3px 0; line-height: 1.5; }
+  .st-tag { font-size: .66rem; text-transform: uppercase; letter-spacing: .06em;
+            border-radius: 6px; padding: 1px 6px; margin-right: 6px; }
+  .st-good { background: rgba(60, 200, 130, .16); color: #3cc882; }
+  .st-bad { background: rgba(255, 107, 107, .14); color: var(--danger); }
+  .st-warn { background: rgba(217, 164, 65, .16); color: var(--warn); }
+  .st-info { background: rgba(110, 160, 255, .16); color: #6ea0ff; }
+  /* The stress test's live problems: one row per error, loop or stall, as it happens. */
+  .st-alerts { margin-top: 12px; border: 1px solid var(--danger); border-radius: 10px;
+               padding: 8px 10px; max-height: 320px; overflow: auto; }
+  .st-outliers { margin: 10px 0 4px; }
+  .st-outliers .note { margin: 4px 0 0; }
+  .st-alerts h3 { margin: 0 0 6px; font-size: .85rem; color: var(--danger); }
+  .st-alerts table.queue { min-width: 0; font-size: .76rem; }
+  .st-alerts td.msg { word-break: break-word; }
+  .st-alerts tr.st-alert-link { cursor: pointer; }
+  .st-alerts tr.st-alert-link:hover td { background: rgba(110, 160, 255, .08); }
+  .st-alerts tr.st-alert-link.on td { background: rgba(110, 160, 255, .16); }
+  .st-box table.queue { min-width: 0; margin-top: 8px; font-size: .76rem; }
+  .st-box table.queue th, .st-box table.queue td { padding: 4px 6px; }
+  .st-thin { color: var(--muted); font-size: .7rem; }
+  /* ---- Time x Doc x Accuracy analysis ---- */
+  #analysisSum { margin-top: 16px; }
+  #analysisSum .cs-title { font-size: .78rem; text-transform: uppercase;
+    letter-spacing: .07em; color: var(--muted); }
+  .an-none { color: var(--muted); }
+  /* The model x document heatmap. Accuracy tints the cell; the time sits under
+     it in small type. Sticky first column and header so a wide grid stays
+     legible while it scrolls. */
+  .an-grid { overflow-x: auto; margin-top: 8px;
+    border: 1px solid var(--border); border-radius: 10px; }
+  table.an-heat { border-collapse: collapse; font-size: .74rem; width: 100%; }
+  table.an-heat th, table.an-heat td { padding: 6px 8px; text-align: center;
+    white-space: nowrap; border-bottom: 1px solid var(--border);
+    border-right: 1px solid var(--border); }
+  table.an-heat th { color: var(--muted); font-weight: 500; text-transform: uppercase;
+    letter-spacing: .04em; font-size: .68rem; position: sticky; top: 0;
+    background: var(--card); z-index: 1; }
+  table.an-heat td.an-rowh, table.an-heat th.an-corner {
+    position: sticky; left: 0; background: var(--card); text-align: left;
+    font-weight: 600; z-index: 1; }
+  table.an-heat th.an-corner { z-index: 2; }
+  table.an-heat td.an-cell { font-variant-numeric: tabular-nums; font-weight: 700; }
+  table.an-heat td.an-cell .an-t { display: block; font-weight: 400;
+    color: var(--muted); font-size: .68rem; margin-top: 1px; }
+  table.an-heat td.an-empty { color: var(--muted); font-weight: 400; }
+  table.an-heat tr.an-mean-row td, table.an-heat td.an-mean-col {
+    background: var(--accent-soft); font-style: italic; }
+  /* Those two rules are a TRANSLUCENT wash and they land on sticky cells as
+     well -- the mean row's own row header, and the mean column where a row
+     header is sticky beside it. A translucent background on a sticky cell is a
+     transparent one, so the wash is composited over the card here rather than
+     replacing it. Same specificity as the rule above, and later, so it wins. */
+  table.an-heat tr.an-mean-row td.an-rowh,
+  table.an-heat tr.an-mean-row th.an-corner {
+    background: linear-gradient(var(--accent-soft), var(--accent-soft)),
+                var(--card); }
+  /* The composition strip at the top of the tab: how many reads survived the
+     outlier fence, and how they split across the two inferred marks. It
+     qualifies every figure below, so it sits before them. */
+  .an-marks { display: flex; flex-wrap: wrap; align-items: center; gap: 6px;
+    margin: 10px 0 2px; font-size: .74rem; }
+  .an-marks-label { color: var(--muted); font-weight: 600; }
+  .an-marks-sep { width: 1px; height: 14px; background: var(--border); margin: 0 2px; }
+  .an-chip { border: 1px solid var(--border); border-radius: 999px;
+    padding: 2px 9px; color: var(--muted); }
+  .an-chip b { color: var(--fg); font-variant-numeric: tabular-nums; }
+  .an-chip-un { opacity: .65; }
+  .an-chip-out { border-color: rgba(217,164,65,.5); color: var(--warn); }
+  /* "inferred", wherever a mark is shown. These two are read off measurements,
+     not reported by the server, and a reader must never take them for recorded
+     fact -- the same discipline as marking a re-extraction's setting. */
+  .an-inf { font-size: .64rem; text-transform: uppercase; letter-spacing: .05em;
+    border-radius: 6px; padding: 1px 6px; margin-left: 4px;
+    background: rgba(124,92,255,.14); color: #9b83ff; }
+  .an-h { font-size: .82rem; font-weight: 600; margin: 20px 0 2px; }
+  #analysisSum table.queue { min-width: 640px; margin-top: 6px; }
+  #analysisSum .an-t { display: block; font-weight: 400; color: var(--muted);
+    font-size: .68rem; margin-top: 1px; }
+  #analysisSum .an-t2 { display: block; font-weight: 400; font-size: .74rem; }
+  /* The card refreshed itself because rows arrived from elsewhere. A brief mark
+     rather than a banner: a table changing silently under the reader is
+     indistinguishable from having misread it, but a permanent notice about the
+     normal case is noise. */
+  /* What the tab is for, stated before the tables. The tables below can be
+     misread as a model ranking and there are three better places for that on
+     this card, so the scope is said out loud rather than left implicit. */
+  .an-scope { font-size: .78rem; line-height: 1.6; margin: 10px 0 2px;
+    padding: 8px 11px; border-left: 3px solid var(--accent);
+    background: var(--accent-soft); border-radius: 0 8px 8px 0; }
+  .an-scope-not { color: var(--danger); font-weight: 600; }
+  /* The range, one step fainter than the count above it: it is the widest claim
+     in the cell and the least precise, so it must not read as the headline. */
+  #analysisSum .an-rng { opacity: .8; font-variant-numeric: tabular-nums; }
+  /* ---- the presentation summary ----
+     Its own colour scale (red under 70, green at 90) lives in `presColour`, not
+     here: the numbers are coloured inline so a cell carries its own verdict
+     wherever it is drawn -- in a table, in the Detail grid, or in a tooltip.
+
+     **Everything here is a size up from the rest of the card** (2026-08-25, at
+     the user's request: *this summary part is for presentation so bigger text*).
+     The rest of the page is a working surface read by one person at a desk; this
+     tab is read by a room, often projected. The scale-up is applied to the
+     shared classes SCOPED to `#presentSum` rather than by raising the base font,
+     so `table.queue`, `.cs-val` and `.cs-set` keep their own proportions and
+     nothing outside this panel moves. */
+  #presentSum { margin-top: 4px; }
+  #presentSum table.queue { min-width: 640px; margin-top: 8px; font-size: .98rem; }
+  #presentSum table.queue th { font-size: .82rem; }
+  #presentSum table.queue th, #presentSum table.queue td { padding: 11px 12px; }
+  #presentSum .cs-val { font-size: 1.22rem; }
+  #presentSum .cs-set { font-size: .82rem; margin-top: 5px; }
+  #presentSum .cs-of { font-size: .84rem; }
+  #presentSum .note { font-size: .86rem; line-height: 1.7; }
+  #presentSum tr.ms-top td { background: var(--accent-soft); }
+  #presentSum table.an-heat { font-size: .95rem; }
+  #presentSum table.an-heat th, #presentSum table.an-heat td { padding: 11px 13px; }
+  #presentSum table.an-heat th { font-size: .78rem; }
+  #presentSum table.an-heat td.an-cell .an-t { font-size: .8rem; }
+  /* A numbered heading per block, because six tables in one column are
+     unreadable without one -- and the numbers are the ones they were asked for,
+     so a reader can check the tab against the request. */
+  /* A numbered accent chip and the question. The chip is where this tab gets
+     its structure from now that the explanatory paragraphs under each block are
+     gone -- six headings in a column need to be countable at a glance. */
+  .pr-h { font-size: 1.06rem; font-weight: 700; letter-spacing: .01em;
+    margin: 34px 0 0; padding-bottom: 8px; border-bottom: 1px solid var(--border);
+    display: flex; align-items: center; gap: 10px; cursor: help; }
+  .pr-h:first-of-type { margin-top: 18px; }
+  .pr-n { flex: 0 0 auto; width: 26px; height: 26px; border-radius: 8px;
+    background: var(--accent); color: #fff; font-size: .84rem; font-weight: 700;
+    display: inline-flex; align-items: center; justify-content: center; }
+  .pr-empty { color: var(--muted); font-size: .88rem; padding: 14px 2px; }
+  /* The magnitude bar under every figure. One weight, one hue per column, and
+     deliberately thin: it is there to be compared down the column out of the
+     corner of the eye, not to be read. */
+  .pr-bar { display: block; height: 4px; border-radius: 3px; margin: 5px auto 0;
+    width: 78%; background: var(--tint); overflow: hidden; }
+  .pr-bar > span { display: block; height: 100%; border-radius: 3px; opacity: .78; }
+  /* Rank, model, counts. The badge carries the SERVER's ordering and never the
+     row's position after a sort -- see `prModel`. */
+  .pr-model { white-space: nowrap; }
+  #presentSum td.pr-model { display: flex; align-items: baseline; gap: 10px; }
+  .pr-rank { flex: 0 0 auto; min-width: 22px; height: 22px; padding: 0 5px;
+    border-radius: 7px; border: 1px solid var(--border); color: var(--muted);
+    font-size: .76rem; font-weight: 700; display: inline-flex;
+    align-items: center; justify-content: center; }
+  .pr-rank-1 { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .pr-name { min-width: 0; white-space: normal; }
+  /* The two request shapes, told apart by colour rather than by reading the
+     word. Both neutral hues: neither shape is better in general, which is the
+     entire point of that block. */
+  .pr-shape { display: inline-block; font-size: .8rem; font-weight: 600;
+    border-radius: 999px; padding: 2px 11px; border: 1px solid var(--border); }
+  .pr-shape-agentic, .pr-shape-hybrid { background: color-mix(in srgb, var(--info) 16%, transparent);
+    border-color: color-mix(in srgb, var(--info) 45%, transparent); }
+  .pr-shape-single { background: var(--accent-soft);
+    border-color: color-mix(in srgb, var(--accent) 40%, transparent); }
+  /* What the bias excluded, as one strip of chips. It replaced a four-line
+     paragraph and says the same thing: which models are missing, and why on
+     hover. Nothing at all renders when the bias is off. */
+  .pr-excl { display: flex; flex-wrap: wrap; align-items: center; gap: 7px;
+    margin: 14px 0 2px; padding: 9px 13px; border-radius: 10px;
+    background: var(--tint); font-size: .84rem; }
+  .pr-excl-k { color: var(--muted); font-weight: 700; text-transform: uppercase;
+    letter-spacing: .06em; font-size: .74rem; margin-right: 2px; }
+  .pr-chip { border: 1px solid var(--border); border-radius: 999px;
+    padding: 2px 10px; font-size: .8rem; cursor: help; }
+  .pr-chip b { margin-left: 6px; color: var(--muted); font-variant-numeric: tabular-nums; }
+  .pr-chip-out { border-color: color-mix(in srgb, var(--danger) 45%, transparent);
+    color: var(--danger); text-decoration: line-through; }
+  /* A block with more than one table needs each one named, or the second reads
+     as a continuation of the first. Quieter than `.pr-h`: it is a label inside
+     a block, not another block. */
+  .pr-sub { font-size: .84rem; font-weight: 600; color: var(--muted);
+    text-transform: uppercase; letter-spacing: .06em; margin: 16px 0 -2px; }
+
+  /* ---- the two headline cards ----
+     The one thing a table cannot do is be read from across a room, so the two
+     results this tab exists to deliver are lifted out at the top at a size that
+     needs no leaning in. They are the SERVER's ranking and never the sorted
+     table -- see `prHero`. */
+  .pr-heroes { display: grid; gap: 12px; margin: 14px 0 4px;
+    grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); }
+  .pr-hero { border: 1px solid var(--border); border-radius: 12px;
+    padding: 16px 18px; background: var(--accent-soft);
+    display: flex; flex-direction: column; gap: 2px;
+    border-top: 3px solid var(--hero, var(--accent)); }
+  .pr-hero-label { font-size: .78rem; text-transform: uppercase;
+    letter-spacing: .07em; color: var(--muted); font-weight: 600;
+    display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  /* The shape pill in a card heading. Same colour vocabulary as block 5's
+     column, so the two say the same thing the same way. */
+  .pr-hero-pill { text-transform: none; letter-spacing: 0; font-size: .74rem;
+    padding: 1px 9px; }
+  .pr-hero-model { font-size: 1.1rem; font-weight: 700; margin-top: 4px;
+    word-break: break-word; }
+  /* `clamp` rather than a fixed size: this is the one number on the page that
+     has to survive both a 380px column and a projector, and a fixed 2.8rem
+     overflows the first. */
+  .pr-hero-num { font-size: clamp(2.1rem, 5.5vw, 3rem); font-weight: 800;
+    line-height: 1.05; font-variant-numeric: tabular-nums; margin: 2px 0;
+    color: var(--hero, var(--text)); }
+  .pr-hero-sub { font-size: .84rem; color: var(--muted); line-height: 1.6; }
+  /* Nothing scored is not a low score, so the card is drawn flat rather than in
+     the red an empty number would otherwise borrow from the scale. */
+  .pr-hero-none { background: transparent; }
+  .pr-hero-none .pr-hero-num { color: var(--muted); }
+
+  /* ---- the environment card ----
+     Three columns because there are three claims and none implies another: the
+     machine this process runs on, the server it would use now, and what the rows
+     in view were actually made under. The headings are what keep them apart and
+     are not decoration -- see `prEnvCard`. */
+  .pr-env { display: grid; gap: 0; margin: 14px 0 2px;
+    border: 1px solid var(--border); border-radius: 12px; overflow: hidden;
+    grid-template-columns: repeat(auto-fit, minmax(290px, 1fr)); }
+  .pr-env-col { padding: 14px 16px; border-right: 1px solid var(--border); }
+  .pr-env-col:last-child { border-right: 0; }
+  .pr-env-h { font-size: .78rem; text-transform: uppercase; letter-spacing: .07em;
+    color: var(--muted); font-weight: 700; margin-bottom: 9px;
+    padding-bottom: 7px; border-bottom: 1px solid var(--border); }
+  .pr-env-row { display: flex; gap: 10px; align-items: baseline;
+    padding: 5px 0; font-size: .88rem; line-height: 1.55; }
+  .pr-env-k { flex: 0 0 108px; color: var(--muted); font-size: .8rem; }
+  .pr-env-v { flex: 1; min-width: 0; word-break: break-word; }
+  .pr-pill { display: inline-block; font-size: .78rem; border-radius: 999px;
+    border: 1px solid var(--border); padding: 1px 9px; margin: 2px 4px 2px 0; }
+  .pr-pill .n { color: var(--muted); font-size: .72rem; margin-left: 5px; }
+  .pr-pill-more { color: var(--muted); border-style: dashed; }
+  /* What the bias dropped. Above the tables, because it qualifies every figure
+     on the tab, and in the accent rather than the danger colour: this is the
+     view working as intended, not a warning. */
+  .pr-bias { font-size: .86rem; line-height: 1.7; margin: 14px 0 2px;
+    padding: 11px 14px; border-left: 3px solid var(--accent);
+    background: var(--accent-soft); border-radius: 0 8px 8px 0; }
+  .pr-bias ul { margin: 6px 0 0; padding-left: 18px; }
+  .pr-bias li { margin: 2px 0; }
+  /* Bias off is a different claim and looks like one: the tables below are then
+     the survey rather than the recommendation. */
+  .pr-bias-off { border-left-color: var(--muted); background: var(--tint); }
+  #presentSum .an-grid { margin-top: 8px; }
+  #caseSum table.queue { min-width: 820px; margin-top: 6px; }
+  #ocrSum table.queue, #extractSum table.queue,
+  #weakSum table.queue { min-width: 720px; margin-top: 6px; }
+  /* The model that extracts the most fields correctly, marked in the table
+     rather than pulled out above it: the runner-up is the whole point of a
+     leaderboard, and a chip naming the winner alone says nothing about by how
+     much or over how many documents. */
+  #ocrSum tr.ms-top td, #extractSum tr.ms-top td { background: var(--accent-soft); }
+  #caseSum .cs-title, #ocrSum .cs-title, #extractSum .cs-title,
+  #standoutSum .cs-title, #errorSum .cs-title,
+  #weakSum .cs-title { font-size: .78rem; text-transform: uppercase;
+    letter-spacing: .07em; color: var(--muted); }
+  /* Four tables on one panel, so each heading after the first needs air above
+     it -- without this the note closing one table and the title opening the
+     next read as one paragraph. */
+  #weakSum .cs-title { display: block; margin-top: 26px; }
+  #weakSum .cs-title:first-child { margin-top: 0; }
+  /* The run count under a grid's row header. `an-t` is block only inside a
+     value cell in the analysis tab's own CSS, and a row header there carries no
+     second line -- here it does, and without this it runs into the name. */
+  #weakSum table.an-heat td.an-rowh .an-t,
+  #weakSum table.an-heat td.an-empty .an-t {
+    display: block; font-weight: 400; font-size: .68rem; color: var(--muted); }
+  /* ---- model x document type ---- */
+  #typeSum table.queue { min-width: 860px; margin-top: 6px; }
+  #typeSum .cs-title { font-size: .78rem; text-transform: uppercase;
+    letter-spacing: .07em; color: var(--muted); display: block; margin-top: 26px; }
+  #typeSum .cs-title:first-child { margin-top: 0; }
+  #typeSum table.an-heat td.an-rowh .an-t,
+  #typeSum table.an-heat td.an-empty .an-t {
+    display: block; font-weight: 400; font-size: .68rem; color: var(--muted); }
+  /* The best model for a column, ringed rather than tinted: the cell already
+     carries an accuracy tint and a second background would fight it. Inset, so
+     the ring does not change the grid's geometry. */
+  #typeSum table.an-heat td.tm-best {
+    outline: 2px solid var(--accent); outline-offset: -2px; }
+  /* The extraction shape beside a model name. A pill rather than another line,
+     because it is half of what identifies the row and has to read as part of
+     the name -- the pass-2 grid holds two rows per model and they are otherwise
+     identical at a glance. `tm-shape-none` is the run that failed before pass 2
+     chose one: a real state, drawn back so it cannot be mistaken for a shape. */
+  .tm-shape { display: inline-block; margin-left: 5px; padding: 1px 6px;
+    border-radius: 6px; font-size: .64rem; font-weight: 600;
+    text-transform: uppercase; letter-spacing: .04em; vertical-align: 1px;
+    background: var(--accent-soft); color: var(--accent); }
+  .tm-shape-none { background: var(--tint); color: var(--muted);
+    font-weight: 400; text-transform: none; letter-spacing: 0; }
+  #typeSum table.an-heat td.an-rowh .tm-shape { margin-left: 4px; }
+  /* What each model is strong and weak at, under the grid. A list rather than a
+     paragraph: it is one independent claim per model, and they are read by
+     looking up a name rather than by reading through. */
+  .tm-list { margin: 10px 0 0; padding-left: 18px; font-size: .8rem;
+    line-height: 1.7; color: var(--fg); }
+  .tm-list li { margin-bottom: 6px; }
+  .tm-list .cs-set { margin-top: 1px; }
+  .cs-val { font-weight: 700; font-variant-numeric: tabular-nums; }
+  .cs-of { color: var(--muted); font-weight: 400; font-size: .74rem; }
+  .cs-set { display: block; color: var(--muted); font-size: .72rem;
+            margin-top: 3px; line-height: 1.5; word-break: break-word; }
+  .cs-none { color: var(--muted); }
+  table.queue { width: 100%; border-collapse: collapse; font-size: .82rem; margin-top: 10px; }
+  table.queue th, table.queue td {
+    border-bottom: 1px solid var(--border); padding: 7px 9px; text-align: left; }
+  table.queue th { color: var(--muted); font-weight: 500; font-size: .76rem;
+    text-transform: uppercase; letter-spacing: .05em; }
+  /* A figure column is CENTRED, and its header with it (2026-08-25, at the
+     user's request: the numbers read as off because a right-aligned column sat
+     under a left-aligned heading). `lvHead` already tags the header `n`, so one
+     rule keeps the two ends of a column on the same axis. The first column is
+     the row's name and stays left, which is what a reader scans down. */
+  table.queue td.n, table.queue th.n { text-align: center; }
+  table.queue td.n { font-variant-numeric: tabular-nums; white-space: nowrap; }
+  table.queue tr.q-running { background: var(--accent-soft); }
+  table.queue tr.q-failed { background: rgba(255,107,107,.07); }
+  table.queue tr.q-cancelled { opacity: .5; }
+  .qbadge { font-size: .7rem; font-weight: 700; padding: 2px 8px; border-radius: 5px;
+            text-transform: uppercase; letter-spacing: .04em; }
+  .qbadge.queued { background: var(--border); color: var(--muted); }
+  .qbadge.running { background: rgba(79,140,255,.2); color: var(--accent); }
+  .qbadge.done { background: rgba(63,185,80,.18); color: var(--ok); }
+  .qbadge.failed { background: rgba(255,107,107,.18); color: var(--danger); }
+  .qbadge.cancelled { background: var(--border); color: var(--muted); }
+  /* A reply that was salvaged from a cut-off body: it has real values in it, so
+     it is not a failure, but the keys it never reached are empty for a reason
+     the fields themselves cannot show. Amber, between done and failed. */
+  .qbadge.partial, .qbadge.truncated, .qbadge.looped {
+    background: rgba(217,164,65,.18); color: var(--warn);
+  }
+  .qbar { height: 5px; border-radius: 4px; background: var(--border); overflow: hidden; min-width: 70px; }
+  .qbar span { display: block; height: 100%; background: var(--accent); transition: width .3s; }
+  .issue .who { font-weight: 600; }
+  /* Best-ever score per document. Its own line above the table because it is a
+     different kind of statement from the rows: a row is one run, this is the
+     ceiling reached across every run and every setting. */
+  .run-best {
+    display: flex; flex-wrap: wrap; gap: 6px 14px; align-items: center;
+    font-size: .78rem; color: var(--muted); margin: 10px 0 2px;
+  }
+  .run-best b { color: var(--text); font-variant-numeric: tabular-nums; }
+  .run-best .rb { display: inline-flex; gap: 5px; align-items: baseline; }
+  #accuracy { display: none; }
+  #accHead { font-size: .88rem; margin-bottom: 14px; }
+  #accHead .case { font-weight: 600; font-size: 1rem; }
+  #accHead .kind { color: var(--muted); }
+  .acc-row { display: grid; grid-template-columns: 190px 1fr 64px; align-items: center;
+             gap: 10px; margin: 7px 0; font-size: .84rem; }
+  .acc-row .label { color: var(--muted); }
+  .acc-track { height: 10px; border-radius: 6px; background: var(--border); overflow: hidden; }
+  .acc-fill { height: 100%; border-radius: 6px; transition: width .3s; }
+  .acc-val { text-align: right; font-variant-numeric: tabular-nums; font-weight: 600; }
+  .acc-note { font-size: .78rem; color: var(--muted); margin-top: 12px; line-height: 1.5; }
+  /* The three script rows under the headline. Indented and ruled so they read as
+     a breakdown OF the number above rather than as three more scores beside it --
+     they are recall over three subsets of the same characters, and they do not
+     add up to it. */
+  .acc-scripts { margin: 14px 0 0; padding: 10px 0 0 14px;
+                 border-left: 2px solid var(--border); }
+  .acc-scripts .acc-row { margin: 5px 0; font-size: .8rem; }
+  .acc-scripts .acc-note { margin-top: 10px; }
+  .acc-scripts .acc-val .cs-set { display: block; }
+  .acc-sub { font-size: .78rem; text-transform: uppercase; letter-spacing: .07em;
+             color: var(--muted); margin: 20px 0 8px; }
+  #accDiff {
+    margin: 0; max-height: 46vh; overflow: auto; font-size: .8rem; line-height: 1.5;
+    font-family: ui-monospace, Consolas, monospace; white-space: pre-wrap;
+    word-break: break-word;
+  }
+  /* Verbatim model output for the Fields and Numbers passes. Same treatment as
+     the accuracy diff: monospace, wrapped, and capped so a 4k-token reply does
+     not push the rest of the card off screen. */
+  .raw-pane pre {
+    margin: 0; max-height: 46vh; overflow: auto; font-size: .8rem; line-height: 1.5;
+    font-family: ui-monospace, Consolas, monospace; white-space: pre-wrap;
+    word-break: break-word;
+  }
+  .raw-pane .fld-sec:first-child { margin-top: 4px; }
+  #accDiff .add { color: var(--ok); }
+  #accDiff .del { color: var(--danger); }
+  #accDiff .hunk { color: var(--accent); }
+  .pagebar { font-size: .8rem; color: var(--muted); margin: 10px 0 0; }
+
+  /* Layout view: the model's own boxes, over the image it was actually sent. */
+  #layout, #rawout { display: none; }
+  .ro-bar {
+    display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+    margin: 10px 0 8px; font-size: .8rem; color: var(--muted);
+  }
+  .ro-bar .spacer { flex: 1 1 auto; }
+  #rawoutBody {
+    margin: 0; padding: 11px 13px; border: 1px solid var(--border); border-radius: 8px;
+    max-height: 70vh; overflow: auto; font-size: .78rem; line-height: 1.6;
+    white-space: pre-wrap; overflow-wrap: anywhere;
+  }
+  .lay-bar {
+    display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+    margin: 10px 0 8px; font-size: .8rem; color: var(--muted);
+  }
+  .lay-bar .spacer { flex: 1 1 auto; }
+  .lay-legend { display: flex; flex-wrap: wrap; gap: 3px 10px; font-size: .72rem; }
+  .lay-legend span { display: inline-flex; align-items: center; gap: 4px; }
+  .lay-swatch { width: 8px; height: 8px; border-radius: 2px; flex: none; }
+  .lay-stage {
+    position: relative; line-height: 0; border: 1px solid var(--border);
+    border-radius: 6px; overflow: hidden; background: #f2f2f2;
+  }
+  .lay-stage img { width: 100%; height: auto; display: block; }
+  .lay-stage svg { position: absolute; inset: 0; width: 100%; height: 100%; }
+  /* Literal colours: these are drawn on a scan, which is the same picture in
+     either theme, so they must not follow the page's palette. */
+  .lay-box { fill: transparent; stroke-width: 2; vector-effect: non-scaling-stroke; cursor: pointer; }
+  .lay-box:hover { fill: rgba(255, 255, 255, .30); }
+  .lay-box.on { fill: rgba(255, 255, 255, .45); stroke-width: 4; }
+  .lay-tag { font-size: 13px; fill: #fff; pointer-events: none; }
+  /* What a block holds is read over the page, not under it: the whole point of
+     this view is where a value sits, and a panel below the scan makes the eye
+     leave the position it is asking about. Fixed rather than absolute because
+     .lay-stage clips its overflow -- a popup parented inside it would be cut
+     off by exactly the boxes near the edges. */
+  .lay-pop {
+    position: fixed; z-index: 60; max-width: min(560px, 92vw); max-height: 62vh;
+    overflow: auto; pointer-events: none;
+    background: var(--panel); color: var(--text);
+    border: 1px solid var(--border); border-radius: 8px;
+    box-shadow: 0 10px 30px rgba(0, 0, 0, .35);
+    padding: 9px 11px; font-size: .84rem; line-height: 1.55;
+  }
+  /* Only a pinned popup takes the pointer, so hovering one box never blocks the
+     box behind it -- but a pinned table can still be scrolled and selected. */
+  .lay-pop.pinned { pointer-events: auto; }
+  .lay-pop .cap {
+    font-size: .7rem; text-transform: uppercase; letter-spacing: .06em;
+    color: var(--muted); display: block; margin-bottom: 4px;
+  }
+  .lay-pop .body { white-space: pre-wrap; overflow-wrap: anywhere; }
+  .lay-pop table { border-collapse: collapse; font-size: .82rem; margin: 2px 0; }
+  .lay-pop th, .lay-pop td { border: 1px solid var(--border); padding: 4px 8px; text-align: left; }
+  .lay-pop th { background: var(--accent-soft); }
+  .lay-pop .txt { white-space: pre-wrap; overflow-wrap: anywhere; margin: 4px 0; }
+  /* The crop is the page's own pixels, positioned by the model's own bbox, so a
+     picture block is checked as a picture rather than as four numbers. */
+  .lay-crop { border: 1px solid var(--border); border-radius: 4px; background-repeat: no-repeat; }
+  .lay-pin {
+    display: block; margin-top: 6px; font-size: .7rem; color: var(--muted);
+  }
+  .serverbar {
+    display: flex; align-items: center; gap: 9px; margin-top: 14px;
+    padding: 9px 12px; border: 1px solid var(--border); border-radius: 9px;
+    font-size: .82rem; color: var(--muted);
+  }
+  .serverbar #serverText { flex: 1; word-break: break-word; }
+  .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--muted); flex: none; }
+  .dot.ok { background: var(--ok); }
+  .dot.bad { background: var(--danger); }
+  button.ghost-sm { padding: 4px 10px; font-size: .78rem; border-radius: 6px; }
+  button.ghost-sm.on { background: var(--accent-soft); border-color: var(--accent); }
+  .fld-bar select.ghost-sm { width: auto; padding: 4px 28px 4px 10px;
+    font-size: .78rem; border-radius: 6px; }
+  .fld-bar select.ghost-sm.on { background: var(--accent-soft); border-color: var(--accent); }
+  /* One row per extraction step, live while the steps run and kept afterwards.
+     The list is the only place that says which part of the form a value came
+     from, which is what makes a wrong field traceable to the question that
+     produced it rather than to "the extractor". */
+  .step-list { list-style: none; margin: 0; padding: 0; font-size: .82rem; }
+  .step-list li { display: flex; align-items: center; gap: 10px; padding: 5px 0;
+                  border-bottom: 1px solid var(--border); }
+  .step-list li:last-child { border-bottom: 0; }
+  .step-list .n { color: var(--muted); font-variant-numeric: tabular-nums;
+                  min-width: 38px; font-size: .76rem; }
+  .step-list .t { flex: 1; min-width: 0; }
+  .step-list .s { color: var(--muted); font-size: .76rem; text-align: right; }
+  .step-list li.waiting { opacity: .45; }
+  /* One step's own reply, under the step that asked for it. The whole-reply pane
+     already holds all of them concatenated; what it cannot say is which of the
+     questions a given block of JSON is answering, and a failed step's text is
+     the one most worth reading. */
+  .step-list li.raw-row { display: block; padding: 0 0 8px; }
+  .step-raw-btn { margin-left: 8px; }
+  .step-raw-head {
+    font-size: .72rem; color: var(--muted); margin: 6px 0 3px;
+    font-family: ui-monospace, Consolas, monospace;
+  }
+  .step-raw pre {
+    margin: 0; max-height: 30vh; overflow: auto; font-size: .76rem; line-height: 1.45;
+    font-family: ui-monospace, Consolas, monospace; white-space: pre-wrap;
+    word-break: break-word; background: var(--bg); border: 1px solid var(--border);
+    border-radius: 6px; padding: 8px 10px;
+  }
+  .step-raw .empty-reply { font-size: .76rem; color: var(--muted); }
+  .step-raw-head .step-prefix-btn { margin-left: 6px; }
+  /* The single-shot prompt, in the whole-reply pane. A <details> rather than a
+     tracked toggle because that pane is repainted only when its checkbox moves,
+     so the browser can keep the open state itself. */
+  .raw-prompt { margin: 4px 0 10px; }
+  .raw-prompt summary {
+    cursor: pointer; font-size: .8rem; color: var(--muted); padding: 2px 0;
+  }
+  .raw-prompt pre {
+    margin: 6px 0 0; max-height: 30vh; overflow: auto; font-size: .76rem;
+    line-height: 1.45; font-family: ui-monospace, Consolas, monospace;
+    white-space: pre-wrap; word-break: break-word; background: var(--bg);
+    border: 1px solid var(--border); border-radius: 6px; padding: 8px 10px;
+  }
+  .step-list li.bad .s { color: var(--danger); }
+  .step-list li.flagged .s { color: var(--warn); }
+  #serverReason:empty { display: none; }
+  #stats { width: 100%; border-collapse: collapse; font-size: .8rem; margin-top: 12px; }
+  #stats:empty { display: none; }
+  #stats th, #stats td { border-bottom: 1px solid var(--border); padding: 5px 8px; text-align: right; }
+  #stats th { color: var(--muted); font-weight: 500; text-align: right; }
+  #stats th:first-child, #stats td:first-child { text-align: left; }
+  #stats tfoot td { font-weight: 600; border-bottom: 0; }
+  .warn:empty { display: none; }
+  .warn {
+    margin: 10px 0 0; padding: 9px 12px; border-radius: 8px; font-size: .82rem;
+    border: 1px solid var(--warn); background: rgba(217, 164, 65, .12); color: var(--warn);
+  }
+  #meta { color: var(--muted); font-size: .82rem; margin-top: 14px; min-height: 1.2em; }
+  .err { color: var(--danger); }
+  .spin {
+    width: 14px; height: 14px; border: 2px solid var(--border); border-top-color: var(--accent);
+    border-radius: 50%; display: inline-block; animation: sp .7s linear infinite; vertical-align: -2px;
+  }
+  @keyframes sp { to { transform: rotate(360deg); } }
+  .note { font-size: .78rem; color: var(--muted); margin-top: 12px; line-height: 1.45; }
+  .note.err { color: var(--warn); border-left: 3px solid var(--warn); padding-left: 10px; }
+  .muted-inline { color: var(--muted); font-weight: 400; }
+
+  /* ---------- the Doc types tab ---------- */
+  /* The matrix scrolls inside its own box, header row and key column pinned --
+     the same shape as the analysis heatmap, with its own classes so the two
+     cannot drift into each other. A key column that scrolls away leaves five
+     columns of chips nobody can read. */
+  .sc-grid { overflow-x: auto; margin-top: 10px;
+    border: 1px solid var(--border); border-radius: 10px; }
+  table.sc-matrix { border-collapse: collapse; width: 100%; font-size: .78rem; }
+  table.sc-matrix th, table.sc-matrix td {
+    padding: 6px 10px; text-align: center; white-space: nowrap;
+    border-bottom: 1px solid var(--border); border-right: 1px solid var(--border); }
+  table.sc-matrix th { color: var(--muted); font-weight: 500; font-size: .7rem;
+    text-transform: uppercase; letter-spacing: .04em;
+    position: sticky; top: 0; background: var(--card); z-index: 1; }
+  table.sc-matrix td.sc-key, table.sc-matrix th.sc-corner {
+    position: sticky; left: 0; background: var(--card); text-align: left;
+    font-weight: 600; z-index: 1; min-width: 210px; }
+  table.sc-matrix th.sc-corner { z-index: 2; }
+  /* A section heading spans the whole row and repeats the grouping the Fields
+     tab draws, so the same thirty keys read in the same order in both places. */
+  table.sc-matrix tr.sc-sec td { background: var(--tint); text-align: left;
+    font-size: .68rem; text-transform: uppercase; letter-spacing: .06em;
+    color: var(--muted); font-weight: 700; position: sticky; left: 0; }
+  table.sc-matrix td.sc-req .req { margin-left: 0; }
+  /* Asked but Optional. A dot rather than a word: on a matrix this size the
+     word "optional" printed ninety times is the loudest thing on the page, and
+     the eye is looking for the REQUIRED chips. */
+  table.sc-matrix td.sc-ask { color: var(--accent); font-weight: 700; }
+  /* Muted, not border-coloured: `not asked` is a real state and has to be
+     legible at a glance, and the legend beside it draws the same dash in
+     the same colour. Faint enough to recede under the REQUIRED chips,
+     which are what the eye is hunting for. */
+  table.sc-matrix td.sc-no { color: var(--muted); opacity: .65; }
+  table.sc-matrix td.sc-unknown-col { background: var(--tint); }
+  /* One card per type: what classifies it, what it asks for, what it demands,
+     and the rules it adds. */
+  .sc-types { display: grid; gap: 12px; margin-top: 14px;
+    grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); }
+  .sc-type { border: 1px solid var(--border); border-radius: 10px; padding: 12px 14px; }
+  .sc-type.sc-noreq { border-style: dashed; }
+  .sc-type h4 { margin: 0 0 2px; font-size: .92rem; }
+  .sc-count { color: var(--muted); font-size: .76rem; }
+  .sc-headings { margin-top: 8px; display: flex; flex-wrap: wrap; gap: 5px; }
+  .sc-headings span { font-size: .74rem; padding: 2px 7px; border-radius: 5px;
+    background: var(--tint); color: var(--text); border: 1px solid var(--border); }
+  .sc-rules { margin: 8px 0 0; padding-left: 0; list-style: none;
+    font-size: .76rem; line-height: 1.5; }
+  .sc-rules li { margin-top: 4px; }
+  /* A rule that cannot run here is struck through rather than left out. Four of
+     the nine need data this process has not got, and a list of nine checks that
+     did not say so would read as nine a document passes. */
+  .sc-rules li.sc-dead { color: var(--muted); }
+  .sc-rules li.sc-dead b { text-decoration: line-through; }
+  .sc-legend { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 10px;
+    font-size: .74rem; color: var(--muted); align-items: center; }
+  .sc-legend b { color: var(--text); font-weight: 600; }
+.dm-panel{margin:18px 0 26px;border:1px solid var(--border,var(--line));border-radius:10px;padding:16px;min-width:0}
+.dm-panel h3{margin:0 0 8px;font-size:1rem}.dm-note{color:var(--muted);font-size:.8rem;line-height:1.6;margin:8px 0 14px}
+.dm-tools,.dm-tabs,.dm-summary{display:flex;align-items:center;gap:8px;flex-wrap:wrap}.dm-tools{justify-content:space-between;margin:12px 0}
+.dm-tools label{display:flex;align-items:center;gap:8px;font-size:.8rem}.dm-tools select{max-width:100%;width:auto;min-height:36px;padding:7px 10px;border:1px solid var(--border,var(--line));border-radius:8px;background:var(--bg);color:var(--text);font:inherit}
+.dm-tabs button{padding:7px 12px;font-size:.8rem}.dm-tabs button[aria-pressed="true"]{border-color:var(--accent);color:var(--accent);background:var(--accent-soft,var(--soft))}
+.dm-summary{margin:8px 0 12px}.dm-badge{display:inline-block;font-size:.72rem;padding:3px 7px;border:1px solid var(--border,var(--line));border-radius:5px;white-space:nowrap}
+.dm-mapped,.dm-system,.dm-combined{color:var(--accent)}.dm-partial{color:var(--warn,#be8c37)}.dm-missing{color:var(--danger,#ce6262)}.dm-extra{color:var(--muted)}
+.dm-scroll{overflow:auto;max-height:640px;border:1px solid var(--border,var(--line));border-radius:8px;overscroll-behavior:contain}
+.dm-table{width:100%;min-width:720px;border-collapse:collapse;font-size:.8rem;margin:0}.dm-table th,.dm-table td{text-align:left;vertical-align:top;padding:10px 12px;border-bottom:1px solid var(--border,var(--line));white-space:normal}
+.dm-table th{position:sticky;top:0;z-index:1;background:var(--panel,var(--surface));color:var(--text);font-size:.75rem}
+.dm-table td:first-child{min-width:190px}.dm-table td:last-child{min-width:250px}.dm-table code{font-size:.75rem;overflow-wrap:anywhere;white-space:normal}.dm-source{display:block;margin-top:4px;color:var(--muted);font-size:.7rem}
+.dm-table tr[hidden],.dm-panel [data-dm-view][hidden],.dm-empty[hidden]{display:none}.dm-empty{color:var(--muted);font-size:.8rem;margin:10px 0}
+@media(max-width:600px){.dm-panel{padding:12px}.dm-tools{align-items:flex-start}.dm-tools label{flex-wrap:wrap}.dm-table{min-width:680px}}
+

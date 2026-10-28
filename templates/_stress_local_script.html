@@ -5,9 +5,11 @@ function createStressLocalPreview({createURL, revokeURL, openPDF, renderPDF, upd
   const basename = name => String(name || '').replace(/\\/g, '/').split('/').pop();
   const normal = name => basename(name).normalize('NFC').toLowerCase();
   let files = [], choices = new Map(), urls = new Map(), pdf = null;
+  let filesByName = new Map();
   let generation = 0, serial = 0, key = '', source = 'pc', queue = Promise.resolve();
   let current = null;
-  const matches = name => files.filter(file => normal(file.name) === normal(name));
+  let pageChoice = null, pageCounts = new WeakMap();
+  const matches = name => filesByName.get(normal(name)) || [];
   function clearURLs() { for (const url of urls.values()) revokeURL(url); urls.clear(); }
   async function closePDF() {
     const old = pdf; pdf = null;
@@ -15,8 +17,14 @@ function createStressLocalPreview({createURL, revokeURL, openPDF, renderPDF, upd
   }
   function invalidate() { serial++; key = ''; }
   function setFiles(next) {
-    invalidate(); generation++; current = null; choices.clear(); clearURLs();
+    invalidate(); generation++; current = null; pageChoice = null; pageCounts = new WeakMap(); choices.clear(); clearURLs();
     files = Array.from(next || []); source = 'pc';
+    filesByName = new Map();
+    for (const file of files) {
+      const name = normal(file.name);
+      if (!filesByName.has(name)) filesByName.set(name, []);
+      filesByName.get(name).push(file);
+    }
     // Destruction waits for any render already using the document.
     queue = queue.catch(() => {}).then(closePDF).catch(() => {});
     return files.length;
@@ -31,10 +39,13 @@ function createStressLocalPreview({createURL, revokeURL, openPDF, renderPDF, upd
   }
   function show(request) {
     current = request;
-    const {filename, page = 1, remote, detail, caseName} = request;
+    const {filename, page: evidencePage = 1, remote, detail, caseName} = request;
     const found = matches(filename);
     let file = found.length === 1 ? found[0] : choices.get(normal(filename));
     if (!found.includes(file)) file = null;
+    const selection = request.selection ?? normal(filename) + ':' + evidencePage;
+    if (pageChoice && (pageChoice.selection !== selection || pageChoice.file !== file)) pageChoice = null;
+    const page = source === 'pc' && pageChoice ? pageChoice.page : evidencePage;
     const nextKey = [generation, source, filename, page, remote, detail, files.indexOf(file)].join('|');
     if (key === nextKey) return queue;
     key = nextKey;
@@ -45,9 +56,9 @@ function createStressLocalPreview({createURL, revokeURL, openPDF, renderPDF, upd
     function server(reason = '') {
       emit({source: 'server', url: remote || '',
         status: reason || (remote ? 'Prepared image actually sent to the model.' : 'No model image was saved.'),
-        caption: '· ' + (caseName || basename(filename)) + (page ? ' page ' + page : '')
+        caption: '· ' + (caseName || basename(filename)) + (evidencePage ? ' page ' + evidencePage : '')
           + (detail ? ' at ' + detail : '') + ' · server model image',
-        download: (caseName || 'page').replace(/[\\/]/g, '-') + '-p' + page + '-' + (detail || 'read') + '.png'});
+        download: (caseName || 'page').replace(/[\\/]/g, '-') + '-p' + evidencePage + '-' + (detail || 'read') + '.png'});
     }
     if (source === 'server') { server(); return queue; }
     if (!found.length) {
@@ -67,13 +78,14 @@ function createStressLocalPreview({createURL, revokeURL, openPDF, renderPDF, upd
     const cacheKey = files.indexOf(file) + ':' + (isPDF ? page : 'original');
     const caption = '· ' + file.name + (isPDF ? ' page ' + page : ' · whole original image') + ' · PC original';
     const download = isPDF ? file.name.replace(/\.pdf$/i, '') + '-p' + page + '-local.png' : file.name;
-    function ready(url) { emit({url, source: 'pc', caption, download,
+    const pagination = () => isPDF ? {pdfPage: Number(page), pdfPages: pageCounts.get(file) || 0} : {};
+    function ready(url) { emit({url, source: 'pc', caption, download, ...pagination(),
       status: 'Local original; model trimming and Detail resizing are not applied.'}); }
     if (urls.has(cacheKey)) {
       const url = urls.get(cacheKey); urls.delete(cacheKey); urls.set(cacheKey, url);
       ready(url); return queue;
     }
-    emit({url: '', caption, status: isPDF ? 'Opening this PDF page on your PC…' : 'Opening PC image…'});
+    emit({url: '', caption, ...pagination(), status: isPDF ? 'Opening this PDF page on your PC…' : 'Opening PC image…'});
     if (!isPDF) { ready(remember(cacheKey, file)); return queue; }
     queue = queue.catch(() => {}).then(async () => {
       if (!active()) return;
@@ -84,15 +96,21 @@ function createStressLocalPreview({createURL, revokeURL, openPDF, renderPDF, upd
           const doc = await openPDF(file);
           if (!active()) { await doc.destroy(); return; }
           pdf = {file, doc};
+          pageCounts.set(file, doc.numPages);
         }
         const number = Number(page);
         if (!Number.isInteger(number) || number < 1 || number > pdf.doc.numPages)
           throw new Error('Requested page is outside this local PDF.');
+        emit({url: '', caption, ...pagination(), status: 'Opening this PDF page on your PC…'});
         const blob = await renderPDF(pdf.doc, number);
         if (!active()) return;
         ready(remember(cacheKey, blob));
       } catch (error) {
-        if (active()) server('Could not open the local PDF; showing the server image. ' + error.message);
+        if (active()) {
+          if (pageChoice) emit({source: 'pc', url: '', caption, download, ...pagination(),
+            status: 'Could not open PDF page ' + page + '. Choose another page. ' + error.message});
+          else server('Could not open the local PDF; showing the server image. ' + error.message);
+        }
       }
     });
     return queue;
@@ -101,6 +119,18 @@ function createStressLocalPreview({createURL, revokeURL, openPDF, renderPDF, upd
     setFiles,
     hasCandidate: name => matches(name).length > 0,
     show,
+    setPage(value) {
+      if (!current || source !== 'pc') return queue;
+      const found = matches(current.filename);
+      const file = found.length === 1 ? found[0] : choices.get(normal(current.filename));
+      const number = Number(value), count = file && pageCounts.get(file);
+      if (count && Number.isInteger(number) && number >= 1 && number <= count) {
+        pageChoice = {file, page: number,
+          selection: current.selection ?? normal(current.filename) + ':' + (current.page ?? 1)};
+      }
+      // Invalid input restores the currently displayed page and never renders it.
+      invalidate(); return show(current);
+    },
     choose(name, index) {
       const file = matches(name)[Number(index)];
       if (index !== '' && file) choices.set(normal(name), file);
@@ -118,13 +148,17 @@ function createStressLocalPreview({createURL, revokeURL, openPDF, renderPDF, upd
   const el = id => document.getElementById(id);
   const folder = el('stLocalFolder'), bar = el('cmpLocalBar');
   let pdfModule;
-  async function openPDF(file) {
-    const base = API + '/local-preview/pdfjs/6.4.299/';
+  const base = API + '/local-preview/pdfjs/6.4.299/';
+  async function loadPDFModule() {
     if (!pdfModule) pdfModule = import(base + 'legacy/build/pdf.min.mjs').catch(error => {
       pdfModule = null; throw error;
     });
     const lib = await pdfModule;
     lib.GlobalWorkerOptions.workerSrc = base + 'legacy/build/pdf.worker.min.mjs';
+    return lib;
+  }
+  async function openPDF(file) {
+    const lib = await loadPDFModule();
     const task = lib.getDocument({data: new Uint8Array(await file.arrayBuffer()),
       cMapUrl: base + 'cmaps/', cMapPacked: true,
       standardFontDataUrl: base + 'standard_fonts/', wasmUrl: base + 'wasm/',
@@ -152,6 +186,15 @@ function createStressLocalPreview({createURL, revokeURL, openPDF, renderPDF, upd
       el('cmpLocalStatus').textContent = state.status;
       el('cmpLocalPC').classList.toggle('on', state.source === 'pc');
       el('cmpLocalServer').classList.toggle('on', state.source === 'server');
+      const canPage = state.source === 'pc' && state.pdfPages > 0;
+      el('cmpPdfPages').hidden = !canPage;
+      if (canPage) {
+        el('cmpPdfPage').value = String(state.pdfPage);
+        el('cmpPdfPage').max = String(state.pdfPages);
+        el('cmpPdfTotal').textContent = '/ ' + state.pdfPages;
+        el('cmpPdfPrev').disabled = state.pdfPage <= 1;
+        el('cmpPdfNext').disabled = state.pdfPage >= state.pdfPages;
+      }
       const chooser = el('cmpLocalChoice');
       el('cmpLocalChoiceLabel').hidden = state.matches.length < 2;
       chooser.replaceChildren(new Option('— choose a file —', ''), ...state.matches.map((file, i) =>
@@ -175,6 +218,7 @@ function createStressLocalPreview({createURL, revokeURL, openPDF, renderPDF, upd
       if (!visible) { this.hide(); return; }
       bar.hidden = false;
       controller.show({filename: o.filename, page: read.page || o.page || 1,
+        selection: String(o.alert) + ':' + o.at,
         remote: read.src, detail: read.detail, caseName: o.case});
     },
     hide() { bar.hidden = true; cmpImg.hidden = false; controller.hide(); },
@@ -183,6 +227,9 @@ function createStressLocalPreview({createURL, revokeURL, openPDF, renderPDF, upd
   folder.addEventListener('change', () => {
     if (!folder.files.length) return;
     const count = controller.setFiles(folder.files);
+    // Fetch the renderer while the user chooses a report row, not on first click.
+    // Only library code is loaded here; document bytes stay unread until opened.
+    if ([...folder.files].some(file => /\.pdf$/i.test(file.name))) loadPDFModule().catch(() => {});
     // Keep File references, not the directory input's path value.
     folder.value = '';
     el('stLocalClear').disabled = false;
@@ -196,6 +243,12 @@ function createStressLocalPreview({createURL, revokeURL, openPDF, renderPDF, upd
   });
   el('cmpLocalPC').addEventListener('click', () => controller.setSource('pc'));
   el('cmpLocalServer').addEventListener('click', () => controller.setSource('server'));
+  el('cmpPdfPrev').addEventListener('click', () => controller.setPage(Number(el('cmpPdfPage').value) - 1));
+  el('cmpPdfNext').addEventListener('click', () => controller.setPage(Number(el('cmpPdfPage').value) + 1));
+  el('cmpPdfPage').addEventListener('change', event => controller.setPage(event.target.value));
+  el('cmpPdfPage').addEventListener('keydown', event => {
+    if (event.key === 'Enter') { event.preventDefault(); controller.setPage(event.target.value); }
+  });
   el('cmpLocalChoice').addEventListener('change', event => {
     controller.choose(cmpOverride?.filename, event.target.value);
   });

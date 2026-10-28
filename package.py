@@ -75,6 +75,8 @@ FILES = [
 # (directory, glob). Only matching files are taken, so a stray artefact dropped
 # in one of these does not travel.
 TREES = [
+    ("static", "benchmark*.js"),
+    ("static", "benchmark.css"),
     ("templates", "*.html"),
     ("schemas", "user_*.json"),
     ("vendor/pdfjs/6.4.299", "**/*"),

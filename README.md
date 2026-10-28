@@ -1873,6 +1873,28 @@ always opens the exact prepared page sent to the model, including trimming and
 Detail resizing; a PC original can look different. This changes previews only,
 not the files or parameters used for the benchmark.
 
+When a selected PC file matches a clicked problem row, Compare opens its original
+immediately while OCR and extraction results load separately from the server.
+If those results are unavailable, the local preview stays open with an explanation.
+Selecting a folder containing PDFs also loads the renderer code ahead of the first
+preview; document contents are still read only when opened. Rapidly switching rows
+keeps the latest selection instead of letting an older server reply replace it.
+
+For a local PDF, **PDF page** has its own previous/next buttons and a page-number
+input covering every page in the original. These controls change only the source
+image; the extraction beside it stays visible. The selected PDF page survives a
+comparison refresh, while selecting a different recorded read or file returns to
+that read's page. **Server · model image** still shows the exact recorded image.
+
+Benchmark scripts and styles use content-versioned URLs and long-lived browser
+caching; deployments must include `static/benchmark*.js` and `static/benchmark.css`
+(included by `package.py`). Per-tab settings remain in the page bootstrap.
+Live reports patch changed DOM nodes, preserving rows, open details and selected
+controls. Compare caches up to 20 evidence responses, with a 16 MiB estimated
+payload budget. Entries are reused for 5 seconds, invalidated when an alert's
+revision changes, and revalidated with ETags afterward. Errors are retried rather
+than cached, and unchanged responses return 304 without another result payload.
+
 The **Stress test** tab benchmarks the **server**: a queue of jobs worked by as many
 concurrent requests as you set, and one report at the end. It uses the reading and extraction
 models selected in the Workspace and never switches them.

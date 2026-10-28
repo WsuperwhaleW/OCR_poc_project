@@ -45,7 +45,12 @@ class PrefixTests(unittest.TestCase):
         page = self.client.get("/").get_data(as_text=True)
         self.assertIn('window.OCR_BASE = location.pathname.replace(/\\/+$/, "")', page)
         self.assertFalse(re.findall(r"fetch\(\s*['\"`]/api/", page))
-        self.assertNotIn('href="/api/', page)
+        for prefix in ('/OCR', '/tools/ocr'):
+            mounted = self.client.get(prefix + '/').text
+            assets = re.findall(r'(?:href|src)="([^"]*/benchmark-assets/[^"]+)"', mounted)
+            self.assertTrue(assets)
+            self.assertTrue(all(url.startswith('api/benchmark-assets/') for url in assets))
+            self.assertIn("benchmarkBase.href = location.origin + window.OCR_BASE + '/'", mounted)
         self.assertNotIn("appBase", page)       # the App path control is gone
 
 

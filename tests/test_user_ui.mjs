@@ -1,10 +1,11 @@
+import {benchmarkSource} from './benchmark_source.mjs';
 import {readFileSync} from 'node:fs';
 import vm from 'node:vm';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
 const root = new URL('../', import.meta.url);
-const page = readFileSync(new URL('templates/index.html', root), 'utf8');
+const page = benchmarkSource();
 const settingsSource = readFileSync(new URL('templates/_user_settings_script.html', root), 'utf8');
 const appSource = readFileSync(new URL('templates/_user_app_script.html', root), 'utf8');
 const renderSource = readFileSync(new URL('templates/_user_render_script.html', root), 'utf8');
@@ -29,6 +30,93 @@ function dom(){
   return {items,el,document:{getElementById:el,createElement:tag=>new Element(tag),createTextNode:text=>({textContent:text}),querySelectorAll:()=>[]}};
 }
 function response(body, ok=true){return {ok,status:ok?200:400,json:async()=>body};}
+
+const settle = async () => {for(let i=0;i<20;i++)await Promise.resolve();};
+function lifecycleSetup(detailFetch) {
+  const {el,document}=dom(),events={},timers=new Map(),calls=[];let serial=0;
+  const job={id:'job-a',filename:'audit.png',created_at:'2026-10-28T00:00:00Z',
+    status:'ocr',progress:'reading',configuration:config,result:{pages:[],text:''}};
+  class FormData {constructor(){this.values={};}append(k,v){this.values[k]=v;}}
+  const fetch=async(url,options={})=>{
+    calls.push(url);
+    if(url.endsWith('/settings'))return response({settings:config});
+    if(url.endsWith('/models'))return response({models:{ocr:{},extraction:{}}});
+    if(url.endsWith('/stress'))return response({runs:[]});
+    if(url.includes('/jobs?'))return response({jobs:[job,{...job,id:'job-b'}],counts:{},more:false});
+    if(url.endsWith('/batches'))return response({batch_id:'batch'});
+    if(url.endsWith('/jobs'))return response({job});
+    return detailFetch ? detailFetch(url,job) : response({job});
+  };
+  el('jobResult').hidden=true;
+  vm.runInContext(appSource,vm.createContext({document,fetch,FormData,Date,console,
+    window:{USER_BASE:'/ocr',addEventListener:(name,fn)=>events[name]=fn,renderUserOcr(){}},
+    URL:{createObjectURL:()=> 'blob:audit',revokeObjectURL(){}},
+    setTimeout:(fn,ms)=>{timers.set(++serial,{fn,ms});return serial;},clearTimeout:id=>timers.delete(id)}));
+  return {el,events,timers,calls,job,
+    open:index=>el('historyRows').children[index].children.at(-1).children[0].listeners.click()};
+}
+
+test('BFCache restore resumes history, selected job and batch polling once',async()=>{
+  const {el,events,timers,calls}=lifecycleSetup();await settle();
+  el('fileInput').listeners.change({target:{files:[{name:'audit.png',size:10}]}});
+  await el('uploadForm').listeners.submit({preventDefault(){}});await settle();
+  const delays=()=>[...timers.values()].map(t=>t.ms).sort((a,b)=>a-b);
+  assert.deepEqual(delays(),[1200,2000,5000,10000,30000]);
+  events.pagehide({persisted:true});assert.equal(timers.size,0);
+  const previous=calls.length;events.pageshow({persisted:true});await settle();
+  assert.ok(calls.slice(previous).some(url=>url.includes('/jobs?')));
+  assert.equal(calls.slice(previous).filter(url=>url.endsWith('/jobs/job-a')).length,2);
+  assert.deepEqual(delays(),[1200,2000,5000,10000,30000]);
+  events.pageshow({persisted:true});await settle();
+  assert.deepEqual(delays(),[1200,2000,5000,10000,30000]);
+});
+
+test('detail response finishing while page is hidden does not restart timers',async()=>{
+  let finish;
+  const {events,timers,open}=lifecycleSetup((_url,job)=>new Promise(resolve=>{finish=()=>resolve(response({job}));}));
+  await settle();const pending=open(0);await settle();
+  events.pagehide({persisted:true});finish();await pending;await settle();
+  assert.equal(timers.size,0);
+  events.pageshow({persisted:true});await settle();finish();await settle();
+  assert.equal([...timers.values()].filter(t=>t.ms===1200).length,1);
+});
+
+test('first detail load failure is visible outside the hidden result and can retry',async()=>{
+  let fail=true;
+  const {el,open,timers}=lifecycleSetup((_url,job)=>{
+    if(fail)throw new Error('network unavailable');return response({job});
+  });await settle();await open(0);
+  const markup=readFileSync(new URL('templates/user.html',root),'utf8');
+  assert.ok(markup.indexOf('id="jobLoadMessage"')<markup.indexOf('id="jobResult"'));
+  assert.equal(el('jobResult').hidden,true);
+  assert.equal(el('jobLoadMessage').hidden,false);
+  assert.match(el('jobLoadMessage').textContent,/network unavailable/);
+  assert.equal(el('jobLoadRetry').hidden,false);
+  assert.equal([...timers.values()].filter(t=>t.ms===4000).length,1);
+  fail=false;el('jobLoadRetry').listeners.click();await settle();
+  assert.equal(el('jobResult').hidden,false);assert.equal(el('jobLoadMessage').hidden,true);
+  assert.equal(el('jobLoadRetry').hidden,true);
+  assert.equal([...timers.values()].filter(t=>t.ms===4000).length,0);
+});
+
+test('HTML 404 for a missing job is explained without endless automatic retries',async()=>{
+  const {el,open,timers}=lifecycleSetup(()=>({ok:false,status:404,json:async()=>{throw Error('HTML');}}));
+  await settle();await open(0);
+  assert.equal(el('jobLoadMessage').hidden,false);
+  assert.match(el('jobLoadMessage').textContent,/ไม่พบงานนี้/);
+  assert.equal([...timers.values()].filter(t=>t.ms===4000).length,0);
+});
+
+test('a late error from the previous selection cannot overwrite the current job',async()=>{
+  let reject;
+  const {el,open,timers}=lifecycleSetup((url,job)=>url.endsWith('job-a')
+    ?new Promise((_resolve,no)=>{reject=no;}) :response({job:{...job,id:'job-b',filename:'second.png',status:'completed'}}));
+  await settle();const previous=open(0);await settle();await open(1);
+  reject(new Error('old request failed'));await previous;
+  assert.equal(el('resultFile').textContent,'second.png');
+  assert.equal(el('jobLoadMessage').hidden,true);
+  assert.equal([...timers.values()].filter(t=>t.ms===4000).length,0);
+});
 
 test('Settings owns the main view and hides benchmark actions despite saved Stress results',()=>{
   const {el,document}=dom();document.body={classList:{toggle(){}}};

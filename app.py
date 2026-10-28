@@ -15,6 +15,7 @@ Accepts any raster format Pillow can open, plus PDFs (PyMuPDF), HEIC/HEIF
 import base64
 import copy
 import gzip
+import hashlib
 import io
 import json
 import mimetypes
@@ -29,6 +30,7 @@ import weakref
 from collections import OrderedDict, deque
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from contextlib import closing, contextmanager
+from functools import lru_cache
 from pathlib import Path
 
 import requests
@@ -276,6 +278,19 @@ class _ProxyPrefix:
 
 
 app.wsgi_app = _ProxyPrefix(app)
+
+
+def _validate_api_json_object():
+    """JSON API bodies are objects; reject malformed/scalar input before handlers.
+
+    Leave multipart uploads and bodyless requests alone. Some endpoints use an
+    omitted body to select their saved defaults.
+    """
+    if (request.path.startswith('/api/')
+            and request.method in ('POST', 'PUT', 'PATCH', 'DELETE')
+            and request.is_json
+            and not isinstance(request.get_json(silent=True), dict)):
+        return jsonify(error='Request body must be a valid JSON object.'), 400
 
 
 @app.before_request
@@ -5883,6 +5898,46 @@ def prepare(request_files, form):
 
 
 
+_BENCHMARK_ASSETS = {
+    **{name: config.BASE_DIR / 'static' / name for name in
+       ('benchmark.js', 'benchmark.css', 'benchmark-performance.js')},
+    **{name: config.BASE_DIR / 'templates' / name for name in
+       ('_stress_local_script.html', '_doctype_mapping_script.html', '_user_settings_script.html')},
+}
+
+
+@lru_cache(maxsize=32)
+def _benchmark_version(path, mtime, size):
+    return hashlib.sha256(path.read_bytes()).hexdigest()[:16]
+
+
+def benchmark_asset(name):
+    path = _BENCHMARK_ASSETS[name]
+    stat = path.stat()
+    version = _benchmark_version(path, stat.st_mtime_ns, stat.st_size)
+    return f'api/benchmark-assets/{version}/{name}'
+
+
+@app.context_processor
+def benchmark_asset_context():
+    return {'benchmark_asset': benchmark_asset}
+
+
+@app.get('/api/benchmark-assets/<version>/<name>')
+def benchmark_asset_file(version, name):
+    path = _BENCHMARK_ASSETS.get(name)
+    if path is None:
+        return jsonify(error='Asset not found.'), 404
+    stat = path.stat()
+    if version != _benchmark_version(path, stat.st_mtime_ns, stat.st_size):
+        return jsonify(error='Asset version not found.'), 404
+    response = send_from_directory(path.parent, path.name, max_age=31536000)
+    response.mimetype = 'text/css' if name.endswith('.css') else 'text/javascript'
+    response.headers['Cache-Control'] = 'public, max-age=31536000, immutable'
+    response.headers['X-Content-Type-Options'] = 'nosniff'
+    return response
+
+
 @app.get("/")
 def index():
     return render_template(
@@ -10269,7 +10324,7 @@ def stress_evidence(alert_id: str):
                              "server started are."), 404
     case = scoring.cases_index().get(item["truth_case"] or item["case"], {})
     filename = str(case.get("pdf") or item["case"]).replace("\\", "/").rsplit("/", 1)[-1]
-    return jsonify(case=item["case"], filename=filename,
+    response = jsonify(case=item["case"], filename=filename,
                    page=item["page"], truth_case=item["truth_case"],
                    fields=item.get("fields"),
                    attempts=[{"detail": a["detail"], "text": a["text"],
@@ -10278,6 +10333,9 @@ def stress_evidence(alert_id: str):
                               "note": a.get("note"),
                               "image": a.get("page") is not None}
                              for a in item["attempts"]])
+    response.headers['Cache-Control'] = 'private, no-cache'
+    response.add_etag(weak=True)
+    return response.make_conditional(request)
 
 
 @app.get("/api/stress/evidence/<alert_id>/<int:index>.png")
@@ -11019,7 +11077,7 @@ _JS_MAP_KEYS = re.compile(r"(?:^\s+|,\s*)(\w+)\s*:", re.M)
 
 
 def template_field_keys():
-    """The keys `templates/index.html` knows how to draw, per map.
+    """The keys `static/benchmark.js` knows how to draw, per map.
 
     Returns {"FIELD_LABELS": {...}, "FIELD_HINTS": {...}, "FIELD_SECTIONS": {...}}.
 
@@ -11032,7 +11090,7 @@ def template_field_keys():
     a parser that fails loudly on a cosmetic edit would be worse than the bug.
     """
     try:
-        text = (config.BASE_DIR / "templates" / "index.html").read_text("utf-8")
+        text = (config.BASE_DIR / "static" / "benchmark.js").read_text("utf-8")
     except Exception:                                    # noqa: BLE001
         return {}
 
@@ -11064,7 +11122,7 @@ def check_template_fields():
     """
     maps = template_field_keys()
     if not maps:
-        return ["could not read the field maps out of templates/index.html"]
+        return ["could not read the field maps out of static/benchmark.js"]
     schema = set(prompts._SCALAR_KEYS)
     problems = []
     for name in ("FIELD_LABELS", "FIELD_HINTS", "FIELD_SECTIONS"):
@@ -11223,6 +11281,8 @@ def choose_port() -> int:
 # app again here would create a second engine and a second set of globals.
 import userweb
 get_user_service = userweb.register(app, sys.modules[__name__])
+# Preserve the User API's origin check before parsing or validating its body.
+app.before_request(_validate_api_json_object)
 
 
 if __name__ == "__main__":

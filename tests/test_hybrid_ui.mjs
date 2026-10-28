@@ -1,9 +1,10 @@
+import {benchmarkSource} from './benchmark_source.mjs';
 import {readFileSync} from 'node:fs';
 import vm from 'node:vm';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-const page = readFileSync(new URL('../templates/index.html', import.meta.url), 'utf8');
+const page = benchmarkSource();
 function source(name) {
   const start = page.indexOf('function ' + name + '(');
   assert.notEqual(start, -1, name);

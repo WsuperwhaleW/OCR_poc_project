@@ -24,6 +24,7 @@
   const dates = value => new Date(value).toLocaleString('th-TH');
   let files = [], settings = null, sending = false, jobs = [], batchJobs = [], selected = null;
   let historyTimer, detailTimer, batchTimer, historyLoading = false, batchLoading = false, more = false;
+  let detailRequest = 0;
   let modelsTimer, modelsLoading = false, pageClosed = false, lastModels = {};
   let previewKey = null, previewObjectUrl = null, previewId = null, imageZoom = 100;
   let typesLoaded = false, typesLoading = false;
@@ -41,8 +42,10 @@
       options = {...options, headers: {...options.headers, 'X-OCR-User-Token': window.USER_API_TOKEN}};
     const response = await fetch(API + path, options);
     if(response.status===204)return {};
-    let body; try { body = await response.json(); } catch (_) { throw new Error('Server ไม่ตอบกลับเป็น JSON (' + response.status + ')'); }
-    if (!response.ok) throw new Error(body.error || 'ดำเนินการไม่สำเร็จ (' + response.status + ')');
+    let body; try { body = await response.json(); } catch (_) {
+      throw Object.assign(new Error('Server ไม่ตอบกลับเป็น JSON (' + response.status + ')'), {status: response.status});
+    }
+    if (!response.ok) throw Object.assign(new Error(body?.error || 'ดำเนินการไม่สำเร็จ (' + response.status + ')'), {status: response.status});
     return body;
   }
   function paintModel(role, info, error) {
@@ -230,7 +233,7 @@
     }));
   }
   async function pollBatch(){
-    if(batchLoading)return;
+    if(batchLoading||pageClosed)return;
     clearTimeout(batchTimer);
     const waiting=batchJobs.filter(job=>active(job.status));
     if(!waiting.length)return;
@@ -239,7 +242,7 @@
     try{for(const item of waiting){const {job}=await api('/jobs/'+item.id);Object.assign(item,job);}paintBatch();}
     catch(_){/* Poll again; already accepted jobs keep running on the server. */}
     finally{batchLoading=false;}
-    if(batchJobs.some(job=>active(job.status)))batchTimer=setTimeout(pollBatch,2000);
+    if(!pageClosed&&batchJobs.some(job=>active(job.status)))batchTimer=setTimeout(pollBatch,2000);
   }
   function view(page){
     const name=typeof page==='boolean'?(page?'history':'upload'):page;
@@ -472,14 +475,26 @@
   }
   $('userJsonRetry').addEventListener('click',()=>{userJsonLoadedKey='';loadUserJson();});
   async function openJob(id,show=true){
-    clearTimeout(detailTimer);selected=id;if(show)view(false);
-    try{const {job}=await api('/jobs/'+id);if(selected!==id)return;paintJob(job);if(show)previewJob(job);
+    if(pageClosed)return;
+    clearTimeout(detailTimer);const ticket=++detailRequest,changed=selected!==id;selected=id;
+    if(show){
+      view(false);message('jobLoadMessage','กำลังโหลดผลลัพธ์…');$('jobLoadRetry').hidden=true;
+      if(changed){$('jobResult').hidden=true;$('emptyResult').hidden=true;$('resultStatus').hidden=true;clearPreview();}
+    }
+    try{const {job}=await api('/jobs/'+id);if(selected!==id||ticket!==detailRequest||pageClosed)return;
+      message('jobLoadMessage','');$('jobLoadRetry').hidden=true;paintJob(job);if(show)previewJob(job);
       if(show)$('resultTitle').scrollIntoView?.({behavior:'smooth',block:'start'});
       if(active(job.status))detailTimer=setTimeout(()=>openJob(id,false),1200);
-    }catch(err){message('jobError',err.message,true);detailTimer=setTimeout(()=>{if(selected===id)openJob(id,false);},4000);}
+    }catch(err){
+      if(selected!==id||ticket!==detailRequest||pageClosed)return;
+      message('jobLoadMessage',err.status===404?'ไม่พบงานนี้ในประวัติ กรุณารีเฟรชรายการเอกสาร':err.message,true);
+      $('jobLoadRetry').hidden=false;
+      if(!err.status||err.status>=500)detailTimer=setTimeout(()=>{if(selected===id)openJob(id,show);},4000);
+    }
   }
+  $('jobLoadRetry').addEventListener('click',()=>{if(selected)openJob(selected);});
   async function loadHistory(append=false){
-    if(historyLoading)return;historyLoading=true;clearTimeout(historyTimer);
+    if(historyLoading||pageClosed)return;historyLoading=true;clearTimeout(historyTimer);
     try{
       const body=await api('/jobs?offset='+(append?jobs.length:0));jobs=append?[...jobs,...body.jobs]:body.jobs;more=body.more;
       $('historyRows').replaceChildren(...jobs.map(job=>{const row=node('tr'),status=node('td'),action=node('td');
@@ -490,7 +505,7 @@
       const counts=body.counts||{};$('queueSummary').textContent='OCR '+(counts.ocr||0)+' ไฟล์ · Extraction '+(counts.extraction||0)+' ไฟล์ · รอ '+((counts.queued_ocr||0)+(counts.queued_extraction||0))+' ไฟล์';
       message('historyError','');
     }catch(err){message('historyError',err.message,true);}
-    finally{historyLoading=false;if(jobs.length<=50)historyTimer=setTimeout(()=>loadHistory(),5000);}
+    finally{historyLoading=false;if(!pageClosed&&jobs.length<=50)historyTimer=setTimeout(()=>loadHistory(),5000);}
   }
   $('refreshHistory').addEventListener('click',()=>loadHistory());$('moreHistory').addEventListener('click',()=>loadHistory(true));
   function tab(mode){resultMode=mode;for(const key of ['text','fields','json','userJson']){const on=mode===key;$(key+'Result').hidden=!on;$(key+'Tab').classList.toggle('selected',on);$(key+'Tab').setAttribute('aria-selected',String(on));}if(mode==='userJson')loadUserJson();}
@@ -498,6 +513,9 @@
   $('userJsonTab').addEventListener('click',()=>tab('userJson'));
   window.addEventListener('beforeunload',event=>{if(sending){event.preventDefault();event.returnValue='';}});
   window.addEventListener('pagehide',event=>{pageClosed=true;clearTimeout(historyTimer);clearTimeout(detailTimer);clearTimeout(batchTimer);clearTimeout(modelsTimer);clearTimeout(stressTimer);if(!event?.persisted)clearPreview();});
-  window.addEventListener('pageshow',()=>{if(pageClosed){pageClosed=false;refreshModels();refreshStress();}});
+  window.addEventListener('pageshow',()=>{if(pageClosed){
+    pageClosed=false;refreshModels();refreshStress();loadHistory();pollBatch();
+    if(selected)openJob(selected,false);
+  }});
   loadSettings();loadHistory();refreshModels();refreshStress();
 })();

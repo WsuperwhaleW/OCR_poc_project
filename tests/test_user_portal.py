@@ -428,7 +428,10 @@ class UserWebTests(unittest.TestCase):
         root = self.client.get('/').text
         self.assertIn('data-pane="settings"', root)
         self.assertIn('id="settingsCard"', root)
-        self.assertIn('window.loadUserSettings = async', root)
+        script_url = re.search(r'src="([^"]+/_user_settings_script.html)"', root)[1]
+        script = self.client.get(script_url)
+        self.assertIn('window.loadUserSettings = async', script.text)
+        script.close()
         self.assertNotIn('/static/user/', root)
         self.assertEqual(self.client.post('/ocr/api/user/batches', json={'file_count': 1}).status_code, 201)
 

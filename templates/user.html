@@ -47,6 +47,8 @@
         </div>
         <section class="card result-card" aria-labelledby="resultTitle">
           <div class="result-heading"><h2 id="resultTitle"><span class="number">02</span> ผลลัพธ์</h2><span id="resultStatus" class="badge" hidden></span></div>
+          <p id="jobLoadMessage" class="message" role="status" aria-live="polite" hidden></p>
+          <button id="jobLoadRetry" type="button" class="subtle" hidden>ลองโหลดผลลัพธ์อีกครั้ง</button>
           <div id="emptyResult" class="empty"><span class="empty-icon" aria-hidden="true">▤</span><h3>เริ่มจากไฟล์ของคุณ</h3><p class="muted">ดูข้อความ OCR และข้อมูลที่ดึงได้<br>พร้อมสถานะแต่ละขั้นตอน</p></div>
           <div id="jobResult" hidden>
             <h3 id="resultFile" class="filename"></h3><p id="resultDate" class="muted small"></p>

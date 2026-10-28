@@ -40,7 +40,7 @@ class DeploymentPackageTests(unittest.TestCase):
                      'vendor/pdfjs/6.4.299/wasm/openjpeg.wasm'):
             self.assertIn(name, picked)
 
-    def test_extracted_upload_only_archive_serves_user_without_a_static_directory(self):
+    def test_extracted_upload_only_archive_serves_user_and_benchmark_assets(self):
         with tempfile.TemporaryDirectory() as directory:
             archive = Path(directory) / 'app.zip'
             subprocess.run([sys.executable, 'package.py', '--no-fixtures', '--out', str(archive)],
@@ -48,7 +48,8 @@ class DeploymentPackageTests(unittest.TestCase):
             with zipfile.ZipFile(archive) as zf:
                 zf.extractall(Path(directory) / 'unpacked')
             root = next((Path(directory) / 'unpacked').iterdir())
-            self.assertFalse((root / 'static').exists())
+            for name in ('benchmark.js', 'benchmark-performance.js', 'benchmark.css'):
+                self.assertTrue((root / 'static' / name).is_file())
             code = '''
 from unittest.mock import patch
 from pathlib import Path
