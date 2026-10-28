@@ -82,12 +82,13 @@ python -m pip install --no-index --find-links wheelhouse -r requirements.txt
 `wheelhouse/` or fails immediately and says which package was missing — rather than
 hanging on a network timeout on a box that has no network.
 
-**The bundled wheels are built for Linux x86_64 on CPython 3.9** (the deployment server's version). Eleven of the sixteen
-are pure Python and install anywhere; the other five are compiled and are not portable:
+**The bundled wheels are built for Linux x86_64 on CPython 3.9** (the deployment server's version).
+The bundle now includes `jsonschema==4.25.1` and its dependencies for User JSON v7.
+Native wheels are compiled for the target and are not portable:
 
 | Wheel | Runs on |
 |---|---|
-| `pillow`, `pillow_heif`, `markupsafe`, `charset_normalizer` | Linux x86_64, CPython **3.9 only** |
+| `pillow`, `pillow_heif`, `markupsafe`, `charset_normalizer`, `rpds-py` | Linux x86_64, CPython **3.9 only** |
 | `pymupdf` | Linux x86_64, CPython 3.9 or newer (`abi3`) |
 
 So the general "Python 3.9 or newer" in [step 1](#1-what-you-need-first) narrows to
@@ -99,15 +100,15 @@ rebuild it for the target.
 ### Windows offline install
 
 Separate bundles are available for **Windows x64 and standard CPython**, including
-PDF and HEIC/HEIF support. Each contains 16 wheels, a pinned package list, and a
-SHA-256 manifest. Optional PaddleOCR/EasyOCR dependencies and model weights are
+PDF and HEIC/HEIF support, plus JSON Schema validation for User JSON v7. Each contains
+a pinned package list and a SHA-256 manifest. Optional PaddleOCR/EasyOCR dependencies and model weights are
 not included.
 
 | Python target | Bundle and installation instructions | Size |
 |---|---|---|
-| 3.12.10 | [`wheelhouse-windows-python-3.12.10/`](wheelhouse-windows-python-3.12.10/README.md) | 33.7 MiB |
-| 3.13.x | [`wheelhouse-windows/`](wheelhouse-windows/README.md) | 33.7 MiB |
-| 3.14.8 | [`wheelhouse-windows-python-3.14.8/`](wheelhouse-windows-python-3.14.8/README.md) | 31.0 MiB |
+| 3.12.10 | [`wheelhouse-windows-python-3.12.10/`](wheelhouse-windows-python-3.12.10/README.md) | 34.14 MiB |
+| 3.13.x | [`wheelhouse-windows/`](wheelhouse-windows/README.md) | 34.09 MiB |
+| 3.14.8 | [`wheelhouse-windows-python-3.14.8/`](wheelhouse-windows-python-3.14.8/README.md) | 31.36 MiB |
 
 The 3.14 bundle uses **pillow-heif 1.1.0** because the original `<1.0` requirement
 has no compatible Windows cp314 wheel. Install with that folder's

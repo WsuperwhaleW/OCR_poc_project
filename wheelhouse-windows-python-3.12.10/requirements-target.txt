@@ -18,3 +18,6 @@ pillow-heif>=0.16,<1.0    # optional: HEIC/HEIF input
 # environment (requirements-paddle.txt / requirements-easyocr.txt) but are
 # imported only by their worker subprocesses -- this app's own process infers
 # nothing, which is the rule that keeps it small and predictable.
+
+# User JSON v7 schema validation
+jsonschema>=4.18,<5.0

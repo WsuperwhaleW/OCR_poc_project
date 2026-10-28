@@ -1,7 +1,7 @@
 # Windows offline wheelhouse for Python 3.14.8
 
 Target: **Windows x64 (AMD64), standard CPython 3.14.8**.
-Built on 2026-10-05. Includes 16 wheels (31.0 MiB).
+Built on 2026-10-05. Updated on 2026-10-28. Includes 21 wheels (31.36 MiB).
 
 Includes application dependencies, PDF support (PyMuPDF), and HEIC/HEIF support
 (pillow-heif). Optional PaddleOCR/EasyOCR dependencies and model weights are
@@ -29,7 +29,7 @@ py -3.14 -c "import sys; print(sys.version)"
 py -3.14 -m venv .venv-py314
 .\.venv-py314\Scripts\python.exe -m pip install --no-index --find-links .\wheelhouse-windows-python-3.14.8 -r .\wheelhouse-windows-python-3.14.8\requirements-lock.txt
 .\.venv-py314\Scripts\python.exe -m pip check
-.\.venv-py314\Scripts\python.exe -c "import flask, requests, PIL, pymupdf, pillow_heif; print('dependencies OK')"
+.\.venv-py314\Scripts\python.exe -c "import flask, requests, PIL, pymupdf, pillow_heif, jsonschema; print('dependencies OK')"
 .\.venv-py314\Scripts\python.exe app.py
 ```
 
@@ -49,8 +49,14 @@ python -m pip --isolated download --index-url https://pypi.org/simple --only-bin
 
 Checked wheel ZIP integrity, compatible target tags, Requires-Python, complete
 dependency closure using the target's Python/Windows markers, and target
-requirements. An offline pip dry run resolved all 16 packages from local files
+requirements. An offline pip dry run resolved all 21 packages from local files
 with --no-index. manifest.json records package versions and SHA-256 hashes.
 The build machine has Python 3.13 only, so imports and execution on Python
 3.14.8 have not been tested. Run the offline install/check/import commands
 above on the target machine before using the application.
+
+## User JSON validation update (2026-10-28)
+
+Includes jsonschema 4.25.1, attrs, jsonschema-specifications, referencing and
+rpds-py, plus typing-extensions where the target Python requires it. The
+requirements lock, target requirements and SHA-256 manifest include this update.
