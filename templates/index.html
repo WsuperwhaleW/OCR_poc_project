@@ -658,6 +658,12 @@ document.addEventListener("DOMContentLoaded", function () {
   .imgrc .verdict.ok { color: var(--ok); }
   .imgrc .verdict.bad { color: var(--warn); }
   .imgrc .meta { font-size: .74rem; color: var(--muted); }
+  .imgrc ul.imgrc-aev { list-style: none; margin: .35rem 0; padding: 0; font-size: .82rem; }
+  .imgrc ul.imgrc-aev li { padding: 1px 0; }
+  .imgrc ul.imgrc-aev b { display: inline-block; min-width: 5.2em; color: var(--muted);
+                          font-weight: 600; }
+  .imgrc .imgrc-total { font-size: .82rem; margin: 0 0 .4rem; }
+  .imgrc table.imgrc-rules td { padding: 2px 6px; }
   #fields td.ungrounded { color: var(--danger); text-decoration: underline wavy var(--danger); }
   /* Scored against the hand-written truth file, marked at the value itself. A
      list of paths below the fields says a value is wrong; a mark beside it says
@@ -4182,47 +4188,112 @@ function imgrcFindings(rows) {
   return rows.map(r => imgrcFieldName(r.field) + ' ' + (r.rule || '') + ' '
     + (r.state === 'warning' ? '(warning)' : '(failed)')).join(', ');
 }
-/* One fill-missing attempt: a row per field asked. */
+/* A validation state as a small chip: pass / fail / warn / not checked / empty. */
+const IMGRC_STATE = { ok: ['pass', 'ok'], failed: ['fail', 'bad'], warning: ['warn', 'warn'],
+                      unchecked: ['not checked', ''], absent: ['empty', ''] };
+function imgrcState(state) {
+  if (!state) return '<span class="blank">—</span>';
+  const [text, cls] = IMGRC_STATE[state] || [state, ''];
+  return '<span class="imgrc-chip ' + cls + '">' + esc(text) + '</span>';
+}
+/* The three things every attempt is read for, in one list: what it ADDED (a
+   value where there was none), what it EDITED (a value replaced), and what it
+   VALIDATED (the rules run on the fields it touched). */
+function imgrcAev(added, edited, rules, editNote) {
+  const addedKeys = Object.keys(added || {}), editedKeys = Object.keys(edited || {});
+  const ran = (rules || []).filter(r => ['ok', 'failed', 'warning'].includes(r.state));
+  const pass = ran.filter(r => r.state === 'ok').length;
+  return '<ul class="imgrc-aev">'
+    + '<li><b>Added</b> ' + (addedKeys.length
+        ? addedKeys.map(k => esc(imgrcFieldName(k)) + ' = ' + imgrcVal(added[k])).join(', ')
+        : '<span class="blank">nothing</span>') + '</li>'
+    + '<li><b>Edited</b> ' + (editedKeys.length
+        ? editedKeys.map(k => esc(imgrcFieldName(k)) + ': <s>' + imgrcVal(edited[k].from)
+                              + '</s> → ' + imgrcVal(edited[k].to)).join(', ')
+        : '<span class="blank">nothing' + (editNote ? ' — ' + esc(editNote) : '') + '</span>') + '</li>'
+    + '<li><b>Validated</b> ' + (rules
+        ? (ran.length ? ran.length + ' rule(s): ' + pass + ' pass, ' + (ran.length - pass)
+                        + ' fail or warn' : '<span class="blank">no rule ran on these fields</span>')
+        : '<span class="blank">not recorded</span>') + '</li></ul>';
+}
+/* The rules, one row each. `cols` is [[heading, rows-list], ...]: the same rule
+   looked up in each list, so a fill shows its state once and a validation
+   recheck shows it before / with the image answer / now. */
+function imgrcRulesTable(cols) {
+  const keyOf = r => r.field + ' ' + (r.rule || '');
+  const order = [], seen = new Set(), by = cols.map(([, rows]) => {
+    const m = new Map();
+    for (const r of rows || []) {
+      m.set(keyOf(r), r);
+      if (!seen.has(keyOf(r))) { seen.add(keyOf(r)); order.push(r); }
+    }
+    return m;
+  });
+  if (!order.length) return '';
+  return '<table class="imgrc-rules"><tr><th>Field</th><th>Rule</th>'
+    + cols.map(([h]) => '<th>' + esc(h) + '</th>').join('') + '</tr>'
+    + order.map(r => {
+      const why = cols.map((_, i) => (by[i].get(keyOf(r)) || {}))
+        .map(x => x.why || x.detail || '').filter(Boolean).pop() || '';
+      return '<tr title="' + esc(why) + '"><td>' + esc(imgrcFieldName(r.field)) + '</td><td>'
+        + esc(r.rule || '') + '</td>'
+        + by.map(m => '<td>' + imgrcState((m.get(keyOf(r)) || {}).state) + '</td>').join('')
+        + '</tr>';
+    }).join('') + '</table>';
+}
+/* One fill-missing attempt: added / edited / validated, a row per field asked,
+   and the rules validation ran once the filled values were in. */
 function imgrcFillTable(a) {
   const filled = new Set(a.filled || []);
+  const added = a.added || Object.fromEntries([...filled].map(k => [k, (a.after || {})[k]]));
   const rows = (a.fields || []).map(k => {
     const got = (a.candidate || {})[k];
     const took = filled.has(k);
     return '<tr><td>' + esc(imgrcFieldName(k)) + '</td><td>' + imgrcVal('')
       + '</td><td>' + (a.candidate ? imgrcVal(got) : '<span class="blank">no answer</span>')
       + '</td><td class="' + (took ? 'took' : '') + '">'
-      + (took ? 'filled' : a.error ? 'request failed'
+      + (took ? 'added' : a.error ? 'request failed'
          : (got === undefined || got === null || got === '') ? 'still empty (images had nothing)'
          : 'still empty') + '</td></tr>';
   }).join('');
-  return '<table><tr><th>Field</th><th>Before</th><th>Images answered</th><th>Result</th></tr>'
+  return imgrcAev(added, {}, a.validated, 'a fill never overwrites a value')
+    + '<table><tr><th>Field</th><th>Before</th><th>Images answered</th><th>Result</th></tr>'
     + rows + '</table>'
+    + (a.validated && a.validated.length
+        ? '<p class="meta">Validation after filling:</p>' + imgrcRulesTable([['Result', a.validated]]) : '')
     + (a.error ? '<p class="verdict bad">Request failed: ' + esc(a.error) + '</p>' : '')
     + imgrcMeta(a);
 }
-/* One validation recheck attempt: why, a row per field, and the verdict. */
+/* One validation recheck attempt: added / edited / validated, why it ran, a row
+   per field, each rule before / with the images' answer / now, and the verdict. */
 function imgrcValidationTable(a) {
   const changed = new Set(a.changed || []);
+  const before = a.before || {}, after = a.after || {};
+  const added = a.added || Object.fromEntries([...changed]
+    .filter(k => before[k] === '' || before[k] == null).map(k => [k, after[k]]));
+  const edited = a.edited || Object.fromEntries([...changed].filter(k => !(k in added))
+    .map(k => [k, { from: before[k], to: after[k] }]));
   const rows = (a.fields || []).map(k => {
-    const before = (a.before || {})[k], got = (a.candidate || {})[k], after = (a.after || {})[k];
-    const kept = a.accepted ? (changed.has(k) ? 'replaced' : 'unchanged (images agreed)')
-      : imgrcSame(got, before) ? 'unchanged (images agreed)' : 'original kept';
-    return '<tr><td>' + esc(imgrcFieldName(k)) + '</td><td>' + imgrcVal(before) + '</td><td>'
+    const was = before[k], got = (a.candidate || {})[k];
+    const kept = !a.accepted ? (imgrcSame(got, was) ? 'unchanged (images agreed)' : 'original kept')
+      : k in added ? 'added' : k in edited ? 'edited' : 'unchanged (images agreed)';
+    return '<tr><td>' + esc(imgrcFieldName(k)) + '</td><td>' + imgrcVal(was) + '</td><td>'
       + (a.candidate ? imgrcVal(got) : '<span class="blank">no answer</span>')
       + '</td><td class="' + (a.accepted && changed.has(k) ? 'took' : '') + '">'
-      + esc(kept) + (a.accepted && changed.has(k) ? ' → ' + imgrcVal(after) : '') + '</td></tr>';
+      + esc(kept) + (a.accepted && changed.has(k) ? ' → ' + imgrcVal(after[k]) : '') + '</td></tr>';
   }).join('');
   const verdict = a.error ? '<p class="verdict bad">Not applied: ' + esc(a.error) + '</p>'
     : a.accepted ? '<p class="verdict ok">Applied: ' + esc(a.reason || 'validation improved')
                    + ' · ' + (a.changed || []).length + ' field(s) changed.</p>'
     : '<p class="verdict bad">Not applied: ' + esc(a.reason || 'original values kept') + '.</p>';
-  return '<p class="meta">Triggered by: ' + esc(imgrcFindings(a.checks_before)) + '</p>'
+  const rules = a.rules_before
+    ? imgrcRulesTable([['Before', a.rules_before], ['Images answer', a.rules_candidate],
+                       ['Now', a.rules_after]])
+    : '<p class="meta">Findings now: ' + esc(imgrcFindings(a.checks_after)) + '</p>';
+  return imgrcAev(a.accepted ? added : {}, a.accepted ? edited : {}, a.rules_before || null)
+    + '<p class="meta">Triggered by: ' + esc(imgrcFindings(a.checks_before)) + '</p>'
     + '<table><tr><th>Field</th><th>Extracted</th><th>Images answered</th><th>Kept</th></tr>'
-    + rows + '</table>' + verdict
-    + (!a.accepted && a.checks_candidate
-        ? '<p class="meta">Findings the image answer would have left: '
-          + esc(imgrcFindings(a.checks_candidate)) + '</p>' : '')
-    + '<p class="meta">Findings now: ' + esc(imgrcFindings(a.checks_after)) + '</p>'
+    + rows + '</table>' + verdict + rules
     + imgrcMeta(a);
 }
 function imgrcMeta(a) {
@@ -4263,9 +4334,25 @@ function imageRecheckHtml(doc, summary) {
   };
   const legacy = !fills.length && (doc.image_filled || []).length
     ? '<p class="meta">Filled from images: ' + esc(doc.image_filled.map(imgrcFieldName).join(', ')) + '</p>' : '';
+  // Totals over both rechecks for this document, before the detail.
+  const count = o => Object.keys(o || {}).length;
+  const nAdded = fills.reduce((n, a) => n + (a.added ? count(a.added) : (a.filled || []).length), 0)
+    + checks.reduce((n, a) => n + (a.accepted ? count(a.added) : 0), 0);
+  const nEdited = checks.reduce((n, a) => n + (a.accepted ? count(a.edited) : 0), 0);
+  const ranOf = rows => (rows || []).filter(r => ['ok', 'failed', 'warning'].includes(r.state));
+  const nRules = fills.reduce((n, a) => n + ranOf(a.validated).length, 0)
+    + checks.reduce((n, a) => n + ranOf(a.rules_before).length, 0);
+  const nFixed = checks.reduce((n, a) => {
+    const bad = new Set(ranOf(a.rules_before).filter(r => r.state !== 'ok').map(r => r.field + ' ' + r.rule));
+    return n + (a.rules_after || []).filter(r => r.state === 'ok' && bad.has(r.field + ' ' + r.rule)).length;
+  }, 0);
+  const total = (fills.length || checks.length)
+    ? '<p class="imgrc-total"><b>' + nAdded + '</b> added · <b>' + nEdited + '</b> edited · <b>'
+      + nRules + '</b> validation rule(s) checked' + (nFixed ? ', <b>' + nFixed + '</b> now passing' : '') + '</p>'
+    : '';
   return '<section class="imgrc"><h4>Image rechecks</h4>'
     + '<p class="note">Page images sent straight to the extraction model, no OCR text in between. '
-    + 'Hover a heading for what each one may change.</p>'
+    + 'Hover a heading for what each one may change.</p>' + total
     + part('missing', summary ? summary.fill_missing : (fills.length ? true : undefined), fills, imgrcFillTable)
     + legacy
     + part('validation', summary ? summary.validation_retry : (checks.length ? true : undefined),
@@ -14865,11 +14952,23 @@ function stReportHtml(s, snapshot, host) {
         + (r.extract.fill_jobs ? ' · ' + r.extract.fill_filled + ' of ' + r.extract.fill_asked
           + ' filled from the page images (Hybrid)' : ''),
       r.extract.missing_required_jobs ? 'st-warn' : ''));
-    if (r.extract?.validation_retry_jobs) tiles.push(stTile('Validation image recheck',
-      r.extract.validation_retry_changed + '<small> field(s) changed</small>',
+    // The two image rechecks, each read the same way: what it added, what it
+    // edited, and the validation rules run on the fields it touched.
+    if (r.extract?.fill_jobs) tiles.push(stTile('Fill missing from images',
+      (r.extract.fill_filled || 0) + '<small> added · 0 edited</small>',
+      r.extract.fill_jobs + ' job(s) · ' + r.extract.fill_asked + ' empty required field(s) asked'
+      + (r.extract.fill_checks != null ? ' · validated ' + r.extract.fill_checks + ' rule(s) on the added values: '
+         + (r.extract.fill_checks_ok || 0) + ' pass, ' + (r.extract.fill_checks_bad || 0) + ' fail or warn' : '')
+      + ' · a fill never overwrites a value',
+      r.extract.fill_checks_bad ? 'st-warn' : ''));
+    if (r.extract?.validation_retry_jobs) tiles.push(stTile('Validation recheck from images',
+      (r.extract.validation_retry_added || 0) + '<small> added · </small>'
+        + (r.extract.validation_retry_edited || 0) + '<small> edited</small>',
       r.extract.validation_retry_jobs + ' job(s) · ' + r.extract.validation_retry_asked + ' fields asked'
+      + (r.extract.validation_retry_checks != null ? ' · validated ' + r.extract.validation_retry_checks
+         + ' rule(s), ' + (r.extract.validation_retry_fixed || 0) + ' now passing' : '')
       + ' · ' + r.extract.validation_retry_accepted + ' document(s) accepted'
-      + ' · ' + r.extract.validation_retry_resolved + ' resolved'
+      + ' · ' + r.extract.validation_retry_resolved + ' fully resolved'
       + ' · ' + stSec(r.extract.validation_retry_s) + ' additional work'));
     // Document sets: one file can hold several documents, each extracted on
     // its own (stress.doc_sets).

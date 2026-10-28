@@ -436,10 +436,18 @@ def report(records: list, wall: float, mode: str, concurrency: int) -> dict:
             out["extract"].update(
                 fill_jobs=sum(r.get("fill_jobs") or 0 for r in rows),
                 fill_asked=sum(r.get("fill_asked") or 0 for r in rows),
-                fill_filled=sum(r.get("fill_filled") or 0 for r in rows))
+                fill_filled=sum(r.get("fill_filled") or 0 for r in rows),
+                # Validation rules run on the values the images filled in.
+                fill_checks=sum(r.get("fill_checks") or 0 for r in rows),
+                fill_checks_ok=sum(r.get("fill_checks_ok") or 0 for r in rows),
+                fill_checks_bad=sum(r.get("fill_checks_bad") or 0 for r in rows))
+            # added = was blank, edited = replaced a value; checks = rules run on
+            # the rechecked fields, fixed = of those, failed/warned before and
+            # passing after.
             out["extract"].update({"validation_retry_" + key:
                 sum(r.get("validation_retry_" + key) or 0 for r in rows)
-                for key in ("jobs", "asked", "changed", "accepted", "resolved", "s", "tokens")})
+                for key in ("jobs", "asked", "changed", "accepted", "resolved", "s", "tokens",
+                            "added", "edited", "checks", "fixed")})
     if mode == "image":
         # Pages sent to the extractor as images, and the jobs extracted again one
         # Detail up because a Mandatory field came back empty or the reply looped

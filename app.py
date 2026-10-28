@@ -8145,6 +8145,16 @@ def _stress_fill_missing(result: dict, images, texts, case_id, rec: dict,
             got = _fill_document(doc, keys, answer, form, text)
             audit["filled"] = list(got)
             audit["accepted"] = bool(got)
+            # A fill only ever ADDS: it writes a blank and never overwrites a value.
+            audit["added"] = {k: _retry_value(doc.get("fields") or {}, k)[1] for k in got}
+            audit["edited"] = {}
+            # What validation said once the filled values were in (the document is
+            # revalidated by `_fill_document`), for the fields that were asked.
+            audit["validated"] = _rule_states(doc, keys)
+            ran, ok, bad = _rule_tally(_rule_states(doc, got))
+            rec["fill_checks"] = rec.get("fill_checks", 0) + ran
+            rec["fill_checks_ok"] = rec.get("fill_checks_ok", 0) + ok
+            rec["fill_checks_bad"] = rec.get("fill_checks_bad", 0) + bad
             gaps_now = {k for _, ks in _missing_required(doc) for k in ks}
             audit["still_empty"] = [k for k in keys if k in gaps_now]
             audit["after"] = {k: _retry_value(doc.get("fields") or {}, k)[1] for k in keys}
@@ -8173,6 +8183,10 @@ def _stress_fill_missing(result: dict, images, texts, case_id, rec: dict,
     note = (" · failed: " + "; ".join(errors)) if errors else ""
     if orphans:
         note += " · no Hybrid step asks for " + ", ".join(orphans)
+    if rec.get("fill_checks"):
+        note = (f" · validated {rec['fill_checks']} rule(s) on the added values: "
+                f"{rec.get('fill_checks_ok', 0)} pass, {rec.get('fill_checks_bad', 0)} fail or warn"
+                + note)
     if not after:
         live.update_flag(alert, f"{what}{why} -- resolved: the page images filled "
                                 + ", ".join(filled) + note, state="resolved")
@@ -8186,6 +8200,25 @@ def _stress_fill_missing(result: dict, images, texts, case_id, rec: dict,
                                 + f", still empty: {listed}{note}",
                          state="retry failed")
     return alert
+
+
+def _rule_states(doc, keys):
+    """Every validation rule run on `keys` (a table key covers its cells): what an
+    image recheck says it VALIDATED. All states, not only the bad ones -- a rule
+    that passed on a value the images supplied is the point of showing it."""
+    keys = set(keys)
+    bases = {k.split("[", 1)[0] for k in keys}
+    return [{k: row[k] for k in ("field", "rule", "state", "why", "detail") if row.get(k)}
+            for row in ((doc.get("validation") or {}).get("checks") or [])
+            if row.get("field") and (row["field"] in keys
+                                     or row["field"].split("[", 1)[0] in bases)]
+
+
+def _rule_tally(rows):
+    """`(rules run, rules that passed, rules failed or warned)` over `_rule_states` rows."""
+    ran = [r for r in rows if r.get("state") in (validate.OK, validate.FAILED, validate.WARNING)]
+    return (len(ran), sum(r["state"] == validate.OK for r in ran),
+            sum(r["state"] in (validate.FAILED, validate.WARNING) for r in ran))
 
 
 def _validation_bad(doc):
@@ -8251,6 +8284,7 @@ def _validation_candidate(doc, keys, answer, form, text, audit=None):
     _revalidate(trial, form, text)
     if audit is not None:
         audit["checks_candidate"] = copy.deepcopy(_validation_bad(trial))
+        audit["rules_candidate"] = _rule_states(trial, keys)
     if (trial.get("validation") or {}).get("error"):
         return None, "Could not validate the image answer"
     before, after = _validation_bad(doc), _validation_bad(trial)
@@ -8287,7 +8321,8 @@ def _stress_recheck_validation(result, images, texts, case_id, rec, live, job, w
         return None
     started = time.perf_counter()
     rec["validation_retry_jobs"] = 1
-    for name in ("asked", "changed", "accepted", "resolved"):
+    for name in ("asked", "changed", "accepted", "resolved", "added", "edited",
+                 "checks", "fixed"):
         rec["validation_retry_" + name] = 0
     names = [f"doc{doc.get('document') or 1}.{key}" for doc, _, keys in plan for key in keys]
     alert = live.flag("validation", job, who,
@@ -8323,6 +8358,7 @@ def _stress_recheck_validation(result, images, texts, case_id, rec, live, job, w
                 # have just had a blank filled by the independent missing toggle.
                 _revalidate(doc, form, text)
                 audit["checks_before"] = copy.deepcopy(_validation_bad(doc))
+                audit["rules_before"] = _rule_states(doc, keys)
                 form["validation_recheck"] = True
                 rec["validation_retry_asked"] += len(keys)
                 answer = _fill_ask([images[p - 1] for p in numbers], form, ids)
@@ -8336,6 +8372,15 @@ def _stress_recheck_validation(result, images, texts, case_id, rec, live, job, w
                     changed = [key for key in keys if _retry_value(before, key)[1] != _retry_value(trial["fields"], key)[1]]
                     doc.update(fields=trial["fields"], normalized=trial["normalized"], validation=trial["validation"])
                     audit.update(accepted=True, changed=changed)
+                    # A value that was blank is an addition; one that was there and
+                    # is now different is an edit.
+                    audit["added"] = {k: _retry_value(doc["fields"], k)[1] for k in changed
+                                      if validate._blank(_retry_value(before, k)[1])}
+                    audit["edited"] = {k: {"from": _retry_value(before, k)[1],
+                                           "to": _retry_value(doc["fields"], k)[1]}
+                                       for k in changed if k not in audit["added"]}
+                    rec["validation_retry_added"] += len(audit["added"])
+                    rec["validation_retry_edited"] += len(audit["edited"])
                     rec["validation_retry_changed"] += len(changed)
                     rec["validation_retry_accepted"] += 1
                     if not _validation_bad(doc):
@@ -8350,6 +8395,18 @@ def _stress_recheck_validation(result, images, texts, case_id, rec, live, job, w
             finally:
                 audit["after"] = {k: _retry_value(doc.get("fields") or {}, k)[1] for k in keys}
                 audit["checks_after"] = copy.deepcopy(_validation_bad(doc))
+                audit["rules_after"] = _rule_states(doc, keys)
+                audit.setdefault("added", {})
+                audit.setdefault("edited", {})
+                # Rules run on the rechecked fields, and the ones that went from
+                # failed or warned to passing.
+                before_rules = audit.get("rules_before") or []
+                rec["validation_retry_checks"] += _rule_tally(before_rules)[0]
+                was_bad = {(r["field"], r.get("rule")) for r in before_rules
+                           if r.get("state") in (validate.FAILED, validate.WARNING)}
+                rec["validation_retry_fixed"] += sum(
+                    1 for r in audit["rules_after"]
+                    if r.get("state") == validate.OK and (r["field"], r.get("rule")) in was_bad)
                 audit["seconds"] = round(time.perf_counter() - began, 3)
                 live.touch(job)
     finally:
@@ -8369,7 +8426,9 @@ def _stress_recheck_validation(result, images, texts, case_id, rec, live, job, w
     remaining = sum(len(_validation_bad(doc)) for doc, _, _ in plan)
     note = (" -- " + "; ".join(errors)) if errors else ""
     state = "resolved" if not remaining and not errors else "retry failed"
-    live.update_flag(alert, f"Validation image recheck: {rec['validation_retry_changed']} field(s) changed; "
+    live.update_flag(alert, f"Validation image recheck: added {rec['validation_retry_added']}, "
+                     f"edited {rec['validation_retry_edited']}; validated "
+                     f"{rec['validation_retry_checks']} rule(s), {rec['validation_retry_fixed']} now passing; "
                      f"{remaining} finding(s) remain{note}", state=state)
     window(alert, result, _missing_required(result))
     return alert

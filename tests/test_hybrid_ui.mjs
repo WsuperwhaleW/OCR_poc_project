@@ -91,11 +91,15 @@ test('validation image recheck is opt-in, full-pipeline-only and disabled during
 test('Compare shows the before/answer/after audit and the decision, escaped, without the chats', () => {
   const ctx = vm.createContext({ST_WRONG_TEXT: {}, FIELD_LABELS: {subtotal: 'Subtotal'}, esc: value => String(value)
     .replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;')});
-  const rules = page.slice(page.indexOf('const IMGRC_RULE'));
   const NL = String.fromCharCode(10);
-  vm.runInContext(rules.slice(0, rules.indexOf(NL + '};') + 3).replace('const ', 'var ') + NL
+  const constant = name => {
+    const at = page.slice(page.indexOf('const ' + name));
+    return at.slice(0, at.indexOf('};') + 2).replace('const ', 'var ');
+  };
+  vm.runInContext(['IMGRC_RULE', 'IMGRC_STATE'].map(constant).join(NL) + NL
     + ['cmpFieldsHtml', 'imgrcFieldName', 'imgrcVal', 'imgrcSame', 'imgrcChip', 'imgrcFindings',
-       'imgrcFillTable', 'imgrcValidationTable', 'imgrcMeta', 'imageRecheckHtml'].map(source).join(NL), ctx);
+       'imgrcState', 'imgrcAev', 'imgrcRulesTable', 'imgrcFillTable', 'imgrcValidationTable',
+       'imgrcMeta', 'imageRecheckHtml'].map(source).join(NL), ctx);
   const retry = {fields: ['subtotal'], accepted: false, before: {subtotal: 'bad'},
     candidate: {subtotal: '<script>bad</script>'}, after: {subtotal: 'bad'},
     checks_before: [{field: 'subtotal', rule: 'vat_calculation', state: 'failed'}],
@@ -111,5 +115,41 @@ test('Compare shows the before/answer/after audit and the decision, escaped, wit
   retry.accepted = true; retry.changed = ['subtotal']; retry.after = {subtotal: 'good'};
   const applied = ctx.cmpFieldsHtml([{rows: [{key: 'subtotal', value: 'good'}], validation_rechecks: [retry]}]);
   assert.match(applied, /Applied: /);
-  assert.match(applied, /replaced/);
+  assert.match(applied, /edited/);
+});
+
+test('both rechecks say what they added, edited and validated', () => {
+  const ctx = vm.createContext({ST_WRONG_TEXT: {}, FIELD_LABELS: {subtotal: 'Subtotal', vat_total: 'VAT'},
+    esc: value => String(value).replaceAll('<', '&lt;')});
+  const NL = String.fromCharCode(10);
+  const constant = name => {
+    const at = page.slice(page.indexOf('const ' + name));
+    return at.slice(0, at.indexOf('};') + 2).replace('const ', 'var ');
+  };
+  vm.runInContext(['IMGRC_RULE', 'IMGRC_STATE'].map(constant).join(NL) + NL
+    + ['imgrcFieldName', 'imgrcVal', 'imgrcSame', 'imgrcChip', 'imgrcFindings', 'imgrcState',
+       'imgrcAev', 'imgrcRulesTable', 'imgrcFillTable', 'imgrcValidationTable', 'imgrcMeta',
+       'imageRecheckHtml'].map(source).join(NL), ctx);
+  const fill = {fields: ['vat_total'], filled: ['vat_total'], accepted: true,
+    candidate: {vat_total: '7.00'}, added: {vat_total: '7.00'}, edited: {},
+    validated: [{field: 'vat_total', rule: 'numeric', state: 'ok'}]};
+  const check = {fields: ['subtotal'], accepted: true, changed: ['subtotal'],
+    before: {subtotal: '1'}, candidate: {subtotal: '100'}, after: {subtotal: '100'},
+    added: {}, edited: {subtotal: {from: '1', to: '100'}},
+    checks_before: [{field: 'subtotal', rule: 'sum', state: 'failed'}],
+    rules_before: [{field: 'subtotal', rule: 'sum', state: 'failed'}],
+    rules_candidate: [{field: 'subtotal', rule: 'sum', state: 'ok'}],
+    rules_after: [{field: 'subtotal', rule: 'sum', state: 'ok'}]};
+  const html = ctx.imageRecheckHtml({image_fills: [fill], validation_image_rechecks: [check]},
+                                    {fill_missing: true, validation_retry: true, flags: []});
+  assert.match(html, /<b>1<\/b> added · <b>1<\/b> edited · <b>2<\/b> validation rule\(s\) checked, <b>1<\/b> now passing/);
+  assert.match(html, /<b>Added<\/b> VAT = 7\.00/);
+  assert.match(html, /a fill never overwrites a value/);
+  assert.match(html, /<b>Edited<\/b> Subtotal: <s>1<\/s> → 100/);
+  assert.match(html, /<b>Validated<\/b> 1 rule\(s\): 0 pass, 1 fail or warn/);
+  assert.match(html, /<th>Before<\/th><th>Images answer<\/th><th>Now<\/th>/);
+  // An attempt that was not applied added and edited nothing.
+  const rejected = ctx.imgrcValidationTable({...check, accepted: false, changed: []});
+  assert.match(rejected, /<b>Added<\/b> <span class="blank">nothing/);
+  assert.match(rejected, /<b>Edited<\/b> <span class="blank">nothing/);
 });
