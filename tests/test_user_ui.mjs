@@ -266,3 +266,35 @@ test('portal base paths support root, trailing slash and nested reverse-proxy mo
   assert.ok(!appSource.includes("fetch('/api/"));
   assert.ok(!settingsSource.includes("fetch('/api/"));
 });
+
+test('Doc types menu loads the shared schema on demand, retries failures and preserves selected files',async()=>{
+  const {el,document}=dom();let probes=0,fail=true;
+  const schema={keys:['document_number','buyer_tax_id'],items_key:'income_items',item_keys:['amount_paid'],
+    unknown:{fields:['document_number','buyer_tax_id'],mandatory:[],items:[]},types:[
+      {code:'INVOICE',name:'an invoice',fields:['document_number'],mandatory:['document_number'],items:[],mandatory_items:[],headings:['ใบแจ้งหนี้'],has_requirement:true},
+      {code:'TAX_INVOICE',name:'a tax invoice',fields:[],mandatory:[],items:[],headings:['ใบกำกับภาษี'],has_requirement:false}]};
+  const fetch=async(url)=>{
+    if(url.endsWith('/api/schema')){probes++;if(fail)return {ok:false,status:503};return response(schema);}
+    if(url.endsWith('/settings'))return response({settings:config});
+    if(url.endsWith('/models'))return response({models:{ocr:{},extraction:{}}});
+    return response({jobs:[],counts:{},more:false});
+  };
+  vm.runInContext(appSource,vm.createContext({document,window:{USER_BASE:'/tools/ocr',addEventListener(){}},fetch,Date,
+    setTimeout:()=>1,clearTimeout(){},URL:{createObjectURL:()=> 'blob:local',revokeObjectURL(){}}}));
+  for(let i=0;i<10;i++)await Promise.resolve();
+  el('fileInput').listeners.change({target:{files:[{name:'selected.png',size:5}]}});
+  assert.equal(probes,0);
+  el('navTypes').listeners.click();for(let i=0;i<10;i++)await Promise.resolve();
+  assert.equal(el('typesView').hidden,false);assert.equal(el('uploadView').hidden,true);assert.equal(el('historyView').hidden,true);
+  assert.equal(el('typesRetry').hidden,false);assert.match(el('typesError').textContent,/503/);
+  fail=false;await el('typesRetry').listeners.click();
+  assert.equal(el('typesRetry').hidden,true);assert.equal(probes,2);
+  const walk=element=>[element,...(element.children||[]).flatMap(walk)],all=walk(el('typesContent'));
+  assert.ok(all.some(e=>e.textContent==='invoice'));assert.ok(all.some(e=>e.textContent==='tax invoice'));
+  assert.ok(all.some(e=>e.textContent==='Required'));assert.ok(all.some(e=>e.textContent==='Optional'));
+  assert.ok(all.some(e=>e.textContent==='buyer_tax_id'));assert.ok(all.some(e=>e.textContent==='amount_paid'));
+  assert.equal(all.filter(e=>e.tag==='table').length,1);
+  el('navUpload').listeners.click();assert.equal(el('typesView').hidden,true);assert.equal(el('uploadView').hidden,false);
+  assert.equal(el('selectedFiles').children[0].children[0].textContent,'selected.png');
+  el('navTypes').listeners.click();assert.equal(probes,2);
+});

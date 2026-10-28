@@ -711,6 +711,10 @@ stage, OCR page progress, extraction step progress, stage duration, transcript
 and fields per document. Original files and JSON results can be downloaded.
 Files without ground truth show no benchmark accuracy score.
 
+The User portal's **Doc types** menu opens the supported-type catalog and
+Required/Optional field matrix from the same `/api/schema` data as Benchmark.
+Opening it preserves selected files and any active results.
+
 The result has three views: **OCR · Rendered** (headings and tables by page),
 **Key-Value**, and **JSON**. The stage timeline keeps separate OCR queue, OCR,
 extraction queue and extraction durations after completion and in history.
