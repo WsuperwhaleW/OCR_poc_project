@@ -31,7 +31,7 @@ from contextlib import closing, contextmanager
 from pathlib import Path
 
 import requests
-from flask import Flask, Response, jsonify, render_template, request
+from flask import Flask, Response, jsonify, render_template, request, send_from_directory
 
 import backends
 import settings
@@ -9790,6 +9790,19 @@ def history_detail(run_id):
     return response
 
 
+@app.get("/api/local-preview/pdfjs/6.4.299/<path:name>")
+def local_preview_pdfjs(name: str):
+    """Versioned browser PDF renderer; local documents never enter this route."""
+    response = send_from_directory(config.BASE_DIR / "vendor" / "pdfjs" / "6.4.299",
+                                   name, max_age=31536000)
+    if name.endswith(".mjs"):
+        response.mimetype = "text/javascript"
+    elif name.endswith(".wasm"):
+        response.mimetype = "application/wasm"
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    return response
+
+
 @app.get("/api/stress/evidence/<alert_id>")
 def stress_evidence(alert_id: str):
     """A flagged stress page for the Compare view: each read of it, in order,
@@ -9804,7 +9817,10 @@ def stress_evidence(alert_id: str):
         return jsonify(error="This page is no longer kept -- only the newest "
                              f"{STRESS_EVIDENCE_MAX} flagged pages since this "
                              "server started are."), 404
-    return jsonify(case=item["case"], page=item["page"], truth_case=item["truth_case"],
+    case = scoring.cases_index().get(item["truth_case"] or item["case"], {})
+    filename = str(case.get("pdf") or item["case"]).replace("\\", "/").rsplit("/", 1)[-1]
+    return jsonify(case=item["case"], filename=filename,
+                   page=item["page"], truth_case=item["truth_case"],
                    fields=item.get("fields"),
                    attempts=[{"detail": a["detail"], "text": a["text"],
                               "looped": a["looped"], "truncated": a["truncated"],

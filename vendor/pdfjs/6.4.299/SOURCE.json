@@ -1,0 +1,7 @@
+{
+  "name": "pdfjs-dist",
+  "version": "6.4.299",
+  "source": "https://registry.npmjs.org/pdfjs-dist/-/pdfjs-dist-6.4.299.tgz",
+  "archive_sha512": "015975dfccc02ed7da00fbc00ee944d0f65385b6330814bbf672f8a4e48bffa4a6ff8007e40db5043f551edf7b3a50aecc9b82a66799b40b648a78ac17855bd6",
+  "runtime": "legacy/build, cmaps, standard_fonts, wasm image codecs; scripting sandbox excluded"
+}

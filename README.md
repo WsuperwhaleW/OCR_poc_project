@@ -1827,6 +1827,18 @@ the stop keep their rows and their scores.
 
 ## Stress test
 
+**Choose PC folder** selects a local folder and its subfolders for on-demand
+original previews in Stress test's Compare panel. Files are matched by filename
+only; duplicate names require an explicit choice. Selecting a folder keeps temporary
+browser File references without reading all contents, uploading documents, or saving
+paths. Refresh clears the selection. PDFs render the requested page locally using
+the bundled PDF.js runtime (`vendor/pdfjs/6.4.299`, included in deployment packages).
+PNG/JPEG/WebP/BMP previews show the whole original image. Unsupported formats,
+missing matches, or PDF errors fall back to the server preview. **Server · model image**
+always opens the exact prepared page sent to the model, including trimming and
+Detail resizing; a PC original can look different. This changes previews only,
+not the files or parameters used for the benchmark.
+
 The **Stress test** tab benchmarks the **server**: a queue of jobs worked by as many
 concurrent requests as you set, and one report at the end. It uses the reading and extraction
 models selected in the Workspace and never switches them.

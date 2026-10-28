@@ -73,6 +73,7 @@ FILES = [
 # in one of these does not travel.
 TREES = [
     ("templates", "*.html"),
+    ("vendor/pdfjs/6.4.299", "**/*"),
 ]
 
 # Benchmark fixtures: the source documents and the ground truth to score against.
@@ -118,7 +119,7 @@ def collect(no_fixtures=False):
                 continue
             missing.append(f"{folder}/")
             continue
-        found = sorted(root.glob(pattern))
+        found = sorted(path for path in root.glob(pattern) if path.is_file())
         if not found and (folder, pattern) not in FIXTURES:
             missing.append(f"{folder}/{pattern}")
         for path in found:

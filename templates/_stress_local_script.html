@@ -1,0 +1,203 @@
+/* File references and preview caches live only in this page. Paths are neither
+   inspected nor persisted. Keep the controller independent of the DOM so races,
+   duplicate names and lazy reads can be tested without a model server. */
+function createStressLocalPreview({createURL, revokeURL, openPDF, renderPDF, update}) {
+  const basename = name => String(name || '').replace(/\\/g, '/').split('/').pop();
+  const normal = name => basename(name).normalize('NFC').toLowerCase();
+  let files = [], choices = new Map(), urls = new Map(), pdf = null;
+  let generation = 0, serial = 0, key = '', source = 'pc', queue = Promise.resolve();
+  let current = null;
+  const matches = name => files.filter(file => normal(file.name) === normal(name));
+  function clearURLs() { for (const url of urls.values()) revokeURL(url); urls.clear(); }
+  async function closePDF() {
+    const old = pdf; pdf = null;
+    if (old) await old.doc.destroy();
+  }
+  function invalidate() { serial++; key = ''; }
+  function setFiles(next) {
+    invalidate(); generation++; current = null; choices.clear(); clearURLs();
+    files = Array.from(next || []); source = 'pc';
+    // Destruction waits for any render already using the document.
+    queue = queue.catch(() => {}).then(closePDF).catch(() => {});
+    return files.length;
+  }
+  function remember(cacheKey, blob) {
+    const url = createURL(blob); urls.set(cacheKey, url);
+    while (urls.size > 3) {
+      const oldest = urls.keys().next().value;
+      revokeURL(urls.get(oldest)); urls.delete(oldest);
+    }
+    return url;
+  }
+  function show(request) {
+    current = request;
+    const {filename, page = 1, remote, detail, caseName} = request;
+    const found = matches(filename);
+    let file = found.length === 1 ? found[0] : choices.get(normal(filename));
+    if (!found.includes(file)) file = null;
+    const nextKey = [generation, source, filename, page, remote, detail, files.indexOf(file)].join('|');
+    if (key === nextKey) return queue;
+    key = nextKey;
+    const ticket = ++serial, epoch = generation;
+    const active = () => ticket === serial && epoch === generation;
+    const base = {filename: basename(filename), matches: found, source, file};
+    const emit = state => { if (active()) update({...base, ...state}); };
+    function server(reason = '') {
+      emit({source: 'server', url: remote || '',
+        status: reason || (remote ? 'Prepared image actually sent to the model.' : 'No model image was saved.'),
+        caption: '· ' + (caseName || basename(filename)) + (page ? ' page ' + page : '')
+          + (detail ? ' at ' + detail : '') + ' · server model image',
+        download: (caseName || 'page').replace(/[\\/]/g, '-') + '-p' + page + '-' + (detail || 'read') + '.png'});
+    }
+    if (source === 'server') { server(); return queue; }
+    if (!found.length) {
+      server(files.length ? 'No filename match on PC; showing the server image.'
+        : 'Choose a PC folder to preview local originals.');
+      return queue;
+    }
+    if (!file) {
+      emit({url: '', status: 'Filename is duplicated. Choose a file to preview it.', caption: '· choose a PC file'});
+      return queue;
+    }
+    const isPDF = /\.pdf$/i.test(file.name);
+    if (!isPDF && !/\.(png|jpe?g|webp|bmp)$/i.test(file.name)) {
+      server('This local format needs the server preview (TIFF/HEIC and multi-frame files are not rendered locally).');
+      return queue;
+    }
+    const cacheKey = files.indexOf(file) + ':' + (isPDF ? page : 'original');
+    const caption = '· ' + file.name + (isPDF ? ' page ' + page : ' · whole original image') + ' · PC original';
+    const download = isPDF ? file.name.replace(/\.pdf$/i, '') + '-p' + page + '-local.png' : file.name;
+    function ready(url) { emit({url, source: 'pc', caption, download,
+      status: 'Local original; model trimming and Detail resizing are not applied.'}); }
+    if (urls.has(cacheKey)) {
+      const url = urls.get(cacheKey); urls.delete(cacheKey); urls.set(cacheKey, url);
+      ready(url); return queue;
+    }
+    emit({url: '', caption, status: isPDF ? 'Opening this PDF page on your PC…' : 'Opening PC image…'});
+    if (!isPDF) { ready(remember(cacheKey, file)); return queue; }
+    queue = queue.catch(() => {}).then(async () => {
+      if (!active()) return;
+      try {
+        if (!pdf || pdf.file !== file) {
+          await closePDF();
+          if (!active()) return;
+          const doc = await openPDF(file);
+          if (!active()) { await doc.destroy(); return; }
+          pdf = {file, doc};
+        }
+        const number = Number(page);
+        if (!Number.isInteger(number) || number < 1 || number > pdf.doc.numPages)
+          throw new Error('Requested page is outside this local PDF.');
+        const blob = await renderPDF(pdf.doc, number);
+        if (!active()) return;
+        ready(remember(cacheKey, blob));
+      } catch (error) {
+        if (active()) server('Could not open the local PDF; showing the server image. ' + error.message);
+      }
+    });
+    return queue;
+  }
+  return {
+    setFiles,
+    hasCandidate: name => matches(name).length > 0,
+    show,
+    choose(name, index) {
+      const file = matches(name)[Number(index)];
+      if (index !== '' && file) choices.set(normal(name), file);
+      else choices.delete(normal(name));
+      invalidate(); if (current) return show(current);
+    },
+    setSource(value) { source = value === 'server' ? 'server' : 'pc'; invalidate(); if (current) return show(current); },
+    hide() { invalidate(); current = null; },
+    async dispose() { setFiles([]); await queue; },
+  };
+}
+
+// Page integration. The folder input works on deployed HTTP sites too.
+(() => {
+  const el = id => document.getElementById(id);
+  const folder = el('stLocalFolder'), bar = el('cmpLocalBar');
+  let pdfModule;
+  async function openPDF(file) {
+    const base = API + '/local-preview/pdfjs/6.4.299/';
+    if (!pdfModule) pdfModule = import(base + 'legacy/build/pdf.min.mjs').catch(error => {
+      pdfModule = null; throw error;
+    });
+    const lib = await pdfModule;
+    lib.GlobalWorkerOptions.workerSrc = base + 'legacy/build/pdf.worker.min.mjs';
+    const task = lib.getDocument({data: new Uint8Array(await file.arrayBuffer()),
+      cMapUrl: base + 'cmaps/', cMapPacked: true,
+      standardFontDataUrl: base + 'standard_fonts/', wasmUrl: base + 'wasm/',
+      isEvalSupported: false, enableXfa: false});
+    try { return await task.promise; }
+    catch (error) { await task.destroy(); throw error; }
+  }
+  async function renderPDF(doc, number) {
+    const page = await doc.getPage(number);
+    const raw = page.getViewport({scale: 1});
+    const viewport = page.getViewport({scale: Math.min(2, 2400 / Math.max(raw.width, raw.height))});
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.ceil(viewport.width); canvas.height = Math.ceil(viewport.height);
+    try {
+      await page.render({canvasContext: canvas.getContext('2d'), viewport}).promise;
+      return await new Promise((resolve, reject) => canvas.toBlob(blob => blob ? resolve(blob)
+        : reject(new Error('Could not render this PDF page.')), 'image/png'));
+    } finally { canvas.width = canvas.height = 0; page.cleanup(); }
+  }
+  const controller = createStressLocalPreview({
+    createURL: file => URL.createObjectURL(file), revokeURL: url => URL.revokeObjectURL(url),
+    openPDF, renderPDF,
+    update(state) {
+      if (bar.hidden) return;
+      el('cmpLocalStatus').textContent = state.status;
+      el('cmpLocalPC').classList.toggle('on', state.source === 'pc');
+      el('cmpLocalServer').classList.toggle('on', state.source === 'server');
+      const chooser = el('cmpLocalChoice');
+      el('cmpLocalChoiceLabel').hidden = state.matches.length < 2;
+      chooser.replaceChildren(new Option('— choose a file —', ''), ...state.matches.map((file, i) =>
+        new Option(`${i + 1}. ${file.name} · ${(file.size / 1024).toFixed(1)} KB · ${new Date(file.lastModified).toLocaleString()}`, String(i))));
+      chooser.value = state.file ? String(state.matches.indexOf(state.file)) : '';
+      cmpImgCap.textContent = state.caption || '';
+      cmpOpen.hidden = cmpDl.hidden = !state.url;
+      cmpImg.hidden = !state.url;
+      if (state.url) {
+        if (cmpImg.getAttribute('src') !== state.url) cmpImg.src = state.url;
+        cmpOpen.href = cmpDl.href = state.url;
+        cmpDl.download = state.download || 'page.png';
+      } else {
+        cmpImg.removeAttribute('src'); cmpOpen.removeAttribute('href'); cmpDl.removeAttribute('href');
+      }
+    },
+  });
+  window.StressLocalPreview = {
+    hasCandidate: controller.hasCandidate,
+    show(o, read, visible) {
+      if (!visible) { this.hide(); return; }
+      bar.hidden = false;
+      controller.show({filename: o.filename, page: read.page || o.page || 1,
+        remote: read.src, detail: read.detail, caseName: o.case});
+    },
+    hide() { bar.hidden = true; cmpImg.hidden = false; controller.hide(); },
+  };
+  el('stLocalChoose').addEventListener('click', () => folder.click());
+  folder.addEventListener('change', () => {
+    if (!folder.files.length) return;
+    const count = controller.setFiles(folder.files);
+    // Keep File references, not the directory input's path value.
+    folder.value = '';
+    el('stLocalClear').disabled = false;
+    el('stLocalNote').textContent = count.toLocaleString() + ' PC files available by filename. No files uploaded; refresh clears this selection.';
+    if (cmpInStress()) { enableCompare(); paintCompare(); }
+  });
+  el('stLocalClear').addEventListener('click', () => {
+    controller.setFiles([]); folder.value = ''; el('stLocalClear').disabled = true;
+    el('stLocalNote').textContent = 'PC folder cleared. Select again to preview local originals.';
+    if (cmpInStress()) { enableCompare(); paintCompare(); }
+  });
+  el('cmpLocalPC').addEventListener('click', () => controller.setSource('pc'));
+  el('cmpLocalServer').addEventListener('click', () => controller.setSource('server'));
+  el('cmpLocalChoice').addEventListener('change', event => {
+    controller.choose(cmpOverride?.filename, event.target.value);
+  });
+  window.addEventListener('pagehide', event => { if (!event.persisted) controller.dispose(); });
+})();

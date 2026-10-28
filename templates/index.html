@@ -260,6 +260,13 @@ document.addEventListener("DOMContentLoaded", function () {
     gap: 6px; margin-bottom: 14px; }
   .st-views button { min-width: 0; padding: 8px 10px; font-size: .84rem; }
   .st-views button.on { background: var(--accent-soft); border-color: var(--accent); font-weight: 600; }
+  .st-local-files { margin: 12px 0 16px; padding: 12px; border: 1px solid var(--border); border-radius: 10px; }
+  .st-local-files .row { flex-wrap: wrap; margin-bottom: 6px; }
+  #cmpLocalBar { align-items: center; flex-wrap: wrap; }
+  #cmpLocalBar .note { flex: 1 1 240px; margin: 0; }
+  #cmpLocalChoiceLabel { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; min-width: 0; max-width: 100%; }
+  #cmpLocalChoiceLabel[hidden] { display: none; }
+  #cmpLocalChoice { max-width: min(440px, 100%); min-width: 0; }
   .history-list { display: grid; gap: 8px; margin-top: 12px;
     max-height: 55vh; overflow-y: auto; }
   .history-item { text-align: left; min-width: 0; padding: 10px;
@@ -2124,6 +2131,14 @@ follows your desktop; Light is the one to pick for projecting or screenshotting.
           <button type="button" data-st-view="run" class="on" aria-pressed="true">Current run</button>
           <button type="button" data-st-view="history" aria-pressed="false">History</button>
         </div>
+        <div class="st-local-files">
+          <div class="row">
+            <button type="button" id="stLocalChoose" class="ghost-sm">Choose PC folder</button>
+            <button type="button" id="stLocalClear" class="ghost-sm" disabled>Clear folder</button>
+          </div>
+          <input id="stLocalFolder" type="file" webkitdirectory multiple hidden>
+          <div id="stLocalNote" class="note" role="status">Preview originals from your PC by filename. Includes subfolders; select again after refresh.</div>
+        </div>
         <div id="stSetup">
         <div class="row">
           <label class="field" style="flex:1;min-width:210px">
@@ -2580,6 +2595,16 @@ follows your desktop; Light is the one to pick for projecting or screenshotting.
         <a id="cmpDl" class="ghost-sm" download>Download</a>
       </div>
       <div class="cmp-bar" id="cmpFlagLinks" hidden></div>
+      <div class="cmp-bar" id="cmpLocalBar" hidden>
+        <div class="cmp-modes" role="group" aria-label="Preview source">
+          <button type="button" id="cmpLocalPC">PC original</button>
+          <button type="button" id="cmpLocalServer">Server · model image</button>
+        </div>
+        <label id="cmpLocalChoiceLabel" hidden>Same filename
+          <select id="cmpLocalChoice" aria-label="Choose a file with the same filename"></select>
+        </label>
+        <span id="cmpLocalStatus" class="note" role="status"></span>
+      </div>
       <div class="cmp-grid" id="cmpGrid">
         <div class="cmp-col" id="cmpColImg">
           <div class="cmp-cap">Source page <span id="cmpImgCap"></span></div>
@@ -11677,7 +11702,8 @@ function colAvailable(col) {
   if (col === cmpColTruth) return !!truthCase();
   if (col === cmpColFields) return cmpInStress() && !!cmpOverride.fields;
   // An extract-only job read no page, so its flag has text and no image.
-  if (col === cmpColImg && cmpInStress()) return cmpOverride.reads.some(r => r.src);
+  if (col === cmpColImg && cmpInStress()) return cmpOverride.reads.some(r => r.src)
+    || !!window.StressLocalPreview?.hasCandidate(cmpOverride.filename);
   return cmpInStress() ? cmpTotal() > 0 : hasRun();
 }
 /* Each document's form: every key asked, its value, Required where the
@@ -11793,15 +11819,7 @@ function paintCompare() {
     cmpLabel.textContent = total > 1 ? `${unit} ${o.at + 1} of ${total}` : unit + ' 1';
     cmpPrev.disabled = o.at === 0;
     cmpNext.disabled = o.at >= total - 1;
-    cmpOpen.hidden = cmpDl.hidden = cmpColImg.hidden || !r.src;
-    if (r.src) {
-      if (cmpImg.getAttribute('src') !== r.src) cmpImg.src = r.src;
-      cmpOpen.href = r.src;
-      cmpDl.href = r.src;
-      cmpDl.download = o.case + '-p' + page + '-' + (r.detail || 'read') + '.png';
-    }
-    cmpImgCap.textContent = '· ' + o.case + (page ? ' page ' + page : '')
-      + (r.detail ? ' at ' + r.detail : '');
+    window.StressLocalPreview?.show(o, r, !cmpColImg.hidden);
     cmpModelCap.textContent = r.page === null && o.fields ? '· the transcript the extraction was fed'
       : '· ' + stReadOutcome(r);
     const raw = cmpRawChk.checked;
@@ -11812,6 +11830,7 @@ function paintCompare() {
     if (cols.includes(cmpColTruth)) paintTruthPane();
     return;
   }
+  window.StressLocalPreview?.hide();
   [cmpPrev, cmpNext, cmpLabel].forEach(el => { el.hidden = !paged; });
   // "Open image" belongs to the image column, not to paging: it is meaningless
   // in the view that shows the transcript beside the fixture.
@@ -11846,6 +11865,7 @@ function paintCompare() {
   if (cols.includes(cmpColTruth)) paintTruthPane();
 }
 function enableCompare() {
+  if (!cmpInStress()) window.StressLocalPreview?.hide();
   const ready = cmpInStress() || hasRun() || !!truthCase();
   cmpToggle.disabled = !ready;
   cmpHint.textContent = !ready ? 'Run a document first.'
@@ -14166,12 +14186,14 @@ async function stShowEvidence(alertId, kind, host, job) {
               : kind === 'error' ? reads.length - 1
               : reads.findIndex(r => r.looped || r.truncated);
   cmpOverride = { alert: alertId, kind, case: data.case, page: data.page,
+                  filename: data.filename || FX_CASES.find(c => c.id === (data.truth_case || data.case))?.pdf || data.case,
                   truthCase: data.truth_case, reads, at: Math.max(0, first),
                   fields: data.fields || null, host, job };
   // An extraction flag opens on the page beside its form, so a missing field
   // can be looked for on the image; on the transcript where no page was read.
   cmpView = !data.fields ? 'source-model'
-    : reads.some(r => r.src) ? 'source-fields' : 'model-fields';
+    : reads.some(r => r.src) || window.StressLocalPreview?.hasCandidate(cmpOverride.filename)
+      ? 'source-fields' : 'model-fields';
   paintMain();
   compareEl.hidden = false;
   cmpToggle.textContent = 'Hide';
@@ -15361,6 +15383,9 @@ document.addEventListener('change', event => {
   event.target.closest('.history-monitor').querySelector('.history-monitor-body').innerHTML =
     monReportHtml(historyMonitorState(samples, Number(event.target.value)), 0);
 });
+</script>
+<script>
+{% include '_stress_local_script.html' %}
 </script>
 <script>
 window.USER_API_TOKEN = {{ user_api_token|tojson }};

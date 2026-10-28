@@ -30,6 +30,12 @@ class DeploymentPackageTests(unittest.TestCase):
             self.assertIn(name, picked)
         self.assertFalse(any(name.startswith(('logs/', '.work/', 'outputs/')) for name in picked))
         self.assertNotIn('.env', picked)
+        for name in ('templates/_stress_local_script.html',
+                     'vendor/pdfjs/6.4.299/LICENSE',
+                     'vendor/pdfjs/6.4.299/legacy/build/pdf.min.mjs',
+                     'vendor/pdfjs/6.4.299/legacy/build/pdf.worker.min.mjs',
+                     'vendor/pdfjs/6.4.299/wasm/openjpeg.wasm'):
+            self.assertIn(name, picked)
 
     def test_extracted_upload_only_archive_serves_user_without_a_static_directory(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -55,6 +61,11 @@ with patch('requests.sessions.Session.request', side_effect=AssertionError('No n
         assert 'async function loadSettings()' in text
         assert '/static/user/' not in text
         assert 'Whale' not in text
+    for prefix in ('', '/ocr'):
+        response = client.get(prefix + '/api/local-preview/pdfjs/6.4.299/legacy/build/pdf.worker.min.mjs')
+        assert response.status_code == 200
+        assert response.mimetype == 'text/javascript'
+        response.close()
     print('archive-user-page: 200, embedded CSS/JS')
 '''
             env = dict(os.environ, PYTHONPATH='')
