@@ -26,7 +26,7 @@ import time
 import uuid
 import weakref
 from collections import OrderedDict, deque
-from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
+from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from contextlib import closing, contextmanager
 from pathlib import Path
 
@@ -7460,6 +7460,8 @@ class _StressLive:
         now = time.perf_counter()
         with self._lock:
             for job, active in self._active.items():
+                if active["stage"] == "extract_queued":
+                    continue        # waiting for an extract worker, not a reply
                 if not active["flagged"] and now - active["last"] >= limit:
                     active["flagged"] = True
                     verb = _STAGE_VERB.get(active["stage"], active["stage"])
@@ -8835,7 +8837,32 @@ def _fields_evidence(result: dict, missing: list) -> list:
 
 def _stress_job(spec: dict, cfg: dict, prepared: dict, cancel,
                 live: _StressLive) -> dict:
-    """One job of the queue, start to finish. Returns its record; never raises."""
+    """One job of the queue, start to finish, on this thread. Returns its record;
+    never raises. `_stress_phase` drives `_stress_job_steps` instead, so a full
+    job's extraction can run on the extract workers."""
+    steps = _stress_job_steps(spec, cfg, prepared, cancel, live)
+    try:
+        while True:
+            next(steps)
+    except StopIteration as done:
+        return done.value
+
+
+def _stress_job_steps(spec: dict, cfg: dict, prepared: dict, cancel,
+                      live: _StressLive):
+    """One job of the queue, as a generator. Returns its record; never raises.
+
+    **A full job yields once, between its read and its extraction**
+    (2026-10-28, at the user's request: *30 concurrency means per instance, not
+    combined -- 30 OCR and 30 extract*). The read is done on one of the run's
+    OCR workers; the yield hands the job to an extract worker, which resumes it
+    (`_stress_phase`). So the run has up to `concurrency` reads AND up to
+    `concurrency` extractions in flight, where before one pool of `concurrency`
+    workers held each job through both and the two stages shared it. A
+    generator keeps every local of the job across the hand-off; what is
+    thread-local (the progress hook) is put back before the yield and set again
+    after it. Every other mode never yields.
+    """
     rec = {"wait_s": round(time.perf_counter() - spec["submitted"], 3)}
     deadline = spec.get("deadline")
     lazy = prepared.get("lazy")
@@ -8848,7 +8875,11 @@ def _stress_job(spec: dict, cfg: dict, prepared: dict, cancel,
     mode = cfg["mode"]
     stage = {"ocr": "ocr", "full": "ocr", "extract": "extract", "image": "extract",
              "classify": "segment"}[mode]
-    if live.slots is not None:
+    # The OCR slot this job holds while it reads (`_StressSlots`); given back
+    # when its read is done, so an idle worker's slot can be lent to a long
+    # file's pages while this job is extracting.
+    holding = live.slots is not None
+    if holding:
         live.slots.hold()
     live.move("queued", stage)
     began = time.perf_counter()
@@ -8881,6 +8912,7 @@ def _stress_job(spec: dict, cfg: dict, prepared: dict, cancel,
     # Every pass-2 request this job makes resets its stall clock as it streams
     # and when it ends -- not only the extraction as a whole (see `_progress`).
     previous_hook = _progress_swap(live.hook(job))
+    hooked = True
     try:
         if mode == "classify":
             _stress_classify(prepared["packs"][spec["index"]], rec, live, cancel, job)
@@ -8919,9 +8951,29 @@ def _stress_job(spec: dict, cfg: dict, prepared: dict, cancel,
                 # extracted: its OCR flag says what went wrong with the read, and
                 # the extraction's own flag (`_missing_required`) what it cost.
                 if mode == "full":
-                    live.move("ocr", "extract")
+                    # Hand the job to an extract worker (the docstring). Its OCR
+                    # slot and this thread's progress hook are given back first.
+                    if holding:
+                        live.slots.release()
+                        holding = False
+                    _progress_swap(previous_hook)
+                    hooked = False
+                    live.move("ocr", "extract_queued")
+                    stage = "extract_queued"
+                    live.touch(job, stage)
+                    waited = time.perf_counter()
+                    yield "extract"
+                    previous_hook = _progress_swap(live.hook(job))
+                    hooked = True
+                    # Waiting for an extract worker is this side's queue, kept
+                    # out of the job's latency like `wait_s`.
+                    rec["extract_wait_s"] = round(time.perf_counter() - waited, 3)
+                    began += rec["extract_wait_s"]
+                    live.move("extract_queued", "extract")
                     stage = "extract"
                     live.touch(job, stage)
+                    if cancel.is_set():
+                        raise SweepCancelled()
                 elif mode == "image":
                     # No read: the pages go to the extractor as they are, and a
                     # flag's window shows each page beside the form.
@@ -9117,8 +9169,9 @@ def _stress_job(spec: dict, cfg: dict, prepared: dict, cancel,
         if (fields_window is not None and extract_alert is None
                 and result is not None and live.ocr_flagged(job)):
             fields_window(live.job_key(job), result, missing)
-        _progress_swap(previous_hook)
-        if live.slots is not None:
+        if hooked:
+            _progress_swap(previous_hook)
+        if holding:
             live.slots.release()
         live.end(job)
         rec.pop("at_page", None)
@@ -9271,6 +9324,14 @@ def _stress_phase(specs: list, cfg: dict, prepared: dict, cancel, phase: str,
     Every job is queued at once and a pool of `concurrency` workers works
     through it -- which is what makes `queue_wait` a real figure: a job's wait is
     the time it spent behind the jobs ahead of it, on THIS side of the wire.
+
+    **The concurrency is per stage, not per job** (2026-10-28, at the user's
+    request). A full run has two pools of `concurrency` workers: the OCR pool
+    reads, and a job whose read is done is handed to the extract pool
+    (`_stress_job_steps` yields there), so up to `concurrency` reads and up to
+    `concurrency` extractions are in flight together. The extract side can sit
+    under its limit -- it only has the files the reads have finished. Every
+    other mode has one stage and one pool.
     Returns `(records, wall, timeline, last_metrics, draining)`, where
     `last_metrics` is the last snapshot of each target, by URL.
 
@@ -9288,6 +9349,9 @@ def _stress_phase(specs: list, cfg: dict, prepared: dict, cancel, phase: str,
         live.slots = _StressSlots(cfg["concurrency"])
     pool = ThreadPoolExecutor(max_workers=cfg["concurrency"],
                               thread_name_prefix="stress")
+    second = (ThreadPoolExecutor(max_workers=cfg["concurrency"],
+                                 thread_name_prefix="stress-extract")
+              if cfg["mode"] == "full" else None)
     started = time.perf_counter()
     deadline = started + cfg["max_seconds"] if cfg["max_seconds"] and phase == "run" else None
     for spec in specs:
@@ -9295,8 +9359,7 @@ def _stress_phase(specs: list, cfg: dict, prepared: dict, cancel, phase: str,
         # Warm-up jobs are thrown away from the report, and from the log too.
         spec["log"] = bool(cfg.get("save_log")) and phase == "run"
         spec["detail"] = bool(cfg.get("save_details")) and phase == "run"
-    job = workspace.bind(_stress_job)
-    futures = [pool.submit(job, spec, cfg, prepared, cancel, live)
+    futures = [_stress_submit(pool, second, spec, cfg, prepared, cancel, live)
                for spec in specs]
     pending, timeline = set(futures), []
     sampler = _StressSampler(list(targets), bases or {}, cfg["metrics_every"],
@@ -9347,6 +9410,8 @@ def _stress_phase(specs: list, cfg: dict, prepared: dict, cancel, phase: str,
         # Queued jobs are dropped; running ones carry on and are drained by the
         # caller. Nothing here blocks on them.
         pool.shutdown(wait=False, cancel_futures=True)
+        if second is not None:
+            second.shutdown(wait=False, cancel_futures=True)
         last_metrics = sampler.stop()
     wall = time.perf_counter() - started
     records, draining = [], []
@@ -9358,6 +9423,66 @@ def _stress_phase(specs: list, cfg: dict, prepared: dict, cancel, phase: str,
             if not future.cancelled():
                 draining.append(future)
     return records, wall, timeline, last_metrics, draining
+
+
+def _stress_submit(pool, second, spec, cfg, prepared, cancel, live):
+    """Start one job on `pool`; returns a future of its record.
+
+    Where the job yields (a full job whose read is done) the rest of it is
+    submitted to `second`, the extract pool, and the returned future resolves
+    when that finishes. A job whose continuation is dropped -- the extract pool
+    shut down on a Stop before an extract worker took it -- is closed, so its
+    `finally` runs, and resolves as cancelled. Both steps run in the workspace
+    current now, which `workspace.bind` would only give the first.
+    """
+    out = Future()
+    steps = _stress_job_steps(spec, cfg, prepared, cancel, live)
+
+    def advance():
+        try:
+            next(steps)
+        except StopIteration as done:
+            return True, done.value
+        return False, None
+
+    advance = workspace.bind(advance)
+
+    def settle(inner, last):
+        if inner.cancelled():
+            steps.close()
+            if not out.done():
+                out.set_result({"status": "cancelled"})
+            return
+        try:
+            finished, rec = inner.result()
+        except BaseException as err:                # noqa: BLE001
+            out.set_exception(err)
+            return
+        if finished:
+            out.set_result(rec)
+        elif last or second is None:
+            # A step yielded where nothing can take the rest of it.
+            steps.close()
+            out.set_result({"status": "cancelled"})
+        else:
+            try:
+                nxt = second.submit(advance)
+            except RuntimeError:
+                # The extract pool is shut down (a Stop): end the job here,
+                # where it sees the cancel and stops at once.
+                try:
+                    finished, rec = advance()
+                except BaseException as err:        # noqa: BLE001
+                    out.set_exception(err)
+                    return
+                if not finished:
+                    steps.close()
+                out.set_result(rec if finished else {"status": "cancelled"})
+                return
+            nxt.add_done_callback(lambda f: settle(f, True))
+
+    pool.submit(advance).add_done_callback(lambda f: settle(f, False))
+    return out
 
 
 def _stress_detail_identity(cfg):
