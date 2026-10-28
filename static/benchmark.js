@@ -1227,7 +1227,242 @@ function valMark(rows) {
     + esc(shown[0].why || shown[0].detail || '') + '</div>';
 }
 
-function defList(pairs, truth, val, req, bl, raw) {
+/* ---- The two image rechecks: fill missing, and validation recheck ----------
+   Both send the page images to the EXTRACTION model (no OCR text in between),
+   asked with the Hybrid steps that own the fields. They differ in what they ask
+   and in what they may change, and the page has to say which did what:
+
+     fill missing        a Mandatory field that came back EMPTY. An answer fills
+                         a blank and never overwrites a value.
+     validation recheck  fields a validation rule FAILED or warned on. The whole
+                         answer is taken only where it leaves validation better
+                         and introduces no new finding; otherwise the extracted
+                         values stay. */
+const IMGRC_RULE = {
+  missing: ['Fill missing from images',
+            'A Mandatory field came back empty, so the page images were sent to the '
+            + 'extraction model with the Hybrid steps that own it. An answer only fills a '
+            + 'blank; it never overwrites a value.'],
+  validation: ['Validation recheck from images',
+               'A validation rule failed or warned on these fields, so the page images were '
+               + 'sent to the extraction model (bypassing OCR) to read them again. The answer '
+               + 'is kept only if validation improves and no new finding appears.'],
+};
+function imgrcFieldName(key) {
+  const base = String(key).split('[', 1)[0];
+  const label = (typeof FIELD_LABELS !== 'undefined' && FIELD_LABELS[base]) || base;
+  return key === base ? label : label + String(key).slice(base.length);
+}
+function imgrcVal(v) {
+  if (v === undefined || v === null || v === '') return '<span class="blank">blank</span>';
+  if (Array.isArray(v)) return esc(v.length + ' row' + (v.length === 1 ? '' : 's'));
+  if (typeof v === 'object') return esc(JSON.stringify(v));
+  return esc(String(v));
+}
+function imgrcSame(a, b) {
+  return JSON.stringify(a ?? '') === JSON.stringify(b ?? '');
+}
+/* A flag state to a chip. `state` is the stress-test alert vocabulary. */
+function imgrcChip(state, text) {
+  const cls = { resolved: 'ok', retrying: 'run', starting: 'run',
+                'retry failed': 'warn', 'no retry': 'bad' }[state] || '';
+  return '<span class="imgrc-chip ' + cls + '">' + esc(text || state || '') + '</span>';
+}
+function imgrcFindings(rows) {
+  if (!rows || !rows.length) return 'none';
+  return rows.map(r => imgrcFieldName(r.field) + ' ' + (r.rule || '') + ' '
+    + (r.state === 'warning' ? '(warning)' : '(failed)')).join(', ');
+}
+/* A validation state as a small chip: pass / fail / warn / not checked / empty. */
+const IMGRC_STATE = { ok: ['pass', 'ok'], failed: ['fail', 'bad'], warning: ['warn', 'warn'],
+                      unchecked: ['not checked', ''], absent: ['empty', ''] };
+function imgrcState(state) {
+  if (!state) return '<span class="blank">—</span>';
+  const [text, cls] = IMGRC_STATE[state] || [state, ''];
+  return '<span class="imgrc-chip ' + cls + '">' + esc(text) + '</span>';
+}
+/* The three things every attempt is read for, in one list: what it ADDED (a
+   value where there was none), what it EDITED (a value replaced), and what it
+   VALIDATED (the rules run on the fields it touched). */
+function imgrcAev(added, edited, rules, editNote) {
+  const addedKeys = Object.keys(added || {}), editedKeys = Object.keys(edited || {});
+  const ran = (rules || []).filter(r => ['ok', 'failed', 'warning'].includes(r.state));
+  const pass = ran.filter(r => r.state === 'ok').length;
+  return '<ul class="imgrc-aev">'
+    + '<li><b>Added</b> ' + (addedKeys.length
+        ? addedKeys.map(k => esc(imgrcFieldName(k)) + ' = ' + imgrcVal(added[k])).join(', ')
+        : '<span class="blank">nothing</span>') + '</li>'
+    + '<li><b>Edited</b> ' + (editedKeys.length
+        ? editedKeys.map(k => esc(imgrcFieldName(k)) + ': <s>' + imgrcVal(edited[k].from)
+                              + '</s> → ' + imgrcVal(edited[k].to)).join(', ')
+        : '<span class="blank">nothing' + (editNote ? ' — ' + esc(editNote) : '') + '</span>') + '</li>'
+    + '<li><b>Validated</b> ' + (rules
+        ? (ran.length ? ran.length + ' rule(s): ' + pass + ' pass, ' + (ran.length - pass)
+                        + ' fail or warn' : '<span class="blank">no rule ran on these fields</span>')
+        : '<span class="blank">not recorded</span>') + '</li></ul>';
+}
+/* The rules, one row each. `cols` is [[heading, rows-list], ...]: the same rule
+   looked up in each list, so a fill shows its state once and a validation
+   recheck shows it before / with the image answer / now. */
+function imgrcRulesTable(cols) {
+  const keyOf = r => r.field + ' ' + (r.rule || '');
+  const order = [], seen = new Set(), by = cols.map(([, rows]) => {
+    const m = new Map();
+    for (const r of rows || []) {
+      m.set(keyOf(r), r);
+      if (!seen.has(keyOf(r))) { seen.add(keyOf(r)); order.push(r); }
+    }
+    return m;
+  });
+  if (!order.length) return '';
+  return '<table class="imgrc-rules"><tr><th>Field</th><th>Rule</th>'
+    + cols.map(([h]) => '<th>' + esc(h) + '</th>').join('') + '</tr>'
+    + order.map(r => {
+      const why = cols.map((_, i) => (by[i].get(keyOf(r)) || {}))
+        .map(x => x.why || x.detail || '').filter(Boolean).pop() || '';
+      return '<tr title="' + esc(why) + '"><td>' + esc(imgrcFieldName(r.field)) + '</td><td>'
+        + esc(r.rule || '') + '</td>'
+        + by.map(m => '<td>' + imgrcState((m.get(keyOf(r)) || {}).state) + '</td>').join('')
+        + '</tr>';
+    }).join('') + '</table>';
+}
+/* One fill-missing attempt: added / edited / validated, a row per field asked,
+   and the rules validation ran once the filled values were in. */
+function imgrcFillTable(a) {
+  const filled = new Set(a.filled || []);
+  const added = a.added || Object.fromEntries([...filled].map(k => [k, (a.after || {})[k]]));
+  const rows = (a.fields || []).map(k => {
+    const got = (a.candidate || {})[k];
+    const took = filled.has(k);
+    return '<tr><td>' + esc(imgrcFieldName(k)) + '</td><td>' + imgrcVal('')
+      + '</td><td>' + (a.candidate ? imgrcVal(got) : '<span class="blank">no answer</span>')
+      + '</td><td class="' + (took ? 'took' : '') + '">'
+      + (took ? 'added' : a.error ? 'request failed'
+         : (got === undefined || got === null || got === '') ? 'still empty (images had nothing)'
+         : 'still empty') + '</td></tr>';
+  }).join('');
+  return imgrcAev(added, {}, a.validated, 'a fill never overwrites a value')
+    + '<table><tr><th>Field</th><th>Before</th><th>Images answered</th><th>Result</th></tr>'
+    + rows + '</table>'
+    + (a.validated && a.validated.length
+        ? '<p class="meta">Validation after filling:</p>' + imgrcRulesTable([['Result', a.validated]]) : '')
+    + (a.error ? '<p class="verdict bad">Request failed: ' + esc(a.error) + '</p>' : '')
+    + imgrcMeta(a);
+}
+/* One validation recheck attempt: added / edited / validated, why it ran, a row
+   per field, each rule before / with the images' answer / now, and the verdict. */
+function imgrcValidationTable(a) {
+  const changed = new Set(a.changed || []);
+  const before = a.before || {}, after = a.after || {};
+  const added = a.added || Object.fromEntries([...changed]
+    .filter(k => before[k] === '' || before[k] == null).map(k => [k, after[k]]));
+  const edited = a.edited || Object.fromEntries([...changed].filter(k => !(k in added))
+    .map(k => [k, { from: before[k], to: after[k] }]));
+  const rows = (a.fields || []).map(k => {
+    const was = before[k], got = (a.candidate || {})[k];
+    const kept = !a.accepted ? (imgrcSame(got, was) ? 'unchanged (images agreed)' : 'original kept')
+      : k in added ? 'added' : k in edited ? 'edited' : 'unchanged (images agreed)';
+    return '<tr><td>' + esc(imgrcFieldName(k)) + '</td><td>' + imgrcVal(was) + '</td><td>'
+      + (a.candidate ? imgrcVal(got) : '<span class="blank">no answer</span>')
+      + '</td><td class="' + (a.accepted && changed.has(k) ? 'took' : '') + '">'
+      + esc(kept) + (a.accepted && changed.has(k) ? ' → ' + imgrcVal(after[k]) : '') + '</td></tr>';
+  }).join('');
+  const verdict = a.error ? '<p class="verdict bad">Not applied: ' + esc(a.error) + '</p>'
+    : a.accepted ? '<p class="verdict ok">Applied: ' + esc(a.reason || 'validation improved')
+                   + ' · ' + (a.changed || []).length + ' field(s) changed.</p>'
+    : '<p class="verdict bad">Not applied: ' + esc(a.reason || 'original values kept') + '.</p>';
+  const rules = a.rules_before
+    ? imgrcRulesTable([['Before', a.rules_before], ['Images answer', a.rules_candidate],
+                       ['Now', a.rules_after]])
+    : '<p class="meta">Findings now: ' + esc(imgrcFindings(a.checks_after)) + '</p>';
+  return imgrcAev(a.accepted ? added : {}, a.accepted ? edited : {}, a.rules_before || null)
+    + '<p class="meta">Triggered by: ' + esc(imgrcFindings(a.checks_before)) + '</p>'
+    + '<table><tr><th>Field</th><th>Extracted</th><th>Images answered</th><th>Kept</th></tr>'
+    + rows + '</table>' + verdict + rules
+    + imgrcMeta(a);
+}
+function imgrcMeta(a) {
+  const bits = [];
+  if (a.steps && a.steps.length) bits.push('Hybrid step' + (a.steps.length > 1 ? 's ' : ' ')
+    + a.steps.join(', '));
+  if (a.pages && a.pages.length) bits.push('page' + (a.pages.length > 1 ? 's ' : ' ') + a.pages.join(', '));
+  if (a.seconds != null) bits.push(a.seconds + ' s');
+  if (a.tokens) bits.push(a.tokens + ' tokens');
+  return bits.length ? '<p class="meta">' + esc(bits.join(' · ')) + '</p>' : '';
+}
+/* The whole block for one document. `summary` is the file's `image_rechecks`
+   (toggles, flags), `doc` the document on screen. Returns '' where neither
+   recheck was switched on and the document carries no record of one. */
+function imageRecheckHtml(doc, summary) {
+  doc = doc || {};
+  const fills = doc.image_fills || [];
+  const checks = doc.validation_image_rechecks || [];
+  if (!summary && !fills.length && !checks.length && !(doc.image_filled || []).length) return '';
+  const flags = (summary && summary.flags) || [];
+  const skipped = (summary && summary.skipped) || {};
+  const part = (kind, on, attempts, table) => {
+    const [title, hint] = IMGRC_RULE[kind];
+    const flag = flags.filter(f => f.kind === kind).pop();
+    let chip, msg = '';
+    if (flag) { chip = imgrcChip(flag.state); msg = flag.message || ''; }
+    else if (attempts.length) chip = imgrcChip(attempts.some(a => a.accepted) ? 'resolved' : 'retry failed',
+                                              attempts.some(a => a.accepted) ? 'applied' : 'not applied');
+    else if (on === false || on === undefined) chip = imgrcChip('', 'off');
+    else if (skipped[kind === 'missing' ? 'fill_missing' : 'validation_retry'])
+      chip = imgrcChip('', 'nothing to do'),
+      msg = kind === 'missing' ? 'Every Mandatory field came back filled.'
+                               : 'Validation found nothing to recheck.';
+    else chip = imgrcChip('', 'not run');
+    return '<div class="imgrc-part"><div class="imgrc-head" title="' + esc(hint) + '"><b>'
+      + esc(title) + '</b>' + chip + '<span class="imgrc-msg">' + esc(msg) + '</span></div>'
+      + attempts.map(table).join('') + '</div>';
+  };
+  const legacy = !fills.length && (doc.image_filled || []).length
+    ? '<p class="meta">Filled from images: ' + esc(doc.image_filled.map(imgrcFieldName).join(', ')) + '</p>' : '';
+  // Totals over both rechecks for this document, before the detail.
+  const count = o => Object.keys(o || {}).length;
+  const nAdded = fills.reduce((n, a) => n + (a.added ? count(a.added) : (a.filled || []).length), 0)
+    + checks.reduce((n, a) => n + (a.accepted ? count(a.added) : 0), 0);
+  const nEdited = checks.reduce((n, a) => n + (a.accepted ? count(a.edited) : 0), 0);
+  const ranOf = rows => (rows || []).filter(r => ['ok', 'failed', 'warning'].includes(r.state));
+  const nRules = fills.reduce((n, a) => n + ranOf(a.validated).length, 0)
+    + checks.reduce((n, a) => n + ranOf(a.rules_before).length, 0);
+  const nFixed = checks.reduce((n, a) => {
+    const bad = new Set(ranOf(a.rules_before).filter(r => r.state !== 'ok').map(r => r.field + ' ' + r.rule));
+    return n + (a.rules_after || []).filter(r => r.state === 'ok' && bad.has(r.field + ' ' + r.rule)).length;
+  }, 0);
+  const total = (fills.length || checks.length)
+    ? '<p class="imgrc-total"><b>' + nAdded + '</b> added · <b>' + nEdited + '</b> edited · <b>'
+      + nRules + '</b> validation rule(s) checked' + (nFixed ? ', <b>' + nFixed + '</b> now passing' : '') + '</p>'
+    : '';
+  return '<section class="imgrc"><h4>Image rechecks</h4>'
+    + '<p class="note">Page images sent straight to the extraction model, no OCR text in between. '
+    + 'Hover a heading for what each one may change.</p>' + total
+    + part('missing', summary ? summary.fill_missing : (fills.length ? true : undefined), fills, imgrcFillTable)
+    + legacy
+    + part('validation', summary ? summary.validation_retry : (checks.length ? true : undefined),
+           checks, imgrcValidationTable)
+    + (summary && summary.error ? '<p class="verdict bad">' + esc(summary.error) + '</p>' : '')
+    + (summary && summary.seconds ? '<p class="meta">Image rechecks took ' + summary.seconds + ' s in all.</p>' : '')
+    + '</section>';
+}
+/* What an image recheck did to each key of `doc`, for the mark beside its value. */
+function imgrcMarks(doc) {
+  const marks = {};
+  for (const k of (doc && doc.image_filled) || []) marks[k] = { kind: 'fill' };
+  for (const a of (doc && doc.validation_image_rechecks) || [])
+    if (a.accepted) for (const k of a.changed || []) marks[k] = { kind: 'fix', before: (a.before || {})[k] };
+  return marks;
+}
+function imgrcMark(m) {
+  if (!m) return '';
+  return m.kind === 'fill'
+    ? '<span class="fld-tag img-fill" title="Came back empty from the transcript; filled by reading the page images.">from image</span>'
+    : '<span class="fld-tag img-fix" title="Validation flagged this value; re-read from the page images and replaced.">corrected from image</span>'
+      + '<span class="fld-was">was <s>' + imgrcVal(m.before) + '</s></span>';
+}
+
+function defList(pairs, truth, val, req, bl, raw, img) {
   if (!pairs.length) return '';
   return '<dl class="fld-grid">' + pairs.map(([label, value, money, status, key]) => {
     // Which pass lost this value, resolved once: the label's stripe, the value's
@@ -1282,7 +1517,7 @@ function defList(pairs, truth, val, req, bl, raw) {
                    : 'advanced extraction') + '">' + tier.toUpperCase()
                 + '</span>' : '')
       + '</dt><dd class="' + (cls.trim() + flag).trim() + '">' + body
-      + scoreMark(sc) + blameMark(blm) + truthLine(sc)
+      + scoreMark(sc) + blameMark(blm) + imgrcMark(img && key ? img[key] : null) + truthLine(sc)
       + (raw && typeof raw[key] === 'string' && raw[key] !== String(value ?? '')
           ? '<details class="fld-raw"><summary>Raw model value</summary><div>' + esc(raw[key]) + '</div></details>' : '')
       + valMark(val && key ? val[key] : null)
@@ -2642,8 +2877,14 @@ function paintPipeline() {
     const tiers = extracted.tiers || {};
     const p = Number(tiers.p1_present), a = Number(tiers.p1_absent);
     const filled = Number.isFinite(p) && p + a > 0 ? p + '/' + (p + a) + ' filled' : '';
+    const imgDocs = (extractedFile && extractedFile.documents) || [extractedFile || extracted];
+    const imgFilled = imgDocs.reduce((n, d) => n + ((d && d.image_filled) || []).length, 0);
+    const imgFixed = imgDocs.reduce((n, d) => n + ((d && d.validation_image_rechecks) || [])
+      .reduce((m, a) => m + (a.accepted ? (a.changed || []).length : 0), 0), 0);
+    const imgNote = (extractedFile || extracted).image_rechecks
+      ? 'images: ' + imgFilled + ' filled, ' + imgFixed + ' corrected' : '';
     ext = pipeBox(3, 'Extract', 'done', esc(modeLabel(extracted)),
-                  [filled, extracted.seconds + 's'].filter(Boolean).join(' · ')
+                  [filled, extracted.seconds + 's', imgNote].filter(Boolean).join(' · ')
                     + pipeBlame('extraction'),
                   'Pass 2 asked for exactly the form stage 2 chose.'
                     + pipeBlameHint('extraction'));
@@ -2662,14 +2903,9 @@ function paintFields() {
   const strip = docStrip();
   if (strip) fldBody.insertAdjacentHTML('afterbegin', strip);
   if (extracted && !extracted.pending) {
-    if (extracted.image_filled?.length) fldBody.insertAdjacentHTML('beforeend',
-      '<p class="note">Filled from images: ' + extracted.image_filled.map(esc).join(', ') + '</p>');
-    for (const retry of extracted.validation_image_rechecks || []) fldBody.insertAdjacentHTML('beforeend',
-      '<details><summary>Validation image recheck · ' + (retry.accepted ? 'accepted' : 'original values kept')
-      + '</summary><pre>' + esc(JSON.stringify(retry, (key, value) => key === 'chats' ? undefined : value, 2)) + '</pre></details>');
     const rechecks = (extractedFile || extracted).image_rechecks;
-    if (rechecks) fldBody.insertAdjacentHTML('beforeend', '<details><summary>Image recheck summary</summary><pre>'
-      + esc(JSON.stringify(rechecks, null, 2)) + '</pre></details>');
+    const block = imageRecheckHtml(extracted, rechecks);
+    if (block) fldBody.insertAdjacentHTML('beforeend', block);
   }
   // Left on the normal body until there is a reply to show: an empty pane while
   // the pass is still running reads as "the model returned nothing", when the
@@ -2853,7 +3089,7 @@ function paintFieldBody() {
         && !(truth.scalars[k] && truth.scalars[k].status === 'missed'))) continue;
     html += '<div class="fld-sec">' + title + '</div>'
       + defList(keys.map(k => [label(k), f[k], MONEY_KEYS.has(k), st[k], k]),
-                truth.scalars, val, req, bl, extracted.fields);
+                truth.scalars, val, req, bl, extracted.fields, imgrcMarks(extracted));
   }
 
   // Filtered exactly as the grounding pass filters it, so the row index in
@@ -8907,10 +9143,8 @@ function cmpFieldsHtml(docs) {
           + esc(ST_WRONG_TEXT[r.wrong] || r.wrong) + '</span>'
           + (lost[r.blame] ? ' <small>' + lost[r.blame] + '</small>' : '') : '')
         + '</td></tr>').join('') + '</table>'
-      + ((d.validation_rechecks || []).map(retry => '<details><summary>Validation image recheck · '
-          + (retry.accepted ? 'accepted' : 'original values kept') + '</summary><pre>'
-          + esc(JSON.stringify(retry, (key, value) => key === 'chats' ? undefined : value, 2))
-          + '</pre></details>').join(''));
+      + imageRecheckHtml({ image_fills: d.image_fills || [],
+                           validation_image_rechecks: d.validation_rechecks || [] }, null);
   }).join('');
 }
 function viewFull(view) { return CMP_VIEWS[view].every(colAvailable); }
@@ -10191,7 +10425,11 @@ async function startRead(opts) {
           pagebar.innerHTML = '<span class="spin"></span> Extracting fields…';
           if (tabFields.classList.contains('on')) paintFields();
         } else if (msg.event === 'image_recheck') {
-          pagebar.innerHTML = '<span class="spin"></span> ' + esc(msg.message);
+          const name = (IMGRC_RULE[msg.kind] || ['Image recheck'])[0];
+          pagebar.innerHTML = (msg.state === 'retrying' || msg.state === 'starting'
+              ? '<span class="spin"></span> ' : '')
+            + (msg.kind ? '<b>' + esc(name) + '</b> ' + imgrcChip(msg.state) + ' ' : '')
+            + esc(msg.message || '');
         } else if (msg.event === 'table_agent') {
           stepEvent(msg);
         } else if (msg.event === 'segmented' || msg.event === 'document'
@@ -11261,7 +11499,8 @@ function stChart(report, host = stOut) {
     + '" y2="' + y(report.concurrency) + '" class="st-conc"/>';
   const legend = series.map(([, label], si) => '<span class="st-key"><i class="st-sw st-s'
     + (si + 1) + '"></i>' + esc(label) + '</span>').join('')
-    + '<span class="st-key"><i class="st-sw st-dash"></i>concurrency limit</span>';
+    + '<span class="st-key"><i class="st-sw st-dash"></i>concurrency limit'
+    + (report.concurrency_per_stage ? ' (each stage)' : '') + '</span>';
   return '<div class="st-chart-wrap"><div class="st-legend">' + legend + '</div>'
     + '<svg class="st-chart" viewBox="0 0 ' + W + ' ' + H + '" data-w="' + W + '" '
     + 'data-series="' + esc(JSON.stringify(series.map(s => [idx(s[0]), s[1]]))).replace(/"/g, '&quot;') + '">'
@@ -11714,7 +11953,8 @@ function stReportHtml(s, snapshot, host) {
         : plan.mode === 'ocr' ? 'OCR only' : plan.mode === 'extract' ? 'Extract only'
         : plan.mode === 'image' ? 'Image to extractor (no OCR)'
         : 'Classify ' + plan.pack_pages + '-page files')
-      + ' · ' + plan.concurrency + ' concurrent · ' + plan.jobs + ' job(s)'
+      + ' · ' + plan.concurrency + (plan.mode === 'full' ? ' OCR + ' + plan.concurrency
+        + ' extract concurrent' : ' concurrent') + ' · ' + plan.jobs + ' job(s)'
       + (plan.warmup ? ' + ' + plan.warmup + ' warm-up' : '')
       + ' · ' + esc(plan.server.kind || '') + ' ' + esc(plan.server.url || '')
       + (plan.reader ? ' · reads with <b>' + esc(csModel(plan.reader)) + '</b>' : '')
@@ -11752,7 +11992,9 @@ function stReportHtml(s, snapshot, host) {
       + '<b>' + (p.phase === 'warmup' ? 'Warming up' : 'Running') + '</b> · '
       + p.done + ' of ' + p.total + ' done · ' + stSec(p.elapsed)
       + ' · queued ' + (st.queued || 0)
-      + (st.ocr ? ' · reading ' + st.ocr : '') + (st.extract ? ' · extracting ' + st.extract : '')
+      + (st.ocr ? ' · reading ' + st.ocr : '')
+      + (st.extract_queued ? ' · waiting to extract ' + st.extract_queued : '')
+      + (st.extract ? ' · extracting ' + st.extract : '')
       + (st.segment ? ' · splitting ' + st.segment : '')
       + (st.classify ? ' · classifying ' + st.classify : '')
       + (p.failed ? ' · <span style="color:var(--danger)">' + p.failed + ' failed</span>' : '')
@@ -11828,11 +12070,23 @@ function stReportHtml(s, snapshot, host) {
         + (r.extract.fill_jobs ? ' · ' + r.extract.fill_filled + ' of ' + r.extract.fill_asked
           + ' filled from the page images (Hybrid)' : ''),
       r.extract.missing_required_jobs ? 'st-warn' : ''));
-    if (r.extract?.validation_retry_jobs) tiles.push(stTile('Validation image recheck',
-      r.extract.validation_retry_changed + '<small> field(s) changed</small>',
+    // The two image rechecks, each read the same way: what it added, what it
+    // edited, and the validation rules run on the fields it touched.
+    if (r.extract?.fill_jobs) tiles.push(stTile('Fill missing from images',
+      (r.extract.fill_filled || 0) + '<small> added · 0 edited</small>',
+      r.extract.fill_jobs + ' job(s) · ' + r.extract.fill_asked + ' empty required field(s) asked'
+      + (r.extract.fill_checks != null ? ' · validated ' + r.extract.fill_checks + ' rule(s) on the added values: '
+         + (r.extract.fill_checks_ok || 0) + ' pass, ' + (r.extract.fill_checks_bad || 0) + ' fail or warn' : '')
+      + ' · a fill never overwrites a value',
+      r.extract.fill_checks_bad ? 'st-warn' : ''));
+    if (r.extract?.validation_retry_jobs) tiles.push(stTile('Validation recheck from images',
+      (r.extract.validation_retry_added || 0) + '<small> added · </small>'
+        + (r.extract.validation_retry_edited || 0) + '<small> edited</small>',
       r.extract.validation_retry_jobs + ' job(s) · ' + r.extract.validation_retry_asked + ' fields asked'
+      + (r.extract.validation_retry_checks != null ? ' · validated ' + r.extract.validation_retry_checks
+         + ' rule(s), ' + (r.extract.validation_retry_fixed || 0) + ' now passing' : '')
       + ' · ' + r.extract.validation_retry_accepted + ' document(s) accepted'
-      + ' · ' + r.extract.validation_retry_resolved + ' resolved'
+      + ' · ' + r.extract.validation_retry_resolved + ' fully resolved'
       + ' · ' + stSec(r.extract.validation_retry_s) + ' additional work'));
     // Document sets: one file can hold several documents, each extracted on
     // its own (stress.doc_sets).
@@ -11865,6 +12119,8 @@ function stReportHtml(s, snapshot, host) {
     const lat = r.latency || {};
     const latency = stLatencyRows([
       ['Waiting in the queue', lat.queue_wait, 'time a job waited for a free worker on this side'],
+      ...(lat.extract_wait ? [['Waiting to extract', lat.extract_wait,
+        'time a read job waited for a free extract worker, kept out of end to end']] : []),
       ['End to end', lat.end_to_end, 'one whole job, from starting work to finishing'],
       ...(r.ocr ? [
         ['OCR, per job', r.ocr.latency_job, 'every page of the document read'],

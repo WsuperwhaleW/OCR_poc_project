@@ -589,6 +589,49 @@
   .fld-tag.req-missing { background: rgba(255,107,107,.18); color: var(--danger); }
   #fields th .req { margin-left: .3rem; }
   .fld-tag.computed { background: rgba(217,164,65,.18); color: var(--warn); }
+  /* A value an image recheck put there: filled where the read left it empty, or
+     replaced where validation flagged it. Neutral hues -- where a value came from
+     is not a verdict on it; the score mark beside it says that. */
+  .fld-tag.img-fill { background: color-mix(in srgb, var(--info) 18%, transparent); color: var(--info); }
+  .fld-tag.img-fix { background: color-mix(in srgb, var(--accent) 18%, transparent); color: var(--accent); }
+  .fld-was { display: block; font-size: .78rem; color: var(--muted); }
+  .fld-was s { color: var(--muted); }
+  /* The two image rechecks, one block each, read the same way: what triggered it,
+     a row per field (before / what the images answered / what was kept), and a
+     one-line verdict. */
+  .imgrc { margin-top: 1rem; border: 1px solid var(--border); border-radius: 8px;
+           padding: .6rem .8rem; background: var(--tint); }
+  .imgrc > h4 { margin: 0 0 .15rem; font-size: .9rem; }
+  .imgrc > p.note { margin: 0 0 .5rem; }
+  .imgrc-part { border-top: 1px solid var(--border); padding: .5rem 0 .3rem; }
+  .imgrc-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: .45rem; }
+  .imgrc-head b { font-size: .86rem; }
+  .imgrc-msg { font-size: .8rem; color: var(--muted); }
+  .imgrc-chip { font-size: .66rem; font-weight: 700; padding: 1px 7px; border-radius: 4px;
+                text-transform: uppercase; letter-spacing: .04em; white-space: nowrap;
+                background: var(--border); color: var(--muted); }
+  .imgrc-chip.ok { background: color-mix(in srgb, var(--ok) 18%, transparent); color: var(--ok); }
+  .imgrc-chip.warn { background: color-mix(in srgb, var(--warn) 18%, transparent); color: var(--warn); }
+  .imgrc-chip.bad { background: color-mix(in srgb, var(--danger) 18%, transparent); color: var(--danger); }
+  .imgrc-chip.run { background: color-mix(in srgb, var(--accent) 18%, transparent); color: var(--accent); }
+  .imgrc table { width: 100%; border-collapse: collapse; margin: .35rem 0; font-size: .8rem; }
+  .imgrc th { text-align: left; font-weight: 600; color: var(--muted); padding: 2px 6px;
+              border-bottom: 1px solid var(--border); }
+  .imgrc td { padding: 3px 6px; border-bottom: 1px solid var(--border); vertical-align: top;
+              word-break: break-word; }
+  .imgrc td.took { font-weight: 600; }
+  .imgrc .blank { color: var(--muted); font-style: italic; }
+  .imgrc ul { margin: .2rem 0 .3rem 1.1rem; padding: 0; font-size: .8rem; }
+  .imgrc .verdict { font-size: .82rem; margin: .2rem 0; }
+  .imgrc .verdict.ok { color: var(--ok); }
+  .imgrc .verdict.bad { color: var(--warn); }
+  .imgrc .meta { font-size: .74rem; color: var(--muted); }
+  .imgrc ul.imgrc-aev { list-style: none; margin: .35rem 0; padding: 0; font-size: .82rem; }
+  .imgrc ul.imgrc-aev li { padding: 1px 0; }
+  .imgrc ul.imgrc-aev b { display: inline-block; min-width: 5.2em; color: var(--muted);
+                          font-weight: 600; }
+  .imgrc .imgrc-total { font-size: .82rem; margin: 0 0 .4rem; }
+  .imgrc table.imgrc-rules td { padding: 2px 6px; }
   #fields td.ungrounded { color: var(--danger); text-decoration: underline wavy var(--danger); }
   /* Scored against the hand-written truth file, marked at the value itself. A
      list of paths below the fields says a value is wrong; a mark beside it says

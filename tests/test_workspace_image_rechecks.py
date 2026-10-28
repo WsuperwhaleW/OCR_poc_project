@@ -41,6 +41,85 @@ class SharedRecheckTests(unittest.TestCase):
         ask.assert_not_called()
         self.assertEqual(value, before)
 
+    def test_fill_records_what_it_asked_what_the_images_said_and_what_it_took(self):
+        value = document({**GOOD, 'vat_total': ''})
+        with patch.object(app, '_fill_ask', return_value={'fields': GOOD, 'tokens': 7}):
+            app.recheck_fields_from_images(value, [page()], ['OCR'], fill_missing=True)
+        audit, = value['image_fills']
+        self.assertEqual(audit['fields'], ['vat_total'])
+        self.assertEqual(audit['steps'], ['totals']); self.assertEqual(audit['pages'], [1])
+        self.assertEqual(audit['candidate'], {'vat_total': GOOD['vat_total']})
+        self.assertEqual(audit['filled'], ['vat_total']); self.assertTrue(audit['accepted'])
+        self.assertEqual(audit['still_empty'], []); self.assertEqual(audit['tokens'], 7)
+
+    def test_each_recheck_says_what_it_added_edited_and_validated(self):
+        value = document({**SHIFTED, 'vat_total': ''})
+        with patch.object(app, '_fill_ask', side_effect=[{'fields': GOOD}, {'fields': GOOD}]):
+            app.recheck_fields_from_images(value, [page()], ['OCR'], fill_missing=True,
+                                           validation_retry=True)
+        fill, = value['image_fills']
+        self.assertEqual(fill['added'], {'vat_total': GOOD['vat_total']})
+        self.assertEqual(fill['edited'], {})
+        self.assertTrue(all(r['field'] == 'vat_total' for r in fill['validated']))
+        self.assertTrue(fill['validated'])
+        check, = value['validation_image_rechecks']
+        # vat_total was filled a moment ago, so the recheck only edits.
+        self.assertEqual(check['added'], {})
+        self.assertEqual(check['edited'], {'subtotal': {'from': SHIFTED['subtotal'], 'to': GOOD['subtotal']}})
+        states = lambda rows: {(r['field'], r['rule']): r['state'] for r in rows}
+        self.assertIn('failed', states(check['rules_before']).values())
+        self.assertNotIn('failed', states(check['rules_after']).values())
+        self.assertEqual(states(check['rules_candidate']), states(check['rules_after']))
+        m = value['image_rechecks']['metrics']
+        self.assertEqual((m['validation_retry_added'], m['validation_retry_edited']), (0, 1))
+        self.assertGreater(m['validation_retry_checks'], 0); self.assertGreater(m['validation_retry_fixed'], 0)
+        self.assertEqual(m['fill_checks'], m['fill_checks_ok'] + m['fill_checks_bad'])
+        flags = {f['kind']: f['message'] for f in value['image_rechecks']['flags']}
+        self.assertIn('added 0, edited 1; validated', flags['validation'])
+
+    def test_a_rejected_recheck_adds_and_edits_nothing(self):
+        value = document()
+        with patch.object(app, '_fill_ask', return_value={'fields': {**SHIFTED, 'subtotal': ''}}):
+            app.recheck_fields_from_images(value, [page()], ['OCR'], validation_retry=True)
+        check, = value['validation_image_rechecks']
+        self.assertFalse(check['accepted'])
+        self.assertEqual((check['added'], check['edited']), ({}, {}))
+        self.assertEqual(value['fields'], SHIFTED)
+        self.assertTrue(check['rules_before'])
+
+    def test_stress_report_rolls_up_added_edited_and_validated(self):
+        import stress
+        job = {'status': 'ok', 'extract_s': 1.0, 'fill_jobs': 1, 'fill_asked': 2, 'fill_filled': 1, 'fill_checks': 3,
+               'fill_checks_ok': 2, 'fill_checks_bad': 1, 'validation_retry_jobs': 1,
+               'validation_retry_added': 1, 'validation_retry_edited': 2,
+               'validation_retry_checks': 5, 'validation_retry_fixed': 4}
+        out = stress.report([job, dict(job)], 1.0, 'full', 1)['extract']
+        self.assertEqual((out['fill_checks'], out['fill_checks_ok'], out['fill_checks_bad']), (6, 4, 2))
+        self.assertEqual((out['validation_retry_added'], out['validation_retry_edited'],
+                          out['validation_retry_checks'], out['validation_retry_fixed']), (2, 4, 10, 8))
+
+    def test_a_fill_the_images_cannot_answer_is_recorded_as_still_empty(self):
+        value = document({**GOOD, 'vat_total': ''})
+        with patch.object(app, '_fill_ask', return_value={'fields': {'vat_total': ''}}):
+            app.recheck_fields_from_images(value, [page()], ['OCR'], fill_missing=True)
+        audit, = value['image_fills']
+        self.assertFalse(audit['accepted']); self.assertEqual(audit['still_empty'], ['vat_total'])
+        with patch.object(app, '_fill_ask', return_value={'error': 'server down'}):
+            value = document({**GOOD, 'vat_total': ''})
+            app.recheck_fields_from_images(value, [page()], ['OCR'], fill_missing=True)
+        self.assertEqual(value['image_fills'][0]['error'], 'server down')
+
+    def test_a_switch_that_found_nothing_to_do_says_so(self):
+        value = document(GOOD)
+        with patch.object(app, '_fill_ask') as ask:
+            app.recheck_fields_from_images(value, [page()], ['OCR'], fill_missing=True,
+                                           validation_retry=True)
+        ask.assert_not_called()
+        self.assertEqual(value['fields'], GOOD)
+        self.assertEqual(value['image_rechecks']['skipped'],
+                         {'fill_missing': True, 'validation_retry': True})
+        self.assertEqual(value['image_rechecks']['flags'], [])
+
     def test_missing_retry_does_not_send_other_documents_pages_when_boundaries_are_unknown(self):
         value = {'documents': [document(GOOD, document=1, pages=[1]),
                                document({**GOOD, 'vat_total': ''}, document=2)]}
@@ -84,6 +163,10 @@ class WorkspaceRouteTests(unittest.TestCase):
                 if stream:
                     kinds = [e['event'] for e in events]
                     self.assertLess(kinds.index('image_recheck'), kinds.index('fields'))
+                    # Each recheck's own flag is streamed as it is raised and as it ends.
+                    flags = [e for e in events if e['event'] == 'image_recheck' and e.get('kind')]
+                    self.assertEqual([(f['kind'], f['state']) for f in flags],
+                                     [('validation', 'retrying'), ('validation', 'resolved')])
 
     def test_an_ordinary_api_call_or_ocr_only_never_enables_the_recheck_implicitly(self):
         for stream in (False, True):

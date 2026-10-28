@@ -359,6 +359,47 @@
     }
     return renderGrid([],value.map(row=>Array.isArray(row)?row:[row]));
   }
+  /* The two image rechecks, as the Workspace's Fields tab shows them: one block
+     each, a row per field (before / what the page images answered / outcome) and
+     a one-line verdict, instead of the raw audit record. */
+  function imageRecheckNodes(doc){
+    const fills=doc.image_fills||[],checks=doc.validation_image_rechecks||[],out=[];
+    const show=v=>v===undefined||v===null||v===''?'(blank)':Array.isArray(v)?v.length+' rows':typeof v==='object'?JSON.stringify(v):String(v);
+    const label=k=>{const b=String(k).split('[',1)[0];return (fieldLabels[b]||b.replace(/_/g,' '))+String(k).slice(b.length);};
+    const grid=(heads,rows)=>{const t=node('table','',''),h=node('tr');heads.forEach(x=>h.append(node('th',x)));t.append(h);
+      rows.forEach(r=>{const tr=node('tr');r.forEach(x=>tr.append(node('td',x)));t.append(tr);});const w=node('div',undefined,'table-scroll');w.append(t);return w;};
+    const box=(title,why)=>{const d=node('details');d.open=true;d.append(node('summary',title));d.append(node('p',why,'muted small'));return d;};
+    // What the attempt added, what it edited, and the validation rules run on its fields.
+    const aev=(added,edited,rules)=>{
+      const ran=(rules||[]).filter(r=>['ok','failed','warning'].includes(r.state)),pass=ran.filter(r=>r.state==='ok').length;
+      const a=Object.entries(added||{}),e=Object.entries(edited||{}),list=node('ul',undefined,'small');
+      list.append(node('li','Added: '+(a.length?a.map(([k,v])=>label(k)+' = '+show(v)).join(', '):'nothing')),
+        node('li','Edited: '+(e.length?e.map(([k,v])=>label(k)+': '+show(v.from)+' → '+show(v.to)).join(', '):'nothing')),
+        node('li','Validated: '+(rules?ran.length+' rule(s), '+pass+' pass, '+(ran.length-pass)+' fail or warn':'not recorded')));
+      return list;};
+    for(const a of fills){
+      const got=a.candidate||{},filled=new Set(a.filled||[]);
+      const d=box('Fill missing from images · '+(filled.size?filled.size+' filled':'nothing filled'),
+        'A required field came back empty, so the page images were sent to the extraction model. An answer only fills a blank.');
+      d.append(aev(a.added||Object.fromEntries([...filled].map(k=>[k,(a.after||{})[k]])),{},a.validated));
+      d.append(grid(['Field','Images answered','Result'],(a.fields||[]).map(k=>[label(k),a.candidate?show(got[k]):'no answer',
+        filled.has(k)?'filled':a.error?'request failed':'still empty'])));
+      if(a.error)d.append(node('p','Request failed: '+a.error,'message error'));
+      out.push(d);
+    }
+    if(!fills.length&&doc.image_filled?.length)out.push(node('p','Filled from images: '+doc.image_filled.map(label).join(', '),'muted'));
+    for(const a of checks){
+      const changed=new Set(a.changed||[]),got=a.candidate||{};
+      const d=box('Validation recheck from images · '+(a.accepted?changed.size+' field(s) corrected':'original values kept'),
+        'A validation rule failed or warned, so the page images were sent to the extraction model (no OCR) to read these fields again. The answer is kept only if validation improves.');
+      d.append(aev(a.accepted?a.added:{},a.accepted?a.edited:{},a.rules_before||null));
+      d.append(grid(['Field','Extracted','Images answered','Kept'],(a.fields||[]).map(k=>[label(k),show((a.before||{})[k]),
+        a.candidate?show(got[k]):'no answer',a.accepted&&changed.has(k)?'replaced → '+show((a.after||{})[k]):'original'])));
+      d.append(node('p',a.error?'Not applied: '+a.error:a.accepted?'Applied: '+(a.reason||'validation improved'):'Not applied: '+(a.reason||'original values kept'),a.accepted?'muted':'message'));
+      out.push(d);
+    }
+    return out;
+  }
   function renderItemTable(value){
     const block=node('section',undefined,'item-table-section');
     const rows=Array.isArray(value.rows)?value.rows:[],columns=Array.isArray(value.columns)?value.columns:[];
@@ -396,13 +437,7 @@
       if(table.children.length)section.append(table);else if(!collections.length)section.append(node('p','ไม่พบข้อมูลที่ดึงได้','muted'));
       section.append(...collections);
       if(doc.item_table&&typeof doc.item_table==='object')section.append(renderItemTable(doc.item_table));
-      if(doc.image_filled?.length)section.append(node('p','Filled from images: '+doc.image_filled.join(', '),'muted'));
-      for(const retry of doc.validation_image_rechecks||[]){
-        const audit=node('details');
-        audit.append(node('summary','Validation image recheck · '+(retry.accepted?'accepted':'original values kept')),
-          node('pre',JSON.stringify(retry,(key,value)=>key==='chats'?undefined:value,2)));
-        section.append(audit);
-      }
+      section.append(...imageRecheckNodes(doc));
       target.append(section);
     }
   }

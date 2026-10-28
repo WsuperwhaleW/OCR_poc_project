@@ -40,8 +40,11 @@ DEFAULT_PACK_PAGES = 100
 # second) would be thousands on a long run; the chart needs a few hundred.
 TIMELINE_POINTS = 400
 
-# Stages a job can be in, in pipeline order. `queued` is waiting for a worker.
-STAGES = ("queued", "ocr", "extract", "segment", "classify")
+# Stages a job can be in, in pipeline order. `queued` is waiting for a worker;
+# `extract_queued` is a full job whose read is done, waiting for an extract
+# worker (the two stages have a concurrency limit each, 2026-10-28). Last, so a
+# timeline taken before it was added still reads by name.
+STAGES = ("queued", "ocr", "extract", "segment", "classify", "extract_queued")
 
 
 # --------------------------------------------------------------------------
@@ -345,8 +348,14 @@ def report(records: list, wall: float, mode: str, concurrency: int) -> dict:
         "jobs_per_minute": round(len(done) / wall * 60, 2),
         "latency": {"end_to_end": distribution(r.get("total_s") for r in done),
                     "queue_wait": distribution(r.get("wait_s") for r in attempted)},
+        # The concurrency is a limit on each stage, not on a job (2026-10-28).
+        "concurrency_per_stage": mode == "full",
         "errors": _top_errors(failed),
     }
+    if mode == "full":
+        # A full job's wait for an extract worker after its read, kept out of
+        # `end_to_end` like `queue_wait` is.
+        out["latency"]["extract_wait"] = distribution(r.get("extract_wait_s") for r in done)
     if mode in ("ocr", "full"):
         pages = total("pages")
         tokens = total("ocr_tokens")
@@ -427,10 +436,18 @@ def report(records: list, wall: float, mode: str, concurrency: int) -> dict:
             out["extract"].update(
                 fill_jobs=sum(r.get("fill_jobs") or 0 for r in rows),
                 fill_asked=sum(r.get("fill_asked") or 0 for r in rows),
-                fill_filled=sum(r.get("fill_filled") or 0 for r in rows))
+                fill_filled=sum(r.get("fill_filled") or 0 for r in rows),
+                # Validation rules run on the values the images filled in.
+                fill_checks=sum(r.get("fill_checks") or 0 for r in rows),
+                fill_checks_ok=sum(r.get("fill_checks_ok") or 0 for r in rows),
+                fill_checks_bad=sum(r.get("fill_checks_bad") or 0 for r in rows))
+            # added = was blank, edited = replaced a value; checks = rules run on
+            # the rechecked fields, fixed = of those, failed/warned before and
+            # passing after.
             out["extract"].update({"validation_retry_" + key:
                 sum(r.get("validation_retry_" + key) or 0 for r in rows)
-                for key in ("jobs", "asked", "changed", "accepted", "resolved", "s", "tokens")})
+                for key in ("jobs", "asked", "changed", "accepted", "resolved", "s", "tokens",
+                            "added", "edited", "checks", "fixed")})
     if mode == "image":
         # Pages sent to the extractor as images, and the jobs extracted again one
         # Detail up because a Mandatory field came back empty or the reply looped

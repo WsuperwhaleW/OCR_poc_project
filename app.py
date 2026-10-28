@@ -25,10 +25,11 @@ import sys
 import tempfile
 import threading
 import time
+import queue
 import uuid
 import weakref
 from collections import OrderedDict, deque
-from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
+from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from contextlib import closing, contextmanager
 from functools import lru_cache
 from pathlib import Path
@@ -7516,6 +7517,8 @@ class _StressLive:
         now = time.perf_counter()
         with self._lock:
             for job, active in self._active.items():
+                if active["stage"] == "extract_queued":
+                    continue        # waiting for an extract worker, not a reply
                 if not active["flagged"] and now - active["last"] >= limit:
                     active["flagged"] = True
                     verb = _STAGE_VERB.get(active["stage"], active["stage"])
@@ -8173,15 +8176,43 @@ def _stress_fill_missing(result: dict, images, texts, case_id, rec: dict,
             # This document's own transcript, which validation checks against.
             own = [texts[p - 1] for p in numbers if p <= len(texts)]
             text = join_page_texts(own) if len(own) > 1 else "".join(own)
+            # What the page shows for this attempt: the keys asked, what the
+            # images answered for them and which of those were taken. Built the
+            # way the validation recheck's audit is, so both read alike.
+            audit = {"fields": list(keys), "steps": list(ids), "pages": numbers,
+                     "filled": [], "accepted": False}
+            doc.setdefault("image_fills", []).append(audit)
+            began = time.perf_counter()
             try:
                 answer = _fill_ask([images[p - 1] for p in numbers], form, ids)
             except Exception as err:            # noqa: BLE001
                 answer = {"error": f"{type(err).__name__}: {err}"}
             tokens += answer.get("tokens") or 0
+            audit["tokens"] = answer.get("tokens") or 0
+            audit["seconds"] = round(time.perf_counter() - began, 3)
             if answer.get("error"):
+                audit["error"] = str(answer["error"])[:300]
+                audit["still_empty"] = list(keys)
                 errors.append(str(answer["error"])[:160])
                 continue
+            audit["candidate"] = {k: _retry_value(answer.get("fields") or {}, k)[1]
+                                  for k in keys}
             got = _fill_document(doc, keys, answer, form, text)
+            audit["filled"] = list(got)
+            audit["accepted"] = bool(got)
+            # A fill only ever ADDS: it writes a blank and never overwrites a value.
+            audit["added"] = {k: _retry_value(doc.get("fields") or {}, k)[1] for k in got}
+            audit["edited"] = {}
+            # What validation said once the filled values were in (the document is
+            # revalidated by `_fill_document`), for the fields that were asked.
+            audit["validated"] = _rule_states(doc, keys)
+            ran, ok, bad = _rule_tally(_rule_states(doc, got))
+            rec["fill_checks"] = rec.get("fill_checks", 0) + ran
+            rec["fill_checks_ok"] = rec.get("fill_checks_ok", 0) + ok
+            rec["fill_checks_bad"] = rec.get("fill_checks_bad", 0) + bad
+            gaps_now = {k for _, ks in _missing_required(doc) for k in ks}
+            audit["still_empty"] = [k for k in keys if k in gaps_now]
+            audit["after"] = {k: _retry_value(doc.get("fields") or {}, k)[1] for k in keys}
             filled += [f"doc{number}.{k}" if several else k for k in got]
             if got:
                 doc["image_filled"] = list(doc.get("image_filled") or []) + got
@@ -8207,6 +8238,10 @@ def _stress_fill_missing(result: dict, images, texts, case_id, rec: dict,
     note = (" · failed: " + "; ".join(errors)) if errors else ""
     if orphans:
         note += " · no Hybrid step asks for " + ", ".join(orphans)
+    if rec.get("fill_checks"):
+        note = (f" · validated {rec['fill_checks']} rule(s) on the added values: "
+                f"{rec.get('fill_checks_ok', 0)} pass, {rec.get('fill_checks_bad', 0)} fail or warn"
+                + note)
     if not after:
         live.update_flag(alert, f"{what}{why} -- resolved: the page images filled "
                                 + ", ".join(filled) + note, state="resolved")
@@ -8220,6 +8255,25 @@ def _stress_fill_missing(result: dict, images, texts, case_id, rec: dict,
                                 + f", still empty: {listed}{note}",
                          state="retry failed")
     return alert
+
+
+def _rule_states(doc, keys):
+    """Every validation rule run on `keys` (a table key covers its cells): what an
+    image recheck says it VALIDATED. All states, not only the bad ones -- a rule
+    that passed on a value the images supplied is the point of showing it."""
+    keys = set(keys)
+    bases = {k.split("[", 1)[0] for k in keys}
+    return [{k: row[k] for k in ("field", "rule", "state", "why", "detail") if row.get(k)}
+            for row in ((doc.get("validation") or {}).get("checks") or [])
+            if row.get("field") and (row["field"] in keys
+                                     or row["field"].split("[", 1)[0] in bases)]
+
+
+def _rule_tally(rows):
+    """`(rules run, rules that passed, rules failed or warned)` over `_rule_states` rows."""
+    ran = [r for r in rows if r.get("state") in (validate.OK, validate.FAILED, validate.WARNING)]
+    return (len(ran), sum(r["state"] == validate.OK for r in ran),
+            sum(r["state"] in (validate.FAILED, validate.WARNING) for r in ran))
 
 
 def _validation_bad(doc):
@@ -8285,6 +8339,7 @@ def _validation_candidate(doc, keys, answer, form, text, audit=None):
     _revalidate(trial, form, text)
     if audit is not None:
         audit["checks_candidate"] = copy.deepcopy(_validation_bad(trial))
+        audit["rules_candidate"] = _rule_states(trial, keys)
     if (trial.get("validation") or {}).get("error"):
         return None, "Could not validate the image answer"
     before, after = _validation_bad(doc), _validation_bad(trial)
@@ -8321,7 +8376,8 @@ def _stress_recheck_validation(result, images, texts, case_id, rec, live, job, w
         return None
     started = time.perf_counter()
     rec["validation_retry_jobs"] = 1
-    for name in ("asked", "changed", "accepted", "resolved"):
+    for name in ("asked", "changed", "accepted", "resolved", "added", "edited",
+                 "checks", "fixed"):
         rec["validation_retry_" + name] = 0
     names = [f"doc{doc.get('document') or 1}.{key}" for doc, _, keys in plan for key in keys]
     alert = live.flag("validation", job, who,
@@ -8357,6 +8413,7 @@ def _stress_recheck_validation(result, images, texts, case_id, rec, live, job, w
                 # have just had a blank filled by the independent missing toggle.
                 _revalidate(doc, form, text)
                 audit["checks_before"] = copy.deepcopy(_validation_bad(doc))
+                audit["rules_before"] = _rule_states(doc, keys)
                 form["validation_recheck"] = True
                 rec["validation_retry_asked"] += len(keys)
                 answer = _fill_ask([images[p - 1] for p in numbers], form, ids)
@@ -8370,6 +8427,15 @@ def _stress_recheck_validation(result, images, texts, case_id, rec, live, job, w
                     changed = [key for key in keys if _retry_value(before, key)[1] != _retry_value(trial["fields"], key)[1]]
                     doc.update(fields=trial["fields"], normalized=trial["normalized"], validation=trial["validation"])
                     audit.update(accepted=True, changed=changed)
+                    # A value that was blank is an addition; one that was there and
+                    # is now different is an edit.
+                    audit["added"] = {k: _retry_value(doc["fields"], k)[1] for k in changed
+                                      if validate._blank(_retry_value(before, k)[1])}
+                    audit["edited"] = {k: {"from": _retry_value(before, k)[1],
+                                           "to": _retry_value(doc["fields"], k)[1]}
+                                       for k in changed if k not in audit["added"]}
+                    rec["validation_retry_added"] += len(audit["added"])
+                    rec["validation_retry_edited"] += len(audit["edited"])
                     rec["validation_retry_changed"] += len(changed)
                     rec["validation_retry_accepted"] += 1
                     if not _validation_bad(doc):
@@ -8384,6 +8450,18 @@ def _stress_recheck_validation(result, images, texts, case_id, rec, live, job, w
             finally:
                 audit["after"] = {k: _retry_value(doc.get("fields") or {}, k)[1] for k in keys}
                 audit["checks_after"] = copy.deepcopy(_validation_bad(doc))
+                audit["rules_after"] = _rule_states(doc, keys)
+                audit.setdefault("added", {})
+                audit.setdefault("edited", {})
+                # Rules run on the rechecked fields, and the ones that went from
+                # failed or warned to passing.
+                before_rules = audit.get("rules_before") or []
+                rec["validation_retry_checks"] += _rule_tally(before_rules)[0]
+                was_bad = {(r["field"], r.get("rule")) for r in before_rules
+                           if r.get("state") in (validate.FAILED, validate.WARNING)}
+                rec["validation_retry_fixed"] += sum(
+                    1 for r in audit["rules_after"]
+                    if r.get("state") == validate.OK and (r["field"], r.get("rule")) in was_bad)
                 audit["seconds"] = round(time.perf_counter() - began, 3)
                 live.touch(job)
     finally:
@@ -8403,7 +8481,9 @@ def _stress_recheck_validation(result, images, texts, case_id, rec, live, job, w
     remaining = sum(len(_validation_bad(doc)) for doc, _, _ in plan)
     note = (" -- " + "; ".join(errors)) if errors else ""
     state = "resolved" if not remaining and not errors else "retry failed"
-    live.update_flag(alert, f"Validation image recheck: {rec['validation_retry_changed']} field(s) changed; "
+    live.update_flag(alert, f"Validation image recheck: added {rec['validation_retry_added']}, "
+                     f"edited {rec['validation_retry_edited']}; validated "
+                     f"{rec['validation_retry_checks']} rule(s), {rec['validation_retry_fixed']} now passing; "
                      f"{remaining} finding(s) remain{note}", state=state)
     window(alert, result, _missing_required(result))
     return alert
@@ -8453,6 +8533,15 @@ def recheck_fields_from_images(result, images, texts, *, fill_missing=False,
     benchmark history is touched; the result carries the decisions and cost.
     """
     if not image_rechecks_needed(result, fill_missing, validation_retry):
+        # Said rather than left out: a toggle that was on and found nothing to do
+        # is otherwise indistinguishable on the page from a toggle that was off.
+        if isinstance(result, dict) and not result.get("error") and (fill_missing or validation_retry):
+            result["image_rechecks"] = {
+                "fill_missing": bool(fill_missing), "validation_retry": bool(validation_retry),
+                "metrics": {}, "flags": [], "seconds": 0,
+                "skipped": {"fill_missing": bool(fill_missing) and not _missing_required(result),
+                            "validation_retry": bool(validation_retry) and not any(
+                                _validation_bad(doc) for doc in result.get("documents") or [result])}}
         return
     started = time.perf_counter()
     live, metrics, cancel = _ImageRecheckProgress(each), {}, MultiCancel()
@@ -8469,6 +8558,36 @@ def recheck_fields_from_images(result, images, texts, *, fill_missing=False,
         summary["error"] = f"Image recheck failed: {err}"
     summary["seconds"] = round(time.perf_counter() - started, 3)
     result["seconds"] = round((result.get("seconds") or 0) + summary["seconds"], 3)
+
+
+def _recheck_events(result, images, texts, fill_missing, validation_retry, case_id):
+    """`recheck_fields_from_images`, with each flag streamed as it is raised or updated.
+
+    The rechecks run on a thread so the stream can say which of the two is asking
+    the images and how it ended, rather than one spinner for both. The callback
+    only queues; the generator does the yielding.
+    """
+    if not image_rechecks_needed(result, fill_missing, validation_retry):
+        recheck_fields_from_images(result, images, texts, fill_missing=fill_missing,
+                                   validation_retry=validation_retry, case_id=case_id)
+        return
+    events, done = queue.Queue(), object()
+
+    def work():
+        try:
+            recheck_fields_from_images(result, images, texts, fill_missing=fill_missing,
+                                       validation_retry=validation_retry, case_id=case_id,
+                                       each=lambda e: events.put(copy.deepcopy(e)))
+        finally:
+            events.put(done)
+
+    # Bound to this request's workspace: the model, extraction mode and agents
+    # the recheck asks with are per-workspace settings.
+    threading.Thread(target=workspace.bind(work), daemon=True).start()
+    yield json.dumps({"event": "image_recheck", "state": "starting",
+                      "message": "Rechecking fields from the page images"}) + "\n"
+    while (event := events.get()) is not done:
+        yield json.dumps(event) + "\n"
 
 
 class _StressPages:
@@ -9151,13 +9270,39 @@ def _fields_evidence(result: dict, missing: list) -> list:
         out.append({"document": number, "pages": list(doc.get("pages") or []),
                     "doc_types": list(doc.get("doc_types") or []),
                     "error": doc.get("error") or "", "rows": rows,
-                    "validation_rechecks": doc.get("validation_image_rechecks") or []})
+                    "validation_rechecks": doc.get("validation_image_rechecks") or [],
+                    "image_fills": doc.get("image_fills") or []})
     return out
 
 
 def _stress_job(spec: dict, cfg: dict, prepared: dict, cancel,
                 live: _StressLive) -> dict:
-    """One job of the queue, start to finish. Returns its record; never raises."""
+    """One job of the queue, start to finish, on this thread. Returns its record;
+    never raises. `_stress_phase` drives `_stress_job_steps` instead, so a full
+    job's extraction can run on the extract workers."""
+    steps = _stress_job_steps(spec, cfg, prepared, cancel, live)
+    try:
+        while True:
+            next(steps)
+    except StopIteration as done:
+        return done.value
+
+
+def _stress_job_steps(spec: dict, cfg: dict, prepared: dict, cancel,
+                      live: _StressLive):
+    """One job of the queue, as a generator. Returns its record; never raises.
+
+    **A full job yields once, between its read and its extraction**
+    (2026-10-28, at the user's request: *30 concurrency means per instance, not
+    combined -- 30 OCR and 30 extract*). The read is done on one of the run's
+    OCR workers; the yield hands the job to an extract worker, which resumes it
+    (`_stress_phase`). So the run has up to `concurrency` reads AND up to
+    `concurrency` extractions in flight, where before one pool of `concurrency`
+    workers held each job through both and the two stages shared it. A
+    generator keeps every local of the job across the hand-off; what is
+    thread-local (the progress hook) is put back before the yield and set again
+    after it. Every other mode never yields.
+    """
     rec = {"wait_s": round(time.perf_counter() - spec["submitted"], 3)}
     deadline = spec.get("deadline")
     lazy = prepared.get("lazy")
@@ -9170,7 +9315,11 @@ def _stress_job(spec: dict, cfg: dict, prepared: dict, cancel,
     mode = cfg["mode"]
     stage = {"ocr": "ocr", "full": "ocr", "extract": "extract", "image": "extract",
              "classify": "segment"}[mode]
-    if live.slots is not None:
+    # The OCR slot this job holds while it reads (`_StressSlots`); given back
+    # when its read is done, so an idle worker's slot can be lent to a long
+    # file's pages while this job is extracting.
+    holding = live.slots is not None
+    if holding:
         live.slots.hold()
     live.move("queued", stage)
     began = time.perf_counter()
@@ -9203,6 +9352,7 @@ def _stress_job(spec: dict, cfg: dict, prepared: dict, cancel,
     # Every pass-2 request this job makes resets its stall clock as it streams
     # and when it ends -- not only the extraction as a whole (see `_progress`).
     previous_hook = _progress_swap(live.hook(job))
+    hooked = True
     try:
         if mode == "classify":
             _stress_classify(prepared["packs"][spec["index"]], rec, live, cancel, job)
@@ -9241,9 +9391,29 @@ def _stress_job(spec: dict, cfg: dict, prepared: dict, cancel,
                 # extracted: its OCR flag says what went wrong with the read, and
                 # the extraction's own flag (`_missing_required`) what it cost.
                 if mode == "full":
-                    live.move("ocr", "extract")
+                    # Hand the job to an extract worker (the docstring). Its OCR
+                    # slot and this thread's progress hook are given back first.
+                    if holding:
+                        live.slots.release()
+                        holding = False
+                    _progress_swap(previous_hook)
+                    hooked = False
+                    live.move("ocr", "extract_queued")
+                    stage = "extract_queued"
+                    live.touch(job, stage)
+                    waited = time.perf_counter()
+                    yield "extract"
+                    previous_hook = _progress_swap(live.hook(job))
+                    hooked = True
+                    # Waiting for an extract worker is this side's queue, kept
+                    # out of the job's latency like `wait_s`.
+                    rec["extract_wait_s"] = round(time.perf_counter() - waited, 3)
+                    began += rec["extract_wait_s"]
+                    live.move("extract_queued", "extract")
                     stage = "extract"
                     live.touch(job, stage)
+                    if cancel.is_set():
+                        raise SweepCancelled()
                 elif mode == "image":
                     # No read: the pages go to the extractor as they are, and a
                     # flag's window shows each page beside the form.
@@ -9443,8 +9613,9 @@ def _stress_job(spec: dict, cfg: dict, prepared: dict, cancel,
         if (fields_window is not None and extract_alert is None
                 and result is not None and live.ocr_flagged(job)):
             fields_window(live.job_key(job), result, missing)
-        _progress_swap(previous_hook)
-        if live.slots is not None:
+        if hooked:
+            _progress_swap(previous_hook)
+        if holding:
             live.slots.release()
         live.end(job)
         rec.pop("at_page", None)
@@ -9597,6 +9768,14 @@ def _stress_phase(specs: list, cfg: dict, prepared: dict, cancel, phase: str,
     Every job is queued at once and a pool of `concurrency` workers works
     through it -- which is what makes `queue_wait` a real figure: a job's wait is
     the time it spent behind the jobs ahead of it, on THIS side of the wire.
+
+    **The concurrency is per stage, not per job** (2026-10-28, at the user's
+    request). A full run has two pools of `concurrency` workers: the OCR pool
+    reads, and a job whose read is done is handed to the extract pool
+    (`_stress_job_steps` yields there), so up to `concurrency` reads and up to
+    `concurrency` extractions are in flight together. The extract side can sit
+    under its limit -- it only has the files the reads have finished. Every
+    other mode has one stage and one pool.
     Returns `(records, wall, timeline, last_metrics, draining)`, where
     `last_metrics` is the last snapshot of each target, by URL.
 
@@ -9614,6 +9793,9 @@ def _stress_phase(specs: list, cfg: dict, prepared: dict, cancel, phase: str,
         live.slots = _StressSlots(cfg["concurrency"])
     pool = ThreadPoolExecutor(max_workers=cfg["concurrency"],
                               thread_name_prefix="stress")
+    second = (ThreadPoolExecutor(max_workers=cfg["concurrency"],
+                                 thread_name_prefix="stress-extract")
+              if cfg.get("mode") == "full" else None)
     started = time.perf_counter()
     deadline = started + cfg["max_seconds"] if cfg["max_seconds"] and phase == "run" else None
     for spec in specs:
@@ -9621,8 +9803,7 @@ def _stress_phase(specs: list, cfg: dict, prepared: dict, cancel, phase: str,
         # Warm-up jobs are thrown away from the report, and from the log too.
         spec["log"] = bool(cfg.get("save_log")) and phase == "run"
         spec["detail"] = bool(cfg.get("save_details")) and phase == "run"
-    job = workspace.bind(_stress_job)
-    futures = [pool.submit(job, spec, cfg, prepared, cancel, live)
+    futures = [_stress_submit(pool, second, spec, cfg, prepared, cancel, live)
                for spec in specs]
     pending, timeline = set(futures), []
     sampler = _StressSampler(list(targets), bases or {}, cfg["metrics_every"],
@@ -9673,6 +9854,8 @@ def _stress_phase(specs: list, cfg: dict, prepared: dict, cancel, phase: str,
         # Queued jobs are dropped; running ones carry on and are drained by the
         # caller. Nothing here blocks on them.
         pool.shutdown(wait=False, cancel_futures=True)
+        if second is not None:
+            second.shutdown(wait=False, cancel_futures=True)
         last_metrics = sampler.stop()
     wall = time.perf_counter() - started
     records, draining = [], []
@@ -9684,6 +9867,66 @@ def _stress_phase(specs: list, cfg: dict, prepared: dict, cancel, phase: str,
             if not future.cancelled():
                 draining.append(future)
     return records, wall, timeline, last_metrics, draining
+
+
+def _stress_submit(pool, second, spec, cfg, prepared, cancel, live):
+    """Start one job on `pool`; returns a future of its record.
+
+    Where the job yields (a full job whose read is done) the rest of it is
+    submitted to `second`, the extract pool, and the returned future resolves
+    when that finishes. A job whose continuation is dropped -- the extract pool
+    shut down on a Stop before an extract worker took it -- is closed, so its
+    `finally` runs, and resolves as cancelled. Both steps run in the workspace
+    current now, which `workspace.bind` would only give the first.
+    """
+    out = Future()
+    steps = _stress_job_steps(spec, cfg, prepared, cancel, live)
+
+    def advance():
+        try:
+            next(steps)
+        except StopIteration as done:
+            return True, done.value
+        return False, None
+
+    advance = workspace.bind(advance)
+
+    def settle(inner, last):
+        if inner.cancelled():
+            steps.close()
+            if not out.done():
+                out.set_result({"status": "cancelled"})
+            return
+        try:
+            finished, rec = inner.result()
+        except BaseException as err:                # noqa: BLE001
+            out.set_exception(err)
+            return
+        if finished:
+            out.set_result(rec)
+        elif last or second is None:
+            # A step yielded where nothing can take the rest of it.
+            steps.close()
+            out.set_result({"status": "cancelled"})
+        else:
+            try:
+                nxt = second.submit(advance)
+            except RuntimeError:
+                # The extract pool is shut down (a Stop): end the job here,
+                # where it sees the cancel and stops at once.
+                try:
+                    finished, rec = advance()
+                except BaseException as err:        # noqa: BLE001
+                    out.set_exception(err)
+                    return
+                if not finished:
+                    steps.close()
+                out.set_result(rec if finished else {"status": "cancelled"})
+                return
+            nxt.add_done_callback(lambda f: settle(f, True))
+
+    pool.submit(advance).add_done_callback(lambda f: settle(f, False))
+    return out
 
 
 def _stress_detail_identity(cfg):
@@ -10691,12 +10934,9 @@ def ocr_stream():
                     except StopIteration as stop:
                         result = stop.value
                         break
-                if image_rechecks_needed(result, fill_missing, validation_retry):
-                    yield json.dumps({"event": "image_recheck", "state": "retrying",
-                                      "message": "Rechecking fields from document images…"}) + "\n"
-                    recheck_fields_from_images(result, pages, collected,
-                                              fill_missing=fill_missing, validation_retry=validation_retry,
-                                              case_id=case["id"] if case else None)
+                if fill_missing or validation_retry:
+                    yield from _recheck_events(result, pages, collected, fill_missing,
+                                               validation_retry, case["id"] if case else None)
                 summary["extracted"] = result
                 # Applied before the event rather than left to `log_run` below:
                 # this is the one path that hands the fields to the browser
