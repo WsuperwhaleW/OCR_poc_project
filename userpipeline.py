@@ -16,7 +16,8 @@ def compact_extraction(value):
             'doc_type_heading', 'doc_type_from', 'doc_type_confidence',
             'pages', 'document', 'documents_found', 'documents_failed',
             'partial', 'error', 'seconds', 'tokens', 'segments', 'split_from',
-            'steps_failed', 'steps_extras', 'model', 'backend', 'url', 'normalization_version')
+            'steps_failed', 'steps_extras', 'model', 'backend', 'url', 'normalization_version',
+            'validation', 'image_filled', 'validation_image_rechecks', 'image_rechecks')
     out = {key: value[key] for key in keys if key in value}
     if isinstance(value.get('item_table'), dict):
         table = value['item_table']
@@ -181,6 +182,31 @@ class EngineAdapter:
                 stream.close()
             if not isinstance(extracted, dict):
                 raise ValueError('ระบบไม่สามารถดึงข้อมูลได้')
+            if self.engine.image_rechecks_needed(extracted, cfg.get('fill_missing', False),
+                                                 cfg.get('validation_retry', False)):
+                images = []
+                try:
+                    store.update(job['id'], progress='กำลังตรวจฟิลด์จากภาพเอกสารอีกครั้ง')
+                    images, _, _, _ = self.engine.prepare_input(
+                        (store.uploads / job['id']).read_bytes(), cfg['detail'],
+                        source={'kind': 'user_upload', 'name': job['filename']}, cache=False)
+                    if len(images) != len(result['pages']):
+                        raise ValueError('จำนวนหน้าของภาพไม่ตรงกับข้อความ OCR')
+                    def progress(event):
+                        label = ('ฟิลด์ที่ขาด' if event.get('kind') == 'missing' else 'ฟิลด์ที่ validation พบปัญหา')
+                        state = 'กำลังอ่านภาพซ้ำ: ' if event.get('state') == 'retrying' else 'ตรวจภาพแล้ว: '
+                        store.update(job['id'], progress=state + label)
+                    self.engine.recheck_fields_from_images(
+                        extracted, images, result['pages'], fill_missing=cfg.get('fill_missing', False),
+                        validation_retry=cfg.get('validation_retry', False), each=progress)
+                    checks = extracted.get('image_rechecks') or {}
+                    if checks.get('error') or any(flag['state'] != 'resolved' for flag in checks.get('flags', [])):
+                        result['warnings'].append('อ่านภาพซ้ำแล้วยังมีฟิลด์ที่ต้องตรวจสอบ กรุณาดูผล validation')
+                except Exception as err:
+                    result['warnings'].append(f'ตรวจฟิลด์จากภาพไม่สำเร็จ เก็บผลเดิมไว้: {err}')
+                finally:
+                    for image in images:
+                        image.close()
             result['extracted'] = compact_extraction(extracted)
             if extracted.get('error'):
                 store.update(job['id'], result=result)

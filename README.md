@@ -1967,6 +1967,23 @@ fields changed and documents accepted/resolved. Retry time and tokens count towa
 The extraction model must support images. This does not alter Extract only or Image to
 extractor mode, or the independent **Fill missing from images** setting.
 
+**Workspace** also offers **Test files** (the benchmark cases), then **Real files**
+from `realData/` when that folder contains documents, followed by the local upload area.
+Selecting a test file loads it on the server for the same full pipeline as an upload;
+the preview and read use the same selected source. A new source replaces the old one.
+Workspace's **Fill missing from images** and **Recheck validation from images** use the
+same Hybrid retries as Stress test. Their switches are remembered independently in this
+browser. The multipart `/api/ocr` and `/api/ocr/stream` APIs accept `fill_missing=1` and
+`validation_retry=1`; omitting them keeps the existing API behavior. OCR-only skips both.
+
+**Settings → Extraction** has the same two options for the User app, saved on the server
+and captured with each new upload batch. Missing-field retries default on; validation
+retries default off. Existing uploaded jobs keep their captured configuration. User jobs
+reload the original into prepared page images only when a retry is needed, without
+adding to the benchmark preview cache. A failed image retry keeps the OCR and existing
+fields available, with a warning. Key-Value and JSON retain the correction audit. Settings
+for User, Workspace and Stress remain independent; changing one does not change another.
+
 **Every new Stress test is saved to History.** Open **Stress test → History** to select a run
 and inspect its Concurrent, Queue, Warm-up, time limit, seed, document strategy,
 selected file IDs, models, servers, sampling and extraction settings, together with its complete report,

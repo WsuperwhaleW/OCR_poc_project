@@ -393,6 +393,13 @@
       if(table.children.length)section.append(table);else if(!collections.length)section.append(node('p','ไม่พบข้อมูลที่ดึงได้','muted'));
       section.append(...collections);
       if(doc.item_table&&typeof doc.item_table==='object')section.append(renderItemTable(doc.item_table));
+      if(doc.image_filled?.length)section.append(node('p','Filled from images: '+doc.image_filled.join(', '),'muted'));
+      for(const retry of doc.validation_image_rechecks||[]){
+        const audit=node('details');
+        audit.append(node('summary','Validation image recheck · '+(retry.accepted?'accepted':'original values kept')),
+          node('pre',JSON.stringify(retry,(key,value)=>key==='chats'?undefined:value,2)));
+        section.append(audit);
+      }
       target.append(section);
     }
   }

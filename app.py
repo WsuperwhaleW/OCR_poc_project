@@ -8109,8 +8109,12 @@ def _stress_fill_missing(result: dict, images, texts, case_id, rec: dict,
         for number, doc, form, keys, ids in plan:
             if cancel.is_set():
                 break
-            numbers = [p for p in (doc.get("pages") or []) if 1 <= p <= len(images)]
-            numbers = numbers or list(range(1, len(images) + 1))
+            numbers = doc.get("pages") or ([] if documents else list(range(1, len(images) + 1)))
+            if (not numbers or any(isinstance(p, bool) or not isinstance(p, int)
+                                   or not 1 <= p <= len(images) for p in numbers)):
+                errors.append(f"doc{number}: page boundaries unavailable; no other document's images were used")
+                continue
+            numbers = list(dict.fromkeys(numbers))
             # This document's own transcript, which validation checks against.
             own = [texts[p - 1] for p in numbers if p <= len(texts)]
             text = join_page_texts(own) if len(own) > 1 else "".join(own)
@@ -8348,6 +8352,68 @@ def _stress_recheck_validation(result, images, texts, case_id, rec, live, job, w
                      f"{remaining} finding(s) remain{note}", state=state)
     window(alert, result, _missing_required(result))
     return alert
+
+
+def image_rechecks_needed(result, fill_missing=False, validation_retry=False):
+    """Decide before loading images; runtime findings only, with no truth lookup."""
+    if not isinstance(result, dict) or result.get("error"):
+        return False
+    return bool((fill_missing and _missing_required(result)) or
+                (validation_retry and any(_validation_bad(doc) for doc in
+                                          result.get("documents") or [result])))
+
+
+class _ImageRecheckProgress:
+    """Adapt the same retries used by Stress to a single-file progress callback."""
+    def __init__(self, each):
+        self.each, self.flags = each, []
+
+    def _emit(self, flag):
+        if self.each:
+            self.each({"event": "image_recheck", **flag})
+
+    def flag(self, kind, job, who, message, **extra):
+        flag = {"id": len(self.flags), "kind": kind, "message": message,
+                "state": extra.get("state", "retrying")}
+        self.flags.append(flag)
+        self._emit(flag)
+        return flag["id"]
+
+    def update_flag(self, alert_id, message=None, **changes):
+        flag = self.flags[alert_id]
+        if message is not None:
+            flag["message"] = message
+        flag.update(changes)
+        self._emit(flag)
+
+    def touch(self, job):
+        pass
+
+
+def recheck_fields_from_images(result, images, texts, *, fill_missing=False,
+                               validation_retry=False, case_id=None, each=None):
+    """Workspace and User pipeline reuse Stress's missing/validation policies.
+
+    Mutates only the fields accepted by those policies. No global toggle or
+    benchmark history is touched; the result carries the decisions and cost.
+    """
+    if not image_rechecks_needed(result, fill_missing, validation_retry):
+        return
+    started = time.perf_counter()
+    live, metrics, cancel = _ImageRecheckProgress(each), {}, MultiCancel()
+    window = lambda *_args: None
+    summary = {"fill_missing": bool(fill_missing), "validation_retry": bool(validation_retry),
+               "metrics": metrics, "flags": live.flags}
+    result["image_rechecks"] = summary
+    try:
+        if fill_missing:
+            _stress_fill_missing(result, images, texts, case_id, metrics, live, 1, "", window, cancel)
+        if validation_retry:
+            _stress_recheck_validation(result, images, texts, case_id, metrics, live, 1, "", window, cancel)
+    except Exception as err:  # optional rescue must retain the original extraction
+        summary["error"] = f"Image recheck failed: {err}"
+    summary["seconds"] = round(time.perf_counter() - started, 3)
+    result["seconds"] = round((result.get("seconds") or 0) + summary["seconds"], 3)
 
 
 class _StressPages:
@@ -10423,6 +10489,10 @@ def ocr():
     if EXTRACT and request.form.get("extract", "1") != "0" and text.strip():
         payload["extracted"] = extract_fields(
             text, case_id=case["id"] if case else None, pages=page_texts)
+        recheck_fields_from_images(payload["extracted"], pages, page_texts,
+                                  fill_missing=request.form.get("fill_missing") == "1",
+                                  validation_retry=request.form.get("validation_retry") == "1",
+                                  case_id=case["id"] if case else None)
     log_run(payload, source)
     return jsonify(text=text, pages=page_texts, **payload)
 
@@ -10465,6 +10535,8 @@ def ocr_stream():
     except ValueError as err:
         return jsonify(error=str(err)), 400
     want_extract = request.form.get("extract", "1") != "0"
+    fill_missing = request.form.get("fill_missing") == "1"
+    validation_retry = request.form.get("validation_retry") == "1"
 
     def page_started(index, page):
         return json.dumps(
@@ -10561,6 +10633,12 @@ def ocr_stream():
                     except StopIteration as stop:
                         result = stop.value
                         break
+                if image_rechecks_needed(result, fill_missing, validation_retry):
+                    yield json.dumps({"event": "image_recheck", "state": "retrying",
+                                      "message": "Rechecking fields from document images…"}) + "\n"
+                    recheck_fields_from_images(result, pages, collected,
+                                              fill_missing=fill_missing, validation_retry=validation_retry,
+                                              case_id=case["id"] if case else None)
                 summary["extracted"] = result
                 # Applied before the event rather than left to `log_run` below:
                 # this is the one path that hands the fields to the browser
