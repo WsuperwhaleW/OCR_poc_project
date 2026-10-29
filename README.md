@@ -1847,6 +1847,24 @@ and the original JSON/export and job history are not changed. The response
 contains `data` (the v7 candidate), `schema_valid`, `schema_errors`, `warnings`,
 `missing_fields` and `unmapped`. `?download=1` downloads only the candidate as a
 `.user-v7.preview.json` file. The UI labels nonconforming candidates **Draft**.
+The shared download toolbar separates the original JSON and User JSON. Inside
+the User JSON tab, **รายงานตรวจสอบ** downloads the complete report via
+`?download=report` as `.user-v7.report.json`, including the candidate, warnings,
+unmapped originals, mapping sources, source job revision and review status.
+
+Schema errors, data warnings and missing optional fields are counted separately.
+`review_status` is `invalid`, `unverified`, `needs_review` or `ready_for_review`;
+the last means ready to compare with the original, not verified extraction
+accuracy. Empty item identifiers and failed extraction checks still need review
+even if JSON Schema accepts the structure. Optional gaps alone do not fail it.
+
+Thai/English column pairs map to User item fields; footer totals stay outside
+the goods rows. Exact OCR labels can supplement buyer/seller names and codes,
+salesperson and total discount without another model call. Explicit PO/GR/RTV
+labels resolve reference kinds, including alphanumeric order numbers. An explicit
+cancellation/replacement statement can add the former invoice with
+`relationType: "REPLACES"`. Unlabelled names and ambiguous values are not guessed;
+OCR supplements are disabled for documents with overlapping or unknown pages.
 
 Mapping keeps numeric IDs as strings, normalizes explicit branch codes and
 dates, and converts unambiguous amounts into numbers. Unknown references use

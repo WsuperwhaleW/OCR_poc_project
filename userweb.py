@@ -265,6 +265,10 @@ def register(application, engine):
     def user_json_preview(job_id):
         job = job_or_404(job_id)
         report = userjson.convert(job)
+        if request.args.get('download') == 'report':
+            output = json.dumps(report, ensure_ascii=False, indent=2, allow_nan=False).encode('utf-8')
+            return send_file(io.BytesIO(output), mimetype='application/json', as_attachment=True,
+                             download_name=Path(job['filename']).stem + '.user-v7.report.json')
         if request.args.get('download') == '1':
             output = json.dumps(report['data'], ensure_ascii=False, indent=2, allow_nan=False).encode('utf-8')
             return send_file(io.BytesIO(output), mimetype='application/json', as_attachment=True,

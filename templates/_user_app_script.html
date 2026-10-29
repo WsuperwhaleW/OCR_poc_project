@@ -473,6 +473,10 @@
     paintTimeline(job);
     message('jobError',job.error,true);$('warnings').replaceChildren(...(result.warnings||[]).map(text=>node('p',text,'message')));
     $('originalLink').href=API+'/jobs/'+job.id+'/file';$('exportLink').href=API+'/jobs/'+job.id+'/export';
+    $('userJsonDownload').href=API+'/jobs/'+encodeURIComponent(job.id)+'/user-json?download=1';
+    $('userJsonDownload').hidden=!result.extracted;
+    $('userJsonReportDownload').href=API+'/jobs/'+encodeURIComponent(job.id)+'/user-json?download=report';
+    $('userJsonReportDownload').hidden=!result.extracted;
     window.renderUserOcr($('textResult'),result.pages,result.text);renderFields(result.extracted);renderDocTypes(result);
     $('jsonResult').textContent=result.extracted?JSON.stringify(result.extracted,null,2):'ยังไม่มีผล Extraction';
     $('jobSettings').textContent=JSON.stringify(job.configuration,null,2);paintBatch();
@@ -483,8 +487,9 @@
     const job=userJsonJob, key=userJsonKey(job);
     if(!job || userJsonLoadedKey===key || userJsonPendingKey===key)return;
     const ticket=++userJsonTicket;userJsonPendingKey=key;userJsonLoadedKey='';
-    $('userJsonDownload').hidden=true;$('userJsonDetails').hidden=true;$('userJsonExtra').hidden=true;$('userJsonRetry').hidden=true;
+    $('userJsonDetails').hidden=true;$('userJsonExtra').hidden=true;$('userJsonRetry').hidden=true;
     $('userJsonCode').textContent='';
+    $('userJsonCounts').textContent='';
     $('userJsonNotice').className='message';
     if(!job.result?.extracted){$('userJsonNotice').textContent='ยังไม่มีผล Extraction ให้แปลง';userJsonPendingKey='';return;}
     $('userJsonNotice').textContent='กำลังแปลงเป็น User JSON…';
@@ -492,16 +497,21 @@
       const report=await api('/jobs/'+encodeURIComponent(job.id)+'/user-json');
       if(ticket!==userJsonTicket || userJsonKey(userJsonJob)!==key)return;
       $('userJsonCode').textContent=JSON.stringify(report.data,null,2);
-      $('userJsonNotice').textContent=report.schema_valid===true?'ผ่านโครงสร้าง schema User v7'
-        :report.schema_valid===false?'Draft · ยังไม่ผ่าน schema User v7':'Draft · ยังไม่ได้ตรวจ schema';
-      if(report.schema_valid!==true)$('userJsonNotice').className='message error';
-      const issues=[...(report.warnings||[]),...(report.schema_errors||[]),
-        ...(report.missing_fields||[]).map(path=>({path,message:'ยังไม่มีข้อมูลฟิลด์นี้'}))];
-      if(issues.length)$('userJsonNotice').textContent+=' · '+issues.length+' รายการให้ตรวจดู';
-      $('userJsonIssues').replaceChildren(...issues.map(issue=>node('li',(issue.path?issue.path+': ':'')+issue.message)));
-      $('userJsonDetails').hidden=!issues.length;
+      const errors=report.schema_errors||[],warnings=[...(report.warnings||[]),...(report.data_issues||[])],
+        missing=(report.missing_fields||[]).map(path=>({path,message:'ยังไม่มีข้อมูลเสริมนี้'}));
+      $('userJsonNotice').textContent=report.schema_valid===true
+        ? warnings.length?'ผ่านโครงสร้าง User v7 · ต้องตรวจข้อมูลก่อนใช้งาน':'ผ่านโครงสร้าง User v7 · พร้อมตรวจเทียบต้นฉบับ'
+        :report.schema_valid===false?'Draft · ยังไม่ผ่านโครงสร้าง User v7':'Draft · ยังไม่ได้ตรวจโครงสร้าง User v7';
+      $('userJsonNotice').className='message'+(report.schema_valid!==true?' error':warnings.length?' warning':'');
+      $('userJsonCounts').textContent='ผิดโครงสร้าง '+errors.length+' · คำเตือน '+warnings.length+' · ข้อมูลเสริมที่ยังไม่มี '+missing.length;
+      for(const [group,list,issues]of [['userJsonSchemaGroup','userJsonSchemaIssues',errors],
+        ['userJsonWarningGroup','userJsonWarnings',warnings],['userJsonMissingGroup','userJsonMissing',missing]]){
+        $(list).replaceChildren(...issues.map(issue=>node('li',(issue.path?issue.path+': ':'')+issue.message)));
+        $(group).hidden=!issues.length;
+      }
+      $('userJsonDetails').hidden=!(errors.length||warnings.length||missing.length);
+      $('userJsonDetails').open=!!(errors.length||warnings.length);
       $('userJsonUnmapped').textContent=JSON.stringify(report.unmapped||[],null,2);$('userJsonExtra').hidden=!report.unmapped?.length;
-      $('userJsonDownload').href=API+'/jobs/'+encodeURIComponent(job.id)+'/user-json?download=1';$('userJsonDownload').hidden=false;
       userJsonLoadedKey=key;
     }catch(err){
       if(ticket!==userJsonTicket || userJsonKey(userJsonJob)!==key)return;

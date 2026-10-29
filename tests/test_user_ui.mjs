@@ -379,15 +379,58 @@ test('User JSON loads only on selection, reports Draft and preserves the legacy 
   const settle=async()=>{for(let i=0;i<15;i++)await Promise.resolve();};
   await settle();await el('historyRows').children[0].children.at(-1).children[0].listeners.click();
   assert.equal(conversions,0);
+  assert.equal(el('exportLink').href,'/ocr/api/user/jobs/job/export');
+  assert.equal(el('userJsonDownload').hidden,false);
+  assert.equal(el('userJsonDownload').href,'/ocr/api/user/jobs/job/user-json?download=1');
+  assert.equal(el('userJsonReportDownload').href,'/ocr/api/user/jobs/job/user-json?download=report');
   const original=el('jsonResult').textContent;
   el('userJsonTab').listeners.click();await settle();assert.equal(el('userJsonRetry').hidden,false);
   fail=false;el('userJsonRetry').listeners.click();await settle();
   assert.equal(el('userJsonResult').hidden,false);assert.equal(el('jsonResult').hidden,true);
   assert.match(el('userJsonNotice').textContent,/Draft/);assert.equal(el('userJsonDetails').hidden,false);
+  assert.equal(el('userJsonCounts').textContent,'ผิดโครงสร้าง 1 · คำเตือน 0 · ข้อมูลเสริมที่ยังไม่มี 1');
+  assert.equal(el('userJsonSchemaGroup').hidden,false);assert.equal(el('userJsonWarningGroup').hidden,true);
+  assert.equal(el('userJsonMissingGroup').hidden,false);
   assert.equal(el('userJsonCode').textContent,JSON.stringify(candidate,null,2));
   assert.equal(el('userJsonDownload').href,'/ocr/api/user/jobs/job/user-json?download=1');
   assert.match(el('userJsonUnmapped').textContent,/มหาชัย/);assert.equal(el('jsonResult').textContent,original);
   el('jsonTab').listeners.click();el('userJsonTab').listeners.click();await settle();assert.equal(conversions,2);
+});
+
+test('both JSON download choices are in the shared toolbar outside the User JSON tab',()=>{
+  const markup=readFileSync(new URL('templates/user.html',root),'utf8');
+  const toolbar=markup.slice(markup.indexOf('class="toolbar result-tools"'),markup.indexOf('id="textResult"'));
+  assert.match(toolbar,/id="exportLink">JSON ปกติ ↓/);
+  assert.match(toolbar,/id="userJsonDownload" hidden>JSON ของ User ↓/);
+  assert.equal((markup.match(/id="userJsonDownload"/g)||[]).length,1);
+});
+
+test('schema-valid User JSON separates data warnings from optional gaps and never claims verified accuracy',async()=>{
+  for(const hasWarning of [false,true]){
+    const {el,document}=dom();
+    const job={id:'review',filename:'review.png',status:'completed',result:{extracted:{fields:{document_number:'INV-1'}}}};
+    const report={data:{documents:[]},schema_valid:true,schema_errors:[],warnings:[],
+      data_issues:hasWarning?[{path:'documents[0].items[0].itemNo',message:'missing item number'}]:[],
+      missing_fields:['documents[0].seller.name'],unmapped:[]};
+    const fetch=async url=>{
+      if(url.endsWith('/settings'))return response({settings:config});
+      if(url.endsWith('/models'))return response({models:{ocr:{},extraction:{}}});
+      if(url.includes('/jobs?'))return response({jobs:[job],counts:{},more:false});
+      if(url.endsWith('/user-json'))return response(report);
+      return response({job});
+    };
+    vm.runInContext(appSource,vm.createContext({document,window:{USER_BASE:'/ocr',renderUserOcr(){},addEventListener(){}},fetch,Date,setTimeout:()=>1,clearTimeout(){}}));
+    await settle();await el('historyRows').children[0].children.at(-1).children[0].listeners.click();
+    el('userJsonTab').listeners.click();await settle();
+    assert.match(el('userJsonNotice').textContent,/ผ่านโครงสร้าง/);
+    assert.match(el('userJsonNotice').textContent,hasWarning?/ต้องตรวจข้อมูลก่อนใช้งาน/:/พร้อมตรวจเทียบต้นฉบับ/);
+    assert.equal(el('userJsonNotice').className,hasWarning?'message warning':'message');
+    assert.equal(el('userJsonCounts').textContent,`ผิดโครงสร้าง 0 · คำเตือน ${hasWarning?1:0} · ข้อมูลเสริมที่ยังไม่มี 1`);
+    assert.equal(el('userJsonWarningGroup').hidden,!hasWarning);
+    assert.equal(el('userJsonMissingGroup').hidden,false);
+    assert.equal(el('userJsonDetails').open,hasWarning);
+    assert.equal(el('userJsonDownload').hidden,false);
+  }
 });
 
 test('a slow User JSON conversion cannot replace a different selected file, including returning to the previous file',async()=>{
@@ -407,6 +450,7 @@ test('a slow User JSON conversion cannot replace a different selected file, incl
   await settle();const open=index=>el('historyRows').children[index].children.at(-1).children[0].listeners.click();
   await open(0);el('userJsonTab').listeners.click();await settle();
   await open(1);await settle();assert.equal(el('userJsonCode').textContent,'');
+  assert.equal(el('userJsonDownload').href,'/ocr/api/user/jobs/b/user-json?download=1');
   await open(0);await settle();release(response(report('b')));await settle();
   assert.equal(el('userJsonCode').textContent,JSON.stringify(report('a').data,null,2));
 });
