@@ -795,10 +795,11 @@ The choice also appears in Fields only, Stress test and Random test's shape lock
 | | Single | Agentic | Hybrid |
 |---|---|---|---|
 | Prompts | whole form | original baseline from `9880dce` | tuned prompts, including latest subtotal/billing rules |
-| Fields per request | all form fields | 1–3 scalar fields, or one list | related groups of 1–3 scalar fields, six party fields, or one list |
+| Fields per request | all form fields | 1–3 scalar fields, or one list | related groups of 1–3 scalar fields, five WHT party fields, six seller/buyer fields, or one list |
 | Invoice steps without extras | 1 | 6 | 4 |
 | Receipt steps without extras | 1 | 6 | 4 |
 | RTV steps without extras | 1 | 5 | 3 |
+| WHT steps without extras | 1 | 10 | 6 |
 | Grounding re-ask | — | per step | per step |
 
 Agentic and Hybrid ask independent steps against the same complete document transcript and
@@ -816,8 +817,20 @@ customer-panel rules on pure billing notes. Both sides need their own evidence;
 a lone tax ID is not assigned by elimination, and a missing seller value must not
 erase an identifiable buyer value, or vice versa. No group adds fields to the form.
 Without extras, an invoice runs four steps, a receipt four, and an RTV return shipment three.
-WHT identity/address requests stay separate; their name instructions exclude explicitly
-designated branch/head-office suffixes while preserving qualifiers in legal names.
+For an explicitly classified WHT certificate, Hybrid combines each party's tax ID,
+name, branch code, branch location and address into one five-field request, capped
+at 600 reply tokens. Payer and payee remain separate requests. Certificate identity,
+income table, totals and dividend option remain separate, giving six requests
+without extras. Existing per-field copy rules are retained for this grouping
+benchmark; the income-table prompt is unchanged. Unknown and non-WHT forms keep
+their current field coverage. Name instructions exclude explicitly designated
+branch/head-office suffixes while preserving qualifiers in legal names.
+
+The RTV joint party question ends with an ownership check: the tax branch must
+belong to the same identified party block as its tax ID. An explicit company tax
+branch takes precedence over a separate operational store code; the other party's
+branch cannot fill the blank. This is a prompt candidate to benchmark on the real
+model, not a post-processing swap or a claim of measured accuracy improvement.
 
 Hybrid branch instructions distinguish labelled tax branch numbers from place names
 and store/customer codes. Printed zeros are valid evidence; missing values must not be
@@ -829,6 +842,10 @@ For targeted Hybrid extraction, historical step ids `total_incl` and `inv_rtv_cn
 complete related totals/payment group. Either `seller` or `buyer` selects the complete
 `parties` group once. Results and detail logs list the group's actual keys under
 `totals`, `payment` or `parties`; old saved logs retain their original steps.
+On WHT, any historical `wht_payer`, `wht_payer_branch` or `wht_payer_address`
+selection requests `wht_payer_party` once; the equivalent payee ids request
+`wht_payee_party`. Missing-field rechecks use these same complete groups, while
+the fill operation still retains previously populated fields.
 
 Hybrid `subtotal` asks for the printed whole-document amount before VAT, including
 both taxable and non-taxable portions, rather than a VAT-base subtotal for just one
@@ -1847,6 +1864,14 @@ and the original JSON/export and job history are not changed. The response
 contains `data` (the v7 candidate), `schema_valid`, `schema_errors`, `warnings`,
 `missing_fields` and `unmapped`. `?download=1` downloads only the candidate as a
 `.user-v7.preview.json` file. The UI labels nonconforming candidates **Draft**.
+The **Hybrid prompts** page in `/user` shows which fields are requested together
+for each document type, including a second type on combined documents. It loads
+`GET /api/user/hybrid-prompts?doc_type=INVOICE` on demand; repeat `doc_type` for
+combined types or use `UNKNOWN` for the base form. Questions come from the same
+Hybrid step and message builders used by extraction, with an OCR placeholder
+instead of an uploaded document. Current extras/schema-first settings are shown;
+opening the page does not run a model or change settings. This is a current
+prompt reference, not the historical prompt of a saved job.
 The shared download toolbar separates the original JSON and User JSON. Inside
 the User JSON tab, **รายงานตรวจสอบ** downloads the complete report via
 `?download=report` as `.user-v7.report.json`, including the candidate, warnings,

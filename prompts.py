@@ -2748,8 +2748,8 @@ def steps_for_types(codes, extras=True, mode="agentic"):
     and none left unasked -- so there is never a step to include "partly".
     Emitting a step with some of its keys removed would mean rewriting its
     skeleton and its rules on the fly. Once selected, related complete steps
-    may be grouped into one request of at most three keys, or six keys for the
-    paired seller/buyer identities.
+    may be grouped into one request of at most three keys, five for a WHT party,
+    or six keys for the paired seller/buyer identities.
 
     `other` owns no scalar key and is included when extras is enabled. Groups
     occupy their first component's position in EXTRACT_STEPS; other steps retain
@@ -2825,6 +2825,45 @@ def steps_for_types(codes, extras=True, mode="agentic"):
                          "Leave only the unsupported or uncertain values empty. "
                          "Return just the six requested keys, without explanations or extra fields.",
                          group_id="parties", max_keys=6, max_tokens=600)
+    if _rtv_return(codes):
+        # Apply the ownership check after both parties' detailed rules, where
+        # the paired question otherwise ended with only the buyer's branch rules.
+        binding = """Final branch ownership check for this goods return:
+- First identify the original supplier receiving the return and the original customer
+  returning it. Bind each party's tax ID, tax branch and branch location to that SAME
+  identified block. A correct tax ID does not permit a branch from the other block.
+- A returner's operational store/site code and a company's tax-registration branch
+  can both be printed in one block. When that block explicitly prints a tax branch
+  designation, including a branch suffix attached to the company name, use that
+  designation rather than an operational store/customer/vendor code preceding the name.
+- A vendor block can print its own all-zero branch designation, including a sequence
+  label that explicitly designates that party's branch. Keep it with that vendor;
+  do not move it to the customer because it resembles head office. Ordinary document
+  and item sequences remain excluded.
+- Branch location is a named branch/site of that party, not its bare company name,
+  its whole address or the other party's name. Leave it empty if no site is named.
+- When a tax ID is present, check that its branch comes from the same party block.
+  An absent tax ID does not invalidate an otherwise explicitly identified party
+  or branch. If a branch cannot be assigned to its party from printed evidence,
+  leave it empty."""
+        table = tuple({**step, "rules": step["rules"] + "\n\n" + binding}
+                      if step["id"] == "parties" else step for step in table)
+    if "WHT_CERTIFICATE" in (codes or ()):
+        # A controlled WHT candidate: combine each party's three requests,
+        # preserving their existing rules and keeping the two parties separate.
+        # Unknown/non-WHT forms retain the baseline rather than silently losing keys.
+        for party in ("payer", "payee"):
+            primary = "wht_" + party
+            table = _group_steps(
+                table, (primary, primary + "_branch", primary + "_address"), primary,
+                f"the {party}'s tax ID, name, branch and address together",
+                f"Read the complete {party} block once and fill its five fields together. "
+                "Keep the tax ID, name, branch code, branch location and address bound to "
+                "that same party using the payer/payee roles below. An absent value does "
+                "not make the other values absent. Never fill a blank from the other "
+                "party. Apply each field's own copy rules independently and return only "
+                "the five requested keys, without prose or additional fields.",
+                group_id=primary + "_party", max_keys=5, max_tokens=600)
     return table
 
 

@@ -61,6 +61,28 @@ def register(application, engine):
         store = service().store
         return jsonify(settings=store.settings(), upload_ceiling_mb=store.initial['max_upload_mb'])
 
+    @application.get('/api/user/hybrid-prompts')
+    def user_hybrid_prompts():
+        """Read-only prompt reference, built by the live Hybrid request helpers."""
+        codes = list(dict.fromkeys(request.args.getlist('doc_type') or ['INVOICE']))
+        if any(code not in engine.prompts.TYPE_NAMES and code != 'UNKNOWN' for code in codes):
+            return jsonify(error='ไม่รู้จักประเภทเอกสารที่เลือก'), 400
+        if 'UNKNOWN' in codes:
+            if len(codes) != 1:
+                return jsonify(error='ไม่สามารถรวม Unknown กับประเภทเอกสารอื่น'), 400
+            codes = []
+        cfg = service().store.settings()
+        framing = engine._framing({'doc_types': codes}, 'hybrid')
+        groups = []
+        for step in engine.prompts.steps_for_types(codes, cfg['extras'], mode='hybrid'):
+            groups.append({'id': step['id'], 'title': step['title'],
+                           'keys': list(step['keys']) or ['other_fields'],
+                           'question': engine._step_question(step, framing, mode='hybrid')})
+        return jsonify(doc_types=codes, mode='hybrid', groups=groups,
+                       prompt_prefix=engine._step_prefix('[ข้อความ OCR ของเอกสาร]'),
+                       settings={'extras': cfg['extras'], 'schema_first': cfg['schema_first']},
+                       has_requirement=any(engine.prompts.DOC_TYPE_FIELDS.get(code) for code in codes))
+
     @application.put('/api/user/settings')
     def user_save_settings():
         body = request.get_json(silent=True)

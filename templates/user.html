@@ -21,7 +21,7 @@
     </div>
   </header>
   <main>
-    <nav aria-label="หน้าหลัก"><button id="navUpload" class="selected">ทดสอบเอกสาร</button><button id="navHistory">ประวัติของทีม</button><button id="navTypes">Doc types</button></nav>
+    <nav aria-label="หน้าหลัก"><button id="navUpload" class="selected">ทดสอบเอกสาร</button><button id="navHistory">ประวัติของทีม</button><button id="navTypes">Doc types</button><button id="navPrompts">Hybrid prompts</button></nav>
     <section id="uploadView">
       <div class="intro"><span class="eyebrow">DOCUMENT WORKSPACE</span><h1>จากเอกสาร สู่ข้อมูล</h1><p class="muted">เลือกไฟล์ แล้วรัน OCR และดึงข้อมูลในครั้งเดียว ผลลัพธ์จะบันทึกให้ทีมดูย้อนหลังโดยอัตโนมัติ</p></div>
       <div class="workspace">
@@ -93,11 +93,30 @@
         <div id="typesContent"></div>
       </div>
     </section>
+    <section id="promptsView" hidden aria-labelledby="promptsTitle">
+      <div class="intro"><span class="eyebrow">HYBRID PROMPTS</span><h1 id="promptsTitle">แต่ละเอกสารถามอะไรพร้อมกันบ้าง</h1><p class="muted">แต่ละกล่องคือหนึ่งคำถามที่ส่งให้โมเดล ฟิลด์ในกล่องเดียวกันจะถูกถามพร้อมกัน</p></div>
+      <div class="card">
+        <div class="prompt-selectors">
+          <label for="promptType">ประเภทเอกสาร<select id="promptType">
+            {% for code, name in user_doc_types.items() %}<option value="{{ code }}"{% if code == 'INVOICE' %} selected{% endif %}>{{ code }} · {{ name }}</option>{% endfor %}
+            <option value="UNKNOWN">Unknown · ไม่ทราบประเภท</option>
+          </select></label>
+          <label for="promptCombinedType">ประเภทร่วมในเอกสารเดียวกัน (ถ้ามี)<select id="promptCombinedType"><option value="">ไม่มีประเภทร่วม</option>
+            {% for code, name in user_doc_types.items() %}<option value="{{ code }}">{{ code }} · {{ name }}</option>{% endfor %}
+          </select></label>
+        </div>
+        <p id="promptsNotice" class="message" role="status"></p>
+        <p class="muted small">แสดงคำถาม Hybrid จาก prompt ชุดปัจจุบัน ใช้ข้อความ “[ข้อความ OCR ของเอกสาร]” แทนเนื้อหาเอกสารจริง ส่วน User JSON เป็นการแปลงผลภายหลัง</p>
+        <p id="promptsError" class="message error" role="alert" hidden></p><button id="promptsRetry" type="button" class="subtle" hidden>ลองโหลดอีกครั้ง</button>
+        <div id="promptsContent"></div>
+      </div>
+    </section>
   </main>
   <footer>OCR <span>ผลลัพธ์จาก AI ควรตรวจสอบกับเอกสารต้นฉบับ</span></footer>
   <script>
     {% include '_doctype_mapping_script.html' %}
     {% include '_user_render_script.html' %}
+    {% include '_user_prompts_script.html' %}
     {% include '_user_app_script.html' %}
   </script>
 </body>

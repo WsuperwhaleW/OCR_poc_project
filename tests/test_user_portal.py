@@ -267,6 +267,38 @@ class UserWebTests(unittest.TestCase):
         self.assertEqual(self.client.post('/api/user/models', json=self.store.settings()).status_code, 200)
         self.assertEqual(self.client.put('/api/user/settings', json=[], headers={'Origin': 'http://elsewhere'}).status_code, 403)
 
+    def test_hybrid_prompt_reference_uses_live_grouping_and_prompts_without_model_calls(self):
+        cfg = self.store.settings()
+        with patch('requests.sessions.Session.request', side_effect=AssertionError('No model/network')):
+            for prefix in ('', '/ocr'):
+                for code in app.prompts.TYPE_NAMES:
+                    response = self.client.get(prefix + '/api/user/hybrid-prompts', query_string={'doc_type': code})
+                    self.assertEqual(response.status_code, 200)
+                    data = response.json
+                    steps = app.prompts.steps_for_types([code], cfg['extras'], mode='hybrid')
+                    framing = app._framing({'doc_types': [code]}, 'hybrid')
+                    self.assertEqual([g['id'] for g in data['groups']], [s['id'] for s in steps])
+                    for group, step in zip(data['groups'], steps):
+                        self.assertEqual(group['keys'], list(step['keys']) or ['other_fields'])
+                        self.assertEqual(group['question'], app._step_question(step, framing, mode='hybrid'))
+                    self.assertEqual(data['prompt_prefix'], app._step_prefix('[ข้อความ OCR ของเอกสาร]'))
+            url = '/api/user/hybrid-prompts'
+            combined = self.client.get(url + '?doc_type=INVOICE&doc_type=TAX_INVOICE').json
+            self.assertEqual(combined['doc_types'], ['INVOICE', 'TAX_INVOICE'])
+            parties = next(g for g in combined['groups'] if g['id'] == 'parties')
+            self.assertEqual(set(parties['keys']), {'seller_tax_id', 'seller_branch', 'seller_branch_location',
+                                                   'buyer_tax_id', 'buyer_branch', 'buyer_branch_location'})
+            unknown = self.client.get(url + '?doc_type=UNKNOWN').json
+            self.assertEqual(unknown['doc_types'], [])
+            self.assertFalse(unknown['has_requirement'])
+            self.assertEqual(self.client.get(url + '?doc_type=BAD').status_code, 400)
+            self.assertEqual(self.client.get(url + '?doc_type=UNKNOWN&doc_type=INVOICE').status_code, 400)
+            self.store.save_settings({'extras': True, 'schema_first': True})
+            updated = self.client.get(url).json
+            self.assertEqual(updated['settings'], {'extras': True, 'schema_first': True})
+            self.assertIn('other_fields', [key for g in updated['groups'] for key in g['keys']])
+        self.assertEqual(self.store.settings()['shape'], cfg['shape'])
+
     def test_user_json_is_read_only_prefix_safe_and_downloads_separately(self):
         stored=self.store.add_job(self.batch(), 'upload_01', 'source.pdf', b'file')
         extracted={'doc_types':['RTV_SHIP_CREDIT'], 'fields':{'document_number':'RTV-1','seller_branch_location':'มหาชัย'}}

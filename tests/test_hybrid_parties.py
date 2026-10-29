@@ -96,6 +96,18 @@ class HybridPartyTests(unittest.TestCase):
         self.assertTrue(all(c.args[1] == 600 for c in chat.call_args_list))
         self.assertEqual(set(chat.call_args.args[3]['properties']), set(VALUES))
 
+    def test_return_branch_ownership_check_is_last_and_does_not_change_invoice_or_agentic(self):
+        rtv = app._steps_for(['parties'], ['RTV_SHIP_CREDIT'], False, mode='hybrid')[0]
+        invoice = app._steps_for(['parties'], ['INVOICE'], False, mode='hybrid')[0]
+        self.assertEqual(set(rtv['keys']), set(invoice['keys']))
+        self.assertEqual(rtv['max_tokens'], invoice['max_tokens'])
+        marker = 'Final branch ownership check for this goods return:'
+        self.assertIn(marker, rtv['rules'])
+        self.assertNotIn(marker, invoice['rules'])
+        self.assertGreater(rtv['rules'].index(marker), rtv['rules'].index('buyer_branch_location'))
+        for step in prompts.steps_for_types(['RTV_SHIP_CREDIT'], False, mode='agentic'):
+            self.assertNotIn(marker, step['rules'])
+
 
 if __name__ == '__main__':
     unittest.main()

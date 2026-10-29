@@ -8,6 +8,7 @@ const root = new URL('../', import.meta.url);
 const page = benchmarkSource();
 const settingsSource = readFileSync(new URL('templates/_user_settings_script.html', root), 'utf8');
 const appSource = readFileSync(new URL('templates/_user_app_script.html', root), 'utf8');
+const promptsSource = readFileSync(new URL('templates/_user_prompts_script.html', root), 'utf8');
 const renderSource = readFileSync(new URL('templates/_user_render_script.html', root), 'utf8');
 const config = {ocr_concurrency:50,extraction_concurrency:64,detail:'medium',shape:'hybrid',
   extras:false,schema_first:false,fill_missing:true,validation_retry:false,loop_guard:true,no_cache:false,user_file_max:0,max_upload_mb:32,
@@ -485,4 +486,53 @@ test('Doc types menu loads the shared schema on demand, retries failures and pre
   el('navUpload').listeners.click();assert.equal(el('typesView').hidden,true);assert.equal(el('uploadView').hidden,false);
   assert.equal(el('selectedFiles').children[0].children[0].textContent,'selected.png');
   el('navTypes').listeners.click();assert.equal(probes,2);
+});
+
+test('Hybrid prompts page loads on demand, retries, shows grouped fields safely and refreshes settings on revisit',async()=>{
+  const {el,document}=dom();let calls=0,fail=true;
+  el('promptType').value='INVOICE';el('promptCombinedType').value='TAX_INVOICE';
+  const data={doc_types:['INVOICE','TAX_INVOICE'],has_requirement:true,settings:{extras:false,schema_first:false},
+    prompt_prefix:'Shared OCR placeholder\n',groups:[{id:'parties',title:'seller and buyer',
+      keys:['seller_tax_id','buyer_tax_id'],question:'<img onerror="bad"> Read both parties'}]};
+  const fetch=async url=>{
+    if(url.includes('/hybrid-prompts?')){calls++;assert.equal(url,'/ocr/api/user/hybrid-prompts?doc_type=INVOICE&doc_type=TAX_INVOICE');
+      return fail?response({error:'try again'},false):response(data);}
+    if(url.endsWith('/settings'))return response({settings:config});
+    if(url.endsWith('/models'))return response({models:{ocr:{},extraction:{}}});
+    return response({jobs:[],counts:{},more:false});
+  };
+  const context=vm.createContext({document,window:{USER_BASE:'/ocr',addEventListener(){}},fetch,Date,setTimeout:()=>1,clearTimeout(){}});
+  vm.runInContext(promptsSource,context);vm.runInContext(appSource,context);await settle();assert.equal(calls,0);
+  el('navPrompts').listeners.click();await settle();
+  assert.equal(el('promptsView').hidden,false);assert.equal(el('typesView').hidden,true);
+  assert.equal(el('promptsRetry').hidden,false);assert.equal(el('promptsError').textContent,'try again');
+  fail=false;await el('promptsRetry').listeners.click();
+  const walk=e=>[e,...e.children.flatMap(walk)],nodes=walk(el('promptsContent'));
+  assert.ok(nodes.some(e=>e.tag==='code'&&e.textContent==='seller_tax_id'));
+  assert.ok(nodes.some(e=>e.tag==='code'&&e.textContent==='buyer_tax_id'));
+  assert.ok(nodes.some(e=>e.tag==='pre'&&e.textContent===data.prompt_prefix+data.groups[0].question));
+  assert.equal(nodes.filter(e=>e.tag==='img').length,0);
+  assert.equal(el('promptsRetry').hidden,true);
+  el('navUpload').listeners.click();assert.equal(el('promptsView').hidden,true);
+  data.settings.extras=true;el('navPrompts').listeners.click();await settle();
+  assert.match(el('promptsNotice').textContent,/ข้อมูลเพิ่มเติม เปิด/);assert.equal(calls,3);
+});
+
+test('a slow prompt response cannot replace a newer type; Unknown clears the combined type',async()=>{
+  const {el,document}=dom();let release;
+  const old=new Promise(resolve=>{release=resolve;});
+  el('promptType').value='INVOICE';el('promptCombinedType').value='';
+  const data=types=>({doc_types:types,has_requirement:false,settings:{extras:false,schema_first:false},prompt_prefix:'',groups:[]});
+  const urls=[];
+  const context=vm.createContext({document,window:{USER_BASE:''},fetch:async url=>{
+    urls.push(url);return url.endsWith('INVOICE')?old:response(data([]));
+  }});
+  vm.runInContext(promptsSource,context);
+  const pending=context.window.loadUserPrompts();
+  el('promptType').value='UNKNOWN';el('promptCombinedType').value='TAX_INVOICE';
+  await el('promptType').listeners.change();
+  assert.equal(el('promptCombinedType').disabled,true);assert.equal(el('promptCombinedType').value,'');
+  assert.equal(urls[1],'/api/user/hybrid-prompts?doc_type=UNKNOWN');
+  release(response(data(['INVOICE'])));await pending;
+  assert.match(el('promptsNotice').textContent,/^Unknown/);
 });

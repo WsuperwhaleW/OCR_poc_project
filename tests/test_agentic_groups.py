@@ -44,7 +44,8 @@ class GroupSelectionTests(unittest.TestCase):
                     expected.add('other_fields')
                 self.assertEqual(set(keys), expected, combo)
                 self.assertEqual(len(keys), len(set(keys)), combo)
-                self.assertTrue(all(len(s['keys']) <= (6 if s['id'] == 'parties' else 3)
+                limits = {'parties': 6, 'wht_payer_party': 5, 'wht_payee_party': 5}
+                self.assertTrue(all(len(s['keys']) <= limits.get(s['id'], 3)
                                     for s in table), combo)
                 for step in table:
                     requested = {step.get('request_aliases', {}).get(k, k) for k in step['keys']}

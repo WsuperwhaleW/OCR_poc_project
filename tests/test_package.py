@@ -25,7 +25,7 @@ class DeploymentPackageTests(unittest.TestCase):
                     local = module.split('.')[0] + '.py'
                     if (package.BASE / local).is_file():
                         self.assertIn(local, picked, f'{name} imports missing module {local}')
-        for name in ('templates/_user_style.html', 'templates/_user_app_script.html',
+        for name in ('templates/_user_style.html', 'templates/_user_app_script.html', 'templates/_user_prompts_script.html',
                      'templates/_user_settings_script.html', 'templates/_workspace_session.html'):
             self.assertIn(name, picked)
         self.assertFalse(any(name.startswith(('logs/', '.work/', 'outputs/')) for name in picked))

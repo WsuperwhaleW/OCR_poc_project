@@ -246,14 +246,16 @@
   }
   function view(page){
     const name=typeof page==='boolean'?(page?'history':'upload'):page;
-    for(const [key,id] of [['upload','navUpload'],['history','navHistory'],['types','navTypes']]){
+    for(const [key,id] of [['upload','navUpload'],['history','navHistory'],['types','navTypes'],['prompts','navPrompts']]){
       $(key+'View').hidden=name!==key;$(id).classList.toggle('selected',name===key);$(id).setAttribute('aria-pressed',String(name===key));
     }
     if(name==='types')loadTypes();
+    if(name==='prompts')window.loadUserPrompts?.(fieldLabels);
   }
   $('navUpload').addEventListener('click',()=>view(false));
   $('navHistory').addEventListener('click',()=>{view(true);loadHistory();});
   $('navTypes').addEventListener('click',()=>view('types'));
+  $('navPrompts').addEventListener('click',()=>view('prompts'));
   $('typesRetry').addEventListener('click',()=>loadTypes());
   const fieldName=key=>fieldLabels[key]||key.replace(/_/g,' ');
   const typeName=name=>(name||'').replace(/^(an|a|the) /,'');

@@ -32,7 +32,7 @@ class VariantTests(unittest.TestCase):
 
     def test_only_hybrid_groups_related_steps(self):
         for code, original, hybrid in [('INVOICE', 6, 4), ('RECEIPT', 6, 4),
-                                       ('RTV_SHIP_CREDIT', 5, 3)]:
+                                       ('RTV_SHIP_CREDIT', 5, 3), ('WHT_CERTIFICATE', 10, 6)]:
             a = prompts.steps_for_types([code], extras=False, mode='agentic')
             h = prompts.steps_for_types([code], extras=False, mode='hybrid')
             self.assertEqual((len(a), len(h)), (original, hybrid))
