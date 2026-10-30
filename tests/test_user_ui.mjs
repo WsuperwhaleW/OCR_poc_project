@@ -559,8 +559,11 @@ test('User prompt editor saves only field guidance and explicit extra destinatio
   const find=text=>walk(el('promptsContent')).find(e=>e.textContent===text);
   const textarea=()=>walk(el('promptsContent')).find(e=>e['aria-label']==='วิธีอ่าน document_number');
   assert.equal(textarea().readOnly,true);
+  assert.equal(textarea().value,'Use its own printed number');
+  assert.equal(textarea().placeholder,undefined);
+  assert.equal(el('promptSave').disabled,true);
   find('แก้ไขวิธีอ่านตัวแปร').listeners.click();assert.equal(textarea().readOnly,false);
-  textarea().value='Read the top right invoice number';textarea().listeners.input();
+  textarea().value+=' — top right';textarea().listeners.input();
   el('promptType').value='WHT_CERTIFICATE';await el('promptType').listeners.change();
   assert.equal(el('promptType').value,'INVOICE');assert.equal(el('promptSave').disabled,false);
   find('+ เพิ่มก้อนคำถาม').listeners.click();
@@ -572,7 +575,7 @@ test('User prompt editor saves only field guidance and explicit extra destinatio
   await el('promptSave').listeners.click();
   assert.equal(calls[0].url,'/ocr/api/user/hybrid-prompts');assert.equal(calls[0].headers['X-OCR-User-Token'],'proof');
   const sent=JSON.parse(calls[0].body);
-  assert.equal(sent.revision,0);assert.equal(sent.value.instructions.document_number,'Read the top right invoice number');
+  assert.equal(sent.revision,0);assert.equal(sent.value.instructions.document_number,'Use its own printed number — top right');
   assert.equal(sent.value.extra_groups[0].fields[0].target,'seller.name');
   assert.equal(el('promptSave').disabled,true);assert.match(el('promptEditStatus').textContent,/เวอร์ชัน 1/);
   find('แก้ไขวิธีอ่านตัวแปร').listeners.click();textarea().value='conflicting edit';textarea().listeners.input();
@@ -580,8 +583,10 @@ test('User prompt editor saves only field guidance and explicit extra destinatio
   assert.equal(el('promptsError').hidden,false);assert.equal(textarea().value,'conflicting edit');
   assert.equal(el('promptSave').disabled,false);
   el('promptReset').listeners.click();
-  assert.equal(textarea().value,'');assert.equal(document.querySelector('.prompt-extra-groups').children.length,0);
+  assert.equal(textarea().value,'Use its own printed number');assert.equal(document.querySelector('.prompt-extra-groups').children.length,0);
   assert.equal(el('promptSave').disabled,false);
+  conflict=false;await el('promptSave').listeners.click();
+  assert.deepEqual(JSON.parse(calls.at(-1).body).value.instructions,{});
 });
 
 test('result-page prompt edits retry extraction in place and keep the same request ID after a failed response',async()=>{

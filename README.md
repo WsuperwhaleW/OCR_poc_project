@@ -718,7 +718,16 @@ Opening it preserves selected files and any active results.
 
 The **Hybrid prompts** menu lets the team edit per-field reading guidance for
 the five types with dedicated field profiles. Existing variable names, response
-shapes and built-in copy/role rules stay locked. **+ เพิ่มก้อนคำถาม** adds a separate
+shapes and shared copy/role rules stay locked. The field editor shows exact
+English rule slices from the live Hybrid prompt, not translated summaries.
+Editing a field replaces its original slice once; it does not append a second,
+possibly contradictory description. Joint rules explicitly defining two keys
+are linked in the editor and changed together. Unclaimed shared instructions
+remain read-only and are visible separately and in the full prompt preview.
+Viewing or saving unchanged defaults preserves the original prompt exactly;
+resetting removes overrides and restores those same visible English rules.
+Previously saved user wording is retained without automatic translation.
+**+ เพิ่มก้อนคำถาม** adds a separate
 request with custom key/guidance pairs; every custom key must choose a supported
 document-level destination in User JSON v7. Scalar destinations include party
 names/codes and monetary fields; array destinations include complete `items`,

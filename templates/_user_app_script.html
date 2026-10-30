@@ -593,10 +593,12 @@
       else if(!changes.length)card.append(node('p','รันซ้ำโดยไม่ได้เปลี่ยน Prompt จากผลต้นทาง','muted small'));
       for(const change of changes){
         const block=node('div',undefined,'prompt-history-change');
-        block.append(node('h4',(actions[change.action]||change.action)+' '+(entities[change.entity]||change.entity)+' · '+change.doc_type+(change.key?' · '+change.key:'')+(change.group_title?' · '+change.group_title:'')));
+        const changedKeys=change.linked_keys?.length?change.linked_keys.join(' + '):change.key;
+        block.append(node('h4',(actions[change.action]||change.action)+' '+(entities[change.entity]||change.entity)+' · '+change.doc_type+(changedKeys?' · '+changedKeys:'')+(change.group_title?' · '+change.group_title:'')));
         const values=node('div',undefined,'prompt-history-values');
         for(const [key,label]of [['before','ก่อนแก้'],['after','หลังแก้']]){
-          const column=node('div');column.append(node('strong',label),node('pre',promptChangeValue(change[key],change.entity),'prompt-history-value'));values.append(column);
+          const value=Object.hasOwn(change,'effective_'+key)?change['effective_'+key]:change[key];
+          const column=node('div');column.append(node('strong',label),node('pre',promptChangeValue(value,change.entity),'prompt-history-value'));values.append(column);
         }
         block.append(values);card.append(block);
       }

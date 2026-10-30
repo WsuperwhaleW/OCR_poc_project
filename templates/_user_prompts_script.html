@@ -62,15 +62,24 @@
   function coreEditor(card,definition){
     const editor=node('div',undefined,'prompt-kv-editor'),areas=[];
     for(const field of definition.fields){
+      const editKey=field.edit_key||field.key,linkedKeys=field.linked_keys||[field.key];
       const row=node('div',undefined,'prompt-kv-row');
       row.append(node('code',field.key),node('span',field.target?'→ documents[].'+field.target:'คงรูปแบบและการแปลงเดิมของระบบ','muted small'));
-      const area=input('textarea',state.value.instructions[field.key]||'',value=>{state.value.instructions[field.key]=value;});
-      area.placeholder=field.default_instruction;area.maxLength=4000;area.rows=3;area.readOnly=true;
-      area.setAttribute('aria-label','วิธีอ่าน '+field.key);areas.push(area);row.append(area);editor.append(row);
+      if(linkedKeys.length>1)row.append(node('span','คำอธิบายเดียวกันใช้กับ '+linkedKeys.join(' + ')+' · แก้แล้วอัปเดตทั้งสองช่อง','muted small'));
+      const original=field.default_instruction||'';
+      const current=Object.hasOwn(state.value.instructions,editKey)?state.value.instructions[editKey]:original;
+      const area=input('textarea',current,value=>{
+        for(const key of linkedKeys)delete state.value.instructions[key];
+        if(value.trim()!==original.trim())state.value.instructions[editKey]=value;
+        for(const item of areas)if(item.key===editKey&&item.area!==area)item.area.value=value;
+      });
+      area.maxLength=4000;area.rows=3;area.readOnly=true;
+      area.setAttribute('aria-label','วิธีอ่าน '+field.key);areas.push({key:editKey,area});row.append(area);editor.append(row);
     }
     const edit=node('button','แก้ไขวิธีอ่านตัวแปร');edit.type='button';edit.className='subtle';
-    edit.addEventListener('click',()=>{if(saving)return;for(const area of areas)area.readOnly=false;areas[0]?.focus?.();edit.textContent='แก้ไขได้ · บันทึกด้วยปุ่มด้านบน';});
+    edit.addEventListener('click',()=>{if(saving)return;for(const item of areas)item.area.readOnly=false;areas[0]?.area.focus?.();edit.textContent='แก้ไขได้ · บันทึกด้วยปุ่มด้านบน';});
     card.append(editor,edit);
+    if(definition.shared_rules){const shared=node('details');shared.append(node('summary','กฎร่วมของก้อนนี้ (อ่านอย่างเดียว)'),node('pre',definition.shared_rules,'prompt-code'));card.append(shared);}
   }
   function paintExtras(){
     const target=$('promptsContent').querySelector?.('.prompt-extra-groups')||document.querySelector('.prompt-extra-groups');if(!target||!state)return;target.replaceChildren();

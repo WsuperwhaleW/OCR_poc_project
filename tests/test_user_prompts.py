@@ -156,6 +156,72 @@ class UserPromptTests(unittest.TestCase):
             'doc_type': 'INVOICE_TAX_INVOICE', 'revision': 0, 'value': value()})
         self.assertEqual(response.status_code, 400)
 
+    def test_editor_defaults_are_exact_english_slices_of_the_unchanged_live_questions(self):
+        with patch('requests.sessions.Session.request', side_effect=AssertionError('No inference')):
+            for code, keys in prompts.DOC_TYPE_FIELDS.items():
+                if not keys:
+                    continue
+                data = self.client.get('/api/user/hybrid-prompts?doc_type=' + code).json
+                originals = prompts.steps_for_types([code], False, mode='hybrid')
+                framing = app._framing({'doc_types': [code]}, 'hybrid')
+                for group, definition, step in zip(data['groups'], data['editor']['groups'], originals):
+                    actual = app._step_question(step, framing, mode='hybrid')
+                    self.assertEqual(group['question'], actual)
+                    for field in definition['fields']:
+                        self.assertTrue(field['default_instruction'])
+                        self.assertLessEqual(len(field['default_instruction']), 4000)
+                        self.assertEqual(actual.count(field['default_instruction']), 1,
+                                         (code, field['key']))
+                # Posting the visible English defaults is a no-op, even for
+                # linked variables. It must not add tokens or duplicate rules.
+                defaults = {f['key']: f['default_instruction'] for g in data['editor']['groups'] for f in g['fields']}
+                response = self.client.put('/api/user/hybrid-prompts', json={'doc_type': code, 'revision': 0,
+                    'value': {'instructions': defaults, 'extra_groups': []}})
+                self.assertEqual(response.status_code, 200, response.data)
+                self.assertEqual(response.json['profile']['value']['instructions'], {})
+                updated = self.client.get('/api/user/hybrid-prompts?doc_type=' + code).json
+                self.assertEqual([g['question'] for g in updated['groups']], [g['question'] for g in data['groups']])
+
+    def test_edit_replaces_only_the_displayed_slice_in_preview_and_actual_worker(self):
+        original = prompts.steps_for_types(['INVOICE'], False, mode='hybrid')[0]
+        before = copy.deepcopy(original)
+        field = next(f for f in userprompts.view('INVOICE', {'value': {'instructions': {}, 'extra_groups': []}})[0]['fields']
+                     if f['key'] == 'document_number')
+        edited = '- document_number: read ONLY the invoice number under the upper-right Invoice No. caption.'
+        response = self.save({'instructions': {'document_number': edited}, 'extra_groups': []})
+        self.assertEqual(response.status_code, 200)
+        cfg = {**self.store.settings(), 'prompt_profiles': self.store.prompt_profiles()}
+        with EngineAdapter(app).context('exact_rule_replacement', cfg):
+            step = app.steps_for_types(['INVOICE'], False, mode='hybrid')[0]
+            self.assertEqual(step['rules'], original['rules'].replace(field['default_instruction'], edited, 1))
+            actual = app._step_question(step, app._framing({'doc_types': ['INVOICE']}, 'hybrid'), mode='hybrid')
+        preview = self.client.get('/api/user/hybrid-prompts?doc_type=INVOICE').json
+        self.assertEqual(preview['groups'][0]['question'], actual)
+        self.assertEqual(actual.count(edited), 1)
+        self.assertNotIn(field['default_instruction'], actual)
+        self.assertNotIn('User field reading guidance', actual)
+        self.assertEqual(prompts.steps_for_types(['INVOICE'], False, mode='hybrid')[0], before)
+
+    def test_joint_rules_are_edited_once_and_audit_captures_real_default_text(self):
+        initial = self.client.get('/api/user/hybrid-prompts?doc_type=WHT_CERTIFICATE').json
+        fields = initial['editor']['groups'][0]['fields']
+        certificate = next(f for f in fields if f['key'] == 'certificate_no')
+        self.assertEqual(certificate['edit_key'], 'book_no')
+        self.assertEqual(certificate['linked_keys'], ['book_no', 'certificate_no'])
+        edited = '- book_no and certificate_no: copy the two numbers from the Book and Certificate captions.'
+        response = self.client.put('/api/user/hybrid-prompts', json={'doc_type': 'WHT_CERTIFICATE', 'revision': 0,
+            'value': {'instructions': {'certificate_no': edited}, 'extra_groups': []}})
+        self.assertEqual(response.status_code, 200, response.data)
+        value = response.json['profile']['value']
+        self.assertEqual(value['instructions'], {'book_no': edited})
+        data = self.client.get('/api/user/hybrid-prompts?doc_type=WHT_CERTIFICATE').json
+        self.assertEqual(data['groups'][0]['question'].count(edited), 1)
+        self.assertNotIn(certificate['default_instruction'], data['groups'][0]['question'])
+        audit = userprompts.changes_between({}, {'WHT_CERTIFICATE': {'value': value}})
+        self.assertEqual(audit[0]['effective_before'], certificate['default_instruction'])
+        self.assertEqual(audit[0]['effective_after'], edited)
+        self.assertEqual(audit[0]['linked_keys'], ['book_no', 'certificate_no'])
+
 
 if __name__ == '__main__':
     unittest.main()

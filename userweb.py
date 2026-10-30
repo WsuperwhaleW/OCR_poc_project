@@ -89,7 +89,7 @@ def register(application, engine):
                        prompt_prefix=engine._step_prefix('[ข้อความ OCR ของเอกสาร]'),
                        settings={'extras': cfg['extras'], 'schema_first': cfg['schema_first']},
                        has_requirement=any(engine.prompts.DOC_TYPE_FIELDS.get(code) for code in codes),
-                       editor=({'revision': profile['revision'], 'value': profile['value'],
+                       editor=({'revision': profile['revision'], 'value': userprompts.editor_value(editable, profile['value']),
                                'groups': userprompts.view(editable, profile),
                                'targets': [{'path': path, 'type': schema.get('type')} for path, schema in userprompts.targets().items()]}
                                if editable else None))

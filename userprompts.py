@@ -17,20 +17,57 @@ CORE_TARGETS = {
     'buyer_tax_id': 'buyer.taxId', 'buyer_branch': 'buyer.branchCode',
     'subtotal': 'amountExcludeVat', 'vat_total': 'vatAmount', 'amount_incl_vat': 'amountIncludeVat',
 }
-GUIDANCE = {
-    'document_type': 'อ่านชื่อประเภทที่พิมพ์เป็นหัวเอกสาร คงข้อความและภาษาเดิม',
-    'document_number': 'อ่านเลขที่ของเอกสารฉบับนี้จากหัวข้อเลขที่ ไม่ใช้เลขเอกสารอ้างอิง',
-    'issue_date': 'อ่านวันที่ออกเอกสารฉบับนี้ ไม่ใช้วันครบกำหนดหรือวันที่ชำระ',
-    'po_gr_rtv_number': 'อ่านเลข PO / GR / RTV ที่เอกสารอ้างอิงตามหัวข้อที่พิมพ์',
-    'subtotal': 'อ่านยอดรวมก่อน VAT ของทั้งเอกสาร ไม่คำนวณยอดที่ไม่มีพิมพ์ไว้',
-    'vat_total': 'อ่านจำนวนภาษีมูลค่าเพิ่ม ไม่ใช่อัตราร้อยละหรือภาษีหัก ณ ที่จ่าย',
-    'amount_incl_vat': 'อ่านยอดรวม VAT ที่พิมพ์ไว้ ไม่คำนวณแทน',
-    'income_items': 'อ่านตารางเงินได้ตามคอลัมน์เดิม โดยรักษาการจับคู่ค่าในแต่ละแถว',
-}
-for party, label in (('seller', 'ผู้ขาย'), ('buyer', 'ผู้ซื้อ'), ('payer', 'ผู้จ่ายเงิน'), ('payee', 'ผู้รับเงิน')):
-    for suffix, hint in (('tax_id', 'เลขผู้เสียภาษี'), ('branch', 'รหัสสาขาภาษี'),
-                         ('branch_location', 'ชื่อหรือตำแหน่งสาขา'), ('name', 'ชื่อ'), ('address', 'ที่อยู่')):
-        GUIDANCE[f'{party}_{suffix}'] = f'อ่าน{hint}ของ{label}จากบล็อกของฝ่ายนั้น ไม่ยืมค่าจากอีกฝ่าย'
+def rule_units(step):
+    """Lossless editable slices of the actual English rules, never summaries.
+
+    Unclaimed text remains shared/read-only. A rule explicitly defining two
+    variables is one unit; both fields point to that same editable slice.
+    """
+    rules, keys = step['rules'], tuple(step['keys'])
+    if len(keys) == 1:
+        return [{'keys': keys, 'start': 0, 'end': len(rules), 'text': rules}]
+    pattern = re.compile(r'(?m)^[-*][ \t]+(' + '|'.join(re.escape(k) for k in keys) + r')\b')
+    matches = list(pattern.finditer(rules))
+    units = []
+    for index, match in enumerate(matches):
+        end = matches[index + 1].start() if index + 1 < len(matches) else len(rules)
+        paragraph_end = rules.find('\n\n', match.start(), end)
+        if paragraph_end >= 0:
+            end = paragraph_end
+        text = rules[match.start():end].rstrip()
+        units.append({'keys': (match.group(1),), 'start': match.start(), 'end': match.start() + len(text), 'text': text})
+    for key in keys:
+        if any(key in unit['keys'] for unit in units):
+            continue
+        owners = [u for u in units if re.search(r'\b' + re.escape(key) + r'\b', u['text'])]
+        if len(owners) != 1:
+            raise ValueError('ยังไม่สามารถแยกข้อกำหนดจริงของตัวแปร ' + key)
+        owners[0]['keys'] += (key,)
+    if {k for unit in units for k in unit['keys']} != set(keys):
+        raise ValueError('ข้อกำหนดตัวแปรไม่ตรงกับก้อนคำถาม')
+    return units
+
+
+def unit_override(unit, instructions):
+    entries = [(key, instructions[key]) for key in unit['keys'] if instructions.get(key)]
+    distinct = list(dict.fromkeys(text for _, text in entries))
+    if not distinct:
+        return None
+    if len(distinct) == 1:
+        return distinct[0]
+    # Older profiles could store different notes for variables sharing a rule.
+    # Preserve all of them explicitly rather than silently discarding a note.
+    return '\n\n'.join(key + ': ' + text for key, text in entries)
+
+
+def editor_value(code, value):
+    instructions = {}
+    for step in base_steps(code):
+        for unit in rule_units(step):
+            override = unit_override(unit, value.get('instructions', {}))
+            if override and override.strip() != unit['text'].strip():
+                instructions[unit['keys'][0]] = override
+    return {'instructions': instructions, 'extra_groups': copy.deepcopy(value.get('extra_groups', []))}
 
 
 @lru_cache(maxsize=1)
@@ -121,23 +158,34 @@ def validate(code, body):
             seen.add(key); destinations.add(target)
             normalized_fields.append(dict(key=key, instruction=instruction.strip(), target=target))
         normalized.append(dict(id=gid, title=title.strip(), fields=normalized_fields))
-    return {'instructions': clean, 'extra_groups': normalized}
+    value = editor_value(code, {'instructions': clean, 'extra_groups': normalized})
+    if any(len(text) > 4000 for text in value['instructions'].values()):
+        raise ValueError('คำอธิบายร่วมของตัวแปรต้องไม่เกิน 4,000 ตัวอักษร')
+    return value
 
 
 def compile_steps(table, codes, profiles):
-    """Apply field-level additions, preserving all protected extraction rules."""
+    """Replace exact field rule slices; shared rules and built-in tables stay intact."""
     selected = [(code, profiles[code]) for code in prompts.TYPE_SPECIFICITY if code in (codes or ()) and code in profiles]
     if not selected:
         return table
     result = []
     for step in table:
-        notes = []
-        for code, profile in selected:
-            for key in step['keys']:
-                note = profile['value']['instructions'].get(key)
-                if note:
-                    notes.append(f'- {key} ({code}): {note}')
-        result.append({**step, 'rules': step['rules'] + '\n\nUser field reading guidance (keep the JSON shape and copy-only rules):\n' + '\n'.join(notes)} if notes else step)
+        edits = [(code, profile['value'].get('instructions', {})) for code, profile in selected
+                 if set(step['keys']) & set(profile['value'].get('instructions', {}))]
+        if not edits:
+            result.append(step)
+            continue
+        rules = step['rules']
+        for unit in reversed(rule_units(step)):
+            replacements = list(dict.fromkeys(unit_override(unit, notes) for _, notes in edits))
+            replacements = [text for text in replacements if text is not None]
+            if not replacements:
+                continue
+            if len(replacements) != 1:
+                raise ValueError('คำอธิบายตัวแปรของประเภทร่วมขัดกัน: ' + ', '.join(unit['keys']))
+            rules = rules[:unit['start']] + replacements[0] + rules[unit['end']:]
+        result.append({**step, 'rules': rules})
     seen_keys = set()
     seen_targets = {CORE_TARGETS[k] for step in table for k in step['keys'] if k in CORE_TARGETS}
     for code, profile in selected:
@@ -160,11 +208,24 @@ def compile_steps(table, codes, profiles):
 
 
 def view(code, profile):
-    value = profile['value']
-    return [{'id': s['id'], 'title': s['title'], 'fields': [
-        {'key': k, 'instruction': value['instructions'].get(k, ''),
-         'default_instruction': GUIDANCE.get(k, 'อ่านค่าที่พิมพ์ตรงกับตัวแปรนี้ตามกฎระบบ ไม่เดาหรือคำนวณแทน'),
-         'target': CORE_TARGETS.get(k, '')} for k in s['keys']]} for s in base_steps(code)]
+    value = editor_value(code, profile['value'])
+    groups = []
+    for step in base_steps(code):
+        units = rule_units(step)
+        fields = []
+        for key in step['keys']:
+            unit = next(unit for unit in units if key in unit['keys'])
+            anchor = unit['keys'][0]
+            fields.append({'key': key, 'edit_key': anchor, 'linked_keys': list(unit['keys']),
+                           'instruction': value['instructions'].get(anchor, ''),
+                           'default_instruction': unit['text'], 'target': CORE_TARGETS.get(key, '')})
+        pieces, position = [], 0
+        for unit in units:
+            pieces.append(step['rules'][position:unit['start']]);position = unit['end']
+        pieces.append(step['rules'][position:])
+        groups.append({'id': step['id'], 'title': step['title'], 'fields': fields,
+                       'shared_rules': ''.join(pieces).strip()})
+    return groups
 
 
 def changes_between(before, after):
@@ -178,10 +239,18 @@ def changes_between(before, after):
     for code in prompts.TYPE_SPECIFICITY:
         old = (before.get(code) or {}).get('value') or {}
         new = (after.get(code) or {}).get('value') or {}
+        if old or new:
+            old, new = editor_value(code, old), editor_value(code, new)
         instructions_before, instructions_after = old.get('instructions', {}), new.get('instructions', {})
         for key in sorted(set(instructions_before) | set(instructions_after)):
+            length = len(changes)
             changed('instruction', 'instructions.' + key, instructions_before.get(key), instructions_after.get(key),
                     doc_type=code, key=key)
+            if len(changes) > length:
+                unit = next(unit for step in base_steps(code) for unit in rule_units(step) if key in unit['keys'])
+                changes[-1].update(linked_keys=list(unit['keys']),
+                    effective_before=instructions_before.get(key, unit['text']),
+                    effective_after=instructions_after.get(key, unit['text']))
         old_list, new_list = old.get('extra_groups', []), new.get('extra_groups', [])
         old_groups, new_groups = {g['id']: g for g in old_list}, {g['id']: g for g in new_list}
         for gid in dict.fromkeys([g['id'] for g in old_list + new_list]):
