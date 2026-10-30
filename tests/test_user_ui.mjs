@@ -589,6 +589,35 @@ test('User prompt editor saves only field guidance and explicit extra destinatio
   assert.deepEqual(JSON.parse(calls.at(-1).body).value.instructions,{});
 });
 
+test('linked prompt variables share one editor and collapsing or viewing keeps the saved field mapping',async()=>{
+  const {el,document}=dom(),walk=e=>[e,...e.children.flatMap(walk)];
+  document.querySelector=()=>null;
+  el('promptsContent').querySelector=selector=>walk(el('promptsContent')).find(e=>e.className===selector.slice(1));
+  const shared='- book_no and certificate_no: read both printed captions.';
+  const data={doc_types:['WHT_CERTIFICATE'],settings:{extras:false,schema_first:false},prompt_prefix:'OCR\n',
+    groups:[{id:'wht_certificate',title:'Certificate numbering',keys:['book_no','certificate_no'],question:'Locked question'}],
+    editor:{revision:0,value:{instructions:{},extra_groups:[]},targets:[],groups:[{id:'wht_certificate',fields:
+      ['book_no','certificate_no'].map(key=>({key,edit_key:'book_no',linked_keys:['book_no','certificate_no'],default_instruction:shared,target:''}))}]}};
+  const requests=[];
+  const context=vm.createContext({document,window:{USER_BASE:'',USER_API_TOKEN:'proof'},fetch:async(url,options={})=>{
+    if(options.method==='PUT'){const body=JSON.parse(options.body);requests.push(body);data.editor.value=body.value;data.editor.revision++;return response({profile:{revision:data.editor.revision}});}
+    return response(clean(data));
+  }});
+  el('promptType').value='WHT_CERTIFICATE';vm.runInContext(promptsSource,context);await context.window.loadUserPrompts();
+  const nodes=()=>walk(el('promptsContent')),find=text=>nodes().find(e=>e.textContent===text);
+  assert.equal(nodes().filter(e=>e.tag==='textarea').length,1);
+  assert.ok(nodes().some(e=>e.tag==='code'&&e.textContent==='book_no'));
+  assert.ok(nodes().some(e=>e.tag==='code'&&e.textContent==='certificate_no'));
+  find('แก้ไขวิธีอ่านตัวแปร').listeners.click();
+  const area=nodes().find(e=>e.tag==='textarea');area.value=shared+' Keep the two numbers separate.';area.listeners.input();
+  find('พับทุกก้อน').listeners.click();assert.equal(nodes().find(e=>e.className==='prompt-group-disclosure').open,false);
+  find('เปิดทุกก้อน').listeners.click();find('กลับโหมดดู').listeners.click();
+  assert.equal(area.readOnly,true);assert.equal(area.value,shared+' Keep the two numbers separate.');
+  await el('promptSave').listeners.click();
+  assert.deepEqual(requests[0].value.instructions,{book_no:shared+' Keep the two numbers separate.'});
+  assert.equal(nodes().filter(e=>e.tag==='textarea').length,1);
+});
+
 test('result-page prompt edits retry extraction in place and keep the same request ID after a failed response',async()=>{
   const {el,document}=dom(),walk=e=>[e,...e.children.flatMap(walk)];
   document.querySelector=()=>null;

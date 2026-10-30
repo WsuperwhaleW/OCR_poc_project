@@ -727,6 +727,11 @@ remain read-only and are visible separately and in the full prompt preview.
 Viewing or saving unchanged defaults preserves the original prompt exactly;
 resetting removes overrides and restores those same visible English rules.
 Previously saved user wording is retained without automatic translation.
+The workbench presents expandable question blocks with a separate reading and
+editing mode. Linked variables share one visible editor, while field labels,
+JSON destinations and changed/default indicators sit beside the full rule text.
+Text areas grow with their content, including on narrow screens. Expand/collapse
+and display changes do not alter the stored profile or the model's prompt.
 **+ เพิ่มก้อนคำถาม** adds a separate
 request with custom key/guidance pairs; every custom key must choose a supported
 document-level destination in User JSON v7. Scalar destinations include party

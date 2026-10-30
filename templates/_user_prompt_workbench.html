@@ -8,13 +8,15 @@
           <p class="muted small">ระบบจำแนกจากหัวเอกสารโดยอัตโนมัติ แล้วรวมฟิลด์ของประเภทที่พบและตัดฟิลด์ซ้ำ จึงไม่จำเป็นต้องถามซ้ำตามจำนวนประเภท หากประเภทที่พบยังไม่มีชุดฟิลด์เฉพาะเลย จะใช้ชุดฟิลด์พื้นฐาน การจำแนกประเภทได้ยังไม่ได้หมายความว่า tune การดึงข้อมูลของประเภทนั้นแล้ว</p>
         </details>
         <p id="{{ prompt_id_prefix }}promptsNotice" class="message" role="status"></p>
-        <div id="{{ prompt_id_prefix }}promptEditorTools" class="toolbar" hidden>
+        <div id="{{ prompt_id_prefix }}promptEditorTools" class="toolbar prompt-editor-actions" hidden>
           <button id="{{ prompt_id_prefix }}promptSave" type="button" class="primary" disabled>{% if prompt_id_prefix %}รัน Extraction ใหม่{% else %}บันทึกสำหรับงานใหม่{% endif %}</button>
           <button id="{{ prompt_id_prefix }}promptDiscard" type="button" class="subtle" disabled>ยกเลิกการแก้ไข</button>
           <button id="{{ prompt_id_prefix }}promptReset" type="button" class="subtle">คืนค่าเริ่มต้น</button>
           <span id="{{ prompt_id_prefix }}promptEditStatus" class="muted small" role="status"></span>
         </div>
+        <details class="prompt-guide"><summary>วิธีแก้ไขและขอบเขตการบันทึก</summary>
         <p class="muted small">คำอธิบายเริ่มต้นดึงจากข้อความอังกฤษที่ใช้ถามจริง แก้แล้วแทนส่วนเดิมของตัวแปรนั้น กฎร่วมและรูปแบบ JSON ถูกล็อกไว้ ก้อนใหม่ต้องเลือกช่องปลายทางใน User JSON {% if prompt_id_prefix %}แก้เพื่อรัน Extraction ทั้งไฟล์จาก OCR เดิม ใช้เฉพาะผลรอบใหม่ และเก็บผลก่อนหน้าไว้{% else %}บันทึกแล้วใช้ร่วมกันทั้งทีมกับงาน Hybrid ที่ส่งใหม่ งานเดิมเก็บเวอร์ชันเดิมไว้{% endif %}</p>
         <p class="muted small">แสดงเฉพาะประเภทที่มีชุดฟิลด์และคำถามเฉพาะตรงตัว ใช้ข้อความ “[ข้อความ OCR ของเอกสาร]” แทนเนื้อหาเอกสารจริง ส่วน User JSON เป็นการแปลงผลภายหลัง</p>
+        </details>
         <p id="{{ prompt_id_prefix }}promptsError" class="message error" role="alert" hidden></p><button id="{{ prompt_id_prefix }}promptsRetry" type="button" class="subtle" hidden>ลองโหลดอีกครั้ง</button>
         <div id="{{ prompt_id_prefix }}promptsContent"></div>
