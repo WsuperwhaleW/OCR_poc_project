@@ -50,6 +50,7 @@ FILES = [
     "userjson.py",
     "userpipeline.py",
     "userstore.py",
+    "userprompts.py",
     "priority.py",
     "extractionlog.py",
     "scoring.py",

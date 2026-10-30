@@ -29,6 +29,8 @@
   let previewKey = null, previewObjectUrl = null, previewId = null, imageZoom = 100;
   let typesLoaded = false, typesLoading = false;
   let userJsonJob=null, userJsonLoadedKey='', userJsonPendingKey='', userJsonTicket=0, resultMode='text';
+  let promptPanelJobId=null;
+  let promptHistoryTicket=0,promptHistoryLoadedKey='';
   $('homeLink').href = window.USER_BASE + '/user';
   function node(tag, text, className) {
     const element = document.createElement(tag); if (text !== undefined) element.textContent = text;
@@ -200,6 +202,9 @@
   $('dropzone').addEventListener('drop',event=>{event.preventDefault();$('dropzone').classList.remove('drag');choose(event.dataTransfer.files);});
   $('uploadForm').addEventListener('submit',async event=>{
     event.preventDefault();if(sending||!files.length||!settings)return;
+    if(window.hasUserJobPromptEdits?.()){
+      message('uploadMessage','กรุณารัน Extraction ใหม่หรือยกเลิก Prompt ที่แก้ไว้ก่อนเริ่มไฟล์ใหม่',true);return;
+    }
     if(settings.user_file_max && files.length>settings.user_file_max){message('uploadMessage','เลือกได้สูงสุด '+settings.user_file_max+' ไฟล์ต่อครั้ง',true);return;}
     const tooLarge=files.find(file=>file.size>settings.max_upload_mb*1024*1024);
     if(tooLarge){message('uploadMessage',tooLarge.name+' ใหญ่เกิน '+settings.max_upload_mb+' MB',true);return;}
@@ -446,7 +451,9 @@
   function paintTimeline(job) {
     const stages=[['queued_ocr','รอคิว OCR'],['ocr','อ่านเอกสาร'],['queued_extraction','รอคิว Extraction'],['extraction','ดึงข้อมูล']];
     const timeline=job.timeline||{}, timing=job.result?.timing||{}, rows=[];
+    $('stageTimeline').classList.toggle('extraction-only',!!job.retry_of);
     for(const [key,label] of stages){
+      if(job.retry_of&&(key==='ocr'||key==='queued_ocr'))continue;
       const saved=timeline[key], running=job.status===key, row=node('li',undefined,saved?.outcome?'stage-error':running?'current':saved?.finished_at?'done':'');
       const head=node('div',undefined,'stage-heading');head.append(node('strong',label));
       let seconds=saved?.started_at ? ((saved.finished_at?Date.parse(saved.finished_at):Date.now())-Date.parse(saved.started_at))/1000 : timing[key];
@@ -482,6 +489,15 @@
     window.renderUserOcr($('textResult'),result.pages,result.text);renderFields(result.extracted);renderDocTypes(result);
     $('jsonResult').textContent=result.extracted?JSON.stringify(result.extracted,null,2):'ยังไม่มีผล Extraction';
     $('jobSettings').textContent=JSON.stringify(job.configuration,null,2);paintBatch();
+    if(promptPanelJobId!==job.id){
+      promptPanelJobId=job.id;$('jobPromptWorkbench').hidden=true;window.clearUserJobPrompts?.();
+      promptHistoryTicket++;promptHistoryLoadedKey='';$('jobPromptHistory').open=false;
+      $('jobPromptHistoryContent').replaceChildren();message('jobPromptHistoryMessage','');
+    }
+    $('jobPromptPanel').hidden=!result.text||!result.pages?.length;
+    $('jobPromptOpen').disabled=active(job.status);
+    $('jobRetryOrigin').hidden=!job.retry_of;
+    if($('jobPromptHistory').open)loadPromptHistory();
     if(resultMode==='userJson')loadUserJson();
   }
   function userJsonKey(job){return job ? [job.id,job.updated_at,job.status].join('|') : '';}
@@ -523,6 +539,9 @@
   $('userJsonRetry').addEventListener('click',()=>{userJsonLoadedKey='';loadUserJson();});
   async function openJob(id,show=true){
     if(pageClosed)return;
+    if(selected!==id&&window.hasUserJobPromptEdits?.()){
+      message('jobPromptMessage','ยังมี Prompt ที่แก้ไว้ กรุณารัน Extraction ใหม่หรือยกเลิกการแก้ไขก่อนเปิดงานอื่น',true);return;
+    }
     clearTimeout(detailTimer);const ticket=++detailRequest,changed=selected!==id;selected=id;
     if(show){
       view(false);message('jobLoadMessage','กำลังโหลดผลลัพธ์…');$('jobLoadRetry').hidden=true;
@@ -540,6 +559,62 @@
     }
   }
   $('jobLoadRetry').addEventListener('click',()=>{if(selected)openJob(selected);});
+  $('jobPromptOpen').addEventListener('click',async()=>{
+    if(!userJsonJob||active(userJsonJob.status))return;
+    $('jobPromptWorkbench').hidden=false;message('jobPromptMessage','');
+    await window.loadUserJobPrompts?.(userJsonJob,fieldLabels,async retried=>{
+      if(!batchJobs.some(job=>job.id===retried.id))batchJobs.push(retried);
+      $('jobPromptWorkbench').hidden=true;await openJob(retried.id);loadHistory();pollBatch();
+    });
+  });
+  $('jobPreviousResult').addEventListener('click',()=>{if(userJsonJob?.retry_of)openJob(userJsonJob.retry_of);});
+  function promptChangeValue(value,entity){
+    if(value===null||value===undefined)return entity==='instruction'?'(ใช้คำอธิบายระบบเดิม)':'(ยังไม่มี)';
+    return typeof value==='string'?value:JSON.stringify(value,null,2);
+  }
+  function renderPromptHistory(attempts,current){
+    const target=$('jobPromptHistoryContent');target.replaceChildren();
+    const names=new Map(attempts.map((attempt,index)=>[attempt.id,index?'Retry '+index:'ผลเริ่มต้น']));
+    const actions={added:'เพิ่ม',changed:'แก้ไข',removed:'ลบ'};
+    const entities={instruction:'คำอธิบายตัวแปร',group:'ก้อนคำถาม',group_title:'ชื่อก้อนคำถาม',field:'ตัวแปรเพิ่มเติม',
+      field_instruction:'วิธีอ่านตัวแปรเพิ่มเติม',destination:'ช่องปลายทาง User JSON',field_order:'ลำดับตัวแปร',group_order:'ลำดับก้อนคำถาม'};
+    for(const attempt of attempts){
+      const card=node('section',undefined,'prompt-history-attempt'+(attempt.id===current?' current':''));
+      const header=node('div',undefined,'toolbar');
+      header.append(node('strong',names.get(attempt.id)+(attempt.id===current?' · ผลที่เปิดอยู่':'')),node('span',labels[attempt.status]||attempt.status,'badge '+attempt.status));
+      const open=node('button','เปิดผลรอบนี้','subtle');open.type='button';open.addEventListener('click',()=>openJob(attempt.id));header.append(open);card.append(header);
+      card.append(node('p','เวลาส่งรัน: '+dates(attempt.created_at),'muted small'));
+      if(attempt.retry_of){
+        const previous=node('button','ต้นทาง: '+(names.get(attempt.retry_of)||'ผลก่อนหน้า'),'subtle');previous.type='button';previous.addEventListener('click',()=>openJob(attempt.retry_of));card.append(previous);
+      }
+      const audit=attempt.prompt_changes||{},changes=audit.changes||[];
+      if(!attempt.retry_of)card.append(node('p','ผลตั้งต้นก่อน Retry','muted small'));
+      else if(!audit.version)card.append(node('p','รอบเก่านี้ยังไม่มีบันทึกรายละเอียดการแก้ Prompt','muted small'));
+      else if(!changes.length)card.append(node('p','รันซ้ำโดยไม่ได้เปลี่ยน Prompt จากผลต้นทาง','muted small'));
+      for(const change of changes){
+        const block=node('div',undefined,'prompt-history-change');
+        block.append(node('h4',(actions[change.action]||change.action)+' '+(entities[change.entity]||change.entity)+' · '+change.doc_type+(change.key?' · '+change.key:'')+(change.group_title?' · '+change.group_title:'')));
+        const values=node('div',undefined,'prompt-history-values');
+        for(const [key,label]of [['before','ก่อนแก้'],['after','หลังแก้']]){
+          const column=node('div');column.append(node('strong',label),node('pre',promptChangeValue(change[key],change.entity),'prompt-history-value'));values.append(column);
+        }
+        block.append(values);card.append(block);
+      }
+      target.append(card);
+    }
+  }
+  async function loadPromptHistory(force=false){
+    const job=userJsonJob;if(!job)return;
+    const key=job.id+'|'+job.status;if(!force&&promptHistoryLoadedKey===key)return;
+    const ticket=++promptHistoryTicket;message('jobPromptHistoryMessage','กำลังโหลดประวัติการแก้ Prompt…');
+    try{
+      const data=await api('/jobs/'+job.id+'/retry-history');
+      if(ticket!==promptHistoryTicket||userJsonJob?.id!==job.id)return;
+      renderPromptHistory(data.attempts||[],job.id);promptHistoryLoadedKey=key;message('jobPromptHistoryMessage','');
+    }catch(err){if(ticket===promptHistoryTicket&&userJsonJob?.id===job.id)message('jobPromptHistoryMessage',err.message,true);}
+  }
+  $('jobPromptHistory').addEventListener('toggle',()=>{if($('jobPromptHistory').open)loadPromptHistory();});
+  $('jobPromptHistoryRefresh').addEventListener('click',()=>loadPromptHistory(true));
   async function loadHistory(append=false){
     if(historyLoading||pageClosed)return;historyLoading=true;clearTimeout(historyTimer);
     try{
@@ -547,7 +622,9 @@
       $('historyRows').replaceChildren(...jobs.map(job=>{const row=node('tr'),status=node('td'),action=node('td');
         status.append(node('span',labels[job.status]||job.status,'badge '+job.status));
         const button=node('button','เปิดผลลัพธ์ →','subtle');button.addEventListener('click',()=>openJob(job.id));action.append(button);
-        row.append(node('td',job.filename),node('td',dates(job.created_at)),status,action);return row;}));
+        const filename=node('td',job.filename);
+        if(job.retry_of)filename.append(node('div','Extraction ใหม่ · ใช้ OCR เดิม','muted small'));
+        row.append(filename,node('td',dates(job.created_at)),status,action);return row;}));
       $('emptyHistory').hidden=!!jobs.length;$('moreHistory').hidden=!more;
       const counts=body.counts||{};$('queueSummary').textContent='OCR '+(counts.ocr||0)+' ไฟล์ · Extraction '+(counts.extraction||0)+' ไฟล์ · รอ '+((counts.queued_ocr||0)+(counts.queued_extraction||0))+' ไฟล์';
       message('historyError','');

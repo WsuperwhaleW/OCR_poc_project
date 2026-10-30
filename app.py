@@ -51,6 +51,7 @@ import machine
 import monitor
 import normalise
 import prompts
+import userprompts
 import randomtest
 import runlog
 import runhistory
@@ -85,7 +86,7 @@ from prompts import (
     items_for_types,
     mandatory_for_types,
     mandatory_items_for_types,
-    steps_for_types,
+    steps_for_types as _builtin_steps_for_types,
     EXTRACT_STEP_PREFIX,
     EXTRACT_STEP_RETRY,
     EXTRACT_STEP_TASK,
@@ -2853,6 +2854,13 @@ def _extract_once(text: str, status: dict, schema, form: dict) -> dict:
 # step, not across them. Which is why the mode is a switch rather than the default.
 
 
+def steps_for_types(codes, extras=True, mode="agentic"):
+    table = _builtin_steps_for_types(codes, extras, mode=mode)
+    if mode == 'hybrid' and workspace.get('user_pipeline', False):
+        return userprompts.compile_steps(table, codes, workspace.get('user_prompt_profiles', {}))
+    return table
+
+
 def _step_schema(step: dict) -> dict:
     """The JSON schema for one step: its own keys and nothing else.
 
@@ -2862,6 +2870,9 @@ def _step_schema(step: dict) -> dict:
     skeleton stays the readable statement of what is asked for; this is the same
     thing in the form the sampler can be held to.
     """
+    if step.get('custom_schema'):
+        return {'type': 'object', 'properties': step['custom_schema'],
+                'required': list(step['keys']), 'additionalProperties': False}
     return {
         "type": "object",
         "properties": {
@@ -3016,7 +3027,9 @@ def _step_values(step: dict, raw: str, salvage: bool = False):
                 raise ValueError(f"reply is missing requested field: {requested}")
             continue
         value = parsed[requested]
-        if key in ("line_items", INCOME_ITEMS_KEY, "other_fields"):
+        if key in step.get('custom_targets', {}) and isinstance(value, list):
+            values[key] = value
+        elif key in ("line_items", INCOME_ITEMS_KEY, "other_fields"):
             values[key] = [v for v in value if isinstance(v, dict)] \
                 if isinstance(value, list) else []
         elif isinstance(value, (str, int, float)):
@@ -3311,6 +3324,8 @@ def _run_step_asked(step: dict, prefix: str, question: str, status: dict, source
         # results, grounding and scoring keep the canonical application fields.
         requested_values = {step.get("request_aliases", {}).get(k, k): v
                             for k, v in attempt_values.items()}
+        if step.get('custom_targets'):
+            requested_values = userprompts.leaf_values(requested_values)
         bad = _ungrounded_in(requested_values, source)
         # Keep whichever attempt invents least. A retry that comes back worse
         # than the answer it was meant to correct is not an improvement, and
@@ -3432,8 +3447,13 @@ def _extract_agentic(text: str, status: dict, form: dict, only=None, mode="agent
                                         status, source)
             yield done(index + 1, step, outcomes[index][0])
 
-    for record, values, step_replies, tokens in outcomes:
-        fields.update(values)
+    custom_fields, custom_targets = {}, {}
+    for step, (record, values, step_replies, tokens) in zip(table, outcomes):
+        if step.get('custom_targets'):
+            custom_fields.update(values)
+            custom_targets.update(step['custom_targets'])
+        else:
+            fields.update(values)
         replies.extend(step_replies)
         total_tokens += tokens
         steps.append(record)
@@ -3461,6 +3481,9 @@ def _extract_agentic(text: str, status: dict, form: dict, only=None, mode="agent
     ordered = {k: fields[k] for k in grounding.SCALAR_FIELDS if k in fields}
     for key in ("line_items", "other_fields"):
         ordered[key] = fields.get(key) or []
+    if custom_fields:
+        ordered['other_fields'] = list(ordered['other_fields']) + [
+            {'label': key, 'value': value} for key, value in userprompts.leaf_values(custom_fields).items()]
     # Only where this form asked for the table. Unlike the two above, which have
     # been on every result since before the schema was per type, an empty
     # `income_items` on an invoice would be a claim that a table was asked for
@@ -3471,6 +3494,10 @@ def _extract_agentic(text: str, status: dict, form: dict, only=None, mode="agent
 
     return {
         "fields": ordered,
+        **({'custom_fields': custom_fields, 'user_prompt_mappings': custom_targets,
+            'user_prompt_revisions': {code: profile['revision'] for code, profile in
+                workspace.get('user_prompt_profiles', {}).items() if code in form['doc_types']}}
+           if custom_targets else {}),
         "raw": "\n\n".join(replies),
         # On the result as well as on the event that announced the steps: a
         # result read back from a sweep, or from the blocking endpoint, never

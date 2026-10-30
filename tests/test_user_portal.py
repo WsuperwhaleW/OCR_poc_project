@@ -36,6 +36,9 @@ class FakeAdapter:
     def snapshot(self, cfg):
         return {**cfg, 'models': self.models(cfg)}
 
+    def snapshot_extraction(self, cfg):
+        return {**cfg, 'models': {**cfg.get('models', {}), 'extraction': self.models(cfg)['extraction']}}
+
     def ocr(self, job, store):
         return {'text': 'Page one', 'pages': ['Page one'], 'warnings': []}
 

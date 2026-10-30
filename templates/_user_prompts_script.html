@@ -1,7 +1,8 @@
 /* On-demand reference for the questions built by the live Hybrid engine. */
 (() => {
-  const $=id=>document.getElementById(id);
-  let ticket=0, labels={};
+ function createEditor(prefix='', options={}){
+  const $=id=>document.getElementById(prefix+id);
+  let ticket=0, labels={}, state=null, dirty=false, saving=false, drafts={}, retryId=null, jobData=null;
   function node(tag,text,className){
     const element=document.createElement(tag);
     if(text!==undefined)element.textContent=text;
@@ -10,9 +11,11 @@
   }
   function render(data){
     const target=$('promptsContent'),groups=data.groups||[];
+    target.replaceChildren();
     $('promptsNotice').textContent=(data.doc_types.length?data.doc_types.join(' + '):'Unknown')+
       ' · Hybrid · '+groups.length+' คำถาม · ข้อมูลเพิ่มเติม '+(data.settings.extras?'เปิด':'ปิด')+
       ' · Schema-first '+(data.settings.schema_first?'เปิด':'ปิด');
+    if(options.job&&data.preview_document)$('promptsNotice').textContent+=' · ตัวอย่างเอกสาร '+data.preview_document+' · การแก้ใช้กับทุกเอกสารประเภทนี้ในไฟล์';
     const shared=node('details',undefined,'prompt-shared');
     shared.append(node('summary','ข้อความนำที่ใช้ร่วมกันทุกคำถาม'),node('pre',data.prompt_prefix,'prompt-code'));
     target.append(shared);
@@ -28,19 +31,109 @@
       details.append(node('summary','อ่านข้อความที่ใช้ถามโมเดล'),node('pre',data.prompt_prefix+group.question,'prompt-code'));
       card.append(details);cards.append(card);
     }
-    target.append(cards);
+    if(data.editor){
+      state={data,code:data.editable_type||data.doc_types[0],revision:data.editor.revision,value:JSON.parse(JSON.stringify(data.editor.value))};
+      for(const card of cards.children){
+        const index=Array.from(cards.children).indexOf(card),group=groups[index];
+        const definition=data.editor.groups.find(item=>item.id===group.id);
+        if(definition)coreEditor(card,definition);
+        else if(group.id.startsWith('user_'))card.hidden=true;
+      }
+      const extras=node('section',undefined,'prompt-extra-section');
+      extras.append(node('h2','คำถามเพิ่มเติม'),node('p','แต่ละก้อนจะถามแยกอีกหนึ่งครั้ง และส่งค่าลงช่อง User JSON ที่เลือก','muted small'));
+      const add=node('button','+ เพิ่มก้อนคำถาม');add.type='button';add.addEventListener('click',()=>{
+        if(saving)return;
+        state.value.extra_groups.push({id:'extra_'+Date.now().toString(36)+'_'+Math.random().toString(36).slice(2,7),title:'คำถามเพิ่มเติม',fields:[{key:'',instruction:'',target:''}]});
+        markDirty();paintExtras();
+      });extras.append(add,node('div',undefined,'prompt-extra-groups'));target.append(cards,extras);paintExtras();
+      $('promptEditorTools').hidden=false;syncTools();
+    }else{state=null;$('promptEditorTools').hidden=!options.job;target.append(cards);if(options.job)syncTools();}
   }
-  async function load(fieldLabels){
+  function syncTools(){
+    $('promptsContent').inert=saving;
+    $('promptSave').disabled=(!dirty&&!options.job)||saving;$('promptDiscard').disabled=!dirty||saving;
+    $('promptReset').disabled=saving||!state;$('promptType').disabled=saving||!!(options.job&&!jobData?.available_types.length);
+    $('promptEditStatus').textContent=saving?'กำลังบันทึก…':dirty?'ยังไม่ได้บันทึก':'เวอร์ชัน '+(state?.revision||0)+(options.job?' · ใช้เฉพาะผลรอบใหม่':' · ใช้กับงาน Hybrid ใหม่');
+  }
+  function markDirty(){dirty=true;retryId=null;if(options.job&&state)drafts[state.code]=JSON.parse(JSON.stringify(state.value));syncTools();}
+  function input(tag,value,handler){const field=node(tag);field.value=value;
+    field.addEventListener('input',()=>{if(saving)return;handler(field.value);markDirty();});return field;}
+  function labeled(text,field){const label=node('label');label.append(node('span',text),field);return label;}
+  function coreEditor(card,definition){
+    const editor=node('div',undefined,'prompt-kv-editor'),areas=[];
+    for(const field of definition.fields){
+      const row=node('div',undefined,'prompt-kv-row');
+      row.append(node('code',field.key),node('span',field.target?'→ documents[].'+field.target:'คงรูปแบบและการแปลงเดิมของระบบ','muted small'));
+      const area=input('textarea',state.value.instructions[field.key]||'',value=>{state.value.instructions[field.key]=value;});
+      area.placeholder=field.default_instruction;area.maxLength=4000;area.rows=3;area.readOnly=true;
+      area.setAttribute('aria-label','วิธีอ่าน '+field.key);areas.push(area);row.append(area);editor.append(row);
+    }
+    const edit=node('button','แก้ไขวิธีอ่านตัวแปร');edit.type='button';edit.className='subtle';
+    edit.addEventListener('click',()=>{if(saving)return;for(const area of areas)area.readOnly=false;areas[0]?.focus?.();edit.textContent='แก้ไขได้ · บันทึกด้วยปุ่มด้านบน';});
+    card.append(editor,edit);
+  }
+  function paintExtras(){
+    const target=$('promptsContent').querySelector?.('.prompt-extra-groups')||document.querySelector('.prompt-extra-groups');if(!target||!state)return;target.replaceChildren();
+    const occupied=new Set(state.data.editor.groups.flatMap(group=>group.fields.map(f=>f.target).filter(Boolean)));
+    for(const group of state.value.extra_groups){
+      const card=node('section',undefined,'prompt-group prompt-custom-group');
+      const title=input('input',group.title,value=>group.title=value);title.maxLength=120;
+      card.append(labeled('ชื่อก้อนคำถาม',title));
+      for(const [index,field]of group.fields.entries()){
+        const row=node('div',undefined,'prompt-kv-row');
+        const key=input('input',field.key,value=>field.key=value);key.placeholder='เช่น supplier_name';key.maxLength=64;
+        const instruction=input('textarea',field.instruction,value=>field.instruction=value);instruction.placeholder='บอกว่าให้อ่านอะไร จากหัวข้อหรือบริเวณไหน';instruction.maxLength=4000;instruction.rows=3;
+        const destination=node('select');destination.append(node('option','เลือกช่องปลายทางใน User JSON'));destination.children[0].value='';
+        for(const option of state.data.editor.targets){const entry=node('option','documents[].'+option.path+' · '+option.type);entry.value=option.path;entry.disabled=occupied.has(option.path);destination.append(entry);}
+        destination.value=field.target;destination.addEventListener('change',()=>{if(saving)return;field.target=destination.value;markDirty();});
+        row.append(labeled('ตัวแปร (key)',key),labeled('วิธีอ่านจากเอกสาร',instruction),labeled('ช่องปลายทาง User JSON',destination));
+        const remove=node('button','ลบตัวแปร');remove.type='button';remove.className='subtle';remove.addEventListener('click',()=>{if(saving)return;group.fields.splice(index,1);markDirty();paintExtras();});row.append(remove);card.append(row);
+      }
+      const add=node('button','+ เพิ่มตัวแปร');add.type='button';add.disabled=group.fields.length>=8;
+      add.addEventListener('click',()=>{if(saving)return;group.fields.push({key:'',instruction:'',target:''});markDirty();paintExtras();});
+      const remove=node('button','ลบก้อนนี้');remove.type='button';remove.className='subtle';remove.addEventListener('click',()=>{if(saving)return;state.value.extra_groups=state.value.extra_groups.filter(item=>item!==group);markDirty();paintExtras();});
+      card.append(add,remove);target.append(card);
+      const saved=state.data.groups.find(item=>item.id==='user_'+state.code+'_'+group.id);
+      if(saved){const details=node('details');details.append(node('summary','อ่านข้อความที่บันทึกและใช้ถามโมเดล'),node('pre',state.data.prompt_prefix+saved.question,'prompt-code'));card.append(details);}
+    }
+  }
+  async function save(){
+    if((!state&&!options.job)||(!dirty&&!options.job)||saving)return;saving=true;syncTools();$('promptsError').hidden=true;
+    try{
+      if(options.job){
+        retryId ||= 'retry_'+Date.now().toString(36)+'_'+Math.random().toString(36).slice(2,12);
+        const response=await fetch(window.USER_BASE+'/api/user/jobs/'+encodeURIComponent(options.job().id)+'/retry-extraction',{
+          method:'POST',headers:{'Content-Type':'application/json','X-OCR-User-Token':window.USER_API_TOKEN},body:JSON.stringify({request_id:retryId,prompt_profiles:drafts})});
+        const body=await response.json();if(!response.ok)throw new Error(body.error||'รัน Extraction ใหม่ไม่สำเร็จ');
+        dirty=false;drafts={};retryId=null;saving=false;syncTools();await options.onRetry(body.job);return;
+      }
+      const response=await fetch(window.USER_BASE+'/api/user/hybrid-prompts',{method:'PUT',headers:{'Content-Type':'application/json','X-OCR-User-Token':window.USER_API_TOKEN},body:JSON.stringify({doc_type:state.code,revision:state.revision,value:state.value})});
+      const body=await response.json();if(!response.ok)throw new Error(body.error||'บันทึกไม่สำเร็จ');
+      dirty=false;state.revision=body.profile.revision;saving=false;await load(undefined,true);
+    }catch(err){$('promptsError').textContent=err.message;$('promptsError').hidden=false;}
+    finally{saving=false;syncTools();}
+  }
+  async function load(fieldLabels,force=false){
     if(fieldLabels)labels=fieldLabels;
+    if(saving&&!force)return;
+    if(dirty&&!force&&!options.job){if(state)$('promptType').value=state.code;return;}
     const current=++ticket;
     const primary=$('promptType').value||'INVOICE';
     $('promptsContent').replaceChildren();$('promptsError').hidden=true;$('promptsRetry').hidden=true;
+    $('promptEditorTools').hidden=true;
     $('promptsNotice').textContent='กำลังโหลดคำถาม Hybrid…';
     try{
-      const response=await fetch(window.USER_BASE+'/api/user/hybrid-prompts?doc_type='+encodeURIComponent(primary));
+      const url=options.job?'/api/user/jobs/'+encodeURIComponent(options.job().id)+'/prompts'+(jobData?.available_types.length?'?doc_type='+encodeURIComponent(primary):''):'/api/user/hybrid-prompts?doc_type='+encodeURIComponent(primary);
+      const response=await fetch(window.USER_BASE+url);
       const data=await response.json();
       if(!response.ok)throw new Error(data.error||'โหลดคำถามไม่สำเร็จ ('+response.status+')');
       if(current!==ticket)return;
+      if(options.job){
+        jobData=data;
+        for(const option of $('promptType').options||[])option.disabled=!data.available_types.includes(option.value);
+        $('promptType').value=data.editable_type||'';
+        if(data.editor&&drafts[data.editable_type])data.editor.value=JSON.parse(JSON.stringify(drafts[data.editable_type]));
+      }
       render(data);
     }catch(err){
       if(current!==ticket)return;
@@ -48,7 +141,22 @@
       $('promptsError').hidden=false;$('promptsRetry').hidden=false;
     }
   }
-  window.loadUserPrompts=load;
+
   $('promptType').addEventListener('change',()=>load());
   $('promptsRetry').addEventListener('click',()=>load());
+  $('promptSave').addEventListener('click',save);
+  $('promptDiscard').addEventListener('click',()=>{if(saving)return;dirty=false;drafts={};retryId=null;load(undefined,true);});
+  $('promptReset').addEventListener('click',()=>{if(!state||saving)return;state.data.editor.value={instructions:{},extra_groups:[]};render(state.data);markDirty();});
+  window.addEventListener?.('beforeunload',event=>{if(dirty){event.preventDefault();event.returnValue='';}});
+  return {load,dirty:()=>dirty||saving,clear(){ticket++;dirty=false;saving=false;drafts={};state=null;jobData=null;retryId=null;}};
+ }
+ const main=createEditor();window.loadUserPrompts=main.load;
+ let source=null,onRetry=null;
+ const inline=createEditor('job_', {job:()=>source,onRetry:job=>onRetry?.(job)});
+ window.hasUserJobPromptEdits=()=>inline.dirty();
+ window.loadUserJobPrompts=(job,labels,callback)=>{
+   if(source?.id!==job.id){inline.clear();source=job;}
+   onRetry=callback;return inline.load(labels);
+ };
+ window.clearUserJobPrompts=()=>{inline.clear();source=null;};
 })();

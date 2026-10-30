@@ -12,6 +12,7 @@ from flask import abort, jsonify, render_template, request, send_file
 
 import config
 import userjson
+import userprompts
 from userpipeline import EngineAdapter, UserService
 from userstore import UserStore, validate_settings
 
@@ -66,21 +67,46 @@ def register(application, engine):
 
     @application.get('/api/user/hybrid-prompts')
     def user_hybrid_prompts():
-        """Read-only prompt reference, built by the live Hybrid request helpers."""
+        """Current User prompt reference and the editable field-level profile."""
         codes = list(dict.fromkeys(request.args.getlist('doc_type') or ['INVOICE']))
         if any(not engine.prompts.DOC_TYPE_FIELDS.get(code) for code in codes):
             return jsonify(error='ประเภทนี้ยังไม่มีชุดคำถาม Hybrid เฉพาะ'), 400
         cfg = service().store.settings()
+        return jsonify(prompt_reference(codes, cfg, service().store.prompt_profiles(), codes[0]))
+
+    def prompt_reference(codes, cfg, profiles, editable=None):
+        selected = editable or (codes[0] if codes else 'UNKNOWN')
+        profile = profiles.get(selected, {'revision': 0, 'value': {'instructions': {}, 'extra_groups': []}})
+        table = userprompts.compile_steps(engine.prompts.steps_for_types(codes, cfg['extras'], mode='hybrid'),
+                                          codes, profiles)
         framing = engine._framing({'doc_types': codes}, 'hybrid')
         groups = []
-        for step in engine.prompts.steps_for_types(codes, cfg['extras'], mode='hybrid'):
+        for step in table:
             groups.append({'id': step['id'], 'title': step['title'],
                            'keys': list(step['keys']) or ['other_fields'],
                            'question': engine._step_question(step, framing, mode='hybrid')})
-        return jsonify(doc_types=codes, mode='hybrid', groups=groups,
+        return dict(doc_types=codes, mode='hybrid', groups=groups,
                        prompt_prefix=engine._step_prefix('[ข้อความ OCR ของเอกสาร]'),
                        settings={'extras': cfg['extras'], 'schema_first': cfg['schema_first']},
-                       has_requirement=any(engine.prompts.DOC_TYPE_FIELDS.get(code) for code in codes))
+                       has_requirement=any(engine.prompts.DOC_TYPE_FIELDS.get(code) for code in codes),
+                       editor=({'revision': profile['revision'], 'value': profile['value'],
+                               'groups': userprompts.view(editable, profile),
+                               'targets': [{'path': path, 'type': schema.get('type')} for path, schema in userprompts.targets().items()]}
+                               if editable else None))
+
+    @application.put('/api/user/hybrid-prompts')
+    def user_save_hybrid_prompts():
+        body = request.get_json(silent=True)
+        if not isinstance(body, dict) or set(body) != {'doc_type', 'revision', 'value'}:
+            return jsonify(error='ส่งประเภทเอกสาร เวอร์ชัน และค่า prompt ให้ครบ'), 400
+        try:
+            value = userprompts.validate(body['doc_type'], body['value'])
+            profile = service().store.save_prompt_profile(body['doc_type'], value, body['revision'])
+        except (ValueError, TypeError) as err:
+            return jsonify(error=str(err)), 400
+        if profile is None:
+            return jsonify(error='มีผู้แก้ prompt นี้แล้ว กรุณาโหลดเวอร์ชันล่าสุดก่อนบันทึก'), 409
+        return jsonify(profile=profile)
 
     @application.put('/api/user/settings')
     def user_save_settings():
@@ -126,6 +152,7 @@ def register(application, engine):
             cfg = current.adapter.snapshot(cfg)
         except RuntimeError as err:
             return jsonify(error=str(err)), 503
+        cfg['prompt_profiles'] = current.store.prompt_profiles()
         batch_id = current.store.create_batch(count, cfg)
         return jsonify(batch_id=batch_id, configuration=cfg), 201
 
@@ -242,10 +269,94 @@ def register(application, engine):
     def user_job(job_id):
         return jsonify(job=job_or_404(job_id))
 
+    @application.get('/api/user/jobs/<job_id>/retry-history')
+    def user_retry_history(job_id):
+        job = job_or_404(job_id)
+        return jsonify(job_id=job_id, attempts=service().store.retry_history(job))
+
+    def prompt_types_for_job(job):
+        result = job['result']
+        extracted = result.get('extracted') or {}
+        docs = extracted.get('documents') or ([extracted] if extracted else result.get('classifications') or [])
+        codes = set()
+        for doc in docs:
+            named = doc.get('doc_types') or ([doc['doc_type']] if doc.get('doc_type') else [])
+            codes.update(named)
+            for code in tuple(named):
+                codes.update(engine.prompts.TYPE_COMPONENTS.get(code, ()))
+        return [code for code in engine.prompts.TYPE_SPECIFICITY if code in codes], docs
+
+    @application.get('/api/user/jobs/<job_id>/prompts')
+    def user_job_prompts(job_id):
+        job = job_or_404(job_id)
+        codes, docs = prompt_types_for_job(job)
+        available = [code for code in codes if engine.prompts.DOC_TYPE_FIELDS.get(code)]
+        selected = request.args.get('doc_type') or (available[0] if available else None)
+        if selected and selected not in available:
+            return jsonify(error='ประเภทที่เลือกไม่ได้อยู่ในผลของงานนี้'), 400
+        # A profile is edited per type and reused for every document of that type.
+        # Other types retain the versions captured by the original upload.
+        preview_codes, preview_document = codes, None
+        if selected:
+            for index, doc in enumerate(docs, 1):
+                named = set(doc.get('doc_types') or ([doc['doc_type']] if doc.get('doc_type') else []))
+                for kind in tuple(named):
+                    named.update(engine.prompts.TYPE_COMPONENTS.get(kind, ()))
+                if selected in named:
+                    preview_codes = [kind for kind in engine.prompts.TYPE_SPECIFICITY if kind in named]
+                    preview_document = index
+                    break
+        data = prompt_reference(preview_codes, job['configuration'],
+                                job['configuration'].get('prompt_profiles', {}), selected)
+        data.update(available_types=available, job_id=job_id, editable_type=selected,
+                    preview_document=preview_document,
+                    documents=[{'document': i + 1, 'pages': doc.get('pages', []),
+                                'doc_types': doc.get('doc_types', [])} for i, doc in enumerate(docs)])
+        return jsonify(data)
+
+    @application.post('/api/user/jobs/<job_id>/retry-extraction')
+    def user_retry_extraction(job_id):
+        parent = job_or_404(job_id)
+        body = request.get_json(silent=True)
+        if not isinstance(body, dict) or set(body) != {'request_id', 'prompt_profiles'}:
+            return jsonify(error='ส่งรหัสคำขอและ prompt สำหรับ retry ให้ครบ'), 400
+        request_id, edits = body['request_id'], body['prompt_profiles']
+        if not isinstance(request_id, str) or not re.fullmatch('[a-zA-Z0-9_-]{8,64}', request_id):
+            return jsonify(error='รหัสคำขอ retry ไม่ถูกต้อง'), 400
+        old = service().store.extraction_retry(job_id, request_id)
+        if old:
+            return jsonify(job=old), 202
+        if parent['status'] not in ('completed', 'partial', 'failed', 'interrupted'):
+            return jsonify(error='รอให้งานเดิมหยุดประมวลผลก่อน retry'), 409
+        if not parent['result'].get('text') or not parent['result'].get('pages'):
+            return jsonify(error='งานนี้ยังไม่มีข้อความ OCR ที่บันทึกไว้สำหรับ retry'), 400
+        current = service()
+        codes, _ = prompt_types_for_job(parent)
+        available = {code for code in codes if engine.prompts.DOC_TYPE_FIELDS.get(code)}
+        if not isinstance(edits, dict) or set(edits) - available:
+            return jsonify(error='แก้ได้เฉพาะประเภทที่พบในงานนี้'), 400
+        cfg = {**current.store.settings(), **parent['configuration'], 'shape': 'hybrid',
+               'extraction_url': current.store.settings()['extraction_url']}
+        profiles = dict(cfg.get('prompt_profiles', {}))
+        try:
+            for code, value in edits.items():
+                normalized = userprompts.validate(code, value)
+                profiles[code] = {'revision': profiles.get(code, {}).get('revision', 0) + 1,
+                                  'scope': 'job', 'value': normalized}
+            cfg['prompt_profiles'] = profiles
+            cfg = current.adapter.snapshot_extraction(cfg)
+            retried = current.store.retry_extraction(job_id, request_id, cfg)
+        except ValueError as err:
+            return jsonify(error=str(err)), 400
+        except RuntimeError as err:
+            return jsonify(error=str(err)), 503
+        current.start()
+        return jsonify(job=retried), 202
+
     @application.get('/api/user/jobs/<job_id>/file')
     def user_file(job_id):
         job = job_or_404(job_id)
-        return send_file(service().store.uploads / job['id'], as_attachment=True, download_name=job['filename'])
+        return send_file(service().store.original(job), as_attachment=True, download_name=job['filename'])
 
     @application.get('/api/user/jobs/<job_id>/preview')
     def user_preview(job_id):
@@ -255,7 +366,7 @@ def register(application, engine):
                  '.png': 'image/png', '.webp': 'image/webp', '.gif': 'image/gif', '.bmp': 'image/bmp'}
         if suffix not in types:
             return jsonify(error='โปรดดาวน์โหลดต้นฉบับเพื่อเปิดไฟล์ประเภทนี้'), 415
-        return send_file(service().store.uploads / job['id'], mimetype=types[suffix],
+        return send_file(service().store.original(job), mimetype=types[suffix],
                          as_attachment=False, download_name=job['filename'])
 
     @application.get('/api/user/jobs/<job_id>/preview/info')
@@ -264,7 +375,7 @@ def register(application, engine):
         if Path(job['filename']).suffix.lower() != '.pdf':
             abort(415)
         try:
-            return jsonify(pages=pdf_info(service().store.uploads / job['id']))
+            return jsonify(pages=pdf_info(service().store.original(job)))
         except ValueError as err:
             return jsonify(error=str(err)), 400
 
@@ -273,7 +384,7 @@ def register(application, engine):
         job = job_or_404(job_id)
         if Path(job['filename']).suffix.lower() != '.pdf':
             abort(415)
-        return send_file(io.BytesIO(pdf_info(service().store.uploads / job['id'], page)), mimetype='image/png')
+        return send_file(io.BytesIO(pdf_info(service().store.original(job), page)), mimetype='image/png')
 
     @application.get('/api/user/jobs/<job_id>/export')
     def user_export(job_id):

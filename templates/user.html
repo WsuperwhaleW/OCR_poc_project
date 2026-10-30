@@ -70,6 +70,19 @@
               </div></details>
               <details id="userJsonExtra" class="saved-settings" hidden><summary>ข้อมูลเดิมที่อยู่นอก User JSON เช่น branchLocation และประเภทเดิม</summary><pre id="userJsonUnmapped" class="transcript result-pane"></pre></details>
             </section>
+            <section id="jobPromptPanel" class="job-prompt-panel" hidden>
+              <div class="toolbar"><h3>Prompt และการรัน Extraction ใหม่</h3><button id="jobPromptOpen" type="button" class="subtle">ดู / แก้ Prompt และ Retry</button></div>
+              <p id="jobRetryOrigin" class="muted small" hidden>ผลนี้ใช้ข้อความ OCR เดิม <button id="jobPreviousResult" type="button" class="subtle">เปิดผลก่อนหน้า</button></p>
+              <p id="jobPromptMessage" class="message" role="status" hidden></p>
+              <details id="jobPromptHistory" class="saved-settings">
+                <summary>ประวัติการแก้ Prompt และ Retry</summary>
+                <p class="muted small">เทียบแต่ละรอบกับผลก่อนหน้าที่นำมา retry เก็บเวลาที่ส่งรัน ค่าก่อนแก้ และค่าหลังแก้ ใช้เฉพาะงานนี้</p>
+                <button id="jobPromptHistoryRefresh" type="button" class="subtle">รีเฟรชประวัติ</button>
+                <p id="jobPromptHistoryMessage" class="message" role="status" hidden></p>
+                <div id="jobPromptHistoryContent"></div>
+              </details>
+              <div id="jobPromptWorkbench" hidden>{% with prompt_id_prefix='job_' %}{% include '_user_prompt_workbench.html' %}{% endwith %}</div>
+            </section>
             <details class="saved-settings"><summary>โมเดลและการตั้งค่าของงานนี้</summary><pre id="jobSettings" class="transcript"></pre></details>
           </div>
         </section>
@@ -95,21 +108,7 @@
     </section>
     <section id="promptsView" hidden aria-labelledby="promptsTitle">
       <div class="intro"><span class="eyebrow">HYBRID PROMPTS</span><h1 id="promptsTitle">แต่ละเอกสารถามอะไรพร้อมกันบ้าง</h1><p class="muted">แต่ละกล่องคือหนึ่งคำถามที่ส่งให้โมเดล ฟิลด์ในกล่องเดียวกันจะถูกถามพร้อมกัน</p></div>
-      <div class="card">
-        <div class="prompt-selectors">
-          <label for="promptType">ประเภทเอกสาร<select id="promptType">
-            {% for code, name in user_prompt_types.items() %}<option value="{{ code }}"{% if code == 'INVOICE' %} selected{% endif %}>{{ code }} · {{ name }}</option>{% endfor %}
-          </select></label>
-        </div>
-        <details class="prompt-type-help">
-          <summary><span class="prompt-help-icon" aria-hidden="true">!</span> เมื่อเอกสารฉบับเดียวมีหลายประเภท</summary>
-          <p class="muted small">ระบบจำแนกจากหัวเอกสารโดยอัตโนมัติ แล้วรวมฟิลด์ของประเภทที่พบและตัดฟิลด์ซ้ำ จึงไม่จำเป็นต้องถามซ้ำตามจำนวนประเภท หากประเภทที่พบยังไม่มีชุดฟิลด์เฉพาะเลย จะใช้ชุดฟิลด์พื้นฐาน การจำแนกประเภทได้ยังไม่ได้หมายความว่า tune การดึงข้อมูลของประเภทนั้นแล้ว</p>
-        </details>
-        <p id="promptsNotice" class="message" role="status"></p>
-        <p class="muted small">แสดงเฉพาะประเภทที่มีชุดฟิลด์และคำถามเฉพาะตรงตัว ใช้ข้อความ “[ข้อความ OCR ของเอกสาร]” แทนเนื้อหาเอกสารจริง ส่วน User JSON เป็นการแปลงผลภายหลัง</p>
-        <p id="promptsError" class="message error" role="alert" hidden></p><button id="promptsRetry" type="button" class="subtle" hidden>ลองโหลดอีกครั้ง</button>
-        <div id="promptsContent"></div>
-      </div>
+      <div class="card">{% with prompt_id_prefix='' %}{% include '_user_prompt_workbench.html' %}{% endwith %}</div>
     </section>
   </main>
   <footer>OCR <span>ผลลัพธ์จาก AI ควรตรวจสอบกับเอกสารต้นฉบับ</span></footer>

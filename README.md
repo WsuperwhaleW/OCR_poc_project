@@ -716,6 +716,47 @@ The User portal's **Doc types** menu opens the supported-type catalog and
 Required/Optional field matrix from the same `/api/schema` data as Benchmark.
 Opening it preserves selected files and any active results.
 
+The **Hybrid prompts** menu lets the team edit per-field reading guidance for
+the five types with dedicated field profiles. Existing variable names, response
+shapes and built-in copy/role rules stay locked. **+ เพิ่มก้อนคำถาม** adds a separate
+request with custom key/guidance pairs; every custom key must choose a supported
+document-level destination in User JSON v7. Scalar destinations include party
+names/codes and monetary fields; array destinations include complete `items`,
+`references` and `remarks` arrays. Row-level destinations are not guessed or
+joined to existing rows. File metadata, page ranges and classified document
+types remain system-owned, and duplicate destinations are rejected.
+
+Profiles are shared and persisted in the User database with optimistic version
+checks. **บันทึกสำหรับงานใหม่** applies to newly accepted Hybrid upload batches;
+each batch snapshots its profiles so queued work and past exports keep their
+original mappings. Custom responses remain in `custom_fields` with explicit
+`user_prompt_mappings`; scalar/cell values also appear under `other_fields`.
+The User JSON adapter validates, converts and audits the selected destinations;
+invalid or absent values do not become invented zeros. Benchmark, Agentic and
+single-prompt extraction keep their existing definitions. **คืนค่าเริ่มต้น**
+stages a reset which takes effect only after saving.
+
+After a User job finishes (including a failed extraction with saved OCR), its
+result page offers **ดู / แก้ Prompt และ Retry**. This opens the same field editor
+in place using the job's captured profiles. Edits can span the supported types
+found in the file and apply only to the retry; the team's shared profiles stay
+unchanged. **รัน Extraction ใหม่** queues a new Hybrid extraction of the entire
+file from the saved OCR text/pages, including classification and segmentation,
+without uploading or running OCR again. Only the extraction model is checked.
+The new attempt retains its own settings, mappings and timing, links back to
+the previous result, and references the retained original file. Retrying the
+same request ID returns the existing attempt. Original results remain intact.
+
+**ประวัติการแก้ Prompt และ Retry** on the result page lists attempts for the
+original file, including branches from earlier results. Every new retry stores
+an immutable, job-scoped change record compared with its chosen parent:
+per-field guidance before/after, added/removed question blocks and variables,
+destination changes, resets and ordering changes. The record uses the retry's
+submission time and is included in the normal JSON download. An unchanged
+retry is explicitly recorded as unchanged; older attempts without a recorded
+diff are identified as having no detailed change history. This does not write
+to the team's shared prompt profiles.
+
 The result has three views: **OCR · Rendered** (headings and tables by page),
 **Key-Value**, and **JSON**. The stage timeline keeps separate OCR queue, OCR,
 extraction queue and extraction durations after completion and in history.

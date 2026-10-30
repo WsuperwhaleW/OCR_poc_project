@@ -1,5 +1,6 @@
 """Durable user uploads, settings and results, separate from benchmark history."""
 import json
+import copy
 import re
 import sqlite3
 import uuid
@@ -7,6 +8,8 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlsplit
+
+import userprompts
 
 
 def now():
@@ -73,9 +76,18 @@ class UserStore:
                     configuration TEXT NOT NULL, result TEXT NOT NULL DEFAULT '{}',
                     UNIQUE(batch_id, upload_id));
                 CREATE INDEX IF NOT EXISTS jobs_status_date ON jobs(status, created_at, id);
+                CREATE TABLE IF NOT EXISTS prompt_profiles (
+                    code TEXT PRIMARY KEY, revision INTEGER NOT NULL, value TEXT NOT NULL);
             ''')
             if 'timeline' not in {r['name'] for r in db.execute('PRAGMA table_info(jobs)')}:
                 db.execute("ALTER TABLE jobs ADD COLUMN timeline TEXT NOT NULL DEFAULT '{}'")
+            columns = {r['name'] for r in db.execute('PRAGMA table_info(jobs)')}
+            for column in ('retry_of', 'original_id'):
+                if column not in columns:
+                    db.execute(f"ALTER TABLE jobs ADD COLUMN {column} TEXT NOT NULL DEFAULT ''")
+            if 'prompt_changes' not in columns:
+                db.execute("ALTER TABLE jobs ADD COLUMN prompt_changes TEXT NOT NULL DEFAULT '{}'")
+            db.execute("CREATE UNIQUE INDEX IF NOT EXISTS jobs_extraction_retry ON jobs(retry_of,upload_id) WHERE retry_of<>''")
 
     @contextmanager
     def connect(self):
@@ -112,6 +124,82 @@ class UserStore:
             db.execute('INSERT INTO batches VALUES (?,?,?)',
                        (batch_id, file_count, json.dumps(configuration, ensure_ascii=False)))
         return batch_id
+
+    def prompt_profiles(self):
+        with self.connect() as db:
+            rows = db.execute('SELECT * FROM prompt_profiles').fetchall()
+        return {row['code']: {'revision': row['revision'], 'value': json.loads(row['value'])} for row in rows}
+
+    def original(self, job):
+        key = job.get('original_id') or job['id']
+        if not re.fullmatch('[0-9a-f]{32}', key):
+            raise ValueError('รหัสไฟล์ต้นฉบับไม่ถูกต้อง')
+        return self.uploads / key
+
+    def extraction_retry(self, parent_id, request_id):
+        with self.connect() as db:
+            row = db.execute('SELECT * FROM jobs WHERE retry_of=? AND upload_id=?',
+                             (parent_id, request_id)).fetchone()
+        return self.decode(row)
+
+    def retry_extraction(self, parent_id, request_id, configuration):
+        if not isinstance(request_id, str) or not re.fullmatch('[a-zA-Z0-9_-]{8,64}', request_id):
+            raise ValueError('รหัสคำขอ retry ไม่ถูกต้อง')
+        with self.connect() as db:
+            db.execute('BEGIN IMMEDIATE')
+            existing = db.execute('SELECT * FROM jobs WHERE retry_of=? AND upload_id=?',
+                                  (parent_id, request_id)).fetchone()
+            if existing:
+                return self.decode(existing)
+            source = self.decode(db.execute('SELECT * FROM jobs WHERE id=?', (parent_id,)).fetchone())
+            if not source or source['status'] not in ('completed', 'partial', 'failed', 'interrupted'):
+                raise ValueError('รอให้งานเดิมหยุดประมวลผลก่อน retry')
+            previous = source['result']
+            if (not str(previous.get('text') or '').strip() or not isinstance(previous.get('pages'), list)
+                    or not previous['pages'] or not all(isinstance(page, str) for page in previous['pages'])):
+                raise ValueError('งานนี้ยังไม่มีข้อความ OCR ที่บันทึกไว้เพียงพอสำหรับ retry')
+            if not self.original(source).is_file():
+                raise ValueError('ไม่พบไฟล์ต้นฉบับของงานนี้')
+            # Copy only OCR evidence. Extraction/classification warnings and
+            # timings belong to the previous attempt, which remains untouched.
+            result = {key: copy.deepcopy(previous[key]) for key in
+                      ('text', 'pages', 'page_count', 'pages_total', 'page_stats') if key in previous}
+            result['warnings'] = copy.deepcopy(previous.get('ocr_warnings', [warning for warning in
+                previous.get('warnings', []) if str(warning).startswith(('อ่านได้ ', 'ข้อความหน้า '))]))
+            result['ocr_warnings'] = copy.deepcopy(result['warnings'])
+            at, batch_id, job_id = now(), uuid.uuid4().hex, uuid.uuid4().hex
+            audit = {'version': 1, 'scope': 'job', 'parent_job_id': source['id'], 'created_at': at,
+                     'changes': userprompts.changes_between(source['configuration'].get('prompt_profiles', {}),
+                                                            configuration.get('prompt_profiles', {}))}
+            db.execute('INSERT INTO batches VALUES (?,?,?)', (batch_id, 1, json.dumps(configuration, ensure_ascii=False)))
+            timeline = {'queued_extraction': {'started_at': at, 'progress': 'ใช้ OCR เดิม · กำลังรอคิว Extraction'}}
+            db.execute('''INSERT INTO jobs(id,batch_id,upload_id,filename,created_at,updated_at,status,progress,
+                          configuration,result,timeline,retry_of,original_id,prompt_changes) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
+                       (job_id, batch_id, request_id, source['filename'], at, at, 'queued_extraction',
+                        'ใช้ OCR เดิม · กำลังรอคิว Extraction', json.dumps(configuration, ensure_ascii=False),
+                        json.dumps(result, ensure_ascii=False), json.dumps(timeline, ensure_ascii=False),
+                        source['id'], source.get('original_id') or source['id'], json.dumps(audit, ensure_ascii=False)))
+            return self.decode(db.execute('SELECT * FROM jobs WHERE id=?', (job_id,)).fetchone())
+
+    def retry_history(self, job):
+        root = job.get('original_id') or job['id']
+        with self.connect() as db:
+            rows = db.execute('SELECT id,retry_of,created_at,status,prompt_changes FROM jobs '
+                              'WHERE id=? OR original_id=? ORDER BY rowid', (root, root)).fetchall()
+        return [{**dict(row), 'prompt_changes': json.loads(row['prompt_changes'])} for row in rows]
+
+    def save_prompt_profile(self, code, value, revision):
+        if isinstance(revision, bool) or not isinstance(revision, int) or revision < 0:
+            raise ValueError('เวอร์ชัน prompt ไม่ถูกต้อง')
+        with self.connect() as db:
+            db.execute('BEGIN IMMEDIATE')
+            row = db.execute('SELECT revision FROM prompt_profiles WHERE code=?', (code,)).fetchone()
+            if (row['revision'] if row else 0) != revision:
+                return None
+            next_revision = revision + 1
+            db.execute('INSERT OR REPLACE INTO prompt_profiles VALUES (?,?,?)',
+                       (code, next_revision, json.dumps(value, ensure_ascii=False)))
+        return {'revision': next_revision, 'value': value}
 
     def batch(self, batch_id):
         with self.connect() as db:
@@ -154,7 +242,7 @@ class UserStore:
         if row is None:
             return None
         out = dict(row)
-        for key in ('configuration', 'result', 'timeline'):
+        for key in ('configuration', 'result', 'timeline', 'prompt_changes'):
             if key in out:
                 out[key] = json.loads(out[key])
         out.pop('upload_id', None)
@@ -169,7 +257,7 @@ class UserStore:
     def list(self, offset=0, limit=50):
         offset = max(0, int(offset))
         with self.connect() as db:
-            rows = db.execute('SELECT id,batch_id,filename,created_at,updated_at,status,progress,error '
+            rows = db.execute('SELECT id,batch_id,filename,created_at,updated_at,status,progress,error,retry_of '
                               'FROM jobs ORDER BY created_at DESC,id DESC LIMIT ? OFFSET ?',
                               (limit + 1, offset)).fetchall()
             counts = {r['status']: r['n'] for r in db.execute(

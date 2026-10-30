@@ -8,6 +8,7 @@ from contextlib import contextmanager
 import workspace
 
 workspace.field('user_pipeline', lambda: False)
+workspace.field('user_prompt_profiles', lambda: {})
 
 
 def compact_extraction(value):
@@ -18,6 +19,7 @@ def compact_extraction(value):
             'partial', 'error', 'seconds', 'tokens', 'segments', 'split_from',
             'steps_failed', 'steps_extras', 'model', 'backend', 'url', 'normalization_version',
             'validation', 'image_filled', 'image_fills', 'validation_image_rechecks', 'image_rechecks')
+    keys += ('custom_fields', 'user_prompt_mappings', 'user_prompt_revisions')
     out = {key: value[key] for key in keys if key in value}
     if isinstance(value.get('item_table'), dict):
         table = value['item_table']
@@ -42,6 +44,7 @@ class EngineAdapter:
             workspace.hold()
             try:
                 ws.put('user_pipeline', True)
+                ws.put('user_prompt_profiles', configuration.get('prompt_profiles', {}))
                 ws.put('active', configuration['ocr_url'])
                 ws.put('extract_url', configuration['extraction_url'])
                 models = configuration.get('models') or {}
@@ -81,6 +84,13 @@ class EngineAdapter:
         return {**configuration, 'models': models,
                 'ocr_profile': self.engine.backends.profile_for_model(models['ocr']['model'])}
 
+    def snapshot_extraction(self, configuration):
+        with self.context('retry_probe_' + uuid.uuid4().hex, configuration):
+            info = self._info(self.engine.backends.extract_status(force=True))
+        if not info.get('text_available') or not info.get('model'):
+            raise RuntimeError('extraction: ' + (info.get('text_reason') or info.get('reason') or 'Model unavailable'))
+        return {**configuration, 'models': {**configuration.get('models', {}), 'extraction': info}}
+
     def check_model(self, job, stage):
         info = (self.engine.backends.status(force=True) if stage == 'ocr'
                 else self.engine.backends.extract_status(force=True))
@@ -99,7 +109,7 @@ class EngineAdapter:
             source = {'kind': 'user_upload', 'name': job['filename'], 'filename': job['filename']}
             context = {}
             images, detail, cache_id, _ = engine.prepare_input(
-                (store.uploads / job['id']).read_bytes(), cfg['detail'], source=source,
+                store.original(job).read_bytes(), cfg['detail'], source=source,
                 cache=False, context_out=context)
             if not images:
                 raise ValueError('ไฟล์ไม่มีหน้าที่อ่านได้')
@@ -139,6 +149,7 @@ class EngineAdapter:
 
     def extraction(self, job, store):
         cfg, result = job['configuration'], job['result']
+        result.setdefault('ocr_warnings', list(result.get('warnings') or []))
         with self.context(job['id'], cfg):
             self.check_model(job, 'extraction')
             stream = self.engine.extract_fields_stream(
@@ -188,7 +199,7 @@ class EngineAdapter:
                 try:
                     store.update(job['id'], progress='กำลังตรวจฟิลด์จากภาพเอกสารอีกครั้ง')
                     images, _, _, _ = self.engine.prepare_input(
-                        (store.uploads / job['id']).read_bytes(), cfg['detail'],
+                        store.original(job).read_bytes(), cfg['detail'],
                         source={'kind': 'user_upload', 'name': job['filename']}, cache=False)
                     if len(images) != len(result['pages']):
                         raise ValueError('จำนวนหน้าของภาพไม่ตรงกับข้อความ OCR')

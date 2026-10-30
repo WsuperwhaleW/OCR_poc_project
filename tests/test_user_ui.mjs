@@ -535,3 +535,109 @@ test('a slow prompt response cannot replace a newer supported type',async()=>{
   release(response(data(['INVOICE'])));await pending;
   assert.match(el('promptsNotice').textContent,/^WHT_CERTIFICATE/);
 });
+
+test('User prompt editor saves only field guidance and explicit extra destinations, protects dirty edits and keeps conflicts visible',async()=>{
+  const {el,document,items}=dom(),walk=e=>[e,...e.children.flatMap(walk)];
+  document.querySelector=selector=>Object.values(items).flatMap(walk).find(e=>e.className===selector.slice(1));
+  const data={doc_types:['INVOICE'],has_requirement:true,settings:{extras:false,schema_first:false},prompt_prefix:'OCR\n',
+    groups:[{id:'document',title:'document',keys:['document_number'],question:'Locked question'}],
+    editor:{revision:0,value:{instructions:{},extra_groups:[]},groups:[{id:'document',title:'document',fields:[
+      {key:'document_number',instruction:'',default_instruction:'Use its own printed number',target:'documentNo'}]}],
+      targets:[{path:'documentNo',type:'string'},{path:'seller.name',type:'string'}]}};
+  const calls=[];let conflict=false;
+  const context=vm.createContext({document,window:{USER_BASE:'/ocr',USER_API_TOKEN:'proof'},fetch:async(url,options={})=>{
+    if(options.method==='PUT'){
+      calls.push({url,...options});
+      if(conflict)return response({error:'มีผู้แก้ prompt นี้แล้ว'},false);
+      const body=JSON.parse(options.body);data.editor.value=body.value;data.editor.revision++;
+      return response({profile:{revision:data.editor.revision,value:body.value}});
+    }
+    return response(clean(data));
+  }});
+  el('promptType').value='INVOICE';vm.runInContext(promptsSource,context);
+  await context.window.loadUserPrompts();
+  const find=text=>walk(el('promptsContent')).find(e=>e.textContent===text);
+  const textarea=()=>walk(el('promptsContent')).find(e=>e['aria-label']==='วิธีอ่าน document_number');
+  assert.equal(textarea().readOnly,true);
+  find('แก้ไขวิธีอ่านตัวแปร').listeners.click();assert.equal(textarea().readOnly,false);
+  textarea().value='Read the top right invoice number';textarea().listeners.input();
+  el('promptType').value='WHT_CERTIFICATE';await el('promptType').listeners.change();
+  assert.equal(el('promptType').value,'INVOICE');assert.equal(el('promptSave').disabled,false);
+  find('+ เพิ่มก้อนคำถาม').listeners.click();
+  const extra=document.querySelector('.prompt-extra-groups').children[0],row=extra.children.find(e=>e.className==='prompt-kv-row');
+  const key=row.children[0].children[1],instruction=row.children[1].children[1],target=row.children[2].children[1];
+  key.value='supplier_name';key.listeners.input();instruction.value='Read the supplier name';instruction.listeners.input();
+  assert.equal(target.children.find(e=>e.value==='documentNo').disabled,true);
+  target.value='seller.name';target.listeners.change();
+  await el('promptSave').listeners.click();
+  assert.equal(calls[0].url,'/ocr/api/user/hybrid-prompts');assert.equal(calls[0].headers['X-OCR-User-Token'],'proof');
+  const sent=JSON.parse(calls[0].body);
+  assert.equal(sent.revision,0);assert.equal(sent.value.instructions.document_number,'Read the top right invoice number');
+  assert.equal(sent.value.extra_groups[0].fields[0].target,'seller.name');
+  assert.equal(el('promptSave').disabled,true);assert.match(el('promptEditStatus').textContent,/เวอร์ชัน 1/);
+  find('แก้ไขวิธีอ่านตัวแปร').listeners.click();textarea().value='conflicting edit';textarea().listeners.input();
+  conflict=true;await el('promptSave').listeners.click();
+  assert.equal(el('promptsError').hidden,false);assert.equal(textarea().value,'conflicting edit');
+  assert.equal(el('promptSave').disabled,false);
+  el('promptReset').listeners.click();
+  assert.equal(textarea().value,'');assert.equal(document.querySelector('.prompt-extra-groups').children.length,0);
+  assert.equal(el('promptSave').disabled,false);
+});
+
+test('result-page prompt edits retry extraction in place and keep the same request ID after a failed response',async()=>{
+  const {el,document}=dom(),walk=e=>[e,...e.children.flatMap(walk)];
+  document.querySelector=()=>null;
+  el('job_promptsContent').querySelector=selector=>walk(el('job_promptsContent')).find(e=>e.className===selector.slice(1));
+  const original={id:'original',filename:'source.png',created_at:'2026-10-30',status:'completed',configuration:{},
+    result:{text:'INVOICE',pages:['INVOICE'],extracted:{doc_types:['INVOICE'],fields:{document_number:'OLD'}}}};
+  const child={...clean(original),id:'retried',retry_of:'original',result:{...clean(original.result),extracted:{doc_types:['INVOICE'],fields:{document_number:'NEW'}}}};
+  const data={doc_types:['INVOICE'],available_types:['INVOICE'],editable_type:'INVOICE',settings:{extras:false,schema_first:false},prompt_prefix:'OCR\n',
+    groups:[{id:'document',title:'document',keys:['document_number'],question:'Original question'}],
+    editor:{revision:1,value:{instructions:{},extra_groups:[]},groups:[{id:'document',title:'document',fields:[
+      {key:'document_number',default_instruction:'Read own number',target:'documentNo'}]}],targets:[]}};
+  const retries=[];let fail=true;
+  const context=vm.createContext({document,window:{USER_BASE:'/ocr',USER_API_TOKEN:'proof',addEventListener(){},renderUserOcr(){}},Date,setTimeout:()=>1,clearTimeout(){},fetch:async(url,options={})=>{
+    if(url.endsWith('/settings'))return response({settings:config});
+    if(url.endsWith('/models'))return response({models:{ocr:{},extraction:{}}});
+    if(url.includes('/jobs?'))return response({jobs:[original,child],counts:{},more:false});
+    if(url.endsWith('/retry-history'))return response({attempts:[
+      {id:'original',retry_of:'',created_at:'2026-10-30',status:'completed',prompt_changes:{}},
+      {id:'retried',retry_of:'original',created_at:'2026-10-30',status:'completed',prompt_changes:{version:1,scope:'job',changes:[
+        {entity:'instruction',action:'changed',doc_type:'INVOICE',key:'document_number',before:'Old reading guide',after:'Use top right number'},
+        {entity:'group',action:'added',doc_type:'INVOICE',group_title:'<img onerror="bad">',before:null,after:{title:'Extra group',fields:[{key:'supplier_name',instruction:'Read seller name',target:'seller.name'}]}}
+      ]}}]});
+    if(url.endsWith('/original/prompts'))return response(clean(data));
+    if(url.endsWith('/retry-extraction')){retries.push(JSON.parse(options.body));return fail?response({error:'connection failed'},false):response({job:child});}
+    return response({job:url.endsWith('/retried')?child:original});
+  }});
+  vm.runInContext(promptsSource,context);vm.runInContext(appSource,context);await settle();
+  await el('historyRows').children[0].children.at(-1).children[0].listeners.click();
+  assert.equal(el('jobPromptPanel').hidden,false);
+  await el('jobPromptOpen').listeners.click();assert.equal(el('jobPromptWorkbench').hidden,false);
+  const find=text=>walk(el('job_promptsContent')).find(e=>e.textContent===text);
+  find('แก้ไขวิธีอ่านตัวแปร').listeners.click();
+  const area=walk(el('job_promptsContent')).find(e=>e['aria-label']==='วิธีอ่าน document_number');
+  area.value='Use top right number';area.listeners.input();
+  await el('job_promptSave').listeners.click();
+  assert.equal(el('job_promptsError').textContent,'connection failed');
+  assert.equal(area.value,'Use top right number');
+  fail=false;await el('job_promptSave').listeners.click();await settle();
+  assert.equal(retries.length,2);assert.equal(retries[0].request_id,retries[1].request_id);
+  assert.equal(retries[1].prompt_profiles.INVOICE.instructions.document_number,'Use top right number');
+  assert.equal(JSON.parse(el('jsonResult').textContent).fields.document_number,'NEW');
+  assert.equal(el('jobRetryOrigin').hidden,false);
+  assert.equal(el('stageTimeline').children.length,2);
+  assert.equal(el('jobPromptWorkbench').hidden,true);
+  el('jobPromptHistory').open=true;await el('jobPromptHistory').listeners.toggle();await settle();
+  const history=walk(el('jobPromptHistoryContent'));
+  assert.equal(el('jobPromptHistoryContent').children.length,2);
+  assert.ok(history.some(e=>e.textContent==='Old reading guide'));
+  assert.ok(history.some(e=>e.textContent==='Use top right number'));
+  assert.ok(history.some(e=>e.tag==='pre'&&e.textContent.includes('seller.name')));
+  assert.ok(history.some(e=>e.tag==='h4'&&e.textContent.includes('<img onerror=')));
+  assert.equal(history.filter(e=>e.tag==='img').length,0);
+  await el('jobPreviousResult').listeners.click();await settle();
+  assert.equal(JSON.parse(el('jsonResult').textContent).fields.document_number,'OLD');
+  assert.equal(el('jobPromptHistory').open,false);
+  assert.equal(el('jobPromptHistoryContent').children.length,0);
+});

@@ -14,6 +14,7 @@ from pathlib import Path
 
 import normalise
 import prompts
+import userprompts
 import tables
 import validate
 
@@ -296,6 +297,66 @@ def _items(doc, fields, issue, path, unmapped):
     return kind, output
 
 
+def _custom_mappings(item, doc, path, issue, mapped):
+    """Use destinations captured with this result, never today's edited profile."""
+    values, destinations = doc.get('custom_fields') or {}, doc.get('user_prompt_mappings') or {}
+    applied = set()
+    if not isinstance(values, dict) or not isinstance(destinations, dict):
+        issue(path, 'ข้อมูล mapping ของ User prompt ไม่ถูกต้อง')
+        return applied
+    for key, target in destinations.items():
+        if not isinstance(target, str) or target not in userprompts.targets():
+            issue(path, 'ช่องปลายทาง User prompt ไม่อยู่ใน schema: ' + str(target))
+            continue
+        raw = values.get(key)
+        if raw in ('', None, [], {}):
+            continue
+        value = copy.deepcopy(raw)
+        schema = userprompts.targets()[target]
+        if schema.get('type') == 'number':
+            value = _number(raw)
+            if value is None:
+                issue(path + '.' + target, 'จำนวนเงินจาก User prompt แปลงไม่ได้ จึงไม่ใส่ 0 แทน')
+                continue
+        elif schema.get('type') == 'string':
+            if not isinstance(raw, (str, int, float)) or isinstance(raw, bool):
+                issue(path + '.' + target, 'ค่าจาก User prompt ไม่ใช่ข้อความหรือค่าพื้นฐาน')
+                continue
+            value = _text(raw)
+            if target == 'documentDate':
+                value = _date(raw)
+                if not value:
+                    issue(path + '.' + target, 'วันที่จาก User prompt แปลงเป็น ISO ไม่ได้')
+                    continue
+            elif target.endswith('.branchCode'):
+                value = normalise.branch_code(raw)
+                if not value:
+                    issue(path + '.' + target, 'รหัสสาขาจาก User prompt แปลงไม่ได้')
+                    continue
+            elif target.endswith('.taxId'):
+                value = normalise.tax_id_digits(raw)
+                if len(value) != 13:
+                    issue(path + '.' + target, 'เลขผู้เสียภาษีจาก User prompt ไม่ครบ 13 หลัก')
+                    continue
+        try:
+            from jsonschema import Draft202012Validator
+            errors = list(Draft202012Validator(schema).iter_errors(value))
+        except ImportError:
+            issue(path + '.' + target, 'ยังตรวจชนิดค่าจาก User prompt ไม่ได้')
+            continue
+        if errors:
+            issue(path + '.' + target, 'ค่าจาก User prompt ไม่ผ่าน schema: ' + errors[0].message)
+            continue
+        destination = item
+        parts = target.split('.')
+        for part in parts[:-1]:
+            destination = destination.setdefault(part, {})
+        destination[parts[-1]] = value
+        applied.add(path + '.' + target)
+        mapped(path + '.' + target, 'custom_fields.' + str(key), raw, value)
+    return applied
+
+
 def convert(job):
     """Return candidate, conversion warnings, unmapped originals and schema errors."""
     result = job.get('result') or {}
@@ -446,6 +507,9 @@ def convert(job):
         if refs:
             item['references'] = refs
         item['itemType'], item['items'] = _items(doc, fields, issue, path, extra)
+        applied = _custom_mappings(item, doc, path, issue, mapped)
+        data_issues[:] = [entry for entry in data_issues if not
+                         (entry['path'] in applied and entry['message'].startswith('ยังไม่มี'))]
         if item['itemType'] and not item['items']:
             data_issues.append({'path': path + '.items', 'message': 'ระบุชนิดตารางได้ แต่ยังไม่มีรายการที่แปลงได้'})
         if fields.get('line_items'):
@@ -454,7 +518,8 @@ def convert(job):
                            if key not in used and value not in ('', None, [], {})}
         if not extra['fields']:
             del extra['fields']
-        for key in ('doc_types', 'doc_type', 'error', 'steps_failed', 'steps_extras'):
+        for key in ('doc_types', 'doc_type', 'error', 'steps_failed', 'steps_extras',
+                    'custom_fields', 'user_prompt_mappings', 'user_prompt_revisions'):
             if doc.get(key):
                 extra[key] = copy.deepcopy(doc[key])
         if extra:
@@ -492,4 +557,4 @@ def convert(job):
             'counts': {'schema_errors': len(schema_errors), 'warnings': len(warnings) + len(data_issues),
                        'missing_optional': len(missing)},
             'source_job': {key: job.get(key) for key in ('id', 'filename', 'status', 'updated_at')},
-            'conversion_version': 2}
+            'conversion_version': 3}
