@@ -26,12 +26,12 @@ class DocTypeMappingTests(unittest.TestCase):
             self.assertEqual(sum(self.data['counts'][section].values()), len(self.data[section]))
 
     def test_combinations_are_explicit_and_scope_false_does_not_filter_t03(self):
-        self.assertEqual(self.types['T03']['ours'], ['RECEIPT', 'TAX_INVOICE'])
+        self.assertEqual(self.types['T03']['ours'], ['RECEIPT_TAX_INVOICE'])
         self.assertFalse(self.types['T03']['user_scope'])
-        self.assertEqual(self.types['T03']['status'], 'combined')
-        self.assertEqual(self.types['T04']['status'], 'partial')
-        self.assertEqual(self.types['T05']['status'], 'partial')
-        self.assertEqual(self.types['T07']['status'], 'missing')
+        for code in ('T02', 'T03', 'T04', 'T05', 'T06', 'T07'):
+            self.assertEqual(self.types[code]['status'], 'mapped')
+            self.assertEqual(len(self.types[code]['ours']), 1)
+            self.assertFalse(prompts.DOC_TYPE_FIELDS.get(self.types[code]['ours'][0]))
 
     def test_rtv_and_every_internal_type_stay_visible_without_being_forced_to_credit_note(self):
         represented = {code for row in self.data['types'] for code in row['ours']}

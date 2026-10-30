@@ -121,6 +121,27 @@ _TYPE_HEADINGS = [
         "withholding tax certificate",
         "certificate of withholding tax",
         "tax withholding certificate")),
+    # Exact printed titles for the six User kinds. Their existing components
+    # remain available to extraction; the new kinds themselves have no profile.
+    ("RECEIPT_ABBREVIATED_TAX_INVOICE", (), (
+        "ใบเสร็จรับเงิน/ใบกำกับภาษีอย่างย่อ", "ใบกำกับภาษีอย่างย่อ/ใบเสร็จรับเงิน",
+        "receipt/abbreviated tax invoice", "abbreviated tax invoice/receipt")),
+    ("DELIVERY_TAX_INVOICE", (), (
+        "ใบส่งของ/ใบกำกับภาษี", "ใบกำกับภาษี/ใบส่งของ",
+        "delivery order/tax invoice", "tax invoice/delivery order",
+        "delivery note/tax invoice", "tax invoice/delivery note",
+        "delivery/tax invoice", "tax invoice/delivery")),
+    ("ABBREVIATED_TAX_INVOICE", (), (
+        "ใบกำกับภาษีอย่างย่อ", "abbreviated tax invoice")),
+    ("INVOICE_TAX_INVOICE", (), (
+        "ใบแจ้งหนี้/ใบกำกับภาษี", "ใบกำกับภาษี/ใบแจ้งหนี้",
+        "invoice/tax invoice", "tax invoice/invoice")),
+    ("RECEIPT_TAX_INVOICE", (), (
+        "ใบเสร็จรับเงิน/ใบกำกับภาษี", "ใบกำกับภาษี/ใบเสร็จรับเงิน",
+        "ใบรับเงิน/ใบกำกับภาษี", "ใบกำกับภาษี/ใบรับเงิน",
+        "receipt/tax invoice", "tax invoice/receipt")),
+    ("CANCELLATION_NOTE", (), (
+        "ใบแจ้งยกเลิก", "ใบแจ้งการยกเลิก", "cancellation note", "cancellation notice")),
     # The five types added with sol014 and sol015 (2026-09-08). All of them sit
     # ABOVE the commercial documents for the reason WHT_CERTIFICATE does: a page
     # that is one of these is nothing else, and none of them has a requirement
@@ -312,7 +333,31 @@ def match_types(raw_title):
         if code not in codes:
             codes.append(code)
         hits.extend(matched)
-    return _drop_subsumed(codes, squashed), hits, squashed
+    codes = _drop_subsumed(codes, squashed)
+    return _specific_types(codes), hits, squashed
+
+
+def _specific_types(codes):
+    """Prefer the literal subtype, retaining existing extraction constituents."""
+    found = set(codes)
+    if "RECEIPT_ABBREVIATED_TAX_INVOICE" in found:
+        found.difference_update(("ABBREVIATED_TAX_INVOICE", "RECEIPT_TAX_INVOICE"))
+    if "DELIVERY_TAX_INVOICE" in found:
+        found.discard("INVOICE_TAX_INVOICE")
+    for code in tuple(found):
+        found.update(prompts.TYPE_COMPONENTS.get(code, ()))
+    return [code for code in prompts.TYPE_NAMES if code in found]
+
+
+def classification_types(codes, heading):
+    """Validate new literal kinds against the quoted heading, never guess them.
+
+    Legacy model/manifest kinds remain intact. This also recognises a combined
+    title quoted by an older model returning only its two constituent kinds.
+    """
+    literal = set(document_types(heading)) & set(prompts.TYPE_COMPONENTS)
+    kept = [code for code in codes if code not in prompts.TYPE_COMPONENTS or code in literal]
+    return _specific_types(kept + list(literal))
 
 
 def heading_confidence(raw_title, line_no=1):
@@ -778,11 +823,10 @@ def _selftest():
     # kind. Looking only backwards is what keeps this true.
     assert document_types("ใบกำกับภาษี (ไม่ใช่ต้นฉบับ)") == ["TAX_INVOICE"]
 
-    # And the ordinary headings are untouched, including the one that is two
-    # types and covers its whole line.
-    assert document_types("ใบเสร็จรับเงิน/ใบกำกับภาษี") == ["RECEIPT", "TAX_INVOICE"]
+    # Literal combined kinds retain their existing constituent types.
+    assert document_types("ใบเสร็จรับเงิน/ใบกำกับภาษี") == ["RECEIPT_TAX_INVOICE", "RECEIPT", "TAX_INVOICE"]
     assert heading_confidence("ใบเสร็จรับเงิน/ใบกำกับภาษี")[0] == 1.0
-    assert document_types("ต้นฉบับใบกำกับภาษี/ใบส่งของ/บริการ") == ["TAX_INVOICE"]
+    assert document_types("ต้นฉบับใบกำกับภาษี/ใบส่งของ/บริการ") == ["DELIVERY_TAX_INVOICE", "TAX_INVOICE"]
 
     # The window is tight on purpose: a denial with a whole clause between it
     # and the needle is not read as being about it.

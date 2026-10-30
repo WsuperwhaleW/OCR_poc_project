@@ -273,6 +273,10 @@ class UserWebTests(unittest.TestCase):
             for prefix in ('', '/ocr'):
                 for code in app.prompts.TYPE_NAMES:
                     response = self.client.get(prefix + '/api/user/hybrid-prompts', query_string={'doc_type': code})
+                    if not app.prompts.DOC_TYPE_FIELDS.get(code):
+                        self.assertEqual(response.status_code, 400)
+                        self.assertNotIn('groups', response.json)
+                        continue
                     self.assertEqual(response.status_code, 200)
                     data = response.json
                     steps = app.prompts.steps_for_types([code], cfg['extras'], mode='hybrid')
@@ -283,14 +287,13 @@ class UserWebTests(unittest.TestCase):
                         self.assertEqual(group['question'], app._step_question(step, framing, mode='hybrid'))
                     self.assertEqual(data['prompt_prefix'], app._step_prefix('[ข้อความ OCR ของเอกสาร]'))
             url = '/api/user/hybrid-prompts'
-            combined = self.client.get(url + '?doc_type=INVOICE&doc_type=TAX_INVOICE').json
-            self.assertEqual(combined['doc_types'], ['INVOICE', 'TAX_INVOICE'])
+            combined = self.client.get(url + '?doc_type=INVOICE&doc_type=CREDIT_NOTE').json
+            self.assertEqual(combined['doc_types'], ['INVOICE', 'CREDIT_NOTE'])
             parties = next(g for g in combined['groups'] if g['id'] == 'parties')
             self.assertEqual(set(parties['keys']), {'seller_tax_id', 'seller_branch', 'seller_branch_location',
                                                    'buyer_tax_id', 'buyer_branch', 'buyer_branch_location'})
-            unknown = self.client.get(url + '?doc_type=UNKNOWN').json
-            self.assertEqual(unknown['doc_types'], [])
-            self.assertFalse(unknown['has_requirement'])
+            self.assertEqual(self.client.get(url + '?doc_type=UNKNOWN').status_code, 400)
+            self.assertEqual(self.client.get(url + '?doc_type=INVOICE&doc_type=TAX_INVOICE').status_code, 400)
             self.assertEqual(self.client.get(url + '?doc_type=BAD').status_code, 400)
             self.assertEqual(self.client.get(url + '?doc_type=UNKNOWN&doc_type=INVOICE').status_code, 400)
             self.store.save_settings({'extras': True, 'schema_first': True})
@@ -456,6 +459,13 @@ class UserWebTests(unittest.TestCase):
             type_names = json.loads(re.search(r'window.USER_DOC_TYPES = (.+);', page.text)[1])
             self.assertEqual(type_names['INVOICE'], 'invoice')
             self.assertEqual(type_names['WHT_CERTIFICATE'], 'withholding tax certificate (50 ทวิ)')
+            self.assertNotIn('promptCombinedType', page.text)
+            self.assertIn('เมื่อเอกสารฉบับเดียวมีหลายประเภท', page.text)
+            self.assertIn('รวมฟิลด์ของประเภทที่พบและตัดฟิลด์ซ้ำ', page.text)
+            for selector in ('promptType',):
+                options = re.search(r'id="' + selector + r'"[^>]*>(.*?)</select>', page.text, re.S)[1]
+                codes = set(re.findall(r'<option value="([^"]+)"', options))
+                self.assertEqual(codes, {code for code, fields in app.prompts.DOC_TYPE_FIELDS.items() if fields})
             self.assertIn('<title>OCR · เอกสารของทีม</title>', page.text)
             self.assertEqual(self.client.get(prefix + '/api/user/settings').status_code, 200)
             catalog = self.client.get(prefix + '/api/schema')

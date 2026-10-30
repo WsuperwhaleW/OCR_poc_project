@@ -98,15 +98,15 @@
       <div class="card">
         <div class="prompt-selectors">
           <label for="promptType">ประเภทเอกสาร<select id="promptType">
-            {% for code, name in user_doc_types.items() %}<option value="{{ code }}"{% if code == 'INVOICE' %} selected{% endif %}>{{ code }} · {{ name }}</option>{% endfor %}
-            <option value="UNKNOWN">Unknown · ไม่ทราบประเภท</option>
-          </select></label>
-          <label for="promptCombinedType">ประเภทร่วมในเอกสารเดียวกัน (ถ้ามี)<select id="promptCombinedType"><option value="">ไม่มีประเภทร่วม</option>
-            {% for code, name in user_doc_types.items() %}<option value="{{ code }}">{{ code }} · {{ name }}</option>{% endfor %}
+            {% for code, name in user_prompt_types.items() %}<option value="{{ code }}"{% if code == 'INVOICE' %} selected{% endif %}>{{ code }} · {{ name }}</option>{% endfor %}
           </select></label>
         </div>
+        <details class="prompt-type-help">
+          <summary><span class="prompt-help-icon" aria-hidden="true">!</span> เมื่อเอกสารฉบับเดียวมีหลายประเภท</summary>
+          <p class="muted small">ระบบจำแนกจากหัวเอกสารโดยอัตโนมัติ แล้วรวมฟิลด์ของประเภทที่พบและตัดฟิลด์ซ้ำ จึงไม่จำเป็นต้องถามซ้ำตามจำนวนประเภท หากประเภทที่พบยังไม่มีชุดฟิลด์เฉพาะเลย จะใช้ชุดฟิลด์พื้นฐาน การจำแนกประเภทได้ยังไม่ได้หมายความว่า tune การดึงข้อมูลของประเภทนั้นแล้ว</p>
+        </details>
         <p id="promptsNotice" class="message" role="status"></p>
-        <p class="muted small">แสดงคำถาม Hybrid จาก prompt ชุดปัจจุบัน ใช้ข้อความ “[ข้อความ OCR ของเอกสาร]” แทนเนื้อหาเอกสารจริง ส่วน User JSON เป็นการแปลงผลภายหลัง</p>
+        <p class="muted small">แสดงเฉพาะประเภทที่มีชุดฟิลด์และคำถามเฉพาะตรงตัว ใช้ข้อความ “[ข้อความ OCR ของเอกสาร]” แทนเนื้อหาเอกสารจริง ส่วน User JSON เป็นการแปลงผลภายหลัง</p>
         <p id="promptsError" class="message error" role="alert" hidden></p><button id="promptsRetry" type="button" class="subtle" hidden>ลองโหลดอีกครั้ง</button>
         <div id="promptsContent"></div>
       </div>

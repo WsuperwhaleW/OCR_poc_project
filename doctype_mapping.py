@@ -11,19 +11,19 @@ import prompts
 
 ROOT = Path(__file__).resolve().parent / 'schemas'
 
-# Candidate correspondences, not automatic classification/export rules.
+# Literal kind correspondences, not automatic classification/export rules.
 TYPE_MAP = {
     '80': ('mapped', ('DEBIT_NOTE',), 'มีประเภทเดิม แต่ยังไม่มีข้อกำหนดฟิลด์เฉพาะประเภท'),
     '81': ('mapped', ('CREDIT_NOTE',), 'ตรงกับใบลดหนี้เดิม'),
     '380': ('mapped', ('INVOICE',), 'ตรงกับใบแจ้งหนี้เดิม'),
     '388': ('mapped', ('TAX_INVOICE',), 'มีประเภทเดิม แต่ยังไม่มีข้อกำหนดฟิลด์เฉพาะประเภท'),
     'T01': ('mapped', ('RECEIPT',), 'ตรงกับใบเสร็จรับเงินเดิม'),
-    'T02': ('combined', ('INVOICE', 'TAX_INVOICE'), 'ระบบเดิมเก็บหลายประเภทในเอกสารเดียว ยังไม่มีรหัส T02 ในผลลัพธ์'),
-    'T03': ('combined', ('RECEIPT', 'TAX_INVOICE'), 'ระบบเดิมเก็บหลายประเภทในเอกสารเดียว คง userScope: false ตาม catalog; ไม่ปิดกั้นการใช้งาน'),
-    'T04': ('partial', ('TAX_INVOICE',), 'ขาดประเภทใบส่งของที่แยกชัดเจน จึงยังยืนยัน T04 จาก TAX_INVOICE อย่างเดียวไม่ได้'),
-    'T05': ('partial', ('TAX_INVOICE',), 'ยังไม่แยกใบกำกับภาษีอย่างย่อออกจากใบกำกับภาษีทั่วไป'),
-    'T06': ('partial', ('RECEIPT', 'TAX_INVOICE'), 'ยังไม่แยกใบกำกับภาษีอย่างย่อ จึงยังยืนยัน T06 ไม่ได้'),
-    'T07': ('missing', (), 'ยังไม่มีประเภทใบแจ้งยกเลิก'),
+    'T02': ('mapped', ('INVOICE_TAX_INVOICE',), 'จำแนกประเภทตรงตัวแล้ว ยังไม่มีชุดฟิลด์เฉพาะประเภท'),
+    'T03': ('mapped', ('RECEIPT_TAX_INVOICE',), 'จำแนกประเภทตรงตัวแล้ว ยังไม่ tune; userScope: false ไม่ปิดกั้นการใช้งาน'),
+    'T04': ('mapped', ('DELIVERY_TAX_INVOICE',), 'จำแนกประเภทตรงตัวแล้ว ยังไม่มีชุดฟิลด์เฉพาะประเภท'),
+    'T05': ('mapped', ('ABBREVIATED_TAX_INVOICE',), 'จำแนกประเภทตรงตัวแล้ว ยังไม่มีชุดฟิลด์เฉพาะประเภท'),
+    'T06': ('mapped', ('RECEIPT_ABBREVIATED_TAX_INVOICE',), 'จำแนกประเภทตรงตัวแล้ว ยังไม่มีชุดฟิลด์เฉพาะประเภท'),
+    'T07': ('mapped', ('CANCELLATION_NOTE',), 'จำแนกประเภทตรงตัวแล้ว ยังไม่มีชุดฟิลด์เฉพาะประเภท'),
 }
 
 # Paths are from the contract; source names are from today's actual engine.

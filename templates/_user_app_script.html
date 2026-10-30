@@ -261,11 +261,11 @@
   const typeName=name=>(name||'').replace(/^(an|a|the) /,'');
   function renderTypes(schema){
     const content=$('typesContent');content.replaceChildren();
-    if(schema.user_mapping && window.renderDocTypeMapping){
-      const mapping=node('div');mapping.innerHTML=window.renderDocTypeMapping(schema.user_mapping);content.append(mapping);
-    }
     const required=schema.types.filter(type=>type.has_requirement), unknown=schema.unknown;
-    $('typesNotice').textContent=schema.types.length+' ประเภท · '+required.length+' ประเภทมีข้อกำหนดฟิลด์เฉพาะ · '+schema.keys.length+' ฟิลด์ใน schema';
+    if(schema.user_mapping && window.renderDocTypeMapping){
+      const mapping=node('div');mapping.innerHTML=window.renderDocTypeMapping(schema.user_mapping,{knownTypes:required.map(type=>type.code),recognizedTypes:schema.types.map(type=>type.code)});content.append(mapping);
+    }
+    $('typesNotice').textContent='รู้จัก '+schema.types.length+' ประเภท · tune แล้ว '+required.length+' ประเภท · ยังไม่ tune '+(schema.types.length-required.length)+' ประเภท';
     const note=node('p','เอกสารหนึ่งฉบับอาจมีหลายประเภท ระบบจะรวมฟิลด์ของทุกประเภทเข้าด้วยกัน หากไม่มีประเภทใดมีข้อกำหนดเฉพาะ จะใช้ชุดฟิลด์พื้นฐานโดยไม่มีฟิลด์บังคับ','catalog-note');
     content.append(note,node('h2','ตารางฟิลด์ตามประเภทเอกสาร'));
     const legend=node('p',undefined,'catalog-legend');
@@ -302,7 +302,7 @@
           if(type.mandatory.includes(key))item.append(node('span','Required','catalog-required'));fields.append(item);}
         card.append(fields);
         if(type.items?.length)card.append(node('p','มีตาราง '+schema.items_key+' เพิ่มเติม: '+type.items.join(', '),'muted small'));
-      }else card.append(node('p','จำแนกประเภทนี้ได้ แต่ยังไม่มีข้อกำหนดฟิลด์เฉพาะ หากเป็นประเภทนี้อย่างเดียว จะใช้ชุดฟิลด์พื้นฐานในตารางด้านบน','muted small'));
+      }else card.append(node('p','รู้จัก · ยังไม่ tune: จำแนกประเภทนี้ได้ แต่ยังไม่มีชุดฟิลด์เฉพาะ หากไม่มีประเภทอื่นที่มีชุดเฉพาะร่วมด้วย จะใช้ชุดฟิลด์พื้นฐานในตารางด้านบน','muted small'));
       cards.append(card);
     }
     content.append(cards);

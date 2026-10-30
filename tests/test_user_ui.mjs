@@ -490,12 +490,12 @@ test('Doc types menu loads the shared schema on demand, retries failures and pre
 
 test('Hybrid prompts page loads on demand, retries, shows grouped fields safely and refreshes settings on revisit',async()=>{
   const {el,document}=dom();let calls=0,fail=true;
-  el('promptType').value='INVOICE';el('promptCombinedType').value='TAX_INVOICE';
-  const data={doc_types:['INVOICE','TAX_INVOICE'],has_requirement:true,settings:{extras:false,schema_first:false},
+  el('promptType').value='INVOICE';
+  const data={doc_types:['INVOICE'],has_requirement:true,settings:{extras:false,schema_first:false},
     prompt_prefix:'Shared OCR placeholder\n',groups:[{id:'parties',title:'seller and buyer',
       keys:['seller_tax_id','buyer_tax_id'],question:'<img onerror="bad"> Read both parties'}]};
   const fetch=async url=>{
-    if(url.includes('/hybrid-prompts?')){calls++;assert.equal(url,'/ocr/api/user/hybrid-prompts?doc_type=INVOICE&doc_type=TAX_INVOICE');
+    if(url.includes('/hybrid-prompts?')){calls++;assert.equal(url,'/ocr/api/user/hybrid-prompts?doc_type=INVOICE');
       return fail?response({error:'try again'},false):response(data);}
     if(url.endsWith('/settings'))return response({settings:config});
     if(url.endsWith('/models'))return response({models:{ocr:{},extraction:{}}});
@@ -518,21 +518,20 @@ test('Hybrid prompts page loads on demand, retries, shows grouped fields safely 
   assert.match(el('promptsNotice').textContent,/ข้อมูลเพิ่มเติม เปิด/);assert.equal(calls,3);
 });
 
-test('a slow prompt response cannot replace a newer type; Unknown clears the combined type',async()=>{
+test('a slow prompt response cannot replace a newer supported type',async()=>{
   const {el,document}=dom();let release;
   const old=new Promise(resolve=>{release=resolve;});
-  el('promptType').value='INVOICE';el('promptCombinedType').value='';
+  el('promptType').value='INVOICE';
   const data=types=>({doc_types:types,has_requirement:false,settings:{extras:false,schema_first:false},prompt_prefix:'',groups:[]});
   const urls=[];
   const context=vm.createContext({document,window:{USER_BASE:''},fetch:async url=>{
-    urls.push(url);return url.endsWith('INVOICE')?old:response(data([]));
+    urls.push(url);return url.endsWith('INVOICE')?old:response(data(['WHT_CERTIFICATE']));
   }});
   vm.runInContext(promptsSource,context);
   const pending=context.window.loadUserPrompts();
-  el('promptType').value='UNKNOWN';el('promptCombinedType').value='TAX_INVOICE';
+  el('promptType').value='WHT_CERTIFICATE';
   await el('promptType').listeners.change();
-  assert.equal(el('promptCombinedType').disabled,true);assert.equal(el('promptCombinedType').value,'');
-  assert.equal(urls[1],'/api/user/hybrid-prompts?doc_type=UNKNOWN');
+  assert.equal(urls[1],'/api/user/hybrid-prompts?doc_type=WHT_CERTIFICATE');
   release(response(data(['INVOICE'])));await pending;
-  assert.match(el('promptsNotice').textContent,/^Unknown/);
+  assert.match(el('promptsNotice').textContent,/^WHT_CERTIFICATE/);
 });

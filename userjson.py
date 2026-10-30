@@ -13,6 +13,7 @@ from functools import lru_cache
 from pathlib import Path
 
 import normalise
+import prompts
 import tables
 import validate
 
@@ -204,10 +205,16 @@ def _type(doc, fields, issue, path):
         name = ' + '.join(sorted(codes))
         issue(path, 'ประเภทเดิมอยู่นอก schema User: ' + name)
         return {'code': '', 'name': name}
+    explicit = codes & set(prompts.TYPE_COMPONENTS)
+    if len(explicit) > 1:
+        issue(path, 'พบประเภทเอกสารเฉพาะขัดแย้งกัน ต้องตรวจต้นฉบับ')
+        return {'code': '', 'name': ' + '.join(sorted(explicit))}
     if 'CREDIT_NOTE' in codes:
         name = 'CREDIT_NOTE'
     elif 'DEBIT_NOTE' in codes:
         name = 'DEBIT_NOTE'
+    elif explicit:
+        name = next(iter(explicit))
     elif 'TAX_INVOICE' in codes and ('อย่างย่อ' in title or 'abbreviated' in title):
         name = 'RECEIPT_ABBREVIATED_TAX_INVOICE' if 'RECEIPT' in codes else 'ABBREVIATED_TAX_INVOICE'
     elif 'TAX_INVOICE' in codes and ('ใบส่งของ' in title or 'delivery' in title):

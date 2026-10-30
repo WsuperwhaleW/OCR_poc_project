@@ -223,6 +223,14 @@ TYPE_NAMES = {
     # because that is what the document is called -- a reader who has seen one
     # knows it as 50 ทวิ long before "withholding tax certificate".
     "WHT_CERTIFICATE": "a withholding tax certificate (50 ทวิ)",
+    # Literal User document kinds. Classification only: no new field profile,
+    # Mandatory rule or extraction question is defined for these types.
+    "RECEIPT_ABBREVIATED_TAX_INVOICE": "a receipt/abbreviated tax invoice",
+    "DELIVERY_TAX_INVOICE": "a delivery order/tax invoice",
+    "ABBREVIATED_TAX_INVOICE": "an abbreviated tax invoice",
+    "INVOICE_TAX_INVOICE": "an invoice/tax invoice",
+    "RECEIPT_TAX_INVOICE": "a receipt/tax invoice",
+    "CANCELLATION_NOTE": "a cancellation note",
     # Added 2026-09-08 with sol014 and sol015, which are the first files here
     # holding several documents apiece. **No requirement covers any of them**,
     # so they contribute no key and nothing Mandatory -- exactly the standing
@@ -272,6 +280,18 @@ TYPE_NAMES = {
 # of two rules survives where a document is both types and both have something to
 # say about one key.
 TYPE_SPECIFICITY = tuple(TYPE_NAMES)
+
+# Existing constituent kinds retained on classification results so adding a
+# literal kind does not replace the extraction form already used for its title.
+# These are exact constituents, not new tuned profiles or nearest-type guesses.
+TYPE_COMPONENTS = {
+    "INVOICE_TAX_INVOICE": ("INVOICE", "TAX_INVOICE"),
+    "RECEIPT_TAX_INVOICE": ("RECEIPT", "TAX_INVOICE"),
+    "DELIVERY_TAX_INVOICE": ("TAX_INVOICE",),
+    "ABBREVIATED_TAX_INVOICE": ("TAX_INVOICE",),
+    "RECEIPT_ABBREVIATED_TAX_INVOICE": ("RECEIPT", "TAX_INVOICE"),
+    "CANCELLATION_NOTE": (),
+}
 
 # {(code, key): bullet}. One key can collide -- sol001 is a statement of account
 # AND an invoice, and both have a rule about `document_number` -- and exactly one
@@ -351,7 +371,10 @@ def type_phrase(codes):
     document. A code this table cannot name is dropped rather than spelled out:
     it is one no rule below knows anything about either.
     """
-    named = [c for c in TYPE_SPECIFICITY if c in set(codes or ())]
+    kinds = set(codes or ())
+    for code in tuple(kinds):
+        kinds.difference_update(TYPE_COMPONENTS.get(code, ()))
+    named = [c for c in TYPE_SPECIFICITY if c in kinds]
     words = [TYPE_NAMES[c] for c in named]
     if not words:
         return ""
@@ -480,6 +503,10 @@ Return ONLY this JSON object, with no prose and no code fence:
   of the page and often not. A company, brand or place name is not a heading.
 - types holds the code, or the codes, from the list above that the heading names. A page
   headed with two kinds at once is both: return both codes.
+- Use the specific combined or abbreviated kind only when the heading explicitly names
+  all its parts. A plain tax invoice is not an abbreviated or delivery tax invoice.
+  A cancellation note must head itself as a cancellation note or notice; a remark about
+  cancellation or a replacement invoice does not make the document a cancellation note.
 - Where nothing on the page names a kind of document in the list, return an empty list and
   "" for the heading. A guess is worse than no answer.
 

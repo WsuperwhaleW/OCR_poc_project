@@ -47,6 +47,25 @@ test('both Doc types views reuse the reference renderer; it has no model or stor
   const user=readFileSync(new URL('../templates/user.html',import.meta.url),'utf8');
   const app=readFileSync(new URL('../templates/_user_app_script.html',import.meta.url),'utf8');
   assert.match(index,/_doctype_mapping_script.html/);assert.match(user,/_doctype_mapping_script.html/);
-  assert.match(index,/renderDocTypeMapping\?\.\(d.user_mapping\)/);assert.match(app,/renderDocTypeMapping\(schema.user_mapping\)/);
+  assert.match(index,/renderDocTypeMapping\?\.\(d.user_mapping\)/);assert.match(app,/renderDocTypeMapping\(schema.user_mapping,\{knownTypes:/);
   assert.doesNotMatch(script,/fetch\(|localStorage|sessionStorage/);
+});
+
+test('User catalog shows literal known, untuned and unknown types without approximate or combined matches',()=>{
+  const {render}=setup();
+  const data={...mapping,types:[
+    {user_code:'380',user_name:'Invoice',ours:['INVOICE'],status:'mapped'},
+    {user_code:'388',user_name:'Tax invoice',ours:['TAX_INVOICE'],status:'mapped'},
+    {user_code:'T02',user_name:'Combined',ours:['INVOICE','TAX_INVOICE'],status:'combined'},
+    {user_code:'T04',user_name:'<Delivery>',ours:['TAX_INVOICE'],status:'partial'}]};
+  const html=render(data,{knownTypes:['INVOICE','WHT_CERTIFICATE'],recognizedTypes:['INVOICE','WHT_CERTIFICATE','TAX_INVOICE']});
+  const rows=html.match(/<tr>.*?<\/tr>/g);
+  const invoice=rows.find(row=>row.includes('380'));
+  assert.match(invoice,/รู้จัก · tune แล้ว/);assert.match(invoice,/INVOICE/);
+  assert.match(rows.find(row=>row.includes('388')),/รู้จัก · ยังไม่ tune/);
+  for(const code of ['T02','T04']){
+    const row=rows.find(row=>row.includes(code));assert.match(row,/ไม่รู้จัก/);assert.doesNotMatch(row,/INVOICE/);
+  }
+  assert.match(html,/WHT_CERTIFICATE/);assert.match(html,/เทียบฟิลด์กับ User/);
+  assert.match(html,/&lt;Delivery&gt;/);assert.doesNotMatch(html,/<Delivery>/);
 });

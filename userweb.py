@@ -54,7 +54,10 @@ def register(application, engine):
     def user_index():
         return render_template('user.html', user_doc_types={
             code: re.sub(r'^(an|a|the) ', '', name)
-            for code, name in engine.prompts.TYPE_NAMES.items()})
+            for code, name in engine.prompts.TYPE_NAMES.items()}, user_prompt_types={
+            code: re.sub(r'^(an|a|the) ', '', name)
+            for code, name in engine.prompts.TYPE_NAMES.items()
+            if engine.prompts.DOC_TYPE_FIELDS.get(code)})
 
     @application.get('/api/user/settings')
     def user_settings():
@@ -65,12 +68,8 @@ def register(application, engine):
     def user_hybrid_prompts():
         """Read-only prompt reference, built by the live Hybrid request helpers."""
         codes = list(dict.fromkeys(request.args.getlist('doc_type') or ['INVOICE']))
-        if any(code not in engine.prompts.TYPE_NAMES and code != 'UNKNOWN' for code in codes):
-            return jsonify(error='ไม่รู้จักประเภทเอกสารที่เลือก'), 400
-        if 'UNKNOWN' in codes:
-            if len(codes) != 1:
-                return jsonify(error='ไม่สามารถรวม Unknown กับประเภทเอกสารอื่น'), 400
-            codes = []
+        if any(not engine.prompts.DOC_TYPE_FIELDS.get(code) for code in codes):
+            return jsonify(error='ประเภทนี้ยังไม่มีชุดคำถาม Hybrid เฉพาะ'), 400
         cfg = service().store.settings()
         framing = engine._framing({'doc_types': codes}, 'hybrid')
         groups = []

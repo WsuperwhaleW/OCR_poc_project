@@ -1811,7 +1811,18 @@ def classify_transcript(text: str):
     """
     best = ([], "", 0.0, {})
     scored = []                     # (line number, codes, line, confidence, detail)
-    for number, line in enumerate((text or "").splitlines()[:_TYPE_SCAN_LINES], 1):
+    lines = (text or "").splitlines()[:_TYPE_SCAN_LINES]
+    candidates = []
+    for number, raw in enumerate(lines, 1):
+        # A literal combined heading may wrap onto two adjacent lines, including
+        # a delivery title that has no standalone kind in the old vocabulary.
+        if number < len(lines) and raw.strip() and lines[number].strip():
+            pair = raw.strip() + " / " + lines[number].strip()
+            if (len(pair) <= _TYPE_SCAN_MAX_CHARS
+                    and set(normalise.document_types(pair)) & set(prompts.TYPE_COMPONENTS)):
+                candidates.append((number, pair))
+        candidates.append((number, raw))
+    for number, line in candidates:
         line = line.strip()
         if not line or len(line) > _TYPE_SCAN_MAX_CHARS:
             continue
@@ -1867,7 +1878,8 @@ def classify_transcript(text: str):
             # as the evidence -- the heading is what the model's answer is checked
             # against, and half of a two-line heading would fail a check the page
             # actually passes.
-            merged = [c for c in normalise.DOCUMENT_TYPES if c in merged]                      + [c for c in merged if c not in normalise.DOCUMENT_TYPES]
+            merged = [c for c in TYPE_NAMES if c in merged]
+            merged = normalise.classification_types(merged, " / ".join(lines))
             best = (merged, " / ".join(lines), best[2], best[3])
     return best
 
@@ -1945,7 +1957,7 @@ def _classify_with_model(text: str, status: dict):
         return [], ""
     # Deduped in the vocabulary's own order, so two spellings of one answer and
     # two orderings of one pair of codes produce the same form.
-    return [c for c in TYPE_NAMES if c in set(codes)], heading
+    return normalise.classification_types(codes, heading), heading
 
 
 def _needs_second_opinion(codes, confidence):

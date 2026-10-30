@@ -13,7 +13,6 @@
     $('promptsNotice').textContent=(data.doc_types.length?data.doc_types.join(' + '):'Unknown')+
       ' · Hybrid · '+groups.length+' คำถาม · ข้อมูลเพิ่มเติม '+(data.settings.extras?'เปิด':'ปิด')+
       ' · Schema-first '+(data.settings.schema_first?'เปิด':'ปิด');
-    if(!data.has_requirement)target.append(node('p','ประเภทนี้ยังไม่มีชุดฟิลด์เฉพาะ จึงใช้คำถามจากชุดฟิลด์พื้นฐาน','catalog-note'));
     const shared=node('details',undefined,'prompt-shared');
     shared.append(node('summary','ข้อความนำที่ใช้ร่วมกันทุกคำถาม'),node('pre',data.prompt_prefix,'prompt-code'));
     target.append(shared);
@@ -35,13 +34,10 @@
     if(fieldLabels)labels=fieldLabels;
     const current=++ticket;
     const primary=$('promptType').value||'INVOICE';
-    $('promptCombinedType').disabled=primary==='UNKNOWN';
-    if(primary==='UNKNOWN')$('promptCombinedType').value='';
-    const codes=[...new Set([primary,$('promptCombinedType').value].filter(Boolean))];
     $('promptsContent').replaceChildren();$('promptsError').hidden=true;$('promptsRetry').hidden=true;
     $('promptsNotice').textContent='กำลังโหลดคำถาม Hybrid…';
     try{
-      const response=await fetch(window.USER_BASE+'/api/user/hybrid-prompts?'+codes.map(code=>'doc_type='+encodeURIComponent(code)).join('&'));
+      const response=await fetch(window.USER_BASE+'/api/user/hybrid-prompts?doc_type='+encodeURIComponent(primary));
       const data=await response.json();
       if(!response.ok)throw new Error(data.error||'โหลดคำถามไม่สำเร็จ ('+response.status+')');
       if(current!==ticket)return;
@@ -54,6 +50,5 @@
   }
   window.loadUserPrompts=load;
   $('promptType').addEventListener('change',()=>load());
-  $('promptCombinedType').addEventListener('change',()=>load());
   $('promptsRetry').addEventListener('click',()=>load());
 })();

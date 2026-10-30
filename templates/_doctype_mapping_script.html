@@ -11,8 +11,27 @@
       +'</td><td>'+(row.ours.length ? row.ours.map(key=>'<code>'+escape(key)+'</code>').join('<br>'):'—')
       +'</td><td>'+badge(row.status)+'</td><td>'+escape(row.note)+'</td></tr>').join('');
   }
-  window.renderDocTypeMapping = mapping => {
+  window.renderDocTypeMapping = (mapping, options={}) => {
     if (!mapping) return '';
+    if(options.knownTypes){
+      const known=new Set(options.knownTypes);
+      const recognized=new Set(options.recognizedTypes||options.knownTypes);
+      const types=mapping.types.filter(row=>row.user_code).map(row=>{
+        const exact=row.status==='mapped'&&row.ours.length===1&&recognized.has(row.ours[0]);
+        return {...row,ours:exact?row.ours:[],status:exact?(known.has(row.ours[0])?'known':'untuned'):'unknown',
+          note:exact?(known.has(row.ours[0])?'มีชุดฟิลด์เฉพาะประเภท':'จำแนกได้ แต่ยังไม่มีชุดฟิลด์เฉพาะประเภท'):'ยังไม่มีประเภทตรงตัวในระบบ'};
+      });
+      const represented=new Set(types.flatMap(row=>row.ours));
+      for(const code of recognized)if(!represented.has(code))types.push({user_code:'',user_name:'',ours:[code],status:known.has(code)?'known':'untuned',
+        note:known.has(code)?'มีชุดฟิลด์เฉพาะประเภท':'จำแนกได้ แต่ยังไม่มีชุดฟิลด์เฉพาะประเภท'});
+      const typeRows=types.map(row=>'<tr><td>'+(row.user_code?'<code>'+escape(row.user_code)+'</code> · '+escape(row.user_name):'—')
+        +'</td><td>'+(row.ours.length?row.ours.map(code=>'<code>'+escape(code)+'</code>').join('<br>'):'—')+'</td><td><span class="dm-badge dm-'+({known:'mapped',untuned:'partial',unknown:'missing'}[row.status])+'">'
+        +({known:'รู้จัก · tune แล้ว',untuned:'รู้จัก · ยังไม่ tune',unknown:'ไม่รู้จัก'}[row.status])+'</span></td><td>'+escape(row.note)+'</td></tr>').join('');
+      return '<section class="dm-panel"><h3>ประเภทเอกสารที่รู้จัก / ไม่รู้จัก</h3>'
+        +'<p class="dm-note">รู้จัก '+recognized.size+' ประเภท: tune ชุดฟิลด์เฉพาะแล้ว '+known.size+' ประเภท และยังไม่ tune '+(recognized.size-known.size)+' ประเภท การ tune ไม่ได้รับรองความแม่นยำของผลโมเดล ไม่เทียบประเภทใกล้เคียงหรือประกอบหลายประเภทแทนประเภทใหม่</p>'
+        +'<div class="dm-scroll"><table class="dm-table"><thead><tr><th>ประเภทเอกสาร User</th><th>ประเภทในระบบ</th><th>สถานะ</th><th>รายละเอียด</th></tr></thead><tbody>'+typeRows+'</tbody></table></div>'
+        +'<details><summary>เทียบฟิลด์กับ User</summary><div class="dm-scroll"><table class="dm-table"><thead><tr><th>Field ของ User</th><th>ของระบบเรา</th><th>สถานะ</th><th>รายละเอียด</th></tr></thead><tbody>'+rows(mapping.fields,true)+'</tbody></table></div></details></section>';
+    }
     const table = (name, items, fields) => '<div data-dm-view="'+name+'"'+(fields?' hidden':'')+'>'
       +'<div class="dm-summary">'+Object.keys(labels).filter(status=>mapping.counts[name]?.[status]).map(status=>badge(status,mapping.counts[name][status])).join('')+'</div>'
       +'<div class="dm-scroll"><table class="dm-table"><thead><tr><th>'+(fields?'Field ของ User':'ประเภทเอกสาร User')+'</th>'
