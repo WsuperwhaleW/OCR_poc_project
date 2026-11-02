@@ -166,7 +166,6 @@ from settings import (
     EXTRACT_LOOP_ABORT,
     EXTRACT_CYCLE_MIN_CHARS,
     EXTRACT_SCHEMA,
-    GEN_CONNECT_TIMEOUT,
     GEN_TIMEOUT,
     LOOP_CHECK_EVERY,
     STREAM_FLUSH_MS,
@@ -506,9 +505,9 @@ class Cancel:
     **What the hang-up buys, and what it measurably does NOT.** Between tokens
     the flag is enough -- `read_page` checks it every chunk. The close is for
     the case the flag cannot reach: a thread blocked in `res.iter_lines()` with
-    no token coming, which is a stalled stream, and which this path has no read
-    timeout to rescue (deliberately -- a slow first token is normal, see
-    `stream_page`).
+    no token coming, which is a stalled stream, and which the read timeout only
+    rescues after `GEN_READ_TIMEOUT` (deliberately long -- a slow first token is
+    normal, see `stream_page`).
 
     **It cannot shorten an Ollama prefill, measured rather than assumed**: on a
     2550x3300 page `requests.post()` itself returned after 221.76s and the first
@@ -518,7 +517,8 @@ class Cancel:
     measured through the app landed 178s and 134s after the button with ZERO
     tokens decoded, which is that, not a flag anyone missed.
 
-    So the honest bound on a Stop is **one prefill**, and the fix for a long one
+    So the honest bound on a Stop is **one prefill** (at most `GEN_READ_TIMEOUT`,
+    where the server never answers), and the fix for a long one
     is the standing fix for prefill: a lower Detail. What Stop removes is the
     rest of the plan, which was the whole complaint.
     """
@@ -1030,10 +1030,12 @@ def stream_page(image: Image.Image, stats: dict = None,
             chat_url(), status,
             json=payload,
             stream=True,
-            # No read timeout: this is the streaming path, where the gap between
-            # tokens is the only thing a timeout could measure and a slow first
-            # token is normal. The client disconnecting is what ends it.
-            timeout=(GEN_CONNECT_TIMEOUT, None),
+            # On a stream the read timeout measures silence, not the whole read:
+            # the wait for the first token, then each gap between tokens. A slow
+            # first token is normal, so the limit is long; without one a server
+            # that stopped answering would hold this page, its job and a Stop's
+            # drain forever.
+            timeout=GEN_TIMEOUT,
         ) as res:
             if cancel is not None:
                 cancel.attach(res)

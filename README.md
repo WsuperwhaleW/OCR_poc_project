@@ -411,7 +411,7 @@ The ones that matter for a deployment:
 | `OCR_PARALLEL_MIN_PAGES` | `3` | The fewest pages a document needs before its pages are read at once. |
 | `OCR_PARALLEL_MAX` | `0` | The most pages in flight at once when `OCR_PARALLEL` applies. `0` = every page. |
 | `MAX_JOBS` | `5` | Rendered documents held in memory for the compare view. A 10-page document at `medium` is ~40 MB, so this is a RAM ceiling. |
-| `GEN_READ_TIMEOUT` | `1800` | Raise on slow hardware; a timeout firing mid-generation throws away work the model server is still doing. |
+| `GEN_READ_TIMEOUT` | `1800` | Seconds a model request may wait on a silent server before it fails, on OCR reads as well as extraction. On a streamed request it measures silence (the wait for the first token, then each gap between tokens), so a stream that keeps sending tokens never hits it. Raise on slow hardware; a timeout firing mid-generation throws away work the model server is still doing. |
 | `EXTRACT` | `1` | Set `0` to run the OCR pass only. |
 | `AGENTIC_EXTRACT` | `0` | Start with field extraction in agentic mode. Switchable from the page at any time; this only sets what a fresh process starts in. |
 | `AGENTIC_RETRIES` | `1` | How many times an agentic step may be re-asked after returning a value that is not in the transcript. `0` turns the retry off. |
@@ -2271,7 +2271,7 @@ value, and the empty required ones in red, so a missing field can be looked for 
 *OCR › Fields* puts the transcript there instead. An extraction that raised shows the page and
 its error, with no fields. An extract-only job never read a page, so it shows the transcript it
 was given.
-| **stalled** | a job has had nothing back for 5 minutes (`STRESS_STALL_SECONDS`) — a hung request or a server that stopped answering; flagged once, and the job keeps running |
+| **stalled** | a job has had nothing back for 5 minutes (`STRESS_STALL_SECONDS`) — a hung request or a server that stopped answering; flagged once, and the job keeps running until the request answers or `GEN_READ_TIMEOUT` fails it |
 
 The final report still counts errors in its *Errors* table.
 

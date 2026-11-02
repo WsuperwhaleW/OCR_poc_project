@@ -81,6 +81,8 @@ MAX_JOBS = config.env_int("MAX_JOBS", 5, minimum=1, maximum=100)
 # matters: a CPU-only server reading a dense page at `original` detail can legitimately
 # take many minutes, and a timeout that fires mid-generation throws away work the
 # server is still doing. Raise it rather than lower it on slow hardware.
+# On a streamed request (every OCR read, and extraction on vLLM) it measures
+# silence: the wait for the first token, then each gap between tokens.
 GEN_CONNECT_TIMEOUT = config.env_float("GEN_CONNECT_TIMEOUT", 10.0, minimum=1.0)
 GEN_READ_TIMEOUT = config.env_float("GEN_READ_TIMEOUT", 1800.0, minimum=30.0)
 GEN_TIMEOUT = (GEN_CONNECT_TIMEOUT, GEN_READ_TIMEOUT)
