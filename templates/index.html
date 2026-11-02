@@ -213,9 +213,11 @@ follows your desktop; Light is the one to pick for projecting or screenshotting.
         </label>
       </div>
       <div class="row" id="realPickRow" hidden>
-        <label class="field" style="flex:1;min-width:200px">Real files · realData/
-          <select id="realPick"><option value="">&mdash; select a real file &mdash;</option></select>
+        <label class="field" style="flex:1 1 100%;min-width:200px">
+          <span>Real files · realData/ <span class="muted-inline" id="realSearchCount" style="font-weight:400"></span></span>
+          <input id="realSearch" type="text" placeholder="Search file names" autocomplete="off">
         </label>
+        <select id="realPick" aria-label="Real file" style="flex:1 1 100%"><option value="">&mdash; select a real file &mdash;</option></select>
       </div>
       <div id="drop">
         <p><strong>Drop a file here</strong></p>

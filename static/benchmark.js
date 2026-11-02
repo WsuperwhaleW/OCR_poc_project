@@ -10244,6 +10244,7 @@ document.getElementById('workspaceCase').addEventListener('change', e => {
 document.getElementById('realPick').addEventListener('change', e => {
   if (e.target.value) realPickLoad(e.target.value);
 });
+document.getElementById('realSearch').addEventListener('input', () => realPickPaint());
 ['dragenter', 'dragover'].forEach(ev =>
   drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.add('over'); }));
 ['dragleave', 'drop'].forEach(ev =>
@@ -10270,6 +10271,8 @@ clearBtn.addEventListener('click', () => {
   // The folder picker was left selected here, so a "cleared" page would still
   // run whatever was chosen in it.
   clearWorkspaceFile();
+  document.getElementById('realSearch').value = '';
+  realPickPaint();
   copyBtn.disabled = true;
   pagebar.textContent = ''; warn.textContent = '';
   meta.textContent = ''; meta.classList.remove('err');
@@ -11262,20 +11265,34 @@ function stSetSource(source) {
 
 /* The Source pane's realData picker: a chosen file is fetched and handed to
    addFiles, so it is read exactly as a dropped file would be. */
+function realPickMatches(name, query) {
+  const fold = text => text.normalize('NFC').toLowerCase();
+  const path = fold(name);
+  return fold(query).split(/\s+/).filter(Boolean).every(word => path.includes(word));
+}
 function realPickPaint() {
   const sel = document.getElementById('realPick');
   if (!sel || !stReal) return;
   const selected = sel.value;
-  document.getElementById('realPickRow').hidden = !stReal.files.length;
+  const query = document.getElementById('realSearch').value;
+  const total = stReal.files.length;
+  const matches = stReal.files.filter(f => realPickMatches(f.name, query));
+  document.getElementById('realPickRow').hidden = !total;
+  document.getElementById('realSearchCount').textContent = query.trim()
+    ? matches.length + ' of ' + total + ' files' : total + ' files';
+  // The chosen file stays listed whatever the search says: a select cannot show
+  // a value it has no option for, and would read as if nothing were chosen.
+  const shown = stReal.files.filter(f => f.name === selected || matches.includes(f));
   const groups = stReal.types.map(type => {
     const group = document.createElement('optgroup');
     group.label = type.toUpperCase();
-    for (const f of stReal.files.filter(f => f.type === type)) {
+    for (const f of shown.filter(f => f.type === type)) {
       group.append(new Option(f.name + ' · ' + f.size_mb + ' MB', f.name));
     }
     return group;
-  });
-  sel.replaceChildren(new Option('— select a real file —', ''), ...groups);
+  }).filter(group => group.childElementCount);
+  const prompt = matches.length ? '— select a real file —' : '— no file name matches —';
+  sel.replaceChildren(new Option(prompt, ''), ...groups);
   sel.value = selected;
 }
 async function realPickLoad(name) {

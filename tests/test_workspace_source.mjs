@@ -82,6 +82,48 @@ test('Workspace preferences survive reload independently of Stress and User sett
   assert.deepEqual([...storage.keys()], ['ocrWorkspaceImageRechecks:v1:/ocr/api']);
 });
 
+function setupSearch(files) {
+  const {ctx, el} = setup();
+  ctx.stReal = {types: [...new Set(files.map(f => f.type))], files};
+  ctx.Option = class {constructor(text, value) {this.text = text; this.value = value;}};
+  ctx.document.createElement = () => ({childElementCount: 0, options: [],
+    append(option) {this.options.push(option); this.childElementCount++;}});
+  el('realPick').replaceChildren = (...items) => {el('realPick').items = items;};
+  vm.runInContext(source('realPickMatches') + source('realPickPaint'), ctx);
+  const listed = () => el('realPick').items.slice(1).flatMap(group => group.options.map(o => o.value));
+  return {ctx, el, listed};
+}
+const realFiles = [
+  {name: 'invoice/INV-2024-001.pdf', type: 'pdf', size_mb: 1},
+  {name: 'invoice/ใบแจ้งหนี้ มกราคม.pdf', type: 'pdf', size_mb: 1},
+  {name: 'scan/photo_001.jpg', type: 'jpg', size_mb: 1},
+];
+
+test('search narrows the real files by any case, by folder, in Thai, and word by word', () => {
+  const {ctx, el, listed} = setupSearch(realFiles);
+  const search = query => {el('realSearch').value = query; ctx.realPickPaint(); return listed();};
+  assert.equal(search('').length, 3);
+  assert.equal(el('realSearchCount').textContent, '3 files');
+  assert.deepEqual(search('inv-2024'), ['invoice/INV-2024-001.pdf']);
+  assert.equal(el('realSearchCount').textContent, '1 of 3 files');
+  assert.deepEqual(search('มกราคม'), ['invoice/ใบแจ้งหนี้ มกราคม.pdf']);
+  assert.deepEqual(search('scan/'), ['scan/photo_001.jpg']);
+  assert.deepEqual(search('001 photo'), ['scan/photo_001.jpg']);
+  assert.deepEqual(search('nothing-like-this'), []);
+  assert.equal(el('realPick').items[0].text, '— no file name matches —');
+  assert.equal(el('realPick').items.length, 1);
+});
+
+test('a search that excludes the chosen file keeps it listed and selected', () => {
+  const {ctx, el, listed} = setupSearch(realFiles);
+  el('realPick').value = 'scan/photo_001.jpg';
+  el('realSearch').value = 'inv-2024';
+  ctx.realPickPaint();
+  assert.deepEqual(listed(), ['invoice/INV-2024-001.pdf', 'scan/photo_001.jpg']);
+  assert.equal(el('realPick').value, 'scan/photo_001.jpg');
+  assert.equal(el('realSearchCount').textContent, '1 of 3 files');
+});
+
 test('real-file selection stays visible, and a slow old load cannot replace a newer case', async () => {
   const {ctx, el} = setup(); ctx.API = '/ocr/api';
   ctx.File = class {constructor(_parts, name, opts) {this.name = name; this.type = opts.type;}};
