@@ -530,6 +530,42 @@ class UserWebTests(unittest.TestCase):
 
 
 class EngineAdapterTests(StoreCase):
+    def test_interleaved_document_progress_counts_finished_documents_and_keeps_classifications_scoped(self):
+        cfg = {**self.store.settings(), 'fill_missing': False}
+        batch = self.store.create_batch(1, cfg)
+        job = self.store.add_job(batch, 'upload_parallel', 'two.pdf', b'file')
+        self.store.update(job['id'], result={'text': 'two documents', 'pages': ['a', 'b'], 'warnings': []})
+        job = self.store.get(job['id'])
+        seen = []
+        def stream(*args, **kwargs):
+            for event in [
+                {'event':'segmenting','pages':2,'walk':True,'parallel':2},
+                {'event':'segment_progress','pages':2,'pages_checked':1,'parallel':2,'starts_found':1},
+                {'event':'segmented','documents':2},
+                {'event':'documents_parallel','documents':2,'document_parallel':2},
+                {'event':'classified','document':1,'pages':[1],'doc_types':['INVOICE']},
+                {'event':'extract_steps','document':1,'total':2},
+                {'event':'classified','document':2,'pages':[2],'doc_types':['RECEIPT']},
+                {'event':'extract_steps','document':2,'total':3},
+                {'event':'extract_step','document':1,'status':'done'},
+                {'event':'extract_step','document':2,'status':'done'},
+                {'event':'document_done','document':2},
+                {'event':'document_done','document':1},
+            ]:
+                yield event
+                seen.append(self.store.get(job['id']))
+            return {'document_parallel':2, 'extraction_request_limit':8, 'documents':[
+                {'document':1,'pages':[1],'fields':{'document_number':'A'}},
+                {'document':2,'pages':[2],'fields':{'document_number':'B'}}]}
+        with patch.object(app.backends, 'extract_status', return_value={'text_available': True}), \
+                patch.object(app, 'extract_fields_stream', side_effect=stream):
+            result = EngineAdapter(app).extraction(job, self.store)
+        self.assertIn('เสร็จ 1/2 เอกสาร', seen[-2]['progress'])
+        self.assertIn('เสร็จ 2/2 เอกสาร', seen[-1]['progress'])
+        self.assertTrue(any('ตรวจขอบเขตแล้ว 1/2 หน้า' in row['progress'] for row in seen))
+        self.assertEqual([c['pages'] for c in result['classifications']], [[1],[2]])
+        self.assertEqual(result['extracted']['extraction_request_limit'], 8)
+
     def test_classification_is_visible_before_extraction_finishes_and_survives_failure(self):
         batch = self.store.create_batch(1, self.store.settings())
         job = self.store.add_job(batch, 'upload_01', 'two.pdf', b'file')

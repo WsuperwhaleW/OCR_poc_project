@@ -527,6 +527,11 @@ def summarise_records(records) -> dict:
 _local = threading.local()
 
 
+def current_batch():
+    """Reuse the outer document batch when its Hybrid steps fan out as well."""
+    return getattr(_local, "batch", None)
+
+
 def open_tally():
     """Start counting this thread's requests. Returns the previous tally."""
     previous = getattr(_local, "tally", None)

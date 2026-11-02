@@ -1,10 +1,11 @@
-"""User portal jobs go first -- scheduled by the vLLM server, not by the app.
+"""User portal jobs go first in app admission and on priority-enabled vLLM.
 
 The server runs `--scheduling-policy=priority` (vllm/podman-ocr-server/
 podman-compose.yml), which orders its waiting queue by each request's
 `priority` field, lower first, and preempts a running request of a later
-priority when a sooner one needs the room. So the app holds nothing back: every
-request is sent as it comes, and only the field says who goes first.
+priority when a sooner one needs the room. Extraction also has a shared
+per-server admission ceiling in extractionlimit.py; its waiting queue uses the
+same priorities, so background work cannot jump ahead of a waiting User request.
 
 A User request keeps vLLM's default, 0. Every other chat request -- a stress
 test, a random test, a read on the benchmark page -- is sent with `BACKGROUND`.

@@ -31,7 +31,7 @@ import uuid
 import weakref
 from collections import OrderedDict, deque
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
-from contextlib import closing, contextmanager
+from contextlib import closing, contextmanager, nullcontext
 from functools import lru_cache
 from pathlib import Path
 
@@ -46,18 +46,21 @@ import dryreplay
 import doctype_mapping
 import fieldscore
 import extractionlog
+import extractionlimit
 import fixscore
 import grounding
 import machine
 import monitor
 import normalise
 import prompts
+import priority
 import userprompts
 import randomtest
 import runlog
 import runhistory
 import scoring
 import segment
+import segmentparallel
 import servertime
 import stress
 import tables
@@ -110,6 +113,8 @@ from settings import (
     AUTO_SELECT_SERVER,
     AGENTIC_PARALLEL,
     AGENTIC_PARALLEL_MAX,
+    EXTRACT_DOCUMENT_PARALLEL_MAX,
+    EXTRACT_REQUEST_CONCURRENCY,
     OCR_PARALLEL,
     OCR_PARALLEL_MAX,
     OCR_PARALLEL_MIN_PAGES,
@@ -138,6 +143,9 @@ from settings import (
     SEGMENT_CHAT_WINDOW,
     SEGMENT_TYPE_GATE,
     SEGMENT_CHAT_MAX_ASKS,
+    SEGMENT_PARALLEL_MAX,
+    SEGMENT_PARALLEL_MIN_PAGES,
+    SEGMENT_PARALLEL_OVERLAP,
     SEGMENT_MAX_TOKENS,
     SEGMENT_WITH_MODEL,
     TABLE_EXTRACT,
@@ -1156,6 +1164,16 @@ def stream_page(image: Image.Image, stats: dict = None,
                             else {"checked": False})
 
 
+_EXTRACTION_LIMITS = extractionlimit.ServerLimits()
+
+
+def _extraction_waiting():
+    # Waiting for the app's shared ceiling is not a stalled model request.
+    cb = getattr(_progress, 'cb', None)
+    if cb is not None:
+        cb('chunk', None, 'waiting for shared extraction capacity')
+
+
 def _timed_post(url: str, payload: dict, status: dict):
     """`requests.post` for one non-streaming model request, timed by the server
     as well. The record lands in this thread's `servertime` tally, if one is open
@@ -1166,12 +1184,20 @@ def _timed_post(url: str, payload: dict, status: dict):
     On vLLM the request is streamed instead, so a reply that starts looping can
     be cut off (`_streamed_post`); the caller gets the same shape either way.
     """
-    res = _post_once(url, payload, status)
-    if res.status_code == 400 and _context_overflow(res.text, status):
-        fitted = _fit_max_tokens(payload, status)
-        if fitted is not None:
-            res = _post_once(url, fitted, status)
-    return res
+    budget = getattr(_progress, "request_budget", None)
+    try:
+        with _EXTRACTION_LIMITS.request((status or {}).get('url') or url,
+                EXTRACT_REQUEST_CONCURRENCY, priority=priority.request_priority(),
+                cancel=budget.stopped if budget is not None else None, on_wait=_extraction_waiting):
+            with budget.request() if budget is not None else nullcontext():
+                res = _post_once(url, payload, status)
+                if res.status_code == 400 and _context_overflow(res.text, status):
+                    fitted = _fit_max_tokens(payload, status)
+                    if fitted is not None:
+                        res = _post_once(url, fitted, status)
+                return res
+    except extractionlimit.Cancelled as err:
+        raise SweepCancelled(str(err)) from err
 
 
 _agentic_chat_context = threading.local()
@@ -1396,6 +1422,27 @@ def _prefilled():
 _progress = threading.local()
 
 
+class _DocumentRequests:
+    """Per-file cancellation and observed concurrency; admission is server-wide."""
+    def __init__(self):
+        self.stopped = threading.Event()
+        self.lock = threading.Lock()
+        self.active = self.peak = 0
+
+    @contextmanager
+    def request(self):
+        if self.stopped.is_set():
+            raise SweepCancelled('extraction closed')
+        with self.lock:
+            self.active += 1
+            self.peak = max(self.peak, self.active)
+        try:
+            yield
+        finally:
+            with self.lock:
+                self.active -= 1
+
+
 def _progress_swap(cb):
     """Install `cb` as this thread's progress hook. Returns the one it replaced."""
     previous = getattr(_progress, "cb", None)
@@ -1406,21 +1453,20 @@ def _progress_swap(cb):
 def _carry_progress(fn):
     """`fn`, set to run with this thread's progress hook -- for handing to a thread.
     The page images of an image-fed extraction (`_feeding_images`) go with it."""
-    cb = getattr(_progress, "cb", None)
-    what = getattr(_progress, "what", None)
-    images = getattr(_progress, "images", None)
-    if cb is None and images is None:
+    state = {name: getattr(_progress, name, None)
+             for name in ("cb", "what", "images", "request_budget", "document")}
+    if all(value is None for value in state.values()):
         return fn
 
     def run(*args, **kwargs):
-        previous, previous_what = _progress_swap(cb), getattr(_progress, "what", None)
-        previous_images = getattr(_progress, "images", None)
-        _progress.what, _progress.images = what, images
+        previous = {name: getattr(_progress, name, None) for name in state}
+        for name, value in state.items():
+            setattr(_progress, name, value)
         try:
             return fn(*args, **kwargs)
         finally:
-            _progress_swap(previous)
-            _progress.what, _progress.images = previous_what, previous_images
+            for name, value in previous.items():
+                setattr(_progress, name, value)
     return run
 
 
@@ -1507,6 +1553,9 @@ def _watched():
         yield _no_progress
         return
     request, what = object(), getattr(_progress, "what", None)
+    document = getattr(_progress, "document", None)
+    if document:
+        what = ', '.join(part for part in (document, what) if part)
     cb("begin", request, what)
     try:
         yield lambda: cb("chunk", request, what)
@@ -2312,8 +2361,11 @@ class _SegmentChat:
       raises and never stops the walk.
     """
 
-    def __init__(self, status: dict):
+    def __init__(self, status: dict, questions=None, reserve=None, budget_deferred=None, wait_budget=None):
         self.status = status
+        self.questions, self.reserve = questions, reserve
+        self.budget_deferred = budget_deferred
+        self.wait_budget = wait_budget
         # The current document's conversation. Thrown away by `opened`.
         self._first = None
         self._turns = []
@@ -2367,7 +2419,23 @@ class _SegmentChat:
             self.capped = True
             return None
         self.asked += 1
-        answer = self._ask(number, page)
+        if self.questions is None:
+            answer = self._ask(number, page)
+        else:
+            key = (number, page, json.dumps(self._messages(number, page), ensure_ascii=False))
+            while True:
+                reserve = self.reserve() if self.reserve else 0
+                allowed, answer = self.questions.call(key, lambda: self._ask(number, page), reserve)
+                if (not allowed and reserve and self.questions.has_capacity() and self.wait_budget
+                        and self.wait_budget()):
+                    continue
+                break
+            if not allowed:
+                if reserve and self.budget_deferred:
+                    self.budget_deferred()
+                self.asked -= 1
+                self.capped = True
+                return None
         if answer is None:
             self.refused += 1
             return None
@@ -2476,6 +2544,9 @@ def _segment_stream(text: str, pages=None, status: dict = None):
         return segment.one(pages, classify_transcript, text,
                            "the file has %d pages, over SEGMENT_MAX_PAGES=%d"
                            % (len(pages), SEGMENT_MAX_PAGES)), "whole"
+    if (walking and len(pages) >= SEGMENT_PARALLEL_MIN_PAGES and SEGMENT_PARALLEL_MAX > 1
+            and backends.parallel_ok(status) and not _image_fed()):
+        return (yield from _segment_parallel_stream(text, pages, status))
     # Too long for the one-shot question, whose prompt carries a digest of every
     # page, is **walked instead** (2026-09-16): one short question per unsettled
     # boundary, the document so far as the conversation, and the memory reset at
@@ -2529,6 +2600,86 @@ def _segment_stream(text: str, pages=None, status: dict = None):
         if groups:
             return segment.apply_groups(pages, groups, classify_transcript), "model"
     return segments, "guess"
+
+
+
+def _segment_parallel_stream(text, pages, status):
+    workers = min(SEGMENT_PARALLEL_MAX, len(pages), EXTRACT_REQUEST_CONCURRENCY)
+    questions = segmentparallel.Questions(SEGMENT_CHAT_MAX_ASKS)
+    messages = queue.Queue()
+    control = segmentparallel.Coordinator(pages, workers, SEGMENT_PARALLEL_OVERLAP,
+        classify_transcript, lambda index: _SegmentChat(status, questions, lambda: control.reserve(index),
+                 lambda: control.budget_deferred(index), lambda: control.wait_budget(index)),
+        CLASSIFY_MIN_CONFIDENCE if SEGMENT_TYPE_GATE else 0.0,
+        progress=lambda values: messages.put(('progress', values)))
+    budget, batch = _DocumentRequests(), servertime.Batch(status)
+    pool = ThreadPoolExecutor(max_workers=len(control.starts), thread_name_prefix='segment-seek')
+    results, fallback = {}, ''
+    def work(index):
+        previous = getattr(_progress, 'request_budget', None)
+        _progress.request_budget = budget
+        try:
+            return control.worker(index)
+        finally:
+            _progress.request_budget = previous
+    try:
+        yield {'event':'segmenting', 'pages':len(pages), 'walk':True,
+               'parallel':len(control.starts), 'worker_starts':[n + 1 for n in control.starts]}
+        for index in range(len(control.starts)):
+            future = pool.submit(_carry_progress(workspace.bind(batch.run)), work, index)
+            future.add_done_callback(lambda done, i=index: messages.put(('done', (i, done))))
+        last = None
+        while len(results) < len(control.starts):
+            kind, value = messages.get()
+            if kind == 'done':
+                index, future = value
+                try:
+                    results[index] = future.result()
+                except segmentparallel.Conflict as err:
+                    fallback = control.conflict_reason or str(err)
+                    budget.stopped.set(); control.cancel.set()
+                    results[index] = {'owned':None, 'groups':[], 'events':[], 'decisions':{}}
+            elif value != last:
+                last = value
+                yield {'event':'segment_progress', 'pages':len(pages),
+                       'parallel':len(control.starts), **value}
+        if not fallback:
+            try:
+                grouped, events = control.assemble(results, text)
+            except segmentparallel.Conflict as err:
+                fallback = str(err)
+    finally:
+        control.cancel.set(); budget.stopped.set()
+        pool.shutdown(wait=True, cancel_futures=True)
+        batch.close()
+    metadata = {'workers':len(control.starts), 'worker_starts':[n + 1 for n in control.starts],
+                'candidate_starts':sorted(control.anchors), 'fallback':fallback,
+                'worker_ownership':[{'worker':i + 1, 'seed_page':control.starts[i] + 1,
+                                     'starts_at':results[i]['owned'],
+                                     'applied':not fallback and i in control.used_owners}
+                                    for i in range(len(control.starts))]}
+    if fallback:
+        # A conflicting handoff never becomes a silent cut. Reuse only exact
+        # conversations and the remaining file-level question budget.
+        yield {'event':'segmenting', 'pages':len(pages), 'walk':True,
+               'parallel':1, 'fallback':fallback}
+        chat = _SegmentChat(status, questions)
+        stream = segment.walk(pages, classify_transcript, whole=text, ask=chat,
+                              min_confidence=CLASSIFY_MIN_CONFIDENCE if SEGMENT_TYPE_GATE else 0.0)
+        events = []
+        with closing(stream):
+            grouped = _drain(stream, events.append)
+    stats = questions.stats()
+    metadata.update(confirmed_starts=[g['pages'][0] for g in grouped if g.get('certain')],
+                    final_document_starts=[g['pages'][0] for g in grouped],
+                    ownership_applied=not bool(fallback))
+    for step in events:
+        yield {'event':'segment_page', **step, 'remaining':len(pages) - step['page'],
+               'head':(pages[step['page'] - 1] or '').strip()[:SEGMENT_MAX_CHARS],
+               'asked_total':stats['questions_sent'], 'answered_total':stats['questions_answered'],
+               'refused_total':stats['questions_refused']}
+    grouped[0]['_parallel_execution'] = {**metadata, **stats}
+    return grouped, ('chat' if stats['questions_answered'] else 'guess')
 
 
 def _segment_record(seg: dict, index: int, total: int) -> dict:
@@ -3462,7 +3613,8 @@ def _extract_agentic(text: str, status: dict, form: dict, only=None, mode="agent
             yield running(index, step)
         # One server-timing span for the lot: a /metrics difference around any
         # single concurrent request covers its neighbours. See servertime.Batch.
-        batch = servertime.Batch(status)
+        parent_batch = servertime.current_batch()
+        batch = parent_batch or servertime.Batch(status)
         with ThreadPoolExecutor(max_workers=parallel,
                                 thread_name_prefix="agentic-step") as pool:
             def submit(index):
@@ -3494,7 +3646,8 @@ def _extract_agentic(text: str, status: dict, form: dict, only=None, mode="agent
                     index = futures[future]
                     outcomes[index] = future.result()
                     yield done(index + 1, table[index], outcomes[index][0])
-        batch.close()
+        if parent_batch is None:
+            batch.close()
     else:
         for index, step in enumerate(table):
             yield running(index + 1, step)
@@ -4590,6 +4743,8 @@ def extract_fields_stream(text: str, mode: str = None, case_id: str = None,
         result["server_time"] = served
     if isinstance(result, dict):
         result["schema_first"] = schema_first
+        result['extraction_request_limit'] = EXTRACT_REQUEST_CONCURRENCY
+        result['extraction_request_scope'] = 'server'
         if _image_fed():
             _ungrounded_result(result)
     return result
@@ -4618,6 +4773,7 @@ def _extract_file(text, mode, case_id, steps, doc_type, pages, truth_fed, status
     """The body of `extract_fields_stream`, split out so the server-time tally
     can be wrapped round all of it."""
     segments, split_from = yield from _segment_stream(text, pages, status)
+    grouping_execution = segments[0].pop('_parallel_execution', None)
     records = [_segment_record(seg, index, len(segments))
                for index, seg in enumerate(segments, 1)]
     # Emitted on every run, one document or several. A page that only heard
@@ -4640,6 +4796,8 @@ def _extract_file(text, mode, case_id, steps, doc_type, pages, truth_fed, status
         # a fact about the run, and a reader looking at one document's fields
         # needs to know whether that was the whole file.
         result["segments"] = records
+        if grouping_execution:
+            result['grouping_execution'] = grouping_execution
         result.setdefault("documents_found", 1)
         result["split_from"] = split_from
         # Whether `other_fields` was asked for. An empty list means "none
@@ -4711,7 +4869,7 @@ def _extract_document(text: str, mode: str, case_id: str, steps, doc_type,
 def _extract_documents(segments, records, mode: str, case_id: str, steps,
                        doc_type, status: dict, truth_fed: bool = False,
                        extras: bool = True, schema_first: bool = False):
-    """Every document in the file, one at a time, merged into one result.
+    """Independent documents, merged in file order even when run concurrently.
 
     **The fields are independent and are kept that way.** Each document is
     extracted from its own pages only, so a value on page 3 cannot fill a key of
@@ -4727,6 +4885,12 @@ def _extract_documents(segments, records, mode: str, case_id: str, steps,
     document; scoring the second document of a split file against it would mark
     a correct extraction wrong for not being the first document.
     """
+    parallel = min(len(segments), EXTRACT_DOCUMENT_PARALLEL_MAX, EXTRACT_REQUEST_CONCURRENCY)
+    if (len(segments) > 1 and EXTRACT_DOCUMENT_PARALLEL_MAX > 1
+            and backends.parallel_ok(status) and not _image_fed()):
+        return (yield from _extract_documents_parallel(
+            segments, records, mode, case_id, steps, doc_type, status,
+            truth_fed, extras, schema_first, parallel))
     documents, failed = [], 0
     for seg, record in zip(segments, records):
         yield {"event": "document", "document": record["document"],
@@ -4757,6 +4921,93 @@ def _extract_documents(segments, records, mode: str, case_id: str, steps,
                "filled": len(result.get("fields") or {}),
                "error": result.get("error") or ""}
     return _merge_documents(documents, records, mode, failed)
+
+
+def _extract_documents_parallel(segments, records, mode, case_id, steps, doc_type,
+                                status, truth_fed, extras, schema_first, parallel):
+    """A rolling window of documents, with one shared budget for all their steps.
+
+    Only the owning thread emits stream events or merges results. Worker events
+    identify their document so interleaving cannot attach fields to a neighbour.
+    One server timing batch covers all workers, including nested Hybrid steps.
+    """
+    started = time.perf_counter()
+    budget = _DocumentRequests()
+    messages = queue.Queue()
+    documents = [None] * len(records)
+    batch = servertime.Batch(status)
+    pool = ThreadPoolExecutor(max_workers=parallel, thread_name_prefix='extract-document')
+    futures = []
+
+    def work(index):
+        seg, record = segments[index], records[index]
+        context = {key: record[key] for key in ('document', 'documents', 'pages', 'page_range')}
+        previous_budget = getattr(_progress, 'request_budget', None)
+        previous_document = getattr(_progress, 'document', None)
+        _progress.request_budget = budget
+        _progress.document = f"document {record['document']} of {len(records)}"
+        def emit(event):
+            if budget.stopped.is_set():
+                raise SweepCancelled('extraction closed')
+            messages.put(('event', index, {**event, **context}))
+        try:
+            emit({'event': 'document'})
+            with closing(_extract_document(seg['text'], mode, case_id, steps, doc_type,
+                                          status, record, truth_fed, extras, schema_first)) as stream:
+                result = _drain(stream, emit)
+            if not isinstance(result, dict):
+                result = {'error': 'extraction returned nothing'}
+        except Exception as err:
+            result = {'error': str(err)}
+        finally:
+            _progress.request_budget = previous_budget
+            _progress.document = previous_document
+        messages.put(('done', index, result))
+
+    def submit(index):
+        # Capture workspace, User prompt revisions, stall hook and image mode.
+        futures.append(pool.submit(_carry_progress(workspace.bind(batch.run)), work, index))
+
+    try:
+        yield {'event': 'documents_parallel', 'documents': len(records),
+               'document_parallel': parallel, 'extraction_request_limit': EXTRACT_REQUEST_CONCURRENCY,
+               'extraction_request_scope': 'server'}
+        for index in range(parallel):
+            submit(index)
+        completed, following = 0, parallel
+        while completed < len(records):
+            kind, index, value = messages.get()
+            if kind == 'event':
+                yield value
+                continue
+            record = records[index]
+            value.update(document=record['document'], pages=list(record['pages']),
+                         page_range=record['page_range'])
+            if case_id and not value.get('field_score'):
+                value['field_truth_scope'] = (
+                    'the ground truth for %s states nothing for page%s %s'
+                    % (case_id, '' if len(record['pages']) == 1 else 's', record['page_range']))
+            documents[index] = value
+            completed += 1
+            yield {'event': 'document_done', 'document': record['document'],
+                   'documents': len(records), 'pages': list(record['pages']),
+                   'page_range': record['page_range'], 'completed_documents': completed,
+                   'filled': len(value.get('fields') or {}), 'error': value.get('error') or ''}
+            if following < len(records):
+                submit(following)
+                following += 1
+    finally:
+        # Closing the stream must not start the rest of a 150-document PDF.
+        budget.stopped.set()
+        pool.shutdown(wait=True, cancel_futures=True)
+        batch.close()
+    result = _merge_documents(documents, records, mode,
+                              sum(bool(doc.get('error')) for doc in documents))
+    result.update(document_parallel=parallel, extraction_request_limit=EXTRACT_REQUEST_CONCURRENCY,
+                  extraction_request_scope='server',
+                  document_requests_peak=budget.peak, document_seconds_sum=result['seconds'],
+                  seconds=round(time.perf_counter() - started, 2))
+    return result
 
 
 def _merge_documents(documents, records, mode: str, failed: int) -> dict:
@@ -7590,7 +7841,8 @@ class _StressLive:
                 return
             now = time.perf_counter()
             if event == "begin":
-                label = ", ".join(p for p in (active["document"], what) if p)
+                label = (what if what and what.startswith('document ') else
+                         ", ".join(p for p in (active["document"], what) if p))
                 active["requests"][request] = {"what": label, "last": now}
                 return
             active["last"] = now
@@ -10041,10 +10293,16 @@ def _stress_detail_identity(cfg):
     return extractionlog.provenance(prompts.__file__, __file__, {
         "AGENTIC_RETRIES": AGENTIC_RETRIES, "EXTRACT_SCHEMA": EXTRACT_SCHEMA,
         "AGENTIC_PARALLEL": AGENTIC_PARALLEL, "AGENTIC_PARALLEL_MAX": AGENTIC_PARALLEL_MAX,
+        "EXTRACT_DOCUMENT_PARALLEL_MAX": EXTRACT_DOCUMENT_PARALLEL_MAX,
+        "EXTRACT_REQUEST_CONCURRENCY": EXTRACT_REQUEST_CONCURRENCY,
+        "SEGMENT_PARALLEL_MAX": SEGMENT_PARALLEL_MAX,
+        "SEGMENT_PARALLEL_MIN_PAGES": SEGMENT_PARALLEL_MIN_PAGES,
+        "SEGMENT_PARALLEL_OVERLAP": SEGMENT_PARALLEL_OVERLAP,
         "SEGMENT_MAX_PAGES": SEGMENT_MAX_PAGES,
         "NORMALIZATION_VERSION": normalise.NORMALIZATION_VERSION}, extra_files={
             "normalise": normalise.__file__, "fieldscore": fieldscore.__file__,
-            "segment": segment.__file__, "backends": backends.__file__,
+            "segment": segment.__file__, "segmentparallel": segmentparallel.__file__,
+            "extractionlimit": extractionlimit.__file__, "backends": backends.__file__,
             "grounding": grounding.__file__, "stress": stress.__file__,
             "manifest": config.SOLUTION_DIR / "manifest.json"}, benchmarks=benchmarks)
 

@@ -1078,6 +1078,11 @@ SEGMENT_CHAT_WINDOW = config.env_int("SEGMENT_CHAT_WINDOW", 8, minimum=2)
 # is a question. Reached, the rest of the walk is Python's own reading, and the
 # result says how many were asked.
 SEGMENT_CHAT_MAX_ASKS = config.env_int("SEGMENT_CHAT_MAX_ASKS", 200, minimum=1)
+# Middle-file workers seek a confirmed boundary before claiming pages. The
+# coordinator verifies every handoff against the preceding forward owner.
+SEGMENT_PARALLEL_MAX = config.env_int("SEGMENT_PARALLEL_MAX", 4, minimum=1, maximum=32)
+SEGMENT_PARALLEL_MIN_PAGES = config.env_int("SEGMENT_PARALLEL_MIN_PAGES", 32, minimum=4)
+SEGMENT_PARALLEL_OVERLAP = config.env_int("SEGMENT_PARALLEL_OVERLAP", 3, minimum=0, maximum=20)
 
 # A change of type the classifier is under CLASSIFY_MIN_CONFIDENCE about is a
 # question on the walk rather than a certain cut (2026-09-16). It costs requests
@@ -1177,6 +1182,12 @@ AGENTIC_PARALLEL = config.env_bool("AGENTIC_PARALLEL", True)
 # The most steps in flight at once when `AGENTIC_PARALLEL` applies. 0 = every
 # step of the form at once (7-9 on a typed form, 17 unclassified).
 AGENTIC_PARALLEL_MAX = config.env_int("AGENTIC_PARALLEL_MAX", 0, minimum=0, maximum=64)
+
+# Independent documents in one PDF may extract together on vLLM. Bound the
+# document workers. A value of 1 restores serial docs. All files share the
+# request ceiling per extraction endpoint, including single-document jobs.
+EXTRACT_DOCUMENT_PARALLEL_MAX = config.env_int("EXTRACT_DOCUMENT_PARALLEL_MAX", 4, minimum=1, maximum=32)
+EXTRACT_REQUEST_CONCURRENCY = config.env_int("EXTRACT_REQUEST_CONCURRENCY", 128, minimum=1, maximum=1024)
 
 # Read a long document's pages AT ONCE rather than one after another, and join
 # the transcripts back in page order. Added 2026-10-20 at the user's request: a

@@ -20,6 +20,8 @@ def compact_extraction(value):
             'steps_failed', 'steps_extras', 'model', 'backend', 'url', 'normalization_version',
             'validation', 'image_filled', 'image_fills', 'validation_image_rechecks', 'image_rechecks')
     keys += ('custom_fields', 'user_prompt_mappings', 'user_prompt_revisions')
+    keys += ('document_parallel', 'extraction_request_limit', 'extraction_request_scope',
+             'document_requests_peak', 'document_seconds_sum', 'grouping_execution')
     out = {key: value[key] for key in keys if key in value}
     if isinstance(value.get('item_table'), dict):
         table = value['item_table']
@@ -156,15 +158,21 @@ class EngineAdapter:
                 result['text'], pages=result['pages'], mode=cfg['shape'],
                 extras=cfg['extras'], schema_first=cfg['schema_first'])
             document, documents, completed, total = 1, 1, 0, 0
+            parallel_documents, per_document, finished_documents = 1, {}, set()
             try:
                 while True:
                     event = next(stream)
                     kind = event.get('event')
                     if kind == 'segmented':
                         documents = event.get('documents', 1)
+                    elif kind == 'documents_parallel':
+                        parallel_documents = event['document_parallel']
+                    elif kind == 'document_done':
+                        finished_documents.add(event['document'])
                     elif kind in ('document', 'classified'):
                         document = event.get('document', 1)
                         completed, total = 0, 0
+                        per_document.setdefault(document, {'completed': 0, 'total': 0})
                         if kind == 'classified':
                             classified = {key: event[key] for key in ('doc_types', 'doc_type',
                                 'doc_type_heading', 'doc_type_from', 'doc_type_confidence') if key in event}
@@ -175,16 +183,28 @@ class EngineAdapter:
                             result['classifications'] = sorted(previous + [classified], key=lambda row: row['document'])
                             store.update(job['id'], result=result)
                     elif kind == 'extract_steps':
+                        document = event.get('document', document)
                         total, completed = event['total'], 0
+                        per_document[document] = {'total': total, 'completed': completed}
                     elif kind == 'extract_step' and event.get('status') == 'done':
-                        completed += 1
+                        document = event.get('document', document)
+                        counts = per_document.setdefault(document, {'total': 0, 'completed': 0})
+                        counts['completed'] += 1
+                        completed, total = counts['completed'], counts['total']
+                    elif kind == 'segment_progress':
+                        store.update(job['id'], progress=f"ตรวจขอบเขตแล้ว {event['pages_checked']}/{event['pages']} หน้า"
+                                     f" · ใช้ {event['parallel']} workers · พบจุดเริ่ม {event['starts_found']} จุด")
+                        continue
                     elif kind in ('classifying', 'segmenting'):
-                        store.update(job['id'], progress='กำลังจำแนกและแยกเอกสาร')
+                        store.update(job['id'], progress='กำลังตรวจรอยต่ออีกครั้ง' if event.get('fallback') else
+                                     'กำลังจำแนกและแยกเอกสาร')
                         continue
                     else:
                         continue
-                    text = f'ดึงข้อมูลเอกสาร {document}/{documents}'
-                    if total:
+                    text = (f'ดึงข้อมูลเสร็จ {len(finished_documents)}/{documents} เอกสาร'
+                            f' · ทำพร้อมกันสูงสุด {parallel_documents} เอกสาร' if parallel_documents > 1 else
+                            f'ดึงข้อมูลเอกสาร {document}/{documents}')
+                    if total and parallel_documents == 1:
                         text += f' · เสร็จ {completed}/{total} steps'
                     store.update(job['id'], progress=text)
             except StopIteration as stop:

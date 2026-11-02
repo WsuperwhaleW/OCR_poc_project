@@ -322,7 +322,7 @@ def _boundary(page: str, previous: str, seg: dict, codes, confidence=None,
 
 
 def walk(pages, classify, whole: str = None, ask=None,
-         min_confidence: float = 0.0):
+         min_confidence: float = 0.0, start: int = 0, stop_boundary=None):
     """The pages of one file, grouped into documents.
 
     `classify(text)` is injected rather than imported: the type classifier lives
@@ -366,7 +366,11 @@ def walk(pages, classify, whole: str = None, ask=None,
     """
     pages = [p if p is not None else "" for p in (pages or [""])]
     segments = []
-    for number, page in enumerate(pages, 1):
+    stopped = False
+    for number, page in enumerate(pages[start:], start + 1):
+        if stop_boundary is not None and stop_boundary(number, None, None, ''):
+            stopped = True
+            break
         codes, heading, confidence, _ = classify(page)
         if not segments:
             segments.append(_open(number, page, codes, heading, confidence,
@@ -393,6 +397,9 @@ def walk(pages, classify, whole: str = None, ask=None,
                 # page says which.
                 new, why = answer
                 certain = True
+        if stop_boundary is not None and stop_boundary(number, new, certain, why):
+            stopped = True
+            break
         if new:
             segments.append(_open(number, page, codes, heading, confidence,
                                   why, certain))
@@ -424,7 +431,7 @@ def walk(pages, classify, whole: str = None, ask=None,
                     codes, confidence, asked, answered)
     for seg in segments:
         seg["text"] = _join(seg)
-    if len(segments) == 1 and whole is not None:
+    if len(segments) == 1 and whole is not None and start == 0 and not stopped:
         # **A file that is one document hands pass 2 the transcript it was
         # given, byte for byte.** Rebuilt from its pages it would not be the
         # same string: `app.py` writes `--- page 1 ---` above the first page of

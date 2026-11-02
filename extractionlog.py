@@ -180,6 +180,12 @@ def job_detail(record, spec, source, warmup=0, catalog=None, benchmark=None):
             "timing": {key: record[key] for key in ("wait_s", "total_s", "ocr_s", "extract_s")
                        if key in record},
             "field_rows": rows, "documents": documents}
+    if isinstance(result, dict) and result.get('document_parallel'):
+        detail['document_execution'] = {key: result[key] for key in (
+            'document_parallel', 'extraction_request_limit', 'extraction_request_scope', 'document_requests_peak',
+            'document_seconds_sum', 'seconds') if key in result}
+    if isinstance(result, dict) and result.get('grouping_execution'):
+        detail['grouping_execution'] = result['grouping_execution']
     if isinstance(result, dict) and result.get("field_score"):
         detail["score"] = _score_summary(result["field_score"])
     alignment = _alignment(documents, benchmark)

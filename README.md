@@ -3485,6 +3485,58 @@ draws a button per document above the values, with the reason for the boundary i
 The run log writes `documents`, and its `p1_present`, `p1_absent`, `other_fields` and
 `ungrounded` cells are **sums over the documents** on such a row.
 
+On vLLM, independent documents in one PDF now extract concurrently **after the
+existing grouping stage completes**. `EXTRACT_DOCUMENT_PARALLEL_MAX=4` bounds
+the number of active documents per file. `EXTRACT_REQUEST_CONCURRENCY=128` is
+one **shared request ceiling per extraction endpoint** across User, Workspace,
+Stress and every file in this Python process. It covers grouping/classification,
+single requests, Hybrid steps, schema/grounding retries and table agents. There
+is no separate eight-request file cap: idle capacity is available to any file.
+User requests have priority in the admission queue, and different extractor
+endpoints have independent ceilings. OCR page requests are separate. Stress/User
+file concurrency remains a separate control; four document workers per file is
+still the default and can be increased with `EXTRACT_DOCUMENT_PARALLEL_MAX`.
+Only each document's own grouped text enters its extraction.
+Questions, field mapping and validation still use the same document path.
+Results merge in original document order even when workers finish out of order;
+one failed document is reported without discarding its successful neighbours.
+
+Set `EXTRACT_DOCUMENT_PARALLEL_MAX=1` and restart to restore serial documents.
+Other model servers and a file grouped as one document keep their existing path.
+This does not split a single long document into arbitrary page-sized forms or
+overlap extraction with an unfinished OCR/grouping stage. Live events carry the
+document number and pages, so progress from different forms remains separate.
+User results retain `document_parallel`, `extraction_request_limit`,
+`extraction_request_scope: "server"` and measured per-file `document_requests_peak`;
+detail logs include them under `document_execution`. Shared admission is keyed
+by normalized server URL, not workspace, file or model name. It does not coordinate
+other app processes or external clients; keep the model server's own ceiling too.
+For parallel files `seconds` is wall time and `document_seconds_sum` retains the
+sum of per-document times. One server timing batch counts all nested requests.
+Local concurrency tests use simulated model replies; latency and accuracy still
+need comparison on the actual extraction server with the same PDF/settings.
+
+Long files (at least `SEGMENT_PARALLEL_MIN_PAGES=32`) on vLLM can also group
+pages with `SEGMENT_PARALLEL_MAX=4` workers. They start near each quarter with
+`SEGMENT_PARALLEL_OVERLAP=3` pages of lookback: 1, 23, 48 and 73 for 100 pages.
+Only the first worker owns its initial page. Each other worker treats its
+opening pages as an unassigned fragment until an existing rule or a validated
+model reply confirms a **new** document. Its ownership begins there, and the
+preceding worker must confirm that same cut before handing off. Worker IDs do
+not dictate page ownership; confirmed start pages are sorted and deduplicated.
+Nominal slice edges never become document boundaries. All pages must appear
+exactly once in the reconciled result before Extraction begins.
+
+Conflicting handoffs fall back to the original forward walk. A file-level
+exact-conversation cache avoids repeating identical boundary questions and keeps
+the combined `SEGMENT_CHAT_MAX_ASKS` budget; speculative seekers reserve questions
+for the forward owner. A single long document can therefore remain wholly with
+the first worker. Prompts still use original page numbers and reset their memory
+only at document cuts. Live progress distinguishes pages checked from the final
+page-ordered grouping; `grouping_execution` in User results/detail logs records
+worker seeds, actual ownership starts, question counts, cache hits and fallback.
+Set `SEGMENT_PARALLEL_MAX=1` to restore the original serial grouping path.
+
 **`SEGMENT_DOCUMENTS=0` reads every page of a file as one document**, which is what every
 measurement recorded before 2026-09-08 was taken under. A single-page file is unaffected either
 way.

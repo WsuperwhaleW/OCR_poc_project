@@ -2136,7 +2136,24 @@ paintReadFloor();
 
 /* Step progress, from either the Re-extract stream or a full run's stream.
    Returns true when the message was a step message and has been consumed. */
+let documentLiveStates = new Map(), documentParallel = 1;
 function stepEvent(msg) {
+  if (msg.event === 'documents_parallel') {
+    documentParallel = msg.document_parallel;
+    documentLiveStates.clear();
+    runningDoc = null;
+    return true;
+  }
+  // Parallel documents can complete steps out of order. Restore that document's
+  // own classification, prompt, steps and table before applying its next event.
+  if (documentParallel > 1 && msg.document) {
+    if (runningDoc?.document) documentLiveStates.set(runningDoc.document,
+      {classified, extractSteps, extractPrefix, tableLive});
+    const state = documentLiveStates.get(msg.document) || {};
+    classified = state.classified || null; extractSteps = state.extractSteps || null;
+    extractPrefix = state.extractPrefix || ''; tableLive = state.tableLive || null;
+    runningDoc = {document:msg.document, documents:msg.documents, pages:msg.pages, page_range:msg.page_range};
+  }
   if (msg.event === 'classified') {
     const { event, ...rest } = msg;
     classified = rest;
@@ -2148,6 +2165,10 @@ function stepEvent(msg) {
                 final: null, how: '', asked: 0, answered: 0, refused: 0 };
     segOpen = null; segOpenHeads.clear();
     enableGrouping();
+  } else if (msg.event === 'segment_progress') {
+    pagebar.dataset.grouping = '1';
+    pagebar.textContent = 'Checking document boundaries — ' + msg.pages_checked + ' / ' + msg.pages
+      + ' pages checked · ' + msg.parallel + ' workers · ' + msg.starts_found + ' start points found';
   } else if (msg.event === 'segment_page') {
     if (!segWalk) {
       segWalk = { pages: msg.pages, walk: false, steps: [], heads: {},
@@ -2170,6 +2191,7 @@ function stepEvent(msg) {
       + (segWalk.walk ? ' · ' + segWalk.asked + ' asked' : '')
       + ' <button type="button" class="ghost-sm" data-go="grouping">View</button>';
   } else if (msg.event === 'segmented') {
+    documentParallel = 1; documentLiveStates.clear();
     /* How many documents the file was read as, and on what authority. Kept
        even when it is one: "one document" is a finding about a three-page file
        quite as much as "three documents" is, and the strip below decides on
