@@ -31,6 +31,7 @@ BASE = config.BASE_DIR
 # Individual files, in the order a reader should meet them.
 FILES = [
     "README.md",
+    "docs/nginx-upload-limits.conf.example",
     "requirements.txt",
     ".env.example",
     ".gitignore",

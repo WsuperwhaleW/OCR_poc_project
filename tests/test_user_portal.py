@@ -452,6 +452,28 @@ class UserWebTests(unittest.TestCase):
         self.assertIn('var isUser = true;', page.text)
         self.assertEqual(workspace.current_id(), 'user-second-tab')
 
+    def test_one_two_and_four_mib_user_uploads_and_pdf_previews_do_not_hit_a_one_mib_cap(self):
+        with app.fitz.open() as document:
+            page = document.new_page()
+            page.insert_text((20, 20), 'Upload size regression')
+            stream = page.get_contents()[0]
+            for size in (1, 2, 4):
+                document.update_stream(stream, b'%' + b'x' * (size * 1024 * 1024) + b'\n')
+                content = document.tobytes(deflate=False)
+                for prefix in ('', '/ocr'):
+                    with self.subTest(size=size, prefix=prefix), \
+                            patch('requests.sessions.Session.request', side_effect=AssertionError('No model calls')):
+                        preview = self.client.post(prefix + '/api/user/previews', data={
+                            'file': (io.BytesIO(content), 'large.pdf')})
+                        preview.request.close()
+                        preview.request.environ['wsgi.input'].close()
+                        self.assertEqual(preview.status_code, 201, preview.data)
+                        self.assertEqual(preview.json['pages'], 1)
+                        self.assertEqual(self.upload(self.batch(prefix=prefix), content=content,
+                                                     prefix=prefix).status_code, 202)
+                        self.assertEqual(self.client.delete(prefix + '/api/user/previews/' +
+                                                            preview.json['preview_id']).status_code, 204)
+
     def test_file_validation_and_each_upload_uses_its_own_size_limit(self):
         self.store.save_settings({'max_upload_mb': 1, 'user_file_max': 2})
         self.assertEqual(self.client.post('/api/user/batches', json={'file_count': 3}).status_code, 400)

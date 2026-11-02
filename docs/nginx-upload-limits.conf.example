@@ -1,0 +1,11 @@
+# Include INSIDE the existing OCR server block. Do not replace its proxy_pass,
+# routing, TLS or other deployment settings.
+#
+# MAX_UPLOAD_MB=32 is the FILE cap in Python. Multipart fields/boundaries also
+# count toward Nginx's REQUEST body limit, so allow one extra MiB here.
+client_max_body_size 33m;
+#
+# This must apply to the Workspace APIs AND /api/user/ (uploads and previews).
+# Check nginx -T for a lower override in any matching location or outer proxy.
+# For a different MAX_UPLOAD_MB, set this to at least MAX_UPLOAD_MB + 1 MiB.
+# Validate with nginx -t before reloading with nginx -s reload.

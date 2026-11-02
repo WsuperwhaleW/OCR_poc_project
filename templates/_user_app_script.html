@@ -45,9 +45,12 @@
     const response = await fetch(API + path, options);
     if(response.status===204)return {};
     let body; try { body = await response.json(); } catch (_) {
-      throw Object.assign(new Error('Server ไม่ตอบกลับเป็น JSON (' + response.status + ')'), {status: response.status});
+      if(response.status!==413)
+        throw Object.assign(new Error('Server ไม่ตอบกลับเป็น JSON (' + response.status + ')'), {status: response.status});
     }
-    if (!response.ok) throw Object.assign(new Error(body?.error || 'ดำเนินการไม่สำเร็จ (' + response.status + ')'), {status: response.status});
+    if (!response.ok) throw Object.assign(new Error(body?.error || (response.status===413
+      ? 'เซิร์ฟเวอร์ปฏิเสธขนาดไฟล์ (413) กรุณาให้ผู้ดูแลตรวจขนาดอัปโหลดที่อนุญาตของเซิร์ฟเวอร์ด้านหน้าและแอป'
+      : 'ดำเนินการไม่สำเร็จ (' + response.status + ')')), {status: response.status});
     return body;
   }
   function paintModel(role, info, error) {

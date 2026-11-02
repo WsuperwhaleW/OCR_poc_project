@@ -10095,6 +10095,13 @@ function hidePrepared() {
   prepDl.hidden = true;
   prepDl.removeAttribute('href');
 }
+async function uploadRequestError(res, fallback) {
+  const body = await res.json().catch(() => null);
+  if (body?.error) return new Error(body.error);
+  if (res.status === 413) return new Error('เซิร์ฟเวอร์ปฏิเสธขนาดไฟล์ (413) กรุณาให้ผู้ดูแลตรวจขนาดอัปโหลดที่อนุญาตของเซิร์ฟเวอร์ด้านหน้าและแอป');
+  return new Error(fallback + ' (' + res.status + ')');
+}
+
 async function refreshPrepared() {
   hidePrepared();
   const body = prepBody();
@@ -10109,8 +10116,7 @@ async function refreshPrepared() {
   try {
     const res = await fetch(API + '/preview', { method: 'POST', body, signal: prepCtl.signal });
     if (!res.ok) {
-      const e = await res.json().catch(() => ({}));
-      throw new Error(e.error || ('Could not prepare the preview (' + res.status + ').'));
+      throw await uploadRequestError(res, 'Could not prepare the preview');
     }
     const blob = await res.blob();
     if (mine !== prepSeq) return;
@@ -10322,8 +10328,7 @@ async function startRead(opts) {
       method: 'POST', body, signal: controller.signal
     });
     if (!res.ok) {
-      const e = await res.json().catch(() => ({}));
-      throw new Error(e.error || ('Request failed (' + res.status + ')'));
+      throw await uploadRequestError(res, 'Request failed');
     }
     const reader = res.body.getReader();
     const decoder = new TextDecoder();

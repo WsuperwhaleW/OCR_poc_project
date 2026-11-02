@@ -316,7 +316,7 @@ location /OCR/ {
     proxy_pass http://127.0.0.1:18000/;   # trailing slash: nginx strips /OCR
     proxy_buffering off;                  # the reads stream; do not hold them back
     proxy_read_timeout 1800s;             # a long read is legitimate
-    client_max_body_size 32m;             # MAX_UPLOAD_MB
+    client_max_body_size 33m;             # MAX_UPLOAD_MB=32 plus multipart overhead
 }
 ```
 
@@ -324,6 +324,22 @@ Without the trailing slash, nginx passes `/OCR/api/...` through unchanged, and t
 takes the prefix off each request itself. It uses `X-Forwarded-Prefix` if the proxy sends
 one, and otherwise everything before `/api/`. A request for the page at an unknown path
 ending in `/` is served the page.
+
+If even 1–4 MB files fail with **413**, compare the same file directly against
+the Python app and through the proxy. Nginx defaults `client_max_body_size` to
+`1m` and can reject the request before Python sees it
+([Nginx documentation](https://nginx.org/en/docs/http/ngx_http_core_module.html#client_max_body_size)).
+Use [docs/nginx-upload-limits.conf.example](docs/nginx-upload-limits.conf.example)
+inside the existing OCR `server` block, and remove or update lower overrides in
+matching `location` blocks. The setting must cover both Workspace API requests
+and `/api/user/` (including PDF previews), with the deployed path prefix if any.
+For `MAX_UPLOAD_MB=32`, allow a **33m request body** to include multipart metadata;
+the app still checks each file against 32 MB. If changing `MAX_UPLOAD_MB`, align
+the proxy ceiling to at least that value plus 1 MB and restart the Python app.
+User Settings may impose a lower file limit; check `/api/user/settings` on the
+same deployed base URL. Validate the active Nginx configuration with `nginx -t`,
+then reload that Nginx instance with `nginx -s reload`. Updating this repository
+does not change a separately managed proxy configuration.
 
 ### Without the page: `test.py`
 

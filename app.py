@@ -35,7 +35,7 @@ from functools import lru_cache
 from pathlib import Path
 
 import requests
-from flask import Flask, Response, jsonify, render_template, request, send_from_directory
+from flask import Flask, Response, abort, jsonify, render_template, request, send_from_directory
 
 import backends
 import settings
@@ -215,7 +215,9 @@ _PDF_LOCK = threading.Lock()
 
 
 app = Flask(__name__)
-app.config["MAX_CONTENT_LENGTH"] = MAX_UPLOAD_MB * 1024 * 1024
+# The file cap excludes the multipart envelope. request_input checks the bytes
+# of the actual upload; a file exactly at the advertised limit must still fit.
+app.config["MAX_CONTENT_LENGTH"] = (MAX_UPLOAD_MB + 1) * 1024 * 1024
 
 
 class _ProxyPrefix:
@@ -5932,7 +5934,9 @@ def request_input(request_files, form, match: bool = True):
     upload = request_files.get("image")
     if upload is None or not upload.filename:
         raise ValueError("No file uploaded.")
-    data = upload.read()
+    data = upload.read(MAX_UPLOAD_MB * 1024 * 1024 + 1)
+    if len(data) > MAX_UPLOAD_MB * 1024 * 1024:
+        abort(413)
     source = describe_source(upload.filename, data, "upload")
     case = None
     if match:
@@ -11359,7 +11363,8 @@ def runs_csv():
 
 @app.errorhandler(413)
 def too_large(_):
-    return jsonify(error=f"File is larger than {MAX_UPLOAD_MB} MB."), 413
+    return jsonify(error=f"File is larger than {MAX_UPLOAD_MB} MB.",
+                   code="upload_too_large", limit_mb=MAX_UPLOAD_MB), 413
 
 
 # Encoding-safe printing lives in config so the packaging script gets it too --
