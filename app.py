@@ -6201,7 +6201,7 @@ def describe_source(name: str, data: bytes, origin: str) -> dict:
 def request_input(request_files, form, match: bool = True):
     """The bytes a request is asking about, however the request named them.
 
-    Three shapes -- a benchmark case, a file in mockOcr/, an upload -- resolve to
+    A benchmark case, a realData/mockOcr file or an upload resolves to
     one `(data, case, source)`. Shared by the read endpoints and by the preview,
     so a preview cannot be of a different document from the read that follows it.
 
@@ -6209,10 +6209,14 @@ def request_input(request_files, form, match: bool = True):
     hashes the upload, and the page asks `POST /api/match` for that separately.
     """
     case_id = (form.get("case") or "").strip()
+    real_name = (form.get("realdata") or "").strip()
     mock_name = (form.get("file") or "").strip()
     if case_id:
         data, case = case_bytes(case_id)
         return data, case, describe_source(case["pdf"], data, "case")
+    if real_name:
+        data = resolve_real(real_name)
+        return data, None, describe_source(real_name, data, "realdata")
     if mock_name:
         data, case = resolve_mock(mock_name)
         return data, case, describe_source(mock_name, data, "folder")

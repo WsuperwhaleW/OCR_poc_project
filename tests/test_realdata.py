@@ -8,6 +8,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from PIL import Image
+
 import app
 import workspace
 
@@ -57,6 +59,49 @@ class RealDataTests(unittest.TestCase):
             with self.subTest(name=bad):
                 self.assertEqual(
                     self.client.get("/api/realdata/file?name=" + bad).status_code, 404)
+
+    def test_workspace_preview_reads_large_realdata_without_an_upload_body(self):
+        data = b'%PDF-1.4\n' + b'x' * (4 * 1024 * 1024)
+        (self.root / 'batch1' / 'large.pdf').write_bytes(data)
+        with patch.dict(app.app.config, MAX_CONTENT_LENGTH=1024), \
+                patch.object(app, 'load_pages', return_value=([Image.new('RGB', (8, 8))], 1)) as load, \
+                patch.object(app.scoring, 'case_for_upload') as match:
+            for prefix in ('', '/ocr'):
+                with self.subTest(prefix=prefix):
+                    with self.client.post(prefix + '/api/preview', data={
+                            'realdata':'batch1/large.pdf', 'detail':'low'}) as response:
+                        self.assertEqual(response.status_code, 200)
+                        self.assertEqual(response.mimetype, 'image/png')
+                        self.assertLess(response.request.content_length, 1024)
+                    self.assertEqual(load.call_args.args[0], data)
+            match.assert_not_called()
+
+    def test_workspace_read_stream_uses_the_same_server_file_and_records_realdata_origin(self):
+        data = b'%PDF-1.4\n' + b'x' * (4 * 1024 * 1024)
+        (self.root / 'batch1' / 'large.pdf').write_bytes(data)
+        with patch.dict(app.app.config, MAX_CONTENT_LENGTH=1024), \
+                patch.object(app, 'prepare_input', return_value=([], 'low', None, None)) as prepare, \
+                patch.object(app, '_page_parallelism', return_value=1), \
+                patch.object(app, 'log_run') as log, \
+                patch.object(app.scoring, 'case_for_upload') as match:
+            with self.client.post('/api/ocr/stream', data={
+                    'realdata':'batch1/large.pdf', 'detail':'low', 'extract':'0'}) as response:
+                events = [json.loads(line) for line in response.text.splitlines()]
+                self.assertEqual(response.status_code, 200)
+                self.assertFalse([e for e in events if e['event'] == 'error'], events)
+                self.assertIn('done', [e['event'] for e in events])
+            self.assertEqual(prepare.call_args.args[0], data)
+            self.assertIsNone(prepare.call_args.args[2])
+            self.assertEqual(log.call_args.args[1], {
+                'name':'batch1/large.pdf', 'size_bytes':len(data), 'origin':'realdata'})
+            match.assert_not_called()
+
+    def test_workspace_realdata_input_rejects_traversal_and_missing_or_unsupported_files(self):
+        for name in ('../x.pdf', 'notes.txt', 'missing.pdf'):
+            for route in ('/api/preview', '/api/ocr', '/api/ocr/stream'):
+                with self.subTest(name=name, route=route):
+                    with self.client.post(route, data={'realdata': name}) as response:
+                        self.assertEqual(response.status_code, 400)
 
     def test_random_draws_from_every_file_of_the_chosen_types(self):
         self.assertEqual(self.cfg()["cases"], ["a.pdf", "b.JPEG", "batch1/c.png"])

@@ -251,7 +251,7 @@ const truthCache = {};
 // replaces it -- reading a document is a measurement, and they are tested one at
 // a time. Several documents go through compare.py or randomtest.py.
 let current = null, controller = null, text = '';
-let workspaceCase = '', workspaceSourceSeq = 0;
+let workspaceCase = '', workspaceReal = '';
 
 /* ---------- left-hand panes ---------- */
 const sideTabs = document.getElementById('sideTabs');
@@ -9783,7 +9783,7 @@ function paintServer() {
                     : 'No model server at ' + server.url);
   serverReason.textContent = ok ? '' : ('⚠ ' + (server.reason || ''));
   paintGlobalModels();
-  runBtn.disabled = !ok || (!current && !workspaceCase);
+  runBtn.disabled = !ok || (!current && !workspaceCase && !workspaceReal);
   // Whether the context picker does anything depends on which kind is active.
   paintCtx();
   paintFieldsOnly();
@@ -10048,6 +10048,7 @@ function localPreview() {
   dropPreview();
   if (!current) {
     if (workspaceCase) showChip(workspaceCase + ' · test file');
+    else if (workspaceReal) showChip(workspaceReal + ' · realData');
     else chip.style.display = 'none';
     return;
   }
@@ -10091,17 +10092,17 @@ function previewOne(file) {
 let prepSeq = 0;                 // a stale reply must never overwrite a newer one
 let prepCtl = null;
 function prepBody() {
-  // The same three shapes `request_input` resolves, chosen the same way the Read
-  // button chooses them, so the preview cannot be of a different document.
+  // Use the same source as Read; server files never need re-uploading.
   const body = new FormData();
   if (current) body.append('image', current);
   else if (workspaceCase) body.append('case', workspaceCase);
+  else if (workspaceReal) body.append('realdata', workspaceReal);
   else return null;
   body.append('detail', detailSel.value);
   return body;
 }
 function prepStem() {
-  const raw = (current && current.name) || workspaceCase || 'page';
+  const raw = (current && current.name) || workspaceReal.split('/').pop() || workspaceCase || 'page';
   // Only the extension comes off. The browser sanitises a `download` name
   // itself, and these documents have Thai names worth keeping.
   return raw.replace(/\.[^.]+$/, '');
@@ -10194,8 +10195,8 @@ function addFiles(list) {
   const file = incoming[0];
   const ignored = incoming.length - 1;
   // Hand-picked files override the folder and benchmark pickers.
-  workspaceSourceSeq++;
   workspaceCase = '';
+  workspaceReal = '';
   document.getElementById('workspaceCase').value = '';
   document.getElementById('realPick').value = '';
   current = file;
@@ -10208,8 +10209,8 @@ function addFiles(list) {
     : '';
 }
 function clearWorkspaceFile() {
-  workspaceSourceSeq++;
   workspaceCase = '';
+  workspaceReal = '';
   document.getElementById('workspaceCase').value = '';
   document.getElementById('realPick').value = '';
   current = null;
@@ -10309,7 +10310,7 @@ stopBtn.addEventListener('click', () => {
    endpoint rather than reimplementing them. A test path that differs from the
    real one is a test of the test path.
 
-   `opts` is `{case, image, detail, extract}`. `extract: false` sends
+   `opts` is `{case, realdata, image, detail, extract}`. `extract: false` sends
    `extract=0`, which the route already understands -- it is what a read-only
    random-test round sends. */
 async function startRead(opts) {
@@ -10336,6 +10337,7 @@ async function startRead(opts) {
 
   const body = new FormData();
   if (opts.case) body.append('case', opts.case);   // the server loads the PDF
+  else if (opts.realdata) body.append('realdata', opts.realdata);
   else body.append('image', opts.image);
   body.append('detail', opts.detail);
   // Pass 2 is skipped rather than run and discarded, so the row's pass-2 columns
@@ -10571,8 +10573,8 @@ function readBusy(on) {
 }
 
 runBtn.addEventListener('click', () => {
-  if (!current && !workspaceCase) return;
-  startRead({ case: workspaceCase, image: current, detail: detailSel.value, extract: true });
+  if (!current && !workspaceCase && !workspaceReal) return;
+  startRead({ case: workspaceCase, realdata: workspaceReal, image: current, detail: detailSel.value, extract: true });
 });
 
 /* Workspace preferences are separate from Stress defaults and server User settings. */
@@ -11263,8 +11265,8 @@ function stSetSource(source) {
   stPaintMode();
 }
 
-/* The Source pane's realData picker: a chosen file is fetched and handed to
-   addFiles, so it is read exactly as a dropped file would be. */
+/* realData files stay on the server, as in Stress: preview and OCR send a name,
+   not a downloaded copy re-uploaded through the proxy's request-size limit. */
 function realPickMatches(name, query) {
   const fold = text => text.normalize('NFC').toLowerCase();
   const path = fold(name);
@@ -11299,30 +11301,15 @@ async function realPickLoad(name) {
   const sel = document.getElementById('realPick');
   if (controller) return;
   clearWorkspaceFile();
-  const mine = workspaceSourceSeq;
-  let applied = false;
+  workspaceReal = name;
   sel.value = name;
-  sel.disabled = true;
-  runNote.textContent = 'Loading ' + name + ' from realData…';
-  try {
-    const res = await fetch(API + '/realdata/file?name=' + encodeURIComponent(name));
-    if (!res.ok) {
-      const data = await res.json().catch(() => ({}));
-      throw new Error(data.error || ('HTTP ' + res.status));
-    }
-    const blob = await res.blob();
-    if (mine !== workspaceSourceSeq) return;
-    addFiles([new File([blob], name.split('/').pop(), { type: blob.type })]);
-    sel.value = name;
-    applied = true;
-  } catch (err) {
-    if (mine === workspaceSourceSeq) runNote.textContent = 'Could not load ' + name + ': ' + err.message;
-  } finally {
-    if (applied || mine === workspaceSourceSeq) {
-      sel.disabled = !!controller;
-      if (!applied) sel.value = '';
-    }
-  }
+  mapChip.className = 'none';
+  mapChip.textContent = 'realData file — no ground truth; this run will not be scored.';
+  runNote.textContent = 'Read ' + name + ' directly from realData on the server.';
+  meta.textContent = name + ' · realData';
+  meta.classList.remove('err');
+  localPreview(); refreshPrepared();
+  paintServer(); enableCompare();
 }
 
 function stPaintFiles() {

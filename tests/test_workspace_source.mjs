@@ -18,9 +18,10 @@ function setup() {
     constructor() {this.values = {};}
     append(key, value) {this.values[key] = value;}
   }
-  const ctx = vm.createContext({current: null, workspaceCase: '', workspaceSourceSeq: 0,
+  const ctx = vm.createContext({current: null, workspaceCase: '', workspaceReal: '',
     controller: null, matchedCase: null, FormData, detailSel: {value: 'medium'},
     document: {getElementById: el}, chip: {style: {}}, mapChip: {}, runNote: {},
+    meta: {classList: {remove() {}}},
     dropPreview() {}, hidePrepared() {}, paintRun() {}, paintServer() {}, localPreview() {},
     refreshPrepared() {}, enableCompare() {}});
   vm.runInContext(['prepBody', 'clearWorkspaceFile'].map(source).join('\n'), ctx);
@@ -124,19 +125,40 @@ test('a search that excludes the chosen file keeps it listed and selected', () =
   assert.equal(el('realSearchCount').textContent, '1 of 3 files');
 });
 
-test('real-file selection stays visible, and a slow old load cannot replace a newer case', async () => {
+test('real-file selection sends only its server name for preview and read, never downloads and uploads it', async () => {
   const {ctx, el} = setup(); ctx.API = '/ocr/api';
-  ctx.File = class {constructor(_parts, name, opts) {this.name = name; this.type = opts.type;}};
-  ctx.addFiles = files => {ctx.current = files[0]; ctx.workspaceSourceSeq++;};
-  let finish;
-  ctx.fetch = () => new Promise(resolve => {finish = () => resolve({ok:true, blob:async()=>({type:'application/pdf'})});});
+  ctx.fetch = () => {throw Error('must not download the file');};
   vm.runInContext('async ' + source('realPickLoad'), ctx);
-  let pending = ctx.realPickLoad('invoice/one.pdf'); finish(); await pending;
-  assert.equal(ctx.current.name, 'one.pdf'); assert.equal(el('realPick').value, 'invoice/one.pdf');
+  await ctx.realPickLoad('invoice/one.pdf');
+  assert.equal(ctx.current, null); assert.equal(ctx.workspaceReal, 'invoice/one.pdf');
+  assert.equal(el('realPick').value, 'invoice/one.pdf');
   assert.equal(el('realPick').disabled, false);
-  pending = ctx.realPickLoad('invoice/slow.pdf');
+  assert.deepEqual({...ctx.prepBody().values}, {realdata: 'invoice/one.pdf', detail:'medium'});
+  const run = page.slice(page.indexOf("runBtn.addEventListener('click'"));
+  let options; ctx.runBtn = {addEventListener(_name, callback) {callback();}};
+  ctx.startRead = value => {options = value;};
+  vm.runInContext(run.slice(0, run.indexOf('\n});') + 4), ctx);
+  assert.equal(options.realdata, 'invoice/one.pdf'); assert.equal(options.image, null);
+  ctx.opts = options;
+  const start = page.indexOf('  const body = new FormData();', page.indexOf('async function startRead('));
+  const block = page.slice(start, page.indexOf('  controller = new AbortController();', start));
+  const sent = vm.runInContext('(function(){' + block + 'return body;})()', ctx).values;
+  assert.equal(sent.realdata, 'invoice/one.pdf'); assert.ok(!('image' in sent));
   el('workspaceCase').value = 'sol014'; el('workspaceCase').listeners.change({target:el('workspaceCase')});
-  finish(); await pending;
   assert.equal(ctx.workspaceCase, 'sol014'); assert.equal(ctx.current, null);
+  assert.equal(ctx.workspaceReal, ''); assert.equal(ctx.prepBody().values.case, 'sol014');
   assert.equal(el('realPick').value, '');
+});
+
+test('dropping an upload clears the realData reference for both preview and read', async () => {
+  const {ctx} = setup();
+  vm.runInContext('async ' + source('realPickLoad'), ctx);
+  await ctx.realPickLoad('large.pdf');
+  ctx.previewOne = () => {};
+  vm.runInContext(source('addFiles'), ctx);
+  const file = {name:'local.pdf'};
+  ctx.addFiles([file]);
+  assert.equal(ctx.workspaceReal, ''); assert.equal(ctx.current, file);
+  assert.equal(ctx.prepBody().values.image, file);
+  assert.ok(!('realdata' in ctx.prepBody().values));
 });
