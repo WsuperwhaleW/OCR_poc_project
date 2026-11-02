@@ -332,6 +332,26 @@ class UserWebTests(unittest.TestCase):
         self.assertEqual(legacy['result']['extracted'],extracted)
         self.assertEqual(self.client.get('/api/user/jobs/absent/user-json').status_code,404)
 
+    def test_split_currency_preview_and_downloads_share_evidence_and_keep_saved_result(self):
+        from tests.test_money_evidence import source, FLAT, WORDS
+        stored = self.store.add_job(self.batch(), 'upload_money', 'split.pdf', b'file')
+        result = source(FLAT + WORDS)['result']
+        self.store.update(stored['id'], status='completed', result=result)
+        before = self.store.get(stored['id'])
+        with patch('requests.sessions.Session.request', side_effect=AssertionError('No inference')):
+            for prefix in ('', '/ocr'):
+                url = prefix + '/api/user/jobs/' + stored['id'] + '/user-json'
+                report = self.client.get(url).json
+                with self.client.get(url + '?download=1') as response:
+                    data = json.loads(response.data)
+                with self.client.get(url + '?download=report') as response:
+                    audit = json.loads(response.data)
+                self.assertEqual(data, report['data'])
+                self.assertEqual(audit, report)
+                self.assertEqual(data['documents'][0]['amountExcludeVat'], 25757.01)
+                self.assertEqual(len([m for m in audit['mappings'] if m.get('normalization')]), 3)
+        self.assertEqual(self.store.get(stored['id']), before)
+
     def test_inline_preview_keeps_download_separate_and_supports_prefixed_history(self):
         job = self.store.add_job(self.batch(), 'upload_01', 'three.pdf', b'%PDF-preview')
         preview = self.client.get('/ocr/api/user/jobs/' + job['id'] + '/preview')

@@ -17,6 +17,75 @@ Two callers, both in the extraction pass:
 """
 
 import re
+from decimal import Decimal
+
+
+def split_amount(value):
+    """A candidate, NOT evidence: accept exactly an integer and two satang digits.
+
+    Keep this separate from the permissive legacy verification parser below.
+    Exporters must confirm the candidate against the document before using it.
+    """
+    if not isinstance(value, str):
+        return None
+    text = value.translate(str.maketrans("๐๑๒๓๔๕๖๗๘๙", "0123456789")).strip()
+    match = re.fullmatch(r"([0-9]{1,3}(?:,[0-9]{3})+|[0-9]+)\s+([0-9]{2})", text)
+    if not match:
+        return None
+    return Decimal(match[1].replace(',', '') + '.' + match[2])
+
+
+_THAI_ONES = ('หนึ่ง', 'สอง', 'สาม', 'สี่', 'ห้า', 'หก', 'เจ็ด', 'แปด', 'เก้า')
+_THAI_GROUP = re.compile(''.join(
+    rf"(?:(?:{'|'.join(_THAI_ONES)}){unit})?" for unit in ('แสน', 'หมื่น', 'พัน', 'ร้อย')) +
+    rf"(?:(?:ยี่|{'|'.join(_THAI_ONES[2:])})?สิบ)?(?:{'|'.join(_THAI_ONES)}|เอ็ด)?")
+
+
+def _thai_integer(text):
+    if text == 'ศูนย์':
+        return 0
+    if 'ล้าน' in text:
+        left, _, right = text.rpartition('ล้าน')
+        a, b = _thai_integer(left), _thai_integer(right) if right else 0
+        return a * 1000000 + b if a is not None and a > 0 and b is not None else None
+    if not text or not _THAI_GROUP.fullmatch(text):
+        return None
+    total, digit = 0, 0
+    while text:
+        token = next((word for word in (*_THAI_ONES, 'ยี่', 'เอ็ด', 'แสน', 'หมื่น', 'พัน', 'ร้อย', 'สิบ')
+                      if text.startswith(word)), None)
+        text = text[len(token):]
+        if token in _THAI_ONES:
+            digit = _THAI_ONES.index(token) + 1
+        elif token in ('ยี่', 'เอ็ด'):
+            digit = 2 if token == 'ยี่' else 1
+        else:
+            total += (digit or 1) * {'สิบ': 10, 'ร้อย': 100, 'พัน': 1000, 'หมื่น': 10000, 'แสน': 100000}[token]
+            digit = 0
+    return total + digit
+
+
+def thai_money_words(text):
+    """Read standalone Thai amount-in-words lines; unsupported wording stays absent.
+
+    Never scan arbitrary prose for a convenient number. Keep the exact source
+    line so a successful currency interpretation has reviewable evidence.
+    """
+    found = []
+    for line in (text or '').splitlines():
+        if len(line) > 300:
+            continue
+        words = re.sub(r'\s+', '', line).strip('()（）[] ')
+        words = re.sub(r'^(?:จำนวนเงินตัวอักษร|จำนวนเงินเป็นตัวอักษร|ตัวอักษร)[:：]?', '', words)
+        words = words.strip('()（）[] ')
+        match = re.fullmatch(r'(.+)บาท(?:ถ้วน|(.+)สตางค์)', words)
+        if not match:
+            continue
+        baht = _thai_integer(match[1])
+        satang = _thai_integer(match[2]) if match[2] else 0
+        if baht is not None and satang is not None and 0 <= satang < 100:
+            found.append({'value': Decimal(baht) + Decimal(satang) / 100, 'source': line.strip()})
+    return found
 
 # Tolerance in currency units. Documents round per-line, so exact equality is
 # too strict; anything above this is a real discrepancy rather than rounding.

@@ -1932,6 +1932,19 @@ the User JSON tab, **รายงานตรวจสอบ** downloads the com
 `?download=report` as `.user-v7.report.json`, including the candidate, warnings,
 unmapped originals, mapping sources, source job revision and review status.
 
+Split baht/satang totals such as `25,757 01` are normalized in User JSON only
+with document evidence: a matching labelled row under explicit baht/satang
+columns, or a labelled total matching a standalone Thai amount-in-words line.
+The latter can confirm subtotal and VAT only when their separately labelled
+split values add exactly to that anchored total. Repeated formatting or a
+matching sum alone is insufficient. Evidence is scoped to the document's own
+non-overlapping pages. Unsupported or conflicting readings stay unmapped with
+a review warning. Successful conversions retain the raw value and a
+`normalization` method/evidence in the report's `mappings`; OCR, saved extraction
+and normal JSON remain available unchanged. This rule covers the three core
+totals, not arbitrary quantities, identifiers or custom numeric destinations,
+and calls no model. Conversion reports use `conversion_version: 4`.
+
 Schema errors, data warnings and missing optional fields are counted separately.
 `review_status` is `invalid`, `unverified`, `needs_review` or `ready_for_review`;
 the last means ready to compare with the original, not verified extraction

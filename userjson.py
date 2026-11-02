@@ -17,6 +17,7 @@ import prompts
 import userprompts
 import tables
 import validate
+import verify
 
 _DIGITS = str.maketrans('๐๑๒๓๔๕๖๗๘๙', '0123456789')
 _TYPES = {'DEBIT_NOTE': '80', 'CREDIT_NOTE': '81', 'INVOICE': '380', 'TAX_INVOICE': '388',
@@ -88,6 +89,80 @@ def _header_aliases(aliases):
     english = [a for a in aliases if re.search(r'[a-z]', a)]
     return {_heading(a) for a in aliases} | {
         _heading(a + b) for th in thai for en in english for a, b in ((th, en), (en, th))}
+
+
+_MONEY_LABELS = {
+    'subtotal': ('จำนวนเงิน (ไม่รวมภาษี)', 'จำนวนเงินก่อนภาษี', 'ยอดก่อนภาษี',
+                 'amount exclusive of tax', 'amount exclucive of tax', 'amount excluding vat', 'subtotal'),
+    'vat_total': ('ภาษีมูลค่าเพิ่ม', 'vat', 'v.a.t.', 'vat amount'),
+    'amount_incl_vat': ('รวมเงินทั้งสิ้น', 'จำนวนเงินรวมทั้งสิ้น', 'ยอดรวมทั้งสิ้น',
+                        'total amount', 'grand total', 'amount including vat'),
+}
+
+
+def _money_key(label):
+    # A printed VAT rate may accompany the label, never an amount or identifier.
+    label = re.sub(r'\d+(?:\.\d+)?\s*%', '', label.translate(_DIGITS))
+    keys = [key for key, aliases in _MONEY_LABELS.items()
+            if _heading(label) in _header_aliases(aliases)]
+    return keys[0] if len(keys) == 1 else None
+
+
+def _split_money_evidence(text):
+    """Confirm split totals using labelled currency columns or a words anchor.
+
+    Repetition and arithmetic alone are not proof of the decimal position.
+    Evidence must come from this document, not from other extracted figures.
+    """
+    confirmed, mentions = {}, {key: [] for key in _MONEY}
+    for table in tables.parse(text):
+        baht = satang = None
+        for row in table['grid']:
+            bs = [i for i, cell in enumerate(row) if _heading(cell) in _header_aliases(('บาท', 'baht'))]
+            ss = [i for i, cell in enumerate(row) if _heading(cell) in _header_aliases(('สตางค์', 'satang'))]
+            if bs or ss:
+                baht, satang = (bs[0], ss[0]) if len(bs) == len(ss) == 1 and ss[0] == bs[0] + 1 else (None, None)
+                continue
+            if baht is None or max(baht, satang) >= len(row):
+                continue
+            keys = [key for i, cell in enumerate(row) if i not in (baht, satang)
+                    and (key := _money_key(cell))]
+            # The two source cells must really be an integer and a two-digit cell.
+            value = verify.split_amount(_text(row[baht]) + ' ' + _text(row[satang]))
+            if len(keys) == 1 and value is not None:
+                confirmed.setdefault(keys[0], []).append({
+                    'value': value, 'method': 'baht_satang_columns', 'evidence': {
+                        'row': copy.deepcopy(row), 'baht_column': baht, 'satang_column': satang}})
+    # OCR may flatten the table, including a newline between baht and satang.
+    # Only explicitly labelled totals count; account numbers and loose digit
+    # pairs elsewhere in the transcript cannot provide currency evidence.
+    lines = text.splitlines()
+    for i, line in enumerate(lines):
+        joined = line
+        if i + 1 < len(lines) and re.fullmatch(r'\s*[0-9๐-๙]{2}\s*', lines[i + 1]):
+            joined += '\n' + lines[i + 1]
+        match = re.fullmatch(r'(.*?)\s+((?:[0-9]{1,3}(?:,[0-9]{3})+|[0-9]+)\s+[0-9]{2})\s*',
+                             joined.translate(_DIGITS))
+        if match and (key := _money_key(match[1])):
+            mentions[key].append({'value': verify.split_amount(match[2]), 'source': joined.strip()})
+    words = verify.thai_money_words(text)
+    word_values = {entry['value'] for entry in words}
+    totals = {entry['value'] for entry in mentions['amount_incl_vat']}
+    if len(word_values) == len(totals) == 1 and word_values == totals:
+        total = next(iter(totals))
+        anchor = {'amount_in_words': words[0]['source'],
+                  'total': mentions['amount_incl_vat'][0]['source']}
+        confirmed.setdefault('amount_incl_vat', []).append({
+            'value': total, 'method': 'thai_amount_in_words', 'evidence': anchor})
+        before = {entry['value'] for entry in mentions['subtotal']}
+        vat = {entry['value'] for entry in mentions['vat_total']}
+        if len(before) == len(vat) == 1 and next(iter(before)) + next(iter(vat)) == total:
+            evidence = {**anchor, 'subtotal': mentions['subtotal'][0]['source'],
+                        'vat': mentions['vat_total'][0]['source']}
+            for key in ('subtotal', 'vat_total'):
+                confirmed.setdefault(key, []).append({
+                    'value': mentions[key][0]['value'], 'method': 'words_anchored_totals', 'evidence': evidence})
+    return confirmed
 
 
 def _columns(headers):
@@ -364,8 +439,11 @@ def convert(job):
     warnings, unmapped, missing, mappings, data_issues = [], [], [], [], []
     def issue(path, message):
         warnings.append({'path': path, 'message': message})
-    def mapped(path, source, raw, value):
-        mappings.append({'path': path, 'source': source, 'original': raw, 'value': value})
+    def mapped(path, source, raw, value, normalization=None):
+        entry = {'path': path, 'source': source, 'original': raw, 'value': value}
+        if normalization:
+            entry['normalization'] = normalization
+        mappings.append(entry)
     file = {'fileName': job.get('filename', ''), 'fileType': Path(job.get('filename', '')).suffix.lstrip('.').upper()}
     count = result.get('pages_total') or result.get('page_count') or len(result.get('pages') or [])
     if isinstance(count, int) and not isinstance(count, bool) and count > 0:
@@ -395,6 +473,8 @@ def convert(job):
                    own.intersection(other['pages']) for other in docs if other is not doc):
                 text = ''
         evidence = _labeled_values(text)
+        split_evidence = (_split_money_evidence(text) if any(
+            verify.split_amount(fields.get(key)) is not None for key in _MONEY) else {})
         for key in ('seller_name', 'buyer_name', 'seller_code', 'buyer_code', 'salesman', 'discount'):
             if _text(fields.get(key)):
                 continue
@@ -463,12 +543,21 @@ def convert(job):
             if not _text(raw):
                 continue
             amount = _number(raw)
+            normalization = None
+            candidate = verify.split_amount(raw) if source in _MONEY else None
+            if amount is None and candidate is not None:
+                proofs = split_evidence.get(source, [])
+                if {proof['value'] for proof in proofs} == {candidate}:
+                    amount = _number(str(candidate))
+                    normalization = {key: value for key, value in proofs[0].items() if key != 'value'}
             if amount is None:
-                issue(path + '.' + target, 'จำนวนเงินแปลงเป็น number ไม่ได้ จึงไม่ใส่ 0 แทน')
+                issue(path + '.' + target, 'อาจเป็นจำนวนเงินแยกบาท–สตางค์ แต่หลักฐานยังไม่พอหรือขัดแย้งกัน '
+                      'โปรดตรวจต้นฉบับ จึงยังไม่แปลงหรือใส่ 0 แทน' if candidate is not None else
+                      'จำนวนเงินแปลงเป็น number ไม่ได้ จึงไม่ใส่ 0 แทน')
             else:
                 item[target] = amount; used.add(source)
                 origin = 'fields.' + source if _text(original_fields.get(source)) else 'ocr.label: ' + evidence[source][0]['label']
-                mapped(path + '.' + target, origin, raw, amount)
+                mapped(path + '.' + target, origin, raw, amount, normalization)
         if _text(fields.get('salesman')):
             item['salesman'] = _text(fields['salesman']); used.add('salesman')
             origin = 'fields.salesman' if _text(original_fields.get('salesman')) else 'ocr.label: ' + evidence['salesman'][0]['label']
@@ -557,4 +646,4 @@ def convert(job):
             'counts': {'schema_errors': len(schema_errors), 'warnings': len(warnings) + len(data_issues),
                        'missing_optional': len(missing)},
             'source_job': {key: job.get(key) for key in ('id', 'filename', 'status', 'updated_at')},
-            'conversion_version': 3}
+            'conversion_version': 4}
