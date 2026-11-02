@@ -9,6 +9,7 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 from flask import abort, jsonify, render_template, request, send_file
+from PIL import Image, ImageOps
 
 import config
 import userjson
@@ -201,7 +202,26 @@ def register(application, engine):
                     abort(404)
                 source = document[page - 1]
                 scale = min(2, 1800 / max(source.rect.width, source.rect.height, 1))
-                return source.get_pixmap(matrix=engine.fitz.Matrix(scale, scale), alpha=False).tobytes('png')
+                pixmap = source.get_pixmap(matrix=engine.fitz.Matrix(scale, scale), alpha=False)
+                # JPEG is far smaller for a scan; PNG can still win on a sparse page.
+                return min(pixmap.tobytes('png'), pixmap.tobytes('jpeg', jpg_quality=80), key=len)
+
+    def page_image(data):
+        return send_file(io.BytesIO(data), mimetype='image/jpeg' if data[:2] == b'\xff\xd8' else 'image/png')
+
+    def fitted_image(path):
+        """A large upload as the preview panel needs it, or None to send the original."""
+        try:
+            if path.stat().st_size <= 1024 * 1024:
+                return None
+            with Image.open(path) as source:
+                image = ImageOps.exif_transpose(source)
+                image.thumbnail((1800, 1800))
+                buffer = io.BytesIO()
+                image.convert('RGB').save(buffer, 'JPEG', quality=80)
+            return buffer.getvalue() if buffer.tell() < path.stat().st_size else None
+        except Exception:
+            return None
 
     def preview_directory():
         directory = service().store.directory / 'previews'
@@ -251,7 +271,7 @@ def register(application, engine):
 
     @application.get('/api/user/previews/<preview_id>/pages/<int:page>')
     def user_temporary_page(preview_id, page):
-        return send_file(io.BytesIO(pdf_info(temporary_preview(preview_id), page)), mimetype='image/png')
+        return page_image(pdf_info(temporary_preview(preview_id), page))
 
     @application.get('/api/user/jobs')
     def user_history():
@@ -268,6 +288,14 @@ def register(application, engine):
     @application.get('/api/user/jobs/<job_id>')
     def user_job(job_id):
         return jsonify(job=job_or_404(job_id))
+
+    @application.post('/api/user/job-status')
+    def user_job_status():
+        body = request.get_json(silent=True)
+        ids = body.get('ids') if isinstance(body, dict) else None
+        if not isinstance(ids, list) or len(ids) > 500:
+            return jsonify(error='Send up to 500 job IDs.'), 400
+        return jsonify(jobs=service().store.statuses(ids))
 
     @application.get('/api/user/jobs/<job_id>/retry-history')
     def user_retry_history(job_id):
@@ -366,6 +394,10 @@ def register(application, engine):
                  '.png': 'image/png', '.webp': 'image/webp', '.gif': 'image/gif', '.bmp': 'image/bmp'}
         if suffix not in types:
             return jsonify(error='โปรดดาวน์โหลดต้นฉบับเพื่อเปิดไฟล์ประเภทนี้'), 415
+        if request.args.get('fit') == '1' and suffix in ('.jpg', '.jpeg', '.png', '.webp', '.bmp'):
+            fitted = fitted_image(service().store.original(job))
+            if fitted:
+                return send_file(io.BytesIO(fitted), mimetype='image/jpeg')
         return send_file(service().store.original(job), mimetype=types[suffix],
                          as_attachment=False, download_name=job['filename'])
 
@@ -384,7 +416,7 @@ def register(application, engine):
         job = job_or_404(job_id)
         if Path(job['filename']).suffix.lower() != '.pdf':
             abort(415)
-        return send_file(io.BytesIO(pdf_info(service().store.original(job), page)), mimetype='image/png')
+        return page_image(pdf_info(service().store.original(job), page))
 
     @application.get('/api/user/jobs/<job_id>/export')
     def user_export(job_id):
@@ -407,11 +439,26 @@ def register(application, engine):
                              download_name=Path(job['filename']).stem + '.user-v7.preview.json')
         return jsonify(report)
 
+    # A job's original never changes and a temporary preview lasts 30 minutes, so
+    # these need not be fetched again each time the same document is opened.
+    kept_seconds = {'user_file': 86400, 'user_preview': 86400, 'user_preview_page': 86400,
+                    'user_temporary_page': 1800}
+
     @application.after_request
     def user_headers(response):
         if request.path.startswith('/api/user/') or request.path.rstrip('/') == '/user':
-            response.headers['Cache-Control'] = 'no-store'
             response.headers['X-Content-Type-Options'] = 'nosniff'
+            if request.endpoint in kept_seconds and response.status_code in (200, 206, 304):
+                response.headers['Cache-Control'] = f'private, max-age={kept_seconds[request.endpoint]}'
+            elif (request.method == 'GET' and response.status_code == 200 and not response.is_streamed
+                    and response.mimetype in ('application/json', 'text/html')):
+                # Always checked with the server, but polling a job that has not
+                # moved costs a 304 rather than all of its OCR text again.
+                response.headers['Cache-Control'] = 'private, no-cache'
+                response.add_etag(weak=True)
+                response.make_conditional(request)
+            else:
+                response.headers['Cache-Control'] = 'no-store'
         return response
 
     return service

@@ -28,7 +28,8 @@ class Element {
 function dom(){
   const items={};
   const el=id=>items[id] ||= new Element();
-  return {items,el,document:{getElementById:el,createElement:tag=>new Element(tag),createTextNode:text=>({textContent:text}),querySelectorAll:()=>[]}};
+  const listeners={};
+  return {items,el,document:{listeners,addEventListener(name,fn){listeners[name]=fn;},getElementById:el,createElement:tag=>new Element(tag),createTextNode:text=>({textContent:text}),querySelectorAll:()=>[]}};
 }
 function response(body, ok=true){return {ok,status:ok?200:400,json:async()=>body};}
 
@@ -43,6 +44,7 @@ function lifecycleSetup(detailFetch) {
     if(url.endsWith('/settings'))return response({settings:config});
     if(url.endsWith('/models'))return response({models:{ocr:{},extraction:{}}});
     if(url.endsWith('/stress'))return response({runs:[]});
+    if(url.endsWith('/job-status'))return response({jobs:[{id:job.id,status:job.status,progress:job.progress}]});
     if(url.includes('/jobs?'))return response({jobs:[job,{...job,id:'job-b'}],counts:{},more:false});
     if(url.endsWith('/batches'))return response({batch_id:'batch'});
     if(url.endsWith('/jobs'))return response({job});
@@ -53,7 +55,7 @@ function lifecycleSetup(detailFetch) {
     window:{USER_BASE:'/ocr',addEventListener:(name,fn)=>events[name]=fn,renderUserOcr(){}},
     URL:{createObjectURL:()=> 'blob:audit',revokeObjectURL(){}},
     setTimeout:(fn,ms)=>{timers.set(++serial,{fn,ms});return serial;},clearTimeout:id=>timers.delete(id)}));
-  return {el,events,timers,calls,job,
+  return {el,events,timers,calls,job,document,
     open:index=>el('historyRows').children[index].children.at(-1).children[0].listeners.click()};
 }
 
@@ -62,14 +64,34 @@ test('BFCache restore resumes history, selected job and batch polling once',asyn
   el('fileInput').listeners.change({target:{files:[{name:'audit.png',size:10}]}});
   await el('uploadForm').listeners.submit({preventDefault(){}});await settle();
   const delays=()=>[...timers.values()].map(t=>t.ms).sort((a,b)=>a-b);
-  assert.deepEqual(delays(),[1200,2000,5000,10000,30000]);
+  assert.deepEqual(delays(),[1200,2000,10000,30000]);
   events.pagehide({persisted:true});assert.equal(timers.size,0);
   const previous=calls.length;events.pageshow({persisted:true});await settle();
   assert.ok(calls.slice(previous).some(url=>url.includes('/jobs?')));
-  assert.equal(calls.slice(previous).filter(url=>url.endsWith('/jobs/job-a')).length,2);
-  assert.deepEqual(delays(),[1200,2000,5000,10000,30000]);
+  assert.equal(calls.slice(previous).filter(url=>url.endsWith('/jobs/job-a')).length,1);
+  assert.equal(calls.slice(previous).filter(url=>url.endsWith('/job-status')).length,1);
+  assert.deepEqual(delays(),[1200,2000,10000,30000]);
   events.pageshow({persisted:true});await settle();
-  assert.deepEqual(delays(),[1200,2000,5000,10000,30000]);
+  assert.deepEqual(delays(),[1200,2000,10000,30000]);
+});
+
+test('a hidden tab asks the server for nothing until it is visible again',async()=>{
+  const {el,timers,calls,document}=lifecycleSetup();await settle();
+  el('fileInput').listeners.change({target:{files:[{name:'audit.png',size:10}]}});
+  await el('uploadForm').listeners.submit({preventDefault(){}});await settle();
+  document.hidden=true;document.listeners.visibilitychange();
+  assert.equal(timers.size,0);
+  const previous=calls.length;await settle();assert.equal(calls.length,previous);
+  document.hidden=false;document.listeners.visibilitychange();await settle();
+  assert.deepEqual([...timers.values()].map(t=>t.ms).sort((a,b)=>a-b),[1200,2000,10000,30000]);
+});
+
+test('history polls only while the History view is showing',async()=>{
+  const {el,timers}=lifecycleSetup();await settle();
+  const history=()=>[...timers.values()].filter(t=>t.ms===5000).length;
+  el('historyView').hidden=false;el('refreshHistory').listeners.click();await settle();
+  assert.equal(history(),1);
+  el('navUpload').listeners.click();assert.equal(history(),0);
 });
 
 test('detail response finishing while page is hidden does not restart timers',async()=>{

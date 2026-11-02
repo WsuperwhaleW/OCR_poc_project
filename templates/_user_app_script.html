@@ -31,6 +31,8 @@
   let userJsonJob=null, userJsonLoadedKey='', userJsonPendingKey='', userJsonTicket=0, resultMode='text';
   let promptPanelJobId=null;
   let promptHistoryTicket=0,promptHistoryLoadedKey='';
+  // A background tab shows nothing, so it asks for nothing until it is back.
+  const asleep = () => pageClosed || document.hidden;
   $('homeLink').href = window.USER_BASE + '/user';
   function node(tag, text, className) {
     const element = document.createElement(tag); if (text !== undefined) element.textContent = text;
@@ -74,7 +76,7 @@
       for (const role of ['ocr', 'extraction']) paintModel(role, null, err.message);
     } finally {
       modelsLoading = false; $('refreshModels').disabled = false;
-      if (!pageClosed) modelsTimer = setTimeout(refreshModels, 30000);
+      if (!asleep()) modelsTimer = setTimeout(refreshModels, 30000);
     }
   }
   // A stress test in any tab loads the same model servers this page's jobs use.
@@ -111,7 +113,7 @@
     catch (err) { paintStress(null, err.message); }
     finally {
       stressLoading = false;
-      if (!pageClosed) stressTimer = setTimeout(refreshStress, 10000);
+      if (!asleep()) stressTimer = setTimeout(refreshStress, 10000);
     }
   }
   $('refreshModels').addEventListener('click', () => { refreshStress(); return refreshModels(); });
@@ -148,14 +150,14 @@
     previewObjectUrl=null;previewKey=null;$('previewPanel').hidden=true;
     $('uploadCard').classList.remove('has-preview');
   }
-  function showPreview(url, name, key) {
+  function showPreview(url, name, key, imageUrl=url) {
     previewKey=key;imageZoom=100;$('zoomReset').textContent='100%';$('imagePreview').style.width='100%';$('pdfPreview').style.width='100%';$('previewPageCount').textContent='';
     $('uploadCard').classList.add('has-preview');
     const pdf=/\.pdf$/i.test(name), image=/\.(png|jpe?g|webp|gif|bmp)$/i.test(name);
     $('previewPanel').hidden=false;$('previewName').textContent=name;$('previewOpen').href=url;
     $('pdfPreview').hidden=!pdf;$('imagePreview').hidden=!image;$('imageZoomTools').hidden=!image&&!pdf;
     $('previewViewport').hidden=!pdf&&!image;
-    if(image)$('imagePreview').src=url;
+    if(image)$('imagePreview').src=imageUrl;
     $('previewHint').textContent=pdf?'กำลังเตรียมตัวอย่าง PDF…':
       image?'เลื่อนดูภาพและใช้ปุ่ม − / + เพื่อซูม':'เปิดเต็มหน้าต่างหรือดาวน์โหลดต้นฉบับเพื่อดูไฟล์ประเภทนี้';
   }
@@ -186,7 +188,8 @@
   function previewJob(job) {
     if(previewKey===job.id)return;
     clearPreview();const supported=/\.(pdf|png|jpe?g|webp|gif|bmp)$/i.test(job.filename);
-    showPreview(API+'/jobs/'+job.id+(supported?'/preview':'/file'),job.filename,job.id);
+    const url=API+'/jobs/'+job.id+(supported?'/preview':'/file');
+    showPreview(url,job.filename,job.id,url+'?fit=1');
     if(/\.pdf$/i.test(job.filename))api('/jobs/'+job.id+'/preview/info').then(body=>{
       if(previewKey===job.id)paintPdfPages(body.pages,API+'/jobs/'+job.id+'/preview/pages/');
     }).catch(err=>{if(previewKey===job.id)$('previewHint').textContent=err.message;});
@@ -243,20 +246,24 @@
   async function pollBatch(){
     if(batchLoading||pageClosed)return;
     clearTimeout(batchTimer);
-    const waiting=batchJobs.filter(job=>active(job.status));
+    const waiting=batchJobs.filter(job=>active(job.status)).slice(0,500);
     if(!waiting.length)return;
     batchLoading=true;
-    // Fetch updates serially to avoid a large client-side burst after a big batch.
-    try{for(const item of waiting){const {job}=await api('/jobs/'+item.id);Object.assign(item,job);}paintBatch();}
-    catch(_){/* Poll again; already accepted jobs keep running on the server. */}
+    // One small request for the whole batch: these rows never show OCR text.
+    try{
+      const {jobs:updates}=await api('/job-status',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({ids:waiting.map(job=>job.id)})});
+      for(const update of updates)Object.assign(waiting.find(job=>job.id===update.id)||{},update);
+      paintBatch();
+    }catch(_){/* Poll again; already accepted jobs keep running on the server. */}
     finally{batchLoading=false;}
-    if(!pageClosed&&batchJobs.some(job=>active(job.status)))batchTimer=setTimeout(pollBatch,2000);
+    if(!asleep()&&batchJobs.some(job=>active(job.status)))batchTimer=setTimeout(pollBatch,2000);
   }
   function view(page){
     const name=typeof page==='boolean'?(page?'history':'upload'):page;
     for(const [key,id] of [['upload','navUpload'],['history','navHistory'],['types','navTypes'],['prompts','navPrompts']]){
       $(key+'View').hidden=name!==key;$(id).classList.toggle('selected',name===key);$(id).setAttribute('aria-pressed',String(name===key));
     }
+    if(name!=='history')clearTimeout(historyTimer);
     if(name==='types')loadTypes();
     if(name==='prompts')window.loadUserPrompts?.(fieldLabels);
   }
@@ -553,12 +560,12 @@
     try{const {job}=await api('/jobs/'+id);if(selected!==id||ticket!==detailRequest||pageClosed)return;
       message('jobLoadMessage','');$('jobLoadRetry').hidden=true;paintJob(job);if(show)previewJob(job);
       if(show)$('resultTitle').scrollIntoView?.({behavior:'smooth',block:'start'});
-      if(active(job.status))detailTimer=setTimeout(()=>openJob(id,false),1200);
+      if(active(job.status)&&!asleep())detailTimer=setTimeout(()=>openJob(id,false),1200);
     }catch(err){
       if(selected!==id||ticket!==detailRequest||pageClosed)return;
       message('jobLoadMessage',err.status===404?'ไม่พบงานนี้ในประวัติ กรุณารีเฟรชรายการเอกสาร':err.message,true);
       $('jobLoadRetry').hidden=false;
-      if(!err.status||err.status>=500)detailTimer=setTimeout(()=>{if(selected===id)openJob(id,show);},4000);
+      if((!err.status||err.status>=500)&&!asleep())detailTimer=setTimeout(()=>{if(selected===id)openJob(id,show);},4000);
     }
   }
   $('jobLoadRetry').addEventListener('click',()=>{if(selected)openJob(selected);});
@@ -634,17 +641,21 @@
       const counts=body.counts||{};$('queueSummary').textContent='OCR '+(counts.ocr||0)+' ไฟล์ · Extraction '+(counts.extraction||0)+' ไฟล์ · รอ '+((counts.queued_ocr||0)+(counts.queued_extraction||0))+' ไฟล์';
       message('historyError','');
     }catch(err){message('historyError',err.message,true);}
-    finally{historyLoading=false;if(!pageClosed&&jobs.length<=50)historyTimer=setTimeout(()=>loadHistory(),5000);}
+    // The rows and queue summary are only on the History view, so only it keeps asking.
+    finally{historyLoading=false;if(!asleep()&&!$('historyView').hidden&&jobs.length<=50)historyTimer=setTimeout(()=>loadHistory(),5000);}
   }
   $('refreshHistory').addEventListener('click',()=>loadHistory());$('moreHistory').addEventListener('click',()=>loadHistory(true));
   function tab(mode){resultMode=mode;for(const key of ['text','fields','json','userJson']){const on=mode===key;$(key+'Result').hidden=!on;$(key+'Tab').classList.toggle('selected',on);$(key+'Tab').setAttribute('aria-selected',String(on));}if(mode==='userJson')loadUserJson();}
   $('fieldsTab').addEventListener('click',()=>tab('fields'));$('textTab').addEventListener('click',()=>tab('text'));$('jsonTab').addEventListener('click',()=>tab('json'));
   $('userJsonTab').addEventListener('click',()=>tab('userJson'));
   window.addEventListener('beforeunload',event=>{if(sending){event.preventDefault();event.returnValue='';}});
-  window.addEventListener('pagehide',event=>{pageClosed=true;clearTimeout(historyTimer);clearTimeout(detailTimer);clearTimeout(batchTimer);clearTimeout(modelsTimer);clearTimeout(stressTimer);if(!event?.persisted)clearPreview();});
-  window.addEventListener('pageshow',()=>{if(pageClosed){
-    pageClosed=false;refreshModels();refreshStress();loadHistory();pollBatch();
+  function stopPolling(){clearTimeout(historyTimer);clearTimeout(detailTimer);clearTimeout(batchTimer);clearTimeout(modelsTimer);clearTimeout(stressTimer);}
+  function resumePolling(){
+    refreshModels();refreshStress();loadHistory();pollBatch();
     if(selected)openJob(selected,false);
-  }});
+  }
+  window.addEventListener('pagehide',event=>{pageClosed=true;stopPolling();if(!event?.persisted)clearPreview();});
+  window.addEventListener('pageshow',()=>{if(pageClosed){pageClosed=false;resumePolling();}});
+  document.addEventListener('visibilitychange',()=>{if(pageClosed)return;if(document.hidden)stopPolling();else resumePolling();});
   loadSettings();loadHistory();refreshModels();refreshStress();
 })();

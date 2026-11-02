@@ -15,6 +15,7 @@ Accepts any raster format Pillow can open, plus PDFs (PyMuPDF), HEIC/HEIF
 import base64
 import copy
 import gzip
+import zlib
 import hashlib
 import io
 import json
@@ -297,6 +298,10 @@ def _validate_api_json_object():
         return jsonify(error='Request body must be a valid JSON object.'), 400
 
 
+_COMPRESSIBLE = ("text/", "application/json", "application/javascript",
+                 "application/wasm", "application/x-ndjson", "image/svg+xml")
+
+
 @app.before_request
 def _enter_workspace():
     """Put this request in its browser tab's workspace -- see `workspace`.
@@ -308,27 +313,56 @@ def _enter_workspace():
     workspace.enter(request.headers.get(workspace.HEADER) or request.args.get("ws"))
 
 
-@app.after_request
-def _gzip_json(response):
-    """Compress a JSON reply for a client that accepts it.
+def _gzip_stream(chunks):
+    """Gzip a streamed reply, flushing per chunk so each still arrives at once."""
+    packer = zlib.compressobj(6, zlib.DEFLATED, 31)
+    try:
+        for chunk in chunks:
+            chunk = chunk.encode("utf-8") if isinstance(chunk, str) else chunk
+            if chunk:
+                yield packer.compress(chunk) + packer.flush(zlib.Z_SYNC_FLUSH)
+        yield packer.flush()
+    finally:
+        # The stream's own `finally` is what releases a sweep guard.
+        close = getattr(chunks, "close", None)
+        if close:
+            close()
 
-    Added 2026-10-21, at the user's request: *save time and data transfer of
-    log retriving*. The run-log card's payload is ~0.3-0.9 MB of JSON and
-    compresses about 10x. Only whole JSON replies: a stream (the ndjson reads)
-    has to reach the page line by line, and anything already encoded is left
+
+@app.after_request
+def _gzip_response(response):
+    """Compress a text reply for a client that accepts it.
+
+    Added 2026-10-21 for JSON, at the user's request: *save time and data
+    transfer of log retriving*. Widened on 2026-11-02 because outbound transfer
+    is what the server is billed for: the page's HTML, scripts and styles
+    compress 3-4x and the ndjson reads were not compressed at all. A stream is
+    flushed chunk by chunk, so it still reaches the page line by line. Images
+    and PDFs are not worth compressing, and anything already encoded is left
     alone, so a proxy in front can still compress whatever this does not.
     """
-    if (response.status_code != 200 or response.mimetype != "application/json"
-            or response.is_streamed or response.direct_passthrough
-            or "Content-Encoding" in response.headers
-            or "gzip" not in request.headers.get("Accept-Encoding", "").lower()):
+    if (response.status_code not in (200, 201, 202)
+            or not (response.mimetype or "").startswith(_COMPRESSIBLE)
+            or "Content-Encoding" in response.headers):
         return response
-    body = response.get_data()
-    if len(body) < 1024:
-        return response
-    response.set_data(gzip.compress(body, compresslevel=6))
-    response.headers["Content-Encoding"] = "gzip"
     response.vary.add("Accept-Encoding")
+    if "gzip" not in request.headers.get("Accept-Encoding", "").lower():
+        return response
+    if response.is_streamed and not response.direct_passthrough:
+        response.response = _gzip_stream(response.response)
+        response.headers.pop("Content-Length", None)
+    else:
+        response.direct_passthrough = False
+        body = response.get_data()
+        if len(body) < 1024:
+            return response
+        response.set_data(gzip.compress(body, compresslevel=6))
+    response.headers["Content-Encoding"] = "gzip"
+    # A byte range of the file means nothing against the compressed body.
+    response.headers.pop("Accept-Ranges", None)
+    etag, weak = response.get_etag()
+    if etag and not weak:
+        response.set_etag(etag, weak=True)
     return response
 
 # Prepared page images, kept so the browser can show the source beside the text.
@@ -6003,7 +6037,7 @@ def benchmark_asset_file(version, name):
 
 @app.get("/")
 def index():
-    return render_template(
+    response = app.make_response(render_template(
         "index.html",
         server=llama_status(),
         details=list(DETAIL_PRESETS),
@@ -6068,7 +6102,12 @@ def index():
         # `{"contest": true}` are untouched: the planner is a pure function and
         # the CLI still drives it, which is where a rematch of a ranking
         # belongs -- it was never a thing to press mid-session.
-    )
+    ))
+    # Rendered from live state, so always checked, but a reload that changed
+    # nothing costs a 304 rather than the page again.
+    response.headers["Cache-Control"] = "no-cache"
+    response.add_etag(weak=True)
+    return response.make_conditional(request)
 
 
 @app.get("/api/health")

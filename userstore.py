@@ -254,6 +254,17 @@ class UserStore:
         with self.connect() as db:
             return self.decode(db.execute('SELECT * FROM jobs WHERE id=?', (job_id,)).fetchone())
 
+    def statuses(self, job_ids):
+        """Just what a batch row shows, so polling never carries OCR text."""
+        ids = [job_id for job_id in job_ids
+               if isinstance(job_id, str) and re.fullmatch('[0-9a-f]{32}', job_id)]
+        if not ids:
+            return []
+        with self.connect() as db:
+            rows = db.execute('SELECT id,status,progress,updated_at FROM jobs WHERE id IN (' +
+                              ','.join('?' * len(ids)) + ')', ids).fetchall()
+        return [dict(row) for row in rows]
+
     def list(self, offset=0, limit=50):
         offset = max(0, int(offset))
         with self.connect() as db:
