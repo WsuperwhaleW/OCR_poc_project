@@ -657,7 +657,18 @@ follows your desktop; Light is the one to pick for projecting or screenshotting.
           <span class="rt-ex-label" style="margin-top:10px">File types</span>
           <div class="rt-chips" id="stRealTypes"></div>
           <span class="note" id="stRealCount" aria-live="polite"></span>
-          <div class="rt-files" id="stRealFiles" hidden></div>
+          <div id="stRealChoose" hidden>
+            <label class="field" style="margin-top:10px">
+              Search files
+              <input id="stRealSearch" type="search" placeholder="File name or folder" aria-controls="stRealFiles">
+            </label>
+            <div class="st-file-controls">
+              <button type="button" class="ghost-sm" id="stRealSelectVisible">Select visible</button>
+              <button type="button" class="ghost-sm" id="stRealClear">Clear selection</button>
+            </div>
+            <span class="note" id="stRealSearchCount" aria-live="polite"></span>
+            <div class="rt-files" id="stRealFiles" hidden></div>
+          </div>
         </div>
         <div class="rt-ex" id="stFilesField">
           <span class="rt-ex-label">Files to test</span>

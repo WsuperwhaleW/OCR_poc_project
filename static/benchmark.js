@@ -11085,7 +11085,7 @@ function stReadDefaultStore() {
 }
 function stDefaultControls() {
   return [...stEl('stSetup').querySelectorAll('input[id], select[id]')]
-    .filter(el => el.id !== 'stMode');
+    .filter(el => !['stMode', 'stRealSearch'].includes(el.id));
 }
 function stCaptureDefaults() {
   const selected = id => [...stEl(id).querySelectorAll('input:checked')].map(el => el.value);
@@ -11114,7 +11114,8 @@ function stApplyRealDefaults() {
   for (const [id, key] of [['stRealTypes', 'realTypes'], ['stRealFiles', 'realFiles']]) {
     const values = stPendingRealDefaults[key];
     const selected = Array.isArray(values) ? new Set(values) : null;
-    for (const box of stEl(id).querySelectorAll('input')) box.checked = !selected || selected.has(box.value);
+    for (const box of stEl(id).querySelectorAll('input'))
+      box.checked = selected ? selected.has(box.value) : key === 'realTypes';
   }
   stPendingRealDefaults = null;
 }
@@ -11182,9 +11183,10 @@ function stSelectedCount() {
   return stSource === 'realdata' ? stRealSelected().length : stSelectedCases().length;
 }
 async function stLoadReal() {
-  // Ticks survive a Refresh; a type or file new to the listing starts ticked.
+  // Keep explicit selections on Refresh; new files start unselected. Random
+  // uses the type pool independently of these per-file checkboxes.
   const offTypes = new Set([...stEl('stRealTypes').querySelectorAll('input:not(:checked)')].map(b => b.value));
-  const offFiles = new Set([...stEl('stRealFiles').querySelectorAll('input:not(:checked)')].map(b => b.value));
+  const selectedFiles = new Set([...stEl('stRealFiles').querySelectorAll('input:checked')].map(b => b.value));
   stEl('stRealCount').textContent = 'Listing realData…';
   try {
     const res = await fetch(API + '/realdata');
@@ -11209,20 +11211,24 @@ async function stLoadReal() {
   stEl('stRealTypes').replaceChildren(...stReal.types.map(t =>
     chip(t, t.toUpperCase() + ' · ' + count(t), count(t) + ' ' + t + ' file(s)', offTypes.has(t))));
   stEl('stRealFiles').replaceChildren(...stReal.files.map(f =>
-    chip(f.name, f.name + ' · ' + f.size_mb + ' MB', f.name, offFiles.has(f.name), f.type)));
+    chip(f.name, f.name + ' · ' + f.size_mb + ' MB', f.name, !selectedFiles.has(f.name), f.type)));
   stApplyRealDefaults();
   stPaintFiles();
   realPickPaint();
 }
 function stPaintReal(busy) {
   const types = new Set(stRealTypes());
+  const query = stEl('stRealSearch').value;
+  let visible = 0;
   for (const box of stEl('stRealTypes').querySelectorAll('input')) {
     box.disabled = busy;
     box.parentElement.classList.toggle('off', !box.checked);
   }
   for (const box of stEl('stRealFiles').querySelectorAll('input')) {
     box.disabled = busy;
-    box.parentElement.style.display = types.has(box.dataset.type) ? '' : 'none';
+    const shown = types.has(box.dataset.type) && realPickMatches(box.value, query);
+    if (shown) visible++;
+    box.parentElement.style.display = shown ? '' : 'none';
     box.parentElement.classList.toggle('off', !box.checked);
   }
   for (const button of stEl('stRealPick').querySelectorAll('button')) {
@@ -11232,7 +11238,12 @@ function stPaintReal(busy) {
     button.setAttribute('aria-pressed', String(on));
   }
   stEl('stRealRefresh').disabled = busy;
+  stEl('stRealChoose').hidden = stRealPick !== 'choose';
   stEl('stRealFiles').hidden = stRealPick !== 'choose';
+  stEl('stRealSearch').disabled = busy;
+  stEl('stRealSelectVisible').disabled = busy || !visible;
+  stEl('stRealClear').disabled = busy || ![...stEl('stRealFiles').querySelectorAll('input:checked')].length;
+  stEl('stRealSearchCount').textContent = visible + ' file(s) shown';
   const pool = stRealPool(), selected = stRealSelected();
   stEl('stRealCount').textContent = !stReal ? 'Listing realData…'
     : stReal.error ? 'Could not list realData: ' + stReal.error
@@ -11244,6 +11255,15 @@ function stPaintReal(busy) {
         + (selected.length ? '. Nothing is scored.' : ' — select at least one file');
   stMode.disabled = busy;
   stRun.disabled = busy || !selected.length || !REAL_MODES.includes(stMode.value);
+}
+function stRealSelectFiles(selectVisible) {
+  if (stAbort || rtRunning || stRunning) return;
+  const types = new Set(stRealTypes()), query = stEl('stRealSearch').value;
+  for (const box of stEl('stRealFiles').querySelectorAll('input')) {
+    if (!selectVisible) box.checked = false;
+    else if (types.has(box.dataset.type) && realPickMatches(box.value, query)) box.checked = true;
+  }
+  stPaintFiles();
 }
 function stSetSource(source) {
   stSource = source;
@@ -12609,6 +12629,9 @@ if (stRun) {
   });
   stEl('stRealTypes').addEventListener('change', stPaintFiles);
   stEl('stRealFiles').addEventListener('change', stPaintFiles);
+  stEl('stRealSearch').addEventListener('input', stPaintFiles);
+  stEl('stRealSelectVisible').addEventListener('click', () => stRealSelectFiles(true));
+  stEl('stRealClear').addEventListener('click', () => stRealSelectFiles(false));
   stEl('stRealRefresh').addEventListener('click', () => stLoadReal());
   stEl('stBatch').addEventListener('click', () => { stBatchOn = !stBatchOn; stPaintBatch(); });
   stEl('stFillImages').addEventListener('click', () => { stFillOn = !stFillOn; stPaintFill(); });

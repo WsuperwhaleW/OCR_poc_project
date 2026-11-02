@@ -144,6 +144,14 @@ test('realData selection waits for asynchronous listing and survives a failed li
   assert.deepEqual(next.fields.stRealFiles.boxes.map(b => b.checked), [true, false, false]);
 });
 
+test('without saved realData defaults, types are enabled and manual files start unselected', () => {
+  const {api, ctx, fields} = setup();
+  ctx.stReal = {files:[]};
+  api.load('ocr');
+  assert.deepEqual(fields.stRealTypes.boxes.map(b => b.checked), [true, true]);
+  assert.deepEqual(fields.stRealFiles.boxes.map(b => b.checked), [false, false]);
+});
+
 test('corrupt storage and invalid saved controls fall back without affecting global controls', () => {
   const {api, storage, fields} = setup();
   const key = 'ocrStressDefaults:v1:/ocr/api';
