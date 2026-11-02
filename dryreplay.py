@@ -24,7 +24,8 @@ def replay(token_ids, xargs: dict) -> dict:
     * `steered` -- of those, steps where the token that came out was NOT the
       penalised one: the reply left the repeat while DRY was pushing it to.
       Under greedy decoding this is the most DRY can have changed;
-    * `longest` -- the longest verbatim repeat in the reply, fired or not.
+    * `longest` -- the longest verbatim repeat in the reply, fired or not;
+    * `running` -- the verbatim repeat still going at the end of the reply.
     """
     allowed = int(xargs.get("dry_allowed_length", 2))
     last_n = int(xargs.get("dry_penalty_last_n", -1))
@@ -56,7 +57,8 @@ def replay(token_ids, xargs: dict) -> dict:
         positions.setdefault(token, []).append(n)
         tokens.append(token)
     return {"checked": True, "tokens": len(tokens), "allowed": allowed,
-            "fired": fired, "first": first, "steered": steered, "longest": longest}
+            "fired": fired, "first": first, "steered": steered, "longest": longest,
+            "running": max(match.values(), default=0)}
 
 
 def describe(result: dict) -> str:

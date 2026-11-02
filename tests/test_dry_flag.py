@@ -86,7 +86,7 @@ class _Stream:
 
 
 class StreamPageTests(unittest.TestCase):
-    def read(self, chunks, xargs=XARGS):
+    def read(self, chunks, xargs=XARGS, guard=False):
         sent = {}
 
         def post(url, status, json=None, **kwargs):
@@ -97,7 +97,7 @@ class StreamPageTests(unittest.TestCase):
         with patch.object(app, "llama_status", return_value=VLLM), \
              patch.object(app, "chat_url", return_value=CHAT), \
              patch.object(app, "_batcher_for", return_value=None), \
-             patch.object(app, "loop_guard", return_value=False), \
+             patch.object(app, "loop_guard", return_value=guard), \
              patch.object(app.backends, "model_window", return_value=None), \
              patch.object(app.backends.settings, "vllm_xargs", return_value=xargs), \
              patch.object(app.servertime, "_fetch", return_value=None), \
@@ -121,6 +121,43 @@ class StreamPageTests(unittest.TestCase):
         sent, stats = self.read([{"delta": {"content": "x"}}], xargs={})
         self.assertNotIn("return_token_ids", sent)
         self.assertNotIn("dry", stats)
+
+    def test_the_guard_cuts_a_cycle_only_once_it_is_past_dry(self):
+        # Four tokens a line, so the repeat running after n tokens is n - 4.
+        pieces = ["ab", "cd", "ef", "\n"]
+        chunks = [{"delta": {"content": pieces[i % 4]}, "token_ids": [i % 4 + 1]}
+                  for i in range(400)]
+        for allowed, read in ((8, 24), (100, 120)):      # the guard checks every 24
+            _, stats = self.read(chunks, dict(XARGS, dry_allowed_length=allowed), guard=True)
+            self.assertTrue(stats["looped"])
+            self.assertEqual(stats["dry"]["tokens"], read)
+
+
+class PageLoopingTests(unittest.TestCase):
+    LINES = "สวัสดีครับ\n" * 6
+    IDS = [1, 2, 3] * 6                                  # a repeat of 15 running
+
+    def test_a_repeat_at_or_below_dry_is_left_to_dry(self):
+        self.assertTrue(app.looks_repetitive(self.LINES))
+        for allowed in (15, 128):
+            self.assertFalse(app.page_looping(self.LINES, self.IDS,
+                                              dict(XARGS, dry_allowed_length=allowed)))
+
+    def test_a_repeat_one_past_dry_is_a_loop(self):
+        self.assertTrue(app.page_looping(self.LINES, self.IDS,
+                                         dict(XARGS, dry_allowed_length=14)))
+
+    def test_what_dry_cannot_see_is_not_held_back(self):
+        counter = "".join(f"ปี {n} " for n in range(1, 60))
+        self.assertTrue(app.page_looping(counter, list(range(200)),
+                                         dict(XARGS, dry_allowed_length=128)))
+
+    def test_with_no_token_ids_the_plain_test_applies(self):
+        self.assertTrue(app.page_looping(self.LINES))
+        self.assertTrue(app.page_looping(self.LINES, [], XARGS))
+
+    def test_a_read_that_is_not_cycling_is_not_a_loop(self):
+        self.assertFalse(app.page_looping("หนึ่ง\nสอง\nสาม\n", [1, 2, 3], XARGS))
 
 
 def _page(detail):

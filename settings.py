@@ -550,7 +550,11 @@ VLLM_DRY = config.env_bool("VLLM_DRY", True)
 # 128: 113 (sol004's legitimately repeated "Land and Building Tax ..." rows);
 # 256: 0. At 256 an empty-row loop is still cut ~24 rows in and a repeating real
 # row ~7 rows in, long before the 4096-token cap.
-VLLM_DRY_ALLOWED_LENGTH = config.env_int("VLLM_DRY_ALLOWED_LENGTH", 256, minimum=1)
+# Lowered to 128 on 2026-11-02 at the user's request: 256 let a loop generate too
+# much before DRY fired and lost data. A loop is now cut in about half the tokens.
+# The cost is those sol004 rows, which the mock document repeats and real documents
+# should not (per the user), so a lower sol004 score here is expected.
+VLLM_DRY_ALLOWED_LENGTH = config.env_int("VLLM_DRY_ALLOWED_LENGTH", 128, minimum=1)
 
 
 def vllm_dry() -> dict:

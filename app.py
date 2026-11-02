@@ -778,6 +778,24 @@ def looks_repetitive(text: str, tail_chars: int = LOOP_TAIL_CHARS,
     return False
 
 
+def page_looping(text: str, dry_ids=None, dry_xargs=None) -> bool:
+    """`looks_repetitive` for a page read, leaving DRY the first go at a repeat.
+
+    2026-11-02, at the user's request: the guard stays out until the running
+    repeat is DRY's allowed length + 1, so it cannot cut a read before DRY has
+    penalised it (a cycle of short lines used to be cut after ~4 lines, long before
+    DRY could fire). The counter and runaway checks are not held back: a counter
+    never repeats verbatim, so DRY cannot see it. With no DRY or no token ids from
+    the server, there is nothing to compare against and the plain test applies.
+    """
+    if not looks_repetitive(text):
+        return False
+    if not dry_ids or _counter_loop(text) or _structural_runaway(text):
+        return True
+    allowed = int(dry_xargs.get("dry_allowed_length", 2))
+    return dryreplay.replay(dry_ids, dry_xargs)["running"] >= allowed + 1
+
+
 def image_data_uri(image: Image.Image) -> str:
     # The stress test encodes each prepared page once, before its clock starts,
     # and hangs the result on the image: a page sent a hundred times under load
@@ -1029,7 +1047,7 @@ def stream_page(image: Image.Image, stats: dict = None,
                     yield piece
                     # Check periodically, not per token -- the scan is O(tail^2).
                     if (guard and pieces % LOOP_CHECK_EVERY == 0
-                            and looks_repetitive("".join(collected))):
+                            and page_looping("".join(collected), dry_ids, dry_xargs)):
                         looped = True
                         break
 
@@ -1039,7 +1057,8 @@ def stream_page(image: Image.Image, stats: dict = None,
     # not the detection: a read that cycled the whole way to the token cap is a
     # looped read and has to say so, or it would log `ok` and be averaged as a
     # transcript.
-    if (not guard or batcher is not None) and looks_repetitive("".join(collected)):
+    if ((not guard or batcher is not None)
+            and page_looping("".join(collected), dry_ids, dry_xargs)):
         looped = True
 
     clock.timings(timings)
