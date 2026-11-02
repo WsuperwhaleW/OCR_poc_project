@@ -120,6 +120,7 @@ function evidenceSetup(local=true) {
   const rows=['a','b'].map((id,i)=>({dataset:{alertId:id,alertCase:'folder/'+id+'.pdf',alertPage:String(i+2)}}));
   const host={querySelectorAll:()=>rows};
   const ctx=vm.createContext({API:'/ocr/api',stEvidenceRequest:0,cmpOverride:null,cmpView:'',FX_CASES:[],
+    stResults:{available:false},stEvidenceUrls:[],URL:{revokeObjectURL(){}},
     window:{StressLocalPreview:{hasCandidate:()=>local}},
     stNote:{textContent:'',classList:{add(){}}},
     document:{getElementById:()=>({hidden:false})},
@@ -145,6 +146,18 @@ test('PC original opens before the slow evidence request completes, then fields 
   assert.equal(s.ctx.cmpOverride.reads[0].text,'OCR a');
   assert.equal(s.ctx.cmpView,'source-fields');
   assert.equal(s.opened[1].scroll,false);
+});
+
+test('a slow browser cache cannot delay opening the selected PC original',async()=>{
+  const s=evidenceSetup();let release;
+  s.ctx.stResults={available:true,read:()=>new Promise(resolve=>{release=resolve;})};
+  const request=s.ctx.stShowEvidence('a','missing',s.host,'1');
+  assert.equal(s.opened.length,1);
+  assert.equal(s.ctx.cmpOverride.filename,'folder/a.pdf');
+  assert.equal(s.pending.length,0);
+  release(null);await new Promise(resolve=>setImmediate(resolve));
+  s.finish(0,'a');await request;
+  assert.equal(s.ctx.cmpOverride.reads[0].text,'OCR a');
 });
 
 test('out-of-order evidence replies and errors cannot replace the newer PC selection',async()=>{

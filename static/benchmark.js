@@ -11706,8 +11706,6 @@ function stAlertBox(alerts, part, title, mode) {
 async function stShowEvidence(alertId, kind, host, job) {
   const ticket = ++stEvidenceRequest;
   const base = API + '/stress/evidence/' + encodeURIComponent(alertId);
-  const saved = await stResults.read(alertId).catch(() => null);
-  if (ticket !== stEvidenceRequest) return;
   // The row already identifies the source. Open a selected PC file immediately;
   // large extraction payloads must not stand between a click and the original.
   const row = [...(host?.querySelectorAll('tr.st-alert-link') || [])]
@@ -11728,6 +11726,8 @@ async function stShowEvidence(alertId, kind, host, job) {
   }
   // This browser's copy where it is current; the server's while the flag is
   // still changing; this browser's again once the server no longer has the page.
+  const saved = stResults.available ? await stResults.read(alertId).catch(() => null) : null;
+  if (ticket !== stEvidenceRequest) return;
   let data = null, loadError = null;
   let fromBrowser = !!saved && saved.revision === String(row?.dataset.alertRevision || '');
   if (fromBrowser) data = saved.data;
