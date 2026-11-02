@@ -495,13 +495,22 @@ function pipeTables(chunk) {
   flush();
   return merged.join('\n');
 }
+// A read stopped by the loop guard or the token cap ends inside its table, and
+// the model sometimes writes rows with no <table> around them. Both are drawn
+// as tables: `src` itself is never changed, so Raw output still shows what came
+// back, and the read's own flag is what says it was cut short.
+function closedTable(chunk) {
+  const body = chunk.replace(/<[^<>]*$/, '').trim();   // a tag the read died inside
+  const open = /^<table\b/i.test(body) ? body : '<table>' + body;
+  return /<\/table>\s*$/i.test(open) ? open : open + '</table>';
+}
 function renderOutput(src) {
   const out = [];
-  const re = /<table[\s\S]*?<\/table>/gi;
+  const re = /<table\b[\s\S]*?(?:<\/table>|$)|(?:\s*<tr\b[\s\S]*?(?:<\/tr>|$))+/gi;
   let last = 0, m;
   while ((m = re.exec(src)) !== null) {
     out.push(pipeTables(src.slice(last, m.index)));
-    out.push(m[0]);
+    out.push(closedTable(m[0]));
     last = re.lastIndex;
   }
   out.push(pipeTables(src.slice(last)));
