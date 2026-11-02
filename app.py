@@ -5959,7 +5959,7 @@ def prepare(request_files, form):
 
 _BENCHMARK_ASSETS = {
     **{name: config.BASE_DIR / 'static' / name for name in
-       ('benchmark.js', 'benchmark.css', 'benchmark-performance.js')},
+       ('benchmark.js', 'benchmark.css', 'benchmark-performance.js', 'benchmark-results.js')},
     **{name: config.BASE_DIR / 'templates' / name for name in
        ('_stress_local_script.html', '_doctype_mapping_script.html', '_user_settings_script.html')},
 }

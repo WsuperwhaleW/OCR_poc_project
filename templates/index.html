@@ -15,7 +15,10 @@
    from the defaults. A link copied out of the address bar carries the id but
    not the sessionStorage, so the tab it is opened in takes a new one rather
    than sharing someone else's. A DUPLICATED tab copies sessionStorage too; the
-   tab it was copied from answers on the channel below and the copy re-keys. */
+   tab it was copied from answers on the channel below and the copy re-keys.
+   The one exception to "a new tab starts from the defaults": while a stress run
+   this browser started has no open tab, a new tab takes that run's workspace
+   back, so closing the tab does not lose the live progress. */
 /* ---- where the API is (2026-10-20) ----
    The app is reached through a reverse proxy at a sub-path (nginx serving
    `host:3000/OCR/`), so no request on this page names a fixed path: the page is
@@ -778,6 +781,12 @@ follows your desktop; Light is the one to pick for projecting or screenshotting.
           <button type="button" id="historyPrev" class="ghost-sm" disabled>Newer</button>
           <button type="button" id="historyNext" class="ghost-sm" disabled>Older</button>
         </div>
+        <h3 class="st-h">Saved in this browser</h3>
+        <p class="note" id="stSavedNote"></p>
+        <div id="stSavedList" class="history-list"></div>
+        <div class="row">
+          <button type="button" id="stSavedClear" class="ghost-sm" hidden>Delete saved results</button>
+        </div>
         </div>
       </div>
 
@@ -1308,6 +1317,7 @@ matched.">
 
 <script>window.BENCHMARK_BOOTSTRAP = {table_agents: {{ table_agents|tojson }},server: {{ server | tojson }},extract: {{ extract | tojson }},server_kinds: {{ server_kinds | tojson }},cases: {{ cases | tojson }},extract_mode: {{ extract_mode | tojson }},extract_steps: {{ extract_steps | tojson }},hybrid_steps: {{ hybrid_steps | tojson }},ocr_profiles: {{ ocr_profiles | tojson }},max_new_tokens: {{ max_new_tokens|tojson }},ocr_sampling: {{ ocr_sampling|tojson }},min_read_for_fields: {{ min_read_for_fields|tojson }},min_read_default: {{ min_read_default|tojson }},min_classify_confidence: {{ min_classify_confidence|tojson }},script_min_chars: {{ script_min_chars|tojson }}};</script>
 <script src="{{ benchmark_asset('benchmark-performance.js') }}"></script>
+<script src="{{ benchmark_asset('benchmark-results.js') }}"></script>
 <script src="{{ benchmark_asset('benchmark.js') }}"></script>
 <script src="{{ benchmark_asset('_stress_local_script.html') }}"></script>
 <script src="{{ benchmark_asset('_doctype_mapping_script.html') }}"></script>

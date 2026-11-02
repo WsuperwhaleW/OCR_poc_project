@@ -12,11 +12,34 @@
     return raw.replace(/[^A-Za-z0-9]/g, '').slice(0, 32);
   };
   var store = function (v) { try { sessionStorage.setItem(KEY, v); return true; } catch (e) { return false; } };
+  // A stress run outlives its tab, but sessionStorage does not, so a reopened
+  // tab would get a new id and never find the run. benchmark.js lists the
+  // workspaces with a run in localStorage, which only this browser can read; a
+  // new tab takes the newest it has not tried. If that tab is still open it
+  // answers on the channel below, and this one moves on.
+  var PARKED = 'ocrStressRuns:' + base, TRIED = KEY + ':tried', ADOPTED = KEY + ':adopted';
+  var adopt = function () {
+    if (isUser) return null;
+    try {
+      var tried = JSON.parse(sessionStorage.getItem(TRIED) || '[]');
+      var list = JSON.parse(localStorage.getItem(PARKED) || '[]');
+      for (var i = list.length - 1; i >= 0; i--) {
+        var ws = list[i] && list[i].ws;
+        if (valid(ws) && tried.indexOf(ws) < 0) {
+          tried.push(ws);
+          sessionStorage.setItem(TRIED, JSON.stringify(tried));
+          sessionStorage.setItem(ADOPTED, '1');
+          return ws;
+        }
+      }
+    } catch (e) { /* No storage: start a new workspace. */ }
+    return null;
+  };
   var url = new URL(location.href);
   var inUrl = url.searchParams.get('ws');
   var stored = null, storable = true;
   try { stored = sessionStorage.getItem(KEY); } catch (e) { storable = false; }
-  var id = valid(stored) ? stored : (!storable && valid(inUrl) ? inUrl : make());
+  var id = valid(stored) ? stored : (!storable && valid(inUrl) ? inUrl : (adopt() || make()));
   // A full/blocked store may allow reads but refuse writes. Use the URL on the
   // next load in that case too, rather than redirecting to a new id forever.
   if (!store(id) && valid(inUrl)) id = inUrl;
@@ -39,6 +62,10 @@
     return realFetch(input, init);
   };
   if (inUrl !== id) { go(id); return; }
+  try {
+    window.OCR_ADOPTED_RUN = sessionStorage.getItem(ADOPTED) === '1';
+    sessionStorage.removeItem(ADOPTED);
+  } catch (e) { /* Blocked storage never adopted anything. */ }
   if (!window.BroadcastChannel) return;
   var channel;
   try { channel = new BroadcastChannel(channelName); } catch (e) { return; }
@@ -48,7 +75,7 @@
     if (msg.hello === window.OCR_WORKSPACE && msg.nonce !== nonce) {
       channel.postMessage({taken: msg.hello, to: msg.nonce});
     } else if (msg.taken === window.OCR_WORKSPACE && msg.to === nonce) {
-      var fresh = make();
+      var fresh = adopt() || make();
       store(fresh);
       window.OCR_WORKSPACE = fresh;
       go(fresh);

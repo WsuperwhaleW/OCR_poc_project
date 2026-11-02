@@ -2010,6 +2010,19 @@ The **Stress test** tab benchmarks the **server**: a queue of jobs worked by as 
 concurrent requests as you set, and one report at the end. It uses the reading and extraction
 models selected in the Workspace and never switches them.
 
+While you watch a run, this browser copies each flagged page (its images and text) and the
+detail log into its own storage (IndexedDB). They are not uploaded. After the run, a reload or
+a server restart, clicking a flag in Current run or History opens the browser's copy. The latest
+result comes back when the page loads, and **Saved in this browser** under History lists the
+rest, removing the oldest past 20 runs or 1 GB. Runs you never had open are not copied, and pages
+without a flag are not sent to the browser at all.
+
+A run continues on the server if you reload or close the tab. Open the app again in the same
+browser and the new tab goes to the Stress test pane, replays the run so far and follows it
+live, with **Stop** working. If the run ended while no tab was open, the tab shows its report
+once. A tab that is still open keeps its run, so a new tab beside it starts empty. Other
+browsers do not see the run; its report is in History for everyone.
+
 The setup shows **Mode**, **Concurrent**, **Queue (jobs)** and **Files to test**, followed by
 the run settings and cache/logging options. File presets are **1–20**, **21–23** and **All**;
 **Advanced** beside them opens individual file selection. The initial selection is 1–20.
@@ -2186,9 +2199,8 @@ Diagnostics are formatted and streamed after benchmark timing ends, independentl
 **Save each job** (the accuracy CSV). They are never written into server History, CSV,
 or a diagnostic file on the server. The server temporarily retains enabled results in
 memory until export. History's Download JSON still contains settings and metrics only.
-The **Download detail log** link in Current run downloads the browser's copy again. It
-survives switching menus inside this page, but Refresh, closing/leaving the page, starting
-another run, or Clear results removes that in-memory copy. Already downloaded files remain.
+The **Download detail log** link in Current run and in History downloads the browser's copy
+again. The server never stores it.
 Automatic downloads follow the browser's download settings; the link is also available
 when the browser blocks an automatic download.
 

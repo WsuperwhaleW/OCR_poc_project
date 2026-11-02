@@ -299,6 +299,9 @@ var selectedPane = 'source', stressPaneOpen = false, stressView = 'run', stRunni
 var cmpOverride = null;
 var stEvidenceRequest = 0;
 const loadStressEvidence = createEvidenceCache({fetch: (...args) => fetch(...args)});
+const stResults = window.StressResults;
+var stEvidenceUrls = [];
+var historyDetailUrl = '';
 function paintMain() {
   const el = id => document.getElementById(id);
   const st = stressPaneOpen && !historyOpen;
@@ -10999,7 +11002,8 @@ function stFinishDetailLog(ev) {
       finished: ev.event === 'done', stopped: !!ev.stopped,
       history_id: ev.history_id || null, error: ev.error || null})
     + ',"report":' + JSON.stringify(stDetailLog.report) + '}');
-  stDetailLog.url = URL.createObjectURL(new Blob(stDetailLog.parts, {type: 'application/json'}));
+  const detailBlob = new Blob(stDetailLog.parts, {type: 'application/json'});
+  stDetailLog.url = URL.createObjectURL(detailBlob);
   stDetailLog.name = 'extraction-details-' + ((stState?.plan?.run_id || new Date().toISOString())
     .replace(/[^a-zA-Z0-9_-]/g, '-')) + '.json';
   stDetailLog.parts = null;
@@ -11007,6 +11011,8 @@ function stFinishDetailLog(ev) {
   stDetailLog.catalog = {};
   stDetailLog.report = null;
   stState.detailDownload = {url: stDetailLog.url, name: stDetailLog.name, count: stDetailLog.count};
+  if (stState.runId) stResults.saveDetail(stState.runId, detailBlob, stDetailLog.name, stDetailLog.count)
+    .catch(() => {});
   stDownloadDetailLog();
 }
 
@@ -11695,6 +11701,8 @@ function stAlertBox(alerts, part, title, mode) {
 async function stShowEvidence(alertId, kind, host, job) {
   const ticket = ++stEvidenceRequest;
   const base = API + '/stress/evidence/' + encodeURIComponent(alertId);
+  const saved = await stResults.read(alertId).catch(() => null);
+  if (ticket !== stEvidenceRequest) return;
   // The row already identifies the source. Open a selected PC file immediately;
   // large extraction payloads must not stand between a click and the original.
   const row = [...(host?.querySelectorAll('tr.st-alert-link') || [])]
@@ -11713,11 +11721,22 @@ async function stShowEvidence(alertId, kind, host, job) {
     stOpenEvidenceCompare(alertId);
     openedLocal = true;
   }
-  let data;
-  try {
-    data = await loadStressEvidence(base, row?.dataset.alertRevision || '');
-  } catch (err) {
+  // This browser's copy where it is current; the server's while the flag is
+  // still changing; this browser's again once the server no longer has the page.
+  let data = null, loadError = null;
+  let fromBrowser = !!saved && saved.revision === String(row?.dataset.alertRevision || '');
+  if (fromBrowser) data = saved.data;
+  else {
+    try {
+      data = await loadStressEvidence(base, row?.dataset.alertRevision || '');
+    } catch (err) {
+      loadError = err;
+    }
     if (ticket !== stEvidenceRequest) return;
+    if (!data && saved) { fromBrowser = true; data = saved.data; }
+  }
+  if (!data) {
+    const err = loadError;
     stNote.textContent = err.message;
     stNote.classList.add('err');
     if (openedLocal) {
@@ -11732,9 +11751,17 @@ async function stShowEvidence(alertId, kind, host, job) {
     return;
   }
   if (ticket !== stEvidenceRequest) return;
+  stEvidenceUrls.forEach(url => URL.revokeObjectURL(url));
+  stEvidenceUrls = [];
+  const browserSrc = n => {
+    if (!saved.blobs[n]) return null;
+    const url = URL.createObjectURL(saved.blobs[n]);
+    stEvidenceUrls.push(url);
+    return url;
+  };
   // `image` is false for a read with no page (an extract-only job's transcript).
   const reads = data.attempts.map((a, n) => Object.assign({}, a,
-    { src: a.image === false ? null : base + '/' + n + '.png' }));
+    { src: a.image === false ? null : fromBrowser ? browserSrc(n) : base + '/' + n + '.png' }));
   // An error opens on the read that failed, which is the last.
   const first = kind === 'dry' ? reads.findIndex(r => r.dry)
               : kind === 'error' ? reads.length - 1
@@ -11948,10 +11975,14 @@ function stWireOutliers(host, s, rerender) {
 
 function stReportHtml(s, snapshot, host) {
   let html = '';
+  if (s.restored) {
+    html += '<p class="note">Saved in this browser on ' + esc(new Date(s.restored).toLocaleString())
+      + '. Flagged pages open from this browser, even if the server no longer has them.</p>';
+  }
   if (s.detailDownload) {
     html += '<p class="note"><a class="ghost-sm" href="' + esc(s.detailDownload.url)
       + '" download="' + esc(s.detailDownload.name) + '">Download detail log</a> · '
-      + s.detailDownload.count + ' job(s) · kept in this browser tab only</p>';
+      + s.detailDownload.count + ' job(s) · kept in this browser only</p>';
   }
   if (s.monitor_samples && s.monitor_samples.length) {
     html += historyMonitorHtml(s.monitor_samples, s.monitor_samples_total);
@@ -12245,15 +12276,38 @@ async function stStart() {
    the background whoever is watching, keeps every line it sends, and names
    itself in `X-Stress-Run`. So a dropped connection is followed again from the
    line it stopped at, and a page that reloads picks the run up where it is
-   (`stResume`). Stop is the only thing that ends a run early. */
+   (`stResume`). Stop is the only thing that ends a run early.
+
+   A closed tab loses its workspace id with its sessionStorage, so the run's
+   workspace is also listed in localStorage until its report has been shown. A
+   tab opened later in this browser takes that workspace back
+   (_workspace_session.html), and with it the run, its Stop and its pickers. */
 const ST_REATTACH_TRIES = 30;
 const ST_SEEN_KEY = 'stSeenRun';
+const ST_PARKED_KEY = 'ocrStressRuns:' + window.OCR_BASE;
 function stSeenRun() {
   try { return sessionStorage.getItem(ST_SEEN_KEY); } catch { return null; }
 }
 function stMarkSeen(id) {
   try { if (id) sessionStorage.setItem(ST_SEEN_KEY, id); } catch { /* private window */ }
+  stUnpark();
 }
+function stOtherParked() {
+  try {
+    const list = JSON.parse(localStorage.getItem(ST_PARKED_KEY));
+    return (Array.isArray(list) ? list : []).filter(r => r && r.ws !== window.OCR_WORKSPACE);
+  } catch { return []; }
+}
+function stSaveParked(list) {
+  try {
+    if (list.length) localStorage.setItem(ST_PARKED_KEY, JSON.stringify(list));
+    else localStorage.removeItem(ST_PARKED_KEY);
+  } catch { /* private window: a closed tab cannot come back to its run */ }
+}
+function stPark(id) {
+  if (id) stSaveParked([...stOtherParked(), { ws: window.OCR_WORKSPACE, run: id }]);
+}
+function stUnpark() { stSaveParked(stOtherParked()); }
 
 // Read one response of a run into stState: 'done' when its report came,
 // 'ended' when the server closed it without one. A dropped connection throws
@@ -12288,6 +12342,7 @@ async function stReadStream(res) {
       if (ev.history_error) stState.historyError = ev.history_error;
       if (ev.event === 'plan') {
         stState.plan = ev;
+        stKeepRun({finished: false, dismissed: false});
         stEl('stSeed').value = ev.seed;
         stNote.textContent = 'Seed ' + ev.seed + '.';
       } else if (ev.event === 'preparing') {
@@ -12317,6 +12372,7 @@ async function stReadStream(res) {
         // resolved, or not): replace its row rather than add one.
         const at = ev.id ? stState.alerts.findIndex(a => a.id === ev.id) : -1;
         if (at >= 0) stState.alerts[at] = ev; else stState.alerts.push(ev);
+        if (ev.evidence) stResults.capture(stState.runId, ev.id, ev.updated ?? ev.elapsed ?? '');
         lastPaint = 0;
       } else if (ev.event === 'draining') {
         stState.draining = ev.in_flight;
@@ -12347,6 +12403,7 @@ async function stWatch(open) {
           throw new Error(data.error || ('HTTP ' + res.status));
         }
         stState.runId = res.headers.get('X-Stress-Run') || stState.runId;
+        stPark(stState.runId);
         const before = stState.received;
         let outcome = 'lost';
         try {
@@ -12385,7 +12442,80 @@ async function stWatch(open) {
     stAbort = null;
     stBusy(false);
     stPaint();
+    if (stState && stState.plan) stFinishSaving(stState);
   }
+}
+
+/* The run's copy in this browser (`benchmark-results.js`). */
+const ST_KEPT_FIELDS = ['plan', 'progress', 'report', 'alerts', 'monitor_samples',
+  'monitor_samples_total', 'historyId', 'historyError'];
+function stKeepRun(fields, state = stState) {
+  if (!state || !state.runId) return Promise.resolve(null);
+  const kept = {};
+  for (const key of ST_KEPT_FIELDS) if (state[key] !== undefined) kept[key] = state[key];
+  return stResults.saveRun(state.runId, { ...fields, mode: state.plan?.mode || '',
+    historyId: state.historyId || null, state: kept }).catch(() => null);
+}
+
+// Ask for every flagged page once more, now that each has its final form, and
+// for the extraction an OCR flag switches to (`stPaintFlagLinks` builds that key).
+async function stFinishSaving(state) {
+  await stKeepRun({finished: true}, state);
+  const jobs = new Map();
+  for (const a of state.alerts || []) {
+    if (!a.evidence) continue;
+    stResults.capture(state.runId, a.id, a.updated ?? a.elapsed ?? '');
+    if (a.stage === 'ocr') jobs.set(a.job, String(a.id).replace(/\d+$/, '') + 'job' + a.job);
+  }
+  if (state.plan?.mode === 'full') for (const key of jobs.values()) stResults.capture(state.runId, key);
+  await stResults.idle();
+  await stKeepRun({finished: true, captured: true}, state);
+  if (stResults.full) stNote.textContent += ' This browser ran out of storage, so some flagged pages were not saved.';
+  stPaintSaved();
+}
+
+function stShowSaved(row) {
+  stClearDetailLog();
+  stState = { ...row.state, alerts: row.state.alerts || [], draining: 0, received: 0,
+              runId: row.key, restored: row.at };
+  stNote.textContent = '';
+  stNote.classList.remove('err');
+  stPaint();
+  stResults.detail(row.key).then(detail => {
+    if (!detail || !stState || stState.runId !== row.key) return;
+    stDetailLog.url = URL.createObjectURL(detail.blob);
+    stDetailLog.name = detail.name;
+    stDetailLog.count = detail.count;
+    stState.detailDownload = {url: stDetailLog.url, name: detail.name, count: detail.count};
+    stPaint();
+  }).catch(() => {});
+  // The tab closed before it had copied everything: the server may still have it.
+  if (!row.captured) stFinishSaving(stState);
+}
+
+async function stRestoreLatest() {
+  const row = await stResults.latest().catch(() => null);
+  if (row && !stState && !stRunning && !stAbort) stShowSaved(row);
+}
+
+async function stPaintSaved() {
+  const list = stEl('stSavedList'), note = stEl('stSavedNote'), clear = stEl('stSavedClear');
+  if (!stResults.available) {
+    note.textContent = 'This browser cannot store results, so flagged pages are only on the server.';
+    return;
+  }
+  const runs = await stResults.runs().catch(() => []);
+  const bytes = runs.reduce((n, r) => n + (r.bytes || 0), 0);
+  note.textContent = runs.length
+    ? 'Flagged pages and detail logs from ' + runs.length + ' run(s), '
+      + (bytes / 1048576).toFixed(1) + ' MB. They stay on this computer and are not uploaded. '
+      + 'The oldest are removed past 20 runs or 1 GB.'
+    : 'Flagged pages and detail logs of the runs you watch are kept here, on this computer only.';
+  clear.hidden = !runs.length;
+  list.innerHTML = runs.map(run => '<button type="button" class="history-item" data-saved-run="'
+    + esc(run.key) + '"><b>' + esc(historyDate(run.at)) + '</b><span>'
+    + esc(run.mode || '') + ' · ' + (run.state?.alerts || []).length + ' flag(s) · '
+    + ((run.bytes || 0) / 1048576).toFixed(1) + ' MB</span></button>').join('');
 }
 
 // On load: this tab's run, if one is still going on the server -- or one that
@@ -12395,8 +12525,11 @@ async function stResume() {
   try {
     const res = await fetch(API + '/stress/active');
     if (res.ok) run = (await res.json()).run;
-  } catch { return; }
-  if (!run || stRunning || stAbort || (!run.running && stSeenRun() === run.id)) return;
+  } catch { return stRestoreLatest(); }
+  // Nothing to bring back, e.g. the server restarted while the tab was closed.
+  if (!run || (!run.running && stSeenRun() === run.id)) { stUnpark(); return stRestoreLatest(); }
+  if (stRunning || stAbort) return;
+  if (window.OCR_ADOPTED_RUN) showPane('stress');
   if (ST_MODES.includes(run.mode) && run.mode !== stMode.value) stLoadModeDefaults(run.mode);
   stClearDetailLog();
   stState = { draining: 0, alerts: [], received: 0, runId: run.id };
@@ -12450,6 +12583,20 @@ if (stRun) {
   stEl('stFillImages').addEventListener('click', () => { stFillOn = !stFillOn; stPaintFill(); });
   stEl('stConc').addEventListener('input', stPaintBatch);
   stRun.addEventListener('click', () => stStart());
+  stEl('stSavedList').addEventListener('click', async event => {
+    const button = event.target.closest('button[data-saved-run]');
+    if (!button || stRunning || stAbort) return;
+    const row = await stResults.run(button.dataset.savedRun).catch(() => null);
+    if (!row) return;
+    await stKeepRun({dismissed: false}, {...row.state, runId: row.key});
+    stShowSaved(row);
+    showStressView('run');
+  });
+  stEl('stSavedClear').addEventListener('click', async () => {
+    if (stRunning || stAbort || !confirm('Delete every stress result saved in this browser?')) return;
+    await stResults.clear().catch(() => {});
+    stPaintSaved();
+  });
   const stop = async () => {
     if (!stAbort || stStopping) return;
     stStopping = true;
@@ -12466,6 +12613,7 @@ if (stRun) {
   stClear.addEventListener('click', () => {
     if (stAbort) return;
     stClearDetailLog();
+    if (stState && stState.runId) stKeepRun({dismissed: true});
     stState = null; stNote.textContent = '';
     stNote.classList.remove('err');
     setTestStatus('st', 'ready');
@@ -12809,6 +12957,7 @@ const historyLabel = status => ({running: 'Running', completed: 'Completed',
 const historyDate = value => value ? new Date(value).toLocaleString() : '—';
 
 async function historyLoad() {
+  stPaintSaved();
   const mine = ++historyListSeq;
   const note = stEl('historyStatus');
   note.textContent = 'Loading…';
@@ -12933,6 +13082,13 @@ function historyRender(item) {
   };
   draw();
   root.querySelector('.history-json').textContent = JSON.stringify(item, null, 2);
+  stResults.detailForHistory(item.id).then(detail => {
+    if (!detail || historyCurrent !== item) return;
+    if (historyDetailUrl) URL.revokeObjectURL(historyDetailUrl);
+    historyDetailUrl = URL.createObjectURL(detail.blob);
+    saved.detailDownload = {url: historyDetailUrl, name: detail.name, count: detail.count};
+    draw();
+  }).catch(() => {});
 }
 
 function historyMonitorState(samples, index) {
