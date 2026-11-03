@@ -2012,6 +2012,8 @@ contains `data` (the v7 candidate), `schema_valid`, `schema_errors`, `warnings`,
 `missing_fields` and `unmapped`. `?download=1` downloads only the candidate as a
 `.user-v7.preview.json` file. The UI labels nonconforming candidates **Draft**.
 In the result tabs and downloads, User JSON comes before the system JSON (**JSON ระบบ**).
+A result opens on the User JSON tab once extraction has produced one (on the OCR
+text before that); after someone picks a tab by hand, that tab stays for the session.
 
 After a multi-file upload, the batch list on the left ends with **ดาวน์โหลด User JSON
 ทั้งหมด** (`GET /api/user/batches/<batch_id>/user-json.zip`). The v7 contract is one

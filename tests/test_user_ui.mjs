@@ -554,7 +554,7 @@ test('portal base paths support root, trailing slash and nested reverse-proxy mo
   assert.ok(!settingsSource.includes("fetch('/api/"));
 });
 
-test('User JSON loads only on selection, reports Draft and preserves the legacy JSON and prefixed download',async()=>{
+test('an extracted result opens on User JSON, reports Draft, keeps a picked tab and the system JSON and prefixed download',async()=>{
   const {el,document}=dom();let conversions=0,fail=true;
   const extracted={doc_types:['RTV_SHIP_CREDIT'],fields:{document_number:'RTV-1',seller_branch_location:'มหาชัย'}};
   const job={id:'job',filename:'test.png',status:'completed',result:{extracted}};
@@ -570,14 +570,16 @@ test('User JSON loads only on selection, reports Draft and preserves the legacy 
   };
   vm.runInContext(appSource,vm.createContext({document,window:{USER_BASE:'/ocr',renderUserOcr(){},addEventListener(){}},fetch,Date,setTimeout:()=>1,clearTimeout(){}}));
   const settle=async()=>{for(let i=0;i<15;i++)await Promise.resolve();};
-  await settle();await el('historyRows').children[0].children.at(-1).children[0].listeners.click();
-  assert.equal(conversions,0);
+  const open=async()=>{await el('historyRows').children[0].children.at(-1).children[0].listeners.click();await settle();};
+  await settle();await open();
+  // Converted once from the saved result; no model call.
+  assert.equal(conversions,1);assert.equal(el('userJsonResult').hidden,false);assert.equal(el('textResult').hidden,true);
   assert.equal(el('exportLink').href,'/ocr/api/user/jobs/job/export');
   assert.equal(el('userJsonDownload').hidden,false);
   assert.equal(el('userJsonDownload').href,'/ocr/api/user/jobs/job/user-json?download=1');
   assert.equal(el('userJsonReportDownload').href,'/ocr/api/user/jobs/job/user-json?download=report');
   const original=el('jsonResult').textContent;
-  el('userJsonTab').listeners.click();await settle();assert.equal(el('userJsonRetry').hidden,false);
+  assert.equal(el('userJsonRetry').hidden,false);
   fail=false;el('userJsonRetry').listeners.click();await settle();
   assert.equal(el('userJsonResult').hidden,false);assert.equal(el('jsonResult').hidden,true);
   assert.match(el('userJsonNotice').textContent,/Draft/);assert.equal(el('userJsonDetails').hidden,false);
@@ -587,7 +589,9 @@ test('User JSON loads only on selection, reports Draft and preserves the legacy 
   assert.equal(el('userJsonCode').textContent,JSON.stringify(candidate,null,2));
   assert.equal(el('userJsonDownload').href,'/ocr/api/user/jobs/job/user-json?download=1');
   assert.match(el('userJsonUnmapped').textContent,/มหาชัย/);assert.equal(el('jsonResult').textContent,original);
-  el('jsonTab').listeners.click();el('userJsonTab').listeners.click();await settle();assert.equal(conversions,2);
+  // A tab picked by hand stays picked when a result is opened again.
+  el('jsonTab').listeners.click();await open();assert.equal(el('jsonResult').hidden,false);assert.equal(el('userJsonResult').hidden,true);
+  el('userJsonTab').listeners.click();await settle();assert.equal(conversions,2);
 });
 
 test('both JSON download choices are in the shared toolbar, User JSON before the system JSON',()=>{

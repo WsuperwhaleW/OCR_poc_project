@@ -30,7 +30,7 @@
   let typesLoaded = false, typesLoading = false;
   let typesMode = 'user', userTypesLoading = false;  // User's own types first; the system catalog is the second tab.
   let userTypesData = null, fieldDraft = null, fieldsSaving = false;
-  let userJsonJob=null, userJsonLoadedKey='', userJsonPendingKey='', userJsonTicket=0, resultMode='text';
+  let userJsonJob=null, userJsonLoadedKey='', userJsonPendingKey='', userJsonTicket=0, resultMode='text', resultModeChosen=false;
   let promptPanelJobId=null;
   let promptHistoryTicket=0,promptHistoryLoadedKey='';
   // The running stage counts up in the browser between polls (liveStage, one interval).
@@ -743,6 +743,9 @@
     $('jobPromptOpen').disabled=active(job.status);
     $('jobRetryOrigin').hidden=!job.retry_of;
     if($('jobPromptHistory').open)loadPromptHistory();
+    // A result opens on User JSON once extraction has produced one, else on the OCR text,
+    // until someone picks a tab themselves (2026-11-03, at the user's request).
+    if(!resultModeChosen){const wanted=result.extracted?'userJson':'text';if(resultMode!==wanted)tab(wanted);}
     if(resultMode==='userJson')loadUserJson();
   }
   function userJsonKey(job){return job ? [job.id,job.updated_at,job.status].join('|') : '';}
@@ -883,8 +886,9 @@
   }
   $('refreshHistory').addEventListener('click',()=>loadHistory());$('moreHistory').addEventListener('click',()=>loadHistory(true));
   function tab(mode){resultMode=mode;for(const key of ['text','fields','json','userJson']){const on=mode===key;$(key+'Result').hidden=!on;$(key+'Tab').classList.toggle('selected',on);$(key+'Tab').setAttribute('aria-selected',String(on));}if(mode==='userJson')loadUserJson();}
-  $('fieldsTab').addEventListener('click',()=>tab('fields'));$('textTab').addEventListener('click',()=>tab('text'));$('jsonTab').addEventListener('click',()=>tab('json'));
-  $('userJsonTab').addEventListener('click',()=>tab('userJson'));
+  const pickTab=mode=>{resultModeChosen=true;tab(mode);};
+  $('fieldsTab').addEventListener('click',()=>pickTab('fields'));$('textTab').addEventListener('click',()=>pickTab('text'));$('jsonTab').addEventListener('click',()=>pickTab('json'));
+  $('userJsonTab').addEventListener('click',()=>pickTab('userJson'));
   window.addEventListener('beforeunload',event=>{if(sending){event.preventDefault();event.returnValue='';}});
   function stopPolling(){clearTimeout(historyTimer);clearTimeout(detailTimer);clearTimeout(batchTimer);clearTimeout(modelsTimer);clearTimeout(stressTimer);syncStageTicker();}
   function resumePolling(){
