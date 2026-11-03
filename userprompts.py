@@ -43,7 +43,11 @@ def rule_units(step):
             continue
         owners = [u for u in units if re.search(r'\b' + re.escape(key) + r'\b', u['text'])]
         if len(owners) != 1:
-            raise ValueError('ยังไม่สามารถแยกข้อกำหนดจริงของตัวแปร ' + key)
+            # Some steps are one combined instruction with no per-key bullet (the
+            # billing-note totals talk about billing_total, not subtotal). Splitting
+            # them would guess, so the whole step is one shared editable unit:
+            # its keys are edited, and switched on and off, together.
+            return [{'keys': keys, 'start': 0, 'end': len(rules), 'text': rules}]
         owners[0]['keys'] += (key,)
     if {k for unit in units for k in unit['keys']} != set(keys):
         raise ValueError('ข้อกำหนดตัวแปรไม่ตรงกับก้อนคำถาม')

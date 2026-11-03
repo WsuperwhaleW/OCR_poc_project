@@ -246,6 +246,24 @@ class UserPromptSetTests(unittest.TestCase):
         state = self.store.prompt_set_snapshot()
         self.assertIn('GROUP RULE', json.dumps(userpromptsets.effective(state, 'INVOICE')[0]))
 
+    def test_every_type_opens_in_the_group_editor_including_combined_rules(self):
+        # The billing-note totals rule is one combined instruction (it talks about
+        # billing_total), so it has no per-key bullet for subtotal; it once broke the page.
+        for code in prompts.TYPE_NAMES:
+            with self.subTest(code=code):
+                response = self.client.get('/api/user/hybrid-prompts', query_string={'doc_type':code, 'template':'1'})
+                self.assertEqual(response.status_code, 200, response.json)
+                self.assertIsNotNone(response.json['editor'])
+        totals = next(g for g in self.reference_template('BILLING_NOTE')['editor']['groups'] if g['id'] == 'totals')
+        self.assertEqual({f['edit_key'] for f in totals['fields']}, {'subtotal'})
+        self.assertEqual(totals['fields'][0]['linked_keys'], ['subtotal','vat_total','amount_incl_vat'])
+        record = userpromptsets.template(self.store.prompt_set_snapshot(), 'BILLING_NOTE')
+        self.assertEqual([s['rules'] for s in record['steps']],
+                         [s['rules'] for s in prompts.steps_for_types(['BILLING_NOTE'], False, mode='hybrid')])
+
+    def reference_template(self, code):
+        return self.client.get('/api/user/hybrid-prompts', query_string={'doc_type':code, 'template':'1'}).json
+
     def test_an_unconfigured_group_is_editable_from_its_built_in_form(self):
         data, where = self.board()
         codes = self.group_codes(data, where['DEBIT_NOTE'])
