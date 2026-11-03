@@ -14,6 +14,7 @@ from PIL import Image, ImageOps
 import config
 import userjson
 import userprompts
+import userpromptsets
 from userpipeline import EngineAdapter, UserService
 from userstore import UserStore, validate_settings
 
@@ -59,7 +60,7 @@ def register(application, engine):
             for code, name in engine.prompts.TYPE_NAMES.items()}, user_prompt_types={
             code: re.sub(r'^(an|a|the) ', '', name)
             for code, name in engine.prompts.TYPE_NAMES.items()
-            if engine.prompts.DOC_TYPE_FIELDS.get(code)})
+            if engine.prompts.DOC_TYPE_FIELDS.get(code)}, user_prompt_catalog=userpromptsets.catalog())
 
     @application.get('/api/user/settings')
     def user_settings():
@@ -70,10 +71,101 @@ def register(application, engine):
     def user_hybrid_prompts():
         """Current User prompt reference and the editable field-level profile."""
         codes = list(dict.fromkeys(request.args.getlist('doc_type') or ['INVOICE']))
-        if any(not engine.prompts.DOC_TYPE_FIELDS.get(code) for code in codes):
-            return jsonify(error='ประเภทนี้ยังไม่มีชุดคำถาม Hybrid เฉพาะ'), 400
+        if any(code not in engine.prompts.TYPE_NAMES for code in codes):
+            return jsonify(error='ไม่รู้จักประเภทเอกสารนี้'), 400
         cfg = service().store.settings()
-        return jsonify(prompt_reference(codes, cfg, service().store.prompt_profiles(), codes[0]))
+        cfg['prompt_sets'] = service().store.prompt_set_snapshot()
+        if len(codes) > 1:
+            if any(not engine.prompts.DOC_TYPE_FIELDS.get(code) for code in codes):
+                return jsonify(error='เลือกประเภทเดี่ยวเพื่อจัดการชุด prompt'), 400
+            try:
+                return jsonify(set_reference(codes[0], cfg, codes_override=codes))
+            except ValueError as err:
+                return jsonify(error=str(err)), 400
+        try:
+            return jsonify(set_reference(codes[0], cfg, request.args.get('source_set_id')))
+        except ValueError as err:
+            return jsonify(error=str(err)), 400
+
+    def set_reference(code, cfg, source_id=None, codes_override=None):
+        import copy
+        snapshot = copy.deepcopy(cfg['prompt_sets'])
+        actual = snapshot['bindings'].get(code, {'set_id':None, 'revision':0})
+        if source_id:
+            if source_id not in snapshot['sets']:
+                raise ValueError('ไม่พบชุดต้นแบบในเวอร์ชันของงานนี้')
+            snapshot['bindings'][code] = {'set_id':source_id, 'revision':actual['revision']}
+        binding = snapshot['bindings'].get(code)
+        record = snapshot['sets'][binding['set_id']] if binding else None
+        codes = codes_override or userpromptsets.codes_for(code)
+        table = userpromptsets.runtime(engine.prompts.steps_for_types(codes, cfg['extras'], mode='hybrid'),
+                                         codes, snapshot, cfg['extras'])
+        framing = engine._framing({'doc_types':codes}, 'hybrid')
+        groups = [{'id':step['id'], 'title':step['title'], 'keys':list(step['keys']), 'enabled':True,
+                   'question':engine._step_question(step, framing, mode='hybrid')} for step in table]
+        editor = None
+        if record:
+            definitions = userpromptsets.view(record)
+            present = {group['id'] for group in groups}
+            for group in definitions:
+                if group['id'] not in present:
+                    groups.append({'id':group['id'], 'title':group['title'], 'keys':[f['key'] for f in group['fields']],
+                                   'enabled':False, 'question':''})
+            order = {group['id']:i for i,group in enumerate(definitions)}
+            groups.sort(key=lambda group:order.get(group['id'],len(order)))
+            editor = {'revision':record['revision'], 'value':record['value'], 'groups':definitions,
+                      'targets':[{'path':path, 'type':schema.get('type')} for path,schema in userprompts.targets().items()]}
+        labels = {r['code']:r['label'] for r in userpromptsets.catalog()}
+        shared = [c for c,b in cfg['prompt_sets']['bindings'].items()
+                  if record and b['set_id'] == record['id']]
+        library = {'binding':actual, 'record':record, 'source_selected':bool(source_id),
+                   'shared_types':[{'code':c, 'label':labels[c]} for c in shared],
+                   'sets':[{'id':r['id'], 'name':r['name'], 'revision':r['revision'], 'base_code':r['base_code']}
+                           for r in snapshot['sets'].values()], 'types':userpromptsets.catalog()}
+        return {'doc_types':codes, 'editable_type':code, 'mode':'hybrid', 'groups':groups,
+                'prompt_prefix':engine._step_prefix('[ข้อความ OCR ของเอกสาร]'),
+                'settings':{'extras':cfg['extras'], 'schema_first':cfg['schema_first']},
+                'has_requirement':bool(engine.prompts.DOC_TYPE_FIELDS.get(code)), 'editor':editor, 'library':library}
+
+    @application.get('/api/user/prompt-sets')
+    def user_prompt_sets():
+        state = service().store.prompt_set_snapshot()
+        return jsonify(**state, types=userpromptsets.catalog())
+
+    @application.post('/api/user/prompt-sets')
+    def user_change_prompt_set():
+        try:
+            record = service().store.change_prompt_set(request.get_json(silent=True))
+            return jsonify(record=record)
+        except userpromptsets.Conflict as err:
+            return jsonify(error=str(err)), 409
+        except (ValueError, TypeError) as err:
+            return jsonify(error=str(err)), 400
+
+    @application.get('/api/user/prompt-sets/<set_id>/history')
+    def user_prompt_set_history(set_id):
+        return jsonify(versions=service().store.prompt_set_history(set_id))
+
+    @application.post('/api/user/hybrid-prompts/preview')
+    def user_preview_hybrid_prompts():
+        import copy
+        body = request.get_json(silent=True)
+        if not isinstance(body, dict) or set(body) - {'doc_type','set_id','value','job_id'}:
+            return jsonify(error='ข้อมูลตัวอย่าง prompt ไม่ถูกต้อง'), 400
+        try:
+            cfg = (copy.deepcopy(job_or_404(body['job_id'])['configuration']) if body.get('job_id') else
+                   {**service().store.settings(), 'prompt_sets':service().store.prompt_set_snapshot()})
+            snapshot = cfg['prompt_sets']
+            code, set_id = body['doc_type'], body['set_id']
+            if body.get('job_id') and code not in prompt_types_for_job(job_or_404(body['job_id']))[0]:
+                raise ValueError('แก้ได้เฉพาะประเภทที่พบในงานนี้')
+            record = snapshot['sets'][set_id]
+            record['value'] = userpromptsets.validate(record['base_code'], body['value'], record['base_steps'])
+            record['steps'] = userpromptsets.compile_record(record)
+            data = set_reference(code, cfg, set_id)
+            return jsonify(data)
+        except (ValueError, KeyError, TypeError) as err:
+            return jsonify(error=str(err)), 400
 
     def prompt_reference(codes, cfg, profiles, editable=None):
         selected = editable or (codes[0] if codes else 'UNKNOWN')
@@ -101,8 +193,8 @@ def register(application, engine):
         if not isinstance(body, dict) or set(body) != {'doc_type', 'revision', 'value'}:
             return jsonify(error='ส่งประเภทเอกสาร เวอร์ชัน และค่า prompt ให้ครบ'), 400
         try:
-            value = userprompts.validate(body['doc_type'], body['value'])
-            profile = service().store.save_prompt_profile(body['doc_type'], value, body['revision'])
+            # The store validates, against the bound set's enabled fields.
+            profile = service().store.save_prompt_profile(body['doc_type'], body['value'], body['revision'])
         except (ValueError, TypeError) as err:
             return jsonify(error=str(err)), 400
         if profile is None:
@@ -154,6 +246,7 @@ def register(application, engine):
         except RuntimeError as err:
             return jsonify(error=str(err)), 503
         cfg['prompt_profiles'] = current.store.prompt_profiles()
+        cfg['prompt_sets'] = current.store.prompt_set_snapshot()
         batch_id = current.store.create_batch(count, cfg)
         return jsonify(batch_id=batch_id, configuration=cfg), 201
 
@@ -318,6 +411,21 @@ def register(application, engine):
     def user_job_prompts(job_id):
         job = job_or_404(job_id)
         codes, docs = prompt_types_for_job(job)
+        if job['configuration'].get('prompt_sets') and codes:
+            available = set(codes)
+            for code in codes:
+                available.difference_update(engine.prompts.TYPE_COMPONENTS.get(code, ()))
+            available = [code for code in engine.prompts.TYPE_SPECIFICITY if code in available]
+            selected = request.args.get('doc_type') or (available[0] if available else None)
+            if selected not in available:
+                return jsonify(error='ประเภทที่เลือกไม่ได้อยู่ในผลของงานนี้'), 400
+            try:
+                data = set_reference(selected, job['configuration'], request.args.get('source_set_id'))
+            except ValueError as err:
+                return jsonify(error=str(err)), 400
+            data.update(available_types=available, job_id=job_id, preview_document=next((i+1 for i,d in enumerate(docs)
+                if selected in (d.get('doc_types') or [d.get('doc_type')])), None))
+            return jsonify(data)
         available = [code for code in codes if engine.prompts.DOC_TYPE_FIELDS.get(code)]
         selected = request.args.get('doc_type') or (available[0] if available else None)
         if selected and selected not in available:
@@ -346,9 +454,9 @@ def register(application, engine):
     def user_retry_extraction(job_id):
         parent = job_or_404(job_id)
         body = request.get_json(silent=True)
-        if not isinstance(body, dict) or set(body) != {'request_id', 'prompt_profiles'}:
+        if not isinstance(body, dict) or set(body) not in ({'request_id', 'prompt_profiles'}, {'request_id','prompt_sets'}):
             return jsonify(error='ส่งรหัสคำขอและ prompt สำหรับ retry ให้ครบ'), 400
-        request_id, edits = body['request_id'], body['prompt_profiles']
+        request_id, edits = body['request_id'], body.get('prompt_sets', body.get('prompt_profiles'))
         if not isinstance(request_id, str) or not re.fullmatch('[a-zA-Z0-9_-]{8,64}', request_id):
             return jsonify(error='รหัสคำขอ retry ไม่ถูกต้อง'), 400
         old = service().store.extraction_retry(job_id, request_id)
@@ -360,21 +468,41 @@ def register(application, engine):
             return jsonify(error='งานนี้ยังไม่มีข้อความ OCR ที่บันทึกไว้สำหรับ retry'), 400
         current = service()
         codes, _ = prompt_types_for_job(parent)
-        available = {code for code in codes if engine.prompts.DOC_TYPE_FIELDS.get(code)}
+        available = (set(codes) if 'prompt_sets' in body else
+                     {code for code in codes if engine.prompts.DOC_TYPE_FIELDS.get(code)})
         if not isinstance(edits, dict) or set(edits) - available:
             return jsonify(error='แก้ได้เฉพาะประเภทที่พบในงานนี้'), 400
         cfg = {**current.store.settings(), **parent['configuration'], 'shape': 'hybrid',
                'extraction_url': current.store.settings()['extraction_url']}
         profiles = dict(cfg.get('prompt_profiles', {}))
         try:
-            for code, value in edits.items():
-                normalized = userprompts.validate(code, value)
+            if 'prompt_sets' in body:
+                import copy
+                if not cfg.get('prompt_sets'):
+                    raise ValueError('งานรุ่นเก่าให้ใช้การแก้ Prompt แบบเดิมของงานนั้น')
+                snapshot = copy.deepcopy(cfg['prompt_sets'])
+                for code, edit in edits.items():
+                    if not isinstance(edit, dict) or set(edit) != {'set_id','value'} or edit['set_id'] not in snapshot['sets']:
+                        raise ValueError('เลือกชุดและค่า prompt จากเวอร์ชันของงานนี้')
+                    snapshot['bindings'][code] = {'set_id':edit['set_id'], 'revision':0}
+                cfg['prompt_sets'] = userpromptsets.retry(snapshot, {c:e['value'] for c,e in edits.items()})
+            legacy_sets = 'prompt_profiles' in body and cfg.get('prompt_sets')
+            if legacy_sets:
+                # Older edit format on a job with set snapshots: keep the job's
+                # on/off state and validate against its enabled fields.
+                cfg['prompt_sets'] = userpromptsets.retry(cfg['prompt_sets'], edits, legacy=True)
+            for code, value in (edits.items() if 'prompt_profiles' in body else []):
+                if legacy_sets:
+                    sets = cfg['prompt_sets']
+                    normalized = userpromptsets.legacy_value(sets['sets'][sets['bindings'][code]['set_id']]['value'])
+                else:
+                    normalized = userprompts.validate(code, value)
                 profiles[code] = {'revision': profiles.get(code, {}).get('revision', 0) + 1,
                                   'scope': 'job', 'value': normalized}
             cfg['prompt_profiles'] = profiles
             cfg = current.adapter.snapshot_extraction(cfg)
             retried = current.store.retry_extraction(job_id, request_id, cfg)
-        except ValueError as err:
+        except (ValueError, TypeError, KeyError) as err:
             return jsonify(error=str(err)), 400
         except RuntimeError as err:
             return jsonify(error=str(err)), 503

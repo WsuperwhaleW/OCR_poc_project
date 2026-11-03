@@ -52,6 +52,8 @@ FILES = [
     "userpipeline.py",
     "userstore.py",
     "userprompts.py",
+    "userpromptsets.py",
+    "userpromptcompare.py",
     "priority.py",
     "extractionlog.py",
     "extractionlimit.py",

@@ -9,6 +9,7 @@ import workspace
 
 workspace.field('user_pipeline', lambda: False)
 workspace.field('user_prompt_profiles', lambda: {})
+workspace.field('user_prompt_sets', lambda: {})
 
 
 def compact_extraction(value):
@@ -19,7 +20,8 @@ def compact_extraction(value):
             'partial', 'error', 'seconds', 'tokens', 'segments', 'split_from',
             'steps_failed', 'steps_extras', 'model', 'backend', 'url', 'normalization_version',
             'validation', 'image_filled', 'image_fills', 'validation_image_rechecks', 'image_rechecks')
-    keys += ('custom_fields', 'user_prompt_mappings', 'user_prompt_revisions')
+    keys += ('custom_fields', 'user_prompt_mappings', 'user_prompt_revisions', 'user_prompt_sets', 'user_disabled_fields',
+             'fields_asked', 'items_asked', 'classified')
     keys += ('document_parallel', 'extraction_request_limit', 'extraction_request_scope',
              'document_requests_peak', 'document_seconds_sum', 'grouping_execution')
     out = {key: value[key] for key in keys if key in value}
@@ -47,6 +49,7 @@ class EngineAdapter:
             try:
                 ws.put('user_pipeline', True)
                 ws.put('user_prompt_profiles', configuration.get('prompt_profiles', {}))
+                ws.put('user_prompt_sets', configuration.get('prompt_sets', {}))
                 ws.put('active', configuration['ocr_url'])
                 ws.put('extract_url', configuration['extraction_url'])
                 models = configuration.get('models') or {}

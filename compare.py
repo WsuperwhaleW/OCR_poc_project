@@ -228,6 +228,9 @@ def main():
                     help=f"base URL of the running app (default: {DEFAULT_APP})")
     ap.add_argument("--fields", action="store_true",
                     help="also score pass 2 against solution/<id>.fields.json")
+    ap.add_argument('--user-prompt-defaults', choices=['before','after'], default=None,
+                    help='run local User Hybrid defaults before/after Sup&Pay migration 2; '
+                         'requires model servers, not a running web app; saves to .work/compare-user-prompts/<variant>')
     ap.add_argument("--fields-only", action="store_true",
                     help="score pass 2 only -- no transcript diff or accuracy")
     ap.add_argument("--from-truth", action="store_true",
@@ -257,6 +260,17 @@ def main():
                          "name is enough (e.g. dots.ocr). Ollama only -- "
                          "llama-server serves whatever it was started with")
     args = ap.parse_args()
+    if args.user_prompt_defaults:
+        if args.mode not in (None,'hybrid') or not (args.fields or args.fields_only or args.from_truth or args.no_extract):
+            ap.error('--user-prompt-defaults requires --fields and Hybrid mode')
+        if args.app.rstrip('/') != DEFAULT_APP.rstrip('/'):
+            ap.error('--user-prompt-defaults runs local app code; select models with --extract-server, not --app')
+        import userpromptcompare
+        return userpromptcompare.run(args, sys.modules[__name__])
+    return run(args)
+
+
+def run(args):
     app = args.app.rstrip("/")
 
     # --from-truth and --fields-only are both about pass 2, so neither needs
@@ -298,6 +312,11 @@ def main():
                else f"  extracting with {extract.get('model')}"))
         if not server.get("available"):
             say(f"  warning: {server.get('reason') or 'not available'}", sys.stderr)
+        if args.user_prompt_defaults and fields and not args.no_extract:
+            available = extract.get('text_available',extract.get('available',server.get('available')))
+            if not available:
+                say('User comparison not run: extraction model unavailable. '+str(extract.get('text_reason') or extract.get('reason') or ''),sys.stderr)
+                return 2
     elif (args.server or args.model or args.profile or args.loop_guard
           or args.extract_server is not None):
         say("--server/--model/--profile/--loop-guard ignored: this run makes no "
@@ -422,17 +441,20 @@ def main():
                 # its own type does not ask for.
                 def score_one(one, pages=None):
                     codes = one.get("doc_types") or []
+                    user_scope = bool(args.user_prompt_defaults)
+                    classified = one.get('classified') or {}
                     return fieldscore.evaluate(
                         cid, one.get("fields"),
-                        keys=prompts.fields_for_types(codes), doc_types=codes,
+                        keys=one.get('fields_asked',prompts.fields_for_types(codes)) if user_scope else prompts.fields_for_types(codes),
+                        doc_types=codes,
                         # Scored over the requirement's Mandatory set, as the
                         # app scores it -- the two must not disagree about what
                         # the headline covers. Empty where no requirement covers
                         # the type, which `fieldscore` reads as "score the base
                         # field set and say it is an unknown type"; the scope
                         # line under the report says which of the two happened.
-                        mandatory=prompts.mandatory_for_types(codes),
-                        items_mandatory=prompts.mandatory_items_for_types(codes),
+                        mandatory=classified.get('mandatory',prompts.mandatory_for_types(codes)) if user_scope else prompts.mandatory_for_types(codes),
+                        items_mandatory=classified.get('mandatory_items',prompts.mandatory_items_for_types(codes)) if user_scope else prompts.mandatory_items_for_types(codes),
                         pages=pages)
 
                 if documents:
