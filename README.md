@@ -2011,6 +2011,7 @@ and the original JSON/export and job history are not changed. The response
 contains `data` (the v7 candidate), `schema_valid`, `schema_errors`, `warnings`,
 `missing_fields` and `unmapped`. `?download=1` downloads only the candidate as a
 `.user-v7.preview.json` file. The UI labels nonconforming candidates **Draft**.
+In the result tabs and downloads, User JSON comes before the system JSON (**JSON ระบบ**).
 
 After a multi-file upload, the batch list on the left ends with **ดาวน์โหลด User JSON
 ทั้งหมด** (`GET /api/user/batches/<batch_id>/user-json.zip`). The v7 contract is one
@@ -2022,7 +2023,8 @@ from a Retry, `schema_valid`, and warning and missing-field counts; files still 
 or failed are listed as not included. No model is called. A batch with nothing finished
 yet answers 409, and the button stays disabled until one file has finished.
 
-The **Doc types ของ User** subtab in `/user` lists all 11 User document codes,
+The **Doc types ของ User** subtab in `/user` opens first (the system catalog is the
+second tab) and lists all 11 User document codes,
 their current Hybrid sets, and a Required/Optional field matrix. Every cell of
 every type is clickable and cycles **Required → Optional → not asked**, so several
 types can be changed before one save. Users can enable fields from other types,

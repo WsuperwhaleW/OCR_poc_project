@@ -590,11 +590,13 @@ test('User JSON loads only on selection, reports Draft and preserves the legacy 
   el('jsonTab').listeners.click();el('userJsonTab').listeners.click();await settle();assert.equal(conversions,2);
 });
 
-test('both JSON download choices are in the shared toolbar outside the User JSON tab',()=>{
+test('both JSON download choices are in the shared toolbar, User JSON before the system JSON',()=>{
   const markup=readFileSync(new URL('templates/user.html',root),'utf8');
   const toolbar=markup.slice(markup.indexOf('class="toolbar result-tools"'),markup.indexOf('id="textResult"'));
-  assert.match(toolbar,/id="exportLink">JSON ปกติ ↓/);
+  assert.match(toolbar,/id="exportLink">JSON ระบบ ↓/);
   assert.match(toolbar,/id="userJsonDownload" hidden>JSON ของ User ↓/);
+  assert.ok(toolbar.indexOf('id="userJsonDownload"')<toolbar.indexOf('id="exportLink"'));
+  assert.ok(toolbar.indexOf('id="userJsonTab"')<toolbar.indexOf('id="jsonTab"'));
   assert.equal((markup.match(/id="userJsonDownload"/g)||[]).length,1);
 });
 
@@ -667,6 +669,9 @@ test('Doc types menu loads the shared schema on demand, retries failures and pre
   assert.equal(probes,0);
   el('navTypes').listeners.click();for(let i=0;i<10;i++)await Promise.resolve();
   assert.equal(el('typesView').hidden,false);assert.equal(el('uploadView').hidden,true);assert.equal(el('historyView').hidden,true);
+  // The User's own types open first; the system catalog loads only from its own tab.
+  assert.equal(el('userTypesPanel').hidden,false);assert.equal(el('systemTypesPanel').hidden,true);assert.equal(probes,0);
+  el('systemTypesTab').listeners.click();for(let i=0;i<10;i++)await Promise.resolve();
   assert.equal(el('typesRetry').hidden,false);assert.match(el('typesError').textContent,/503/);
   fail=false;await el('typesRetry').listeners.click();
   assert.equal(el('typesRetry').hidden,true);assert.equal(probes,2);

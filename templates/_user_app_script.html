@@ -28,7 +28,7 @@
   let modelsTimer, modelsLoading = false, pageClosed = false, lastModels = {};
   let previewKey = null, previewObjectUrl = null, previewId = null, imageZoom = 100;
   let typesLoaded = false, typesLoading = false;
-  let typesMode = 'system', userTypesLoading = false;
+  let typesMode = 'user', userTypesLoading = false;  // User's own types first; the system catalog is the second tab.
   let userTypesData = null, fieldDraft = null, fieldsSaving = false;
   let userJsonJob=null, userJsonLoadedKey='', userJsonPendingKey='', userJsonTicket=0, resultMode='text';
   let promptPanelJobId=null;
@@ -455,7 +455,7 @@
       cards.append(card);
     }
     content.append(cards);
-    content.append(node('p','ลูกศรแสดงปลายทางที่กำหนดตรงใน User JSON ส่วนฟิลด์อื่นอาจใช้ประกอบการแปลงหรือแสดงใน JSON ปกติ ดูและแก้ชุดได้ที่ Hybrid prompts','catalog-note'));
+    content.append(node('p','ลูกศรแสดงปลายทางที่กำหนดตรงใน User JSON ส่วนฟิลด์อื่นอาจใช้ประกอบการแปลงหรือแสดงใน JSON ระบบ ดูและแก้ชุดได้ที่ Hybrid prompts','catalog-note'));
     content.hidden=false;
     $('userTypesNotice').textContent=data.types.length+' ประเภท · Hybrid · Extra fields '+(data.extras?'เปิด':'ปิด');
   }
