@@ -283,6 +283,42 @@ class SweepRunTests(unittest.TestCase):
         self.assertEqual(sorted(seen[:3]), sorted(seen[3:]))
         self.assertEqual(len(set(seen)), 3)
 
+    def test_saved_rows_carry_the_level_they_ran_at(self):
+        fake = _FakeVllm()
+        patches = self._patches(fake)
+        for p in patches:
+            p.start()
+        try:
+            with mock.patch.object(app, "log_extract") as logged:
+                cfg = app._stress_config({"mode": "extract", "sweep": "1,2,4", "sweep_jobs": 3,
+                                          "warmup": 1, "seed": 1, "save_log": True})
+                events = [json.loads(x) for x in app._stress_run(cfg, app.MultiCancel())]
+        finally:
+            for p in patches:
+                p.stop()
+        tags = [call.kwargs["extra"] for call in logged.call_args_list]
+        self.assertEqual(len(tags), 9)                        # 3 per level; no warm-up row
+        self.assertEqual({t["stress_run"] for t in tags}, {events[0]["run_id"]})
+        self.assertEqual(sorted(t["stress_concurrency"] for t in tags), [1] * 3 + [2] * 3 + [4] * 3)
+
+
+class SweepHistoryTests(unittest.TestCase):
+    def test_a_run_cut_off_before_its_report_keeps_its_finished_levels(self):
+        level = {"event": "sweep_level", "index": 0, "levels": 2, "level": 1, "jobs": 2,
+                 "client": {}, "servers": [], "errors": []}
+
+        def stream():
+            yield json.dumps({"event": "plan", "sweep": [{"level": 1, "jobs": 2}]}) + "\n"
+            yield json.dumps(level) + "\n"
+            # ...and the server goes away before level 2 ends.
+
+        with mock.patch.object(app.runhistory, "start", return_value="r1"),                 mock.patch.object(app.runhistory, "save_plan"),                 mock.patch.object(app.runhistory, "finish") as finish:
+            lines = list(app._history_stream(stream(), "stress", {}))
+        self.assertEqual(len(lines), 2)
+        status, = finish.call_args.args[1:2]
+        self.assertEqual(status, "interrupted")
+        self.assertEqual(finish.call_args.kwargs["result"]["sweep_levels"][0]["level"], 1)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -2339,6 +2339,17 @@ as those buckets. The report opens with one graph per metric against the concurr
 CSV**. The note above the graphs names the level where output throughput peaked and the first
 level that added under 10% more. The rest of the report covers all levels together.
 
+**Save each job to the run log** works on a sweep as on any stress run: one row per measured
+job, every level's, all under one `stress_run`, each with `stress_concurrency` set to the level
+it ran at. Because every level runs the same files, a sweep of 6 levels × 128 jobs writes 768
+rows over those 128 files; drop them with the *stress test* chip when a table is about single
+runs.
+
+A sweep **runs in the background** like any stress run: close or reload the tab and it carries
+on, and the tab picks it up again with every finished level's graphs. History keeps the levels
+that finished even when a run never reached its report (a server restart), and this browser's
+saved copy is updated as each level ends.
+
 ### Live monitor
 
 **Start live monitor** is in the top-right page menu beside the theme selector (vLLM only).

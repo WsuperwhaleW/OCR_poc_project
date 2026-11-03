@@ -12597,6 +12597,9 @@ async function stReadStream(res) {
         // One level of the concurrency sweep, read off /metrics as it ended.
         stState.sweepLevels = stState.sweepLevels || [];
         stState.sweepLevels[ev.index] = ev;
+        // Kept in this browser as each level ends, so a run the server later
+        // loses (a restart) still has its curve so far.
+        stKeepRun({finished: false});
         lastPaint = 0;
       } else if (ev.event === 'draining') {
         stState.draining = ev.in_flight;
@@ -12672,7 +12675,7 @@ async function stWatch(open) {
 
 /* The run's copy in this browser (`benchmark-results.js`). */
 const ST_KEPT_FIELDS = ['plan', 'progress', 'report', 'alerts', 'monitor_samples',
-  'monitor_samples_total', 'historyId', 'historyError'];
+  'monitor_samples_total', 'historyId', 'historyError', 'sweepLevels'];
 function stKeepRun(fields, state = stState) {
   if (!state || !state.runId) return Promise.resolve(null);
   const kept = {};
@@ -13299,6 +13302,8 @@ function historyRender(item) {
     + '<details><summary>All saved settings and metrics (JSON)</summary><pre class="history-json"></pre></details>';
   const host = stEl('historyReport');
   const saved = {plan: item.plan, report: result.report,
+    // A sweep that never reached its report still shows the levels it finished.
+    sweepLevels: result.sweep_levels,
     alerts: result.alerts || [], monitor_samples: result.monitor_samples,
     monitor_samples_total: result.monitor_samples_total};
   const draw = () => {

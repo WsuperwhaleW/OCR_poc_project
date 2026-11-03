@@ -10951,10 +10951,16 @@ def _history_stream(stream, kind, configuration):
     """Save on the server before emitting completion, including failed/closed streams."""
     run_id, storage_error, progress, finished, plan = None, "", None, False, None
     monitor_sampler, alerts = _HistoryMonitor(configuration), []
+    # A concurrency sweep's finished levels, kept so a run that never reaches
+    # its report (a restart, a crash) still has its curve so far in History.
+    sweep_levels = []
 
     def saved_monitor():
         samples, total = monitor_sampler.stop()
-        return {"monitor_samples": samples, "monitor_samples_total": total, "alerts": alerts}
+        saved = {"monitor_samples": samples, "monitor_samples_total": total, "alerts": alerts}
+        if sweep_levels:
+            saved["sweep_levels"] = sweep_levels
+        return saved
 
     try:
         run_id = runhistory.start(kind, configuration)
@@ -10990,6 +10996,8 @@ def _history_stream(stream, kind, configuration):
                         storage_error = f"History could not be saved: {err}"
             if event.get("event") == "progress":
                 progress = event
+            if stage == "sweep_level":
+                sweep_levels.append(dict(event))
             if event.get("event") == "done":
                 event.update(saved_monitor())
                 if run_id:
