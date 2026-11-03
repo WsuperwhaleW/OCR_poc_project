@@ -3,6 +3,7 @@
  function createEditor(prefix='', options={}){
   const $=id=>document.getElementById(prefix+id);
   let ticket=0, labels={}, state=null, dirty=false, saving=false, drafts={}, retryId=null, jobData=null,openGroups={};
+  let libraryData=null,previewTicket=0,previewTimer=null;
   function node(tag,text,className){
     const element=document.createElement(tag);
     if(text!==undefined)element.textContent=text;
@@ -10,11 +11,13 @@
     return element;
   }
   function render(data){
+    libraryData=data.library||null;paintLibrary(data);
     const target=$('promptsContent'),groups=data.groups||[];
     const viewKey=data.editable_type||data.doc_types.join('+');
     target.replaceChildren();
-    $('promptsNotice').textContent=(data.doc_types.length?data.doc_types.join(' + '):'Unknown')+
-      ' · Hybrid · '+groups.length+' คำถาม · ข้อมูลเพิ่มเติม '+(data.settings.extras?'เปิด':'ปิด')+
+    $('promptsNotice').textContent=(libraryData?.types.find(t=>t.code===data.editable_type)?.label||
+      (data.doc_types.length?data.doc_types.join(' + '):'Unknown'))+
+      ' · Hybrid · '+groups.filter(group=>group.enabled!==false).length+' คำถาม · ข้อมูลเพิ่มเติม '+(data.settings.extras?'เปิด':'ปิด')+
       ' · Schema-first '+(data.settings.schema_first?'เปิด':'ปิด');
     if(options.job&&data.preview_document)$('promptsNotice').textContent+=' · ตัวอย่างเอกสาร '+data.preview_document+' · การแก้ใช้กับทุกเอกสารประเภทนี้ในไฟล์';
     const shared=node('details',undefined,'prompt-shared');
@@ -23,12 +26,13 @@
     const cards=node('div',undefined,'prompt-groups');
     for(const [index,group]of groups.entries()){
       const card=node('section',undefined,'prompt-group');
+      card.dataset.groupId=group.id;card.classList.toggle('is-disabled',group.enabled===false);
       const definition=data.editor?.groups.find(item=>item.id===group.id);
       const disclosure=node('details',undefined,'prompt-group-disclosure');
       const openKey=viewKey+'|'+group.id;disclosure.open=Object.hasOwn(openGroups,openKey)?openGroups[openKey]:index===0;
       const header=node('summary',undefined,'prompt-group-summary'),heading=node('div',undefined,'prompt-group-heading');
       const count=definition?new Set(definition.fields.map(field=>field.edit_key||field.key)).size:0;
-      heading.append(node('h2',group.title,'prompt-group-title'),node('span',group.keys.length+' ตัวแปร'+(count?' · '+count+' คำอธิบาย':''),'prompt-group-count'));
+      heading.append(node('h2',group.title,'prompt-group-title'),node('span',group.keys.length+' ตัวแปร'+(count?' · '+count+' คำอธิบาย':'')+(group.enabled===false?' · ปิดใช้งาน':''),'prompt-group-count'));
       header.append(node('span',String(index+1).padStart(2,'0'),'prompt-group-number'),heading);
       const body=node('div',undefined,'prompt-group-body');card.promptBody=body;card.promptDisclosure=disclosure;
       if(!definition){
@@ -37,7 +41,9 @@
         body.append(keys);
       }
       const details=node('details',undefined,'prompt-reference');
-      details.append(node('summary','ดู Prompt ฉบับเต็มที่บันทึกไว้'),node('pre',data.prompt_prefix+group.question,'prompt-code'));
+      details.dataset.groupId=group.id;
+      details.append(node('summary',libraryData?'ดู Prompt ที่จะใช้จริงจากค่าปัจจุบัน':'ดู Prompt ฉบับเต็มที่บันทึกไว้'),
+        node('pre',group.enabled===false?'ปิดก้อนนี้ · ไม่ส่งคำถาม':data.prompt_prefix+group.question,'prompt-code'));
       body.promptReference=details;
       if(!definition)body.append(details);
       disclosure.append(header,body);card.append(disclosure);cards.append(card);
@@ -74,8 +80,77 @@
     $('promptSave').disabled=(!dirty&&!options.job)||saving;$('promptDiscard').disabled=!dirty||saving;
     $('promptReset').disabled=saving||!state;$('promptType').disabled=saving||!!(options.job&&!jobData?.available_types.length);
     $('promptEditStatus').textContent=saving?'กำลังบันทึก…':dirty?'ยังไม่ได้บันทึก':'เวอร์ชัน '+(state?.revision||0)+(options.job?' · ใช้เฉพาะผลรอบใหม่':' · ใช้กับงาน Hybrid ใหม่');
+    if(libraryData){
+      $('promptLibrary').inert=saving;
+      $('promptSave').disabled=saving||(!state&&!options.job)||(!dirty&&!options.job);
+      $('promptSetName').disabled=!!options.job||$('promptSetAction').value==='bind';
+      $('promptSetAction').disabled=!!options.job;
+      paintImpact();
+    }
   }
-  function markDirty(){dirty=true;retryId=null;if(options.job&&state)drafts[state.code]=JSON.parse(JSON.stringify(state.value));syncTools();}
+  function markDirty(){dirty=true;retryId=null;if(options.job&&state)drafts[state.code]=libraryData?
+    {set_id:libraryData.record.id,value:JSON.parse(JSON.stringify(state.value))}:JSON.parse(JSON.stringify(state.value));syncTools();queuePreview();}
+  function paintLibrary(data){
+    const info=data.library;$('promptLibrary').hidden=!info;
+    if(!info)return;
+    $('promptLibrary').inert=false;
+    const record=info.record;
+    $('promptSetInfo').textContent=record?(info.source_selected?'เลือกต้นแบบแล้ว · ยังไม่บันทึก · ':'กำหนดชุดแล้ว · ')+record.name+' · เวอร์ชัน '+record.revision+
+      ' · '+record.steps.length+' ก้อน · '+record.steps.reduce((n,s)=>n+s.keys.length,0)+' ฟิลด์':
+      'ยังไม่มีชุดเฉพาะ · ปัจจุบันใช้ '+data.groups.length+' ก้อน · '+data.groups.reduce((n,g)=>n+g.keys.length,0)+' ฟิลด์ · เลือกชุดต้นแบบก่อนแก้';
+    $('promptSetName').value=record?.name||'';
+    $('promptSourceSet').replaceChildren(...info.sets.map(s=>{const option=node('option',s.name+' · v'+s.revision);option.value=s.id;return option;}));
+    $('promptSourceSet').value=record?.id||info.sets[0]?.id||'';
+    $('promptSetAction').value=info.source_selected?'detach':'shared';
+    if(info.source_selected&&!options.job)$('promptSetName').value=(info.types.find(t=>t.code===data.editable_type)?.label||data.editable_type)+' · ชุดเฉพาะ';
+    for(const option of $('promptSetAction').children)option.disabled=option.value==='shared'&&(!record||info.source_selected);
+    $('promptSetHistory').hidden=!!options.job||!record||info.source_selected;
+    $('promptSetVersions').replaceChildren();$('promptSetVersions').hidden=true;
+    paintImpact();
+  }
+  function paintImpact(){
+    if(!libraryData)return;
+    const action=$('promptSetAction').value;
+    const type=libraryData.types.find(t=>t.code===(state?.code||$('promptType').value));
+    const code=type?.user_code||type?.label?.split(' · ')[0]||state?.code||$('promptType').value;
+    const others=libraryData.shared_types.filter(t=>t.code!==(state?.code||$('promptType').value));
+    const source=libraryData.record?.name||'ชุดต้นแบบ';
+    $('promptSharedTypes').textContent=options.job?
+      'ต้นแบบสำหรับ Retry: '+source+' · ใช้เฉพาะผลรอบใหม่ ไม่เปลี่ยนชุดกลาง':action==='detach'?
+      'คัดลอกจาก '+source+' · หลังบันทึก '+code+' ใช้ชุดของตัวเอง':action==='bind'?
+      'หลังบันทึก '+code+' จะใช้ชุดร่วมกับ '+(others.map(t=>t.label).join(', ')||source):
+      libraryData.shared_types.length?'ใช้ชุดเดียวกัน: '+libraryData.shared_types.map(t=>t.label).join(', '):'ยังไม่ได้ผูกชุดที่ใช้ร่วม';
+    $('promptSetImpact').textContent=options.job?'ใช้เฉพาะ Retry นี้ ไม่แก้ชุดกลาง':action==='shared'?
+      'บันทึกแล้วมีผลกับงานใหม่ของ: '+libraryData.shared_types.map(t=>t.label).join(', '):action==='detach'?
+      'คัดลอกทั้งชุดและบันทึกให้เฉพาะประเภทที่เลือก งานใหม่ของทุกคนในประเภทนี้จะใช้ชุดใหม่':
+      'เปลี่ยนประเภทนี้ให้ใช้ชุดต้นแบบร่วมกัน โดยไม่แก้เนื้อหาของชุดต้นแบบ';
+  }
+  function queuePreview(){
+    if(!libraryData||!state)return;
+    clearTimeout(previewTimer);const seq=++previewTicket;
+    previewTimer=setTimeout(async()=>{
+      try{
+        const response=await fetch(window.USER_BASE+'/api/user/hybrid-prompts/preview',{
+          method:'POST',headers:{'Content-Type':'application/json','X-OCR-User-Token':window.USER_API_TOKEN},
+          body:JSON.stringify({doc_type:state.code,set_id:libraryData.record.id,value:state.value,
+            ...(options.job?{job_id:options.job().id}:{})})});
+        const data=await response.json();if(seq!==previewTicket)return;
+        if(!response.ok)throw new Error(data.error||'สร้างตัวอย่างคำถามไม่สำเร็จ');
+        for(const reference of $('promptsContent').querySelectorAll?.('.prompt-reference')||[]){
+          const group=data.groups.find(g=>g.id===reference.dataset.groupId);
+          const pre=reference.querySelector('pre');if(pre)pre.textContent=group?.enabled===false?'ปิดก้อนนี้ · ไม่ส่งคำถาม':group?data.prompt_prefix+group.question:'ปิดก้อนนี้ · ไม่ส่งคำถาม';
+        }
+        $('promptsNotice').textContent=(state.data.library.types.find(t=>t.code===state.code)?.label||state.code)+
+          ' · Hybrid · '+data.groups.filter(g=>g.enabled!==false).length+' คำถาม · ตัวอย่างจากค่าปัจจุบัน';
+        for(const card of $('promptsContent').querySelectorAll?.('.prompt-group')||[]){
+          const group=data.groups.find(g=>g.id===card.dataset.groupId);if(!group)continue;
+          card.classList.toggle('is-disabled',group.enabled===false);
+          const count=card.querySelector('.prompt-group-count');if(count)count.textContent=group.keys.length+' ตัวแปร'+(group.enabled===false?' · ปิดใช้งาน':'');
+        }
+        $('promptsError').hidden=true;
+      }catch(err){if(seq===previewTicket){$('promptsError').textContent=err.message;$('promptsError').hidden=false;}}
+    },300);
+  }
   function input(tag,value,handler){const field=node(tag);field.value=value;
     field.addEventListener('input',()=>{if(saving)return;handler(field.value);markDirty();if(tag==='textarea')fitArea(field);});return field;}
   function labeled(text,field){const label=node('label');label.append(node('span',text),field);return label;}
@@ -93,6 +168,13 @@
     const tools=node('div',undefined,'prompt-section-tools'),mode=node('span','คำอธิบายที่ส่งให้โมเดล','muted small');
     const edit=node('button','แก้ไขวิธีอ่านตัวแปร','subtle');edit.type='button';let editing=false;
     tools.append(mode,edit);host.append(tools);
+    if(libraryData){
+      const enabled=node('input');enabled.type='checkbox';enabled.checked=!(state.value.disabled_groups||[]).includes(definition.id);
+      enabled.setAttribute('aria-label','เปิดก้อน '+definition.id);
+      enabled.addEventListener('change',()=>{if(saving)return;const off=new Set(state.value.disabled_groups||[]);
+        if(enabled.checked)off.delete(definition.id);else off.add(definition.id);state.value.disabled_groups=[...off];markDirty();paintExtras();});
+      tools.prepend(labeled('เปิดก้อนคำถาม',enabled));
+    }
     for(const field of definition.fields){
       const editKey=field.edit_key||field.key,linkedKeys=field.linked_keys||[field.key];
       if(seen.has(editKey))continue;seen.add(editKey);
@@ -101,6 +183,14 @@
       label.append(node('strong',related.map(item=>labels[item.key]||item.key.replace(/_/g,' ')).join(' / '),'prompt-field-name'));
       const keys=node('div',undefined,'prompt-key-pills');for(const item of related)keys.append(node('code',item.key));label.append(keys);
       if(linkedKeys.length>1)label.append(node('span','ใช้คำอธิบายร่วมกัน','prompt-linked-note'));
+      if(libraryData){
+        const enabled=node('input');enabled.type='checkbox';enabled.checked=!(state.value.disabled_fields||[]).includes(field.key);
+        enabled.setAttribute('aria-label','เปิดฟิลด์ '+editKey);
+        enabled.addEventListener('change',()=>{if(saving)return;const off=new Set(state.value.disabled_fields||[]);
+          for(const key of linkedKeys)if(enabled.checked)off.delete(key);else off.add(key);
+          state.value.disabled_fields=[...off];markDirty();paintExtras();});
+        label.prepend(labeled(linkedKeys.length>1?'เปิดฟิลด์ร่วมกัน':'เปิดฟิลด์',enabled));
+      }
       const destinations=[...new Set(related.map(item=>item.target).filter(Boolean))];
       if(destinations.length)label.append(node('span','→ '+destinations.join(' / '),'prompt-field-destination'));
       const original=field.default_instruction||'';
@@ -129,27 +219,47 @@
   }
   function paintExtras(){
     const target=$('promptsContent').querySelector?.('.prompt-extra-groups')||document.querySelector('.prompt-extra-groups');if(!target||!state)return;target.replaceChildren();
-    const occupied=new Set(state.data.editor.groups.flatMap(group=>group.fields.map(f=>f.target).filter(Boolean)));
+    const occupied=new Set(state.data.editor.groups.filter(g=>!(state.value.disabled_groups||[]).includes(g.id))
+      .flatMap(group=>group.fields.filter(f=>!(state.value.disabled_fields||[]).includes(f.key)).map(f=>f.target).filter(Boolean)));
     for(const group of state.value.extra_groups){
       const card=node('section',undefined,'prompt-group prompt-custom-group');
+      if(libraryData){
+        const enabled=node('input');enabled.type='checkbox';enabled.checked=!(state.value.disabled_groups||[]).includes(group.id);
+        enabled.setAttribute('aria-label','เปิดก้อน '+group.id);
+        enabled.addEventListener('change',()=>{if(saving)return;const off=new Set(state.value.disabled_groups||[]);
+          if(enabled.checked)off.delete(group.id);else off.add(group.id);state.value.disabled_groups=[...off];markDirty();});
+        card.append(labeled('เปิดก้อนคำถามเพิ่มเติม',enabled));
+      }
       const title=input('input',group.title,value=>group.title=value);title.maxLength=120;
       card.append(labeled('ชื่อก้อนคำถาม',title));
       for(const [index,field]of group.fields.entries()){
         const row=node('div',undefined,'prompt-kv-row');
-        const key=input('input',field.key,value=>field.key=value);key.placeholder='เช่น supplier_name';key.maxLength=64;
+        const key=input('input',field.key,value=>{if(libraryData){const off=new Set(state.value.disabled_fields||[]);
+          if(off.delete(field.key))off.add(value);state.value.disabled_fields=[...off];}field.key=value;});key.placeholder='เช่น supplier_name';key.maxLength=64;
         const instruction=input('textarea',field.instruction,value=>field.instruction=value);instruction.placeholder='บอกว่าให้อ่านอะไร จากหัวข้อหรือบริเวณไหน';instruction.maxLength=4000;instruction.rows=3;
         const destination=node('select');destination.append(node('option','เลือกช่องปลายทางใน User JSON'));destination.children[0].value='';
         for(const option of state.data.editor.targets){const entry=node('option','documents[].'+option.path+' · '+option.type);entry.value=option.path;entry.disabled=occupied.has(option.path);destination.append(entry);}
         destination.value=field.target;destination.addEventListener('change',()=>{if(saving)return;field.target=destination.value;markDirty();});
         row.append(labeled('ตัวแปร (key)',key),labeled('วิธีอ่านจากเอกสาร',instruction),labeled('ช่องปลายทาง User JSON',destination));
-        const remove=node('button','ลบตัวแปร');remove.type='button';remove.className='subtle';remove.addEventListener('click',()=>{if(saving)return;group.fields.splice(index,1);markDirty();paintExtras();});row.append(remove);card.append(row);
+        if(libraryData){const enabled=node('input');enabled.type='checkbox';enabled.checked=!(state.value.disabled_fields||[]).includes(field.key);
+          enabled.setAttribute('aria-label','เปิดฟิลด์ '+field.key);enabled.addEventListener('change',()=>{if(saving)return;const off=new Set(state.value.disabled_fields||[]);
+            if(enabled.checked)off.delete(field.key);else off.add(field.key);state.value.disabled_fields=[...off];markDirty();});row.append(labeled('เปิดฟิลด์',enabled));}
+        const remove=node('button','ลบตัวแปร');remove.type='button';remove.className='subtle';remove.addEventListener('click',()=>{if(saving)return;
+          if(libraryData)state.value.disabled_fields=(state.value.disabled_fields||[]).filter(k=>k!==field.key);group.fields.splice(index,1);markDirty();paintExtras();});row.append(remove);card.append(row);
       }
       const add=node('button','+ เพิ่มตัวแปร');add.type='button';add.disabled=group.fields.length>=8;
       add.addEventListener('click',()=>{if(saving)return;group.fields.push({key:'',instruction:'',target:''});markDirty();paintExtras();});
-      const remove=node('button','ลบก้อนนี้');remove.type='button';remove.className='subtle';remove.addEventListener('click',()=>{if(saving)return;state.value.extra_groups=state.value.extra_groups.filter(item=>item!==group);markDirty();paintExtras();});
+      const remove=node('button','ลบก้อนนี้');remove.type='button';remove.className='subtle';remove.addEventListener('click',()=>{if(saving)return;
+        if(libraryData){const keys=new Set(group.fields.map(f=>f.key));state.value.disabled_fields=(state.value.disabled_fields||[]).filter(k=>!keys.has(k));
+        state.value.disabled_groups=(state.value.disabled_groups||[]).filter(id=>id!==group.id);}
+        state.value.extra_groups=state.value.extra_groups.filter(item=>item!==group);markDirty();paintExtras();});
       card.append(add,remove);target.append(card);fitAll(target);
-      const saved=state.data.groups.find(item=>item.id==='user_'+state.code+'_'+group.id);
-      if(saved){const details=node('details');details.append(node('summary','อ่านข้อความที่บันทึกและใช้ถามโมเดล'),node('pre',state.data.prompt_prefix+saved.question,'prompt-code'));card.append(details);}
+      const id='user_'+(libraryData?.record?.base_code||state.code)+'_'+group.id;
+      const saved=state.data.groups.find(item=>item.id===id);
+      if(saved||libraryData){const details=node('details',undefined,'prompt-reference');details.dataset.groupId=id;
+        details.append(node('summary',libraryData?'ดู Prompt ที่จะใช้จริงจากค่าปัจจุบัน':'อ่านข้อความที่บันทึกและใช้ถามโมเดล'),
+          node('pre',saved?state.data.prompt_prefix+saved.question:(state.value.disabled_groups||[]).includes(group.id)||
+            group.fields.every(f=>(state.value.disabled_fields||[]).includes(f.key))?'ปิดก้อนนี้ · ไม่ส่งคำถาม':'กำลังสร้างตัวอย่างคำถาม','prompt-code'));card.append(details);}
     }
   }
   async function save(){
@@ -158,9 +268,18 @@
       if(options.job){
         retryId ||= 'retry_'+Date.now().toString(36)+'_'+Math.random().toString(36).slice(2,12);
         const response=await fetch(window.USER_BASE+'/api/user/jobs/'+encodeURIComponent(options.job().id)+'/retry-extraction',{
-          method:'POST',headers:{'Content-Type':'application/json','X-OCR-User-Token':window.USER_API_TOKEN},body:JSON.stringify({request_id:retryId,prompt_profiles:drafts})});
+          method:'POST',headers:{'Content-Type':'application/json','X-OCR-User-Token':window.USER_API_TOKEN},body:JSON.stringify({request_id:retryId,[libraryData?'prompt_sets':'prompt_profiles']:drafts})});
         const body=await response.json();if(!response.ok)throw new Error(body.error||'รัน Extraction ใหม่ไม่สำเร็จ');
         dirty=false;drafts={};retryId=null;saving=false;syncTools();await options.onRetry(body.job);return;
+      }
+      if(libraryData){
+        const response=await fetch(window.USER_BASE+'/api/user/prompt-sets',{
+          method:'POST',headers:{'Content-Type':'application/json','X-OCR-User-Token':window.USER_API_TOKEN},
+          body:JSON.stringify({doc_type:state.code,binding_revision:libraryData.binding.revision,
+            set_id:libraryData.record.id,revision:state.revision,action:$('promptSetAction').value,
+            name:$('promptSetName').value,value:state.value})});
+        const data=await response.json();if(!response.ok)throw new Error(data.error||'บันทึกชุดไม่สำเร็จ');
+        dirty=false;saving=false;await load(undefined,true);return;
       }
       const response=await fetch(window.USER_BASE+'/api/user/hybrid-prompts',{method:'PUT',headers:{'Content-Type':'application/json','X-OCR-User-Token':window.USER_API_TOKEN},body:JSON.stringify({doc_type:state.code,revision:state.revision,value:state.value})});
       const body=await response.json();if(!response.ok)throw new Error(body.error||'บันทึกไม่สำเร็จ');
@@ -168,17 +287,20 @@
     }catch(err){$('promptsError').textContent=err.message;$('promptsError').hidden=false;}
     finally{saving=false;syncTools();}
   }
-  async function load(fieldLabels,force=false){
+  async function load(fieldLabels,force=false,sourceSet=null){
     if(fieldLabels)labels=fieldLabels;
     if(saving&&!force)return;
     if(dirty&&!force&&!options.job){if(state)$('promptType').value=state.code;return;}
-    const current=++ticket;
+    const current=++ticket;previewTicket++;if(previewTimer)clearTimeout(previewTimer);
     const primary=$('promptType').value||'INVOICE';
     $('promptsContent').replaceChildren();$('promptsError').hidden=true;$('promptsRetry').hidden=true;
     $('promptEditorTools').hidden=true;
+    $('promptLibrary').hidden=true;
     $('promptsNotice').textContent='กำลังโหลดคำถาม Hybrid…';
     try{
-      const url=options.job?'/api/user/jobs/'+encodeURIComponent(options.job().id)+'/prompts'+(jobData?.available_types.length?'?doc_type='+encodeURIComponent(primary):''):'/api/user/hybrid-prompts?doc_type='+encodeURIComponent(primary);
+      let url=options.job?'/api/user/jobs/'+encodeURIComponent(options.job().id)+'/prompts'+(jobData?.available_types.length?'?doc_type='+encodeURIComponent(primary):''):'/api/user/hybrid-prompts?doc_type='+encodeURIComponent(primary);
+      if(!sourceSet&&options.job&&drafts[primary]?.set_id)sourceSet=drafts[primary].set_id;
+      if(sourceSet)url+=(url.includes('?')?'&':'?')+'source_set_id='+encodeURIComponent(sourceSet);
       const response=await fetch(window.USER_BASE+url);
       const data=await response.json();
       if(!response.ok)throw new Error(data.error||'โหลดคำถามไม่สำเร็จ ('+response.status+')');
@@ -187,9 +309,11 @@
         jobData=data;
         for(const option of $('promptType').options||[])option.disabled=!data.available_types.includes(option.value);
         $('promptType').value=data.editable_type||'';
-        if(data.editor&&drafts[data.editable_type])data.editor.value=JSON.parse(JSON.stringify(drafts[data.editable_type]));
+        if(data.editor&&drafts[data.editable_type])data.editor.value=JSON.parse(JSON.stringify(data.library?drafts[data.editable_type].value:drafts[data.editable_type]));
       }
       render(data);
+      if(sourceSet)markDirty();
+      else if(options.job&&drafts[data.editable_type])queuePreview();
     }catch(err){
       if(current!==ticket)return;
       $('promptsNotice').textContent='';$('promptsError').textContent=err.message;
@@ -200,11 +324,29 @@
   $('promptType').addEventListener('change',()=>load());
   $('promptsRetry').addEventListener('click',()=>load());
   $('promptSave').addEventListener('click',save);
+  $('promptUseSource').addEventListener('click',()=>{if(!saving)load(undefined,true,$('promptSourceSet').value);});
+  $('promptSetAction').addEventListener('change',()=>{if(!saving){
+    if(libraryData&&$('promptSetAction').value==='detach')$('promptSetName').value=(libraryData.types.find(t=>t.code===state?.code)?.label||state?.code)+' · ชุดเฉพาะ';
+    if(libraryData&&$('promptSetAction').value==='bind')$('promptSetName').value=libraryData.record?.name||'';
+    markDirty();paintImpact();}});
+  $('promptSetName').addEventListener('input',()=>{if(!saving)markDirty();});
+  $('promptSetHistory').addEventListener('click',async()=>{
+    if(!libraryData?.record||saving)return;
+    try{const res=await fetch(window.USER_BASE+'/api/user/prompt-sets/'+encodeURIComponent(libraryData.record.id)+'/history');
+      const data=await res.json();if(!res.ok)throw new Error(data.error||'โหลดประวัติไม่สำเร็จ');
+      $('promptSetVersions').replaceChildren(...data.versions.map(v=>{const details=node('details');
+        details.append(node('summary','v'+v.revision+' · '+v.created_at+' · '+v.payload.name),
+          node('pre',JSON.stringify(v.payload.value,null,2),'prompt-code'));return details;}));
+      $('promptSetVersions').hidden=false;
+    }catch(err){$('promptsError').textContent=err.message;$('promptsError').hidden=false;}
+  });
   $('promptDiscard').addEventListener('click',()=>{if(saving)return;dirty=false;drafts={};retryId=null;load(undefined,true);});
-  $('promptReset').addEventListener('click',()=>{if(!state||saving)return;state.data.editor.value={instructions:{},extra_groups:[]};render(state.data);markDirty();});
+  $('promptReset').addEventListener('click',()=>{if(!state||saving)return;const action=$('promptSetAction').value,name=$('promptSetName').value;
+    state.data.editor.value={instructions:{},extra_groups:[]};render(state.data);
+    if(libraryData){$('promptSetAction').value=action;$('promptSetName').value=name;}markDirty();});
   window.addEventListener?.('resize',()=>fitAll($('promptsContent')));
   window.addEventListener?.('beforeunload',event=>{if(dirty){event.preventDefault();event.returnValue='';}});
-  return {load,dirty:()=>dirty||saving,clear(){ticket++;dirty=false;saving=false;drafts={};state=null;jobData=null;retryId=null;openGroups={};}};
+  return {load,dirty:()=>dirty||saving,clear(){ticket++;previewTicket++;if(previewTimer)clearTimeout(previewTimer);dirty=false;saving=false;drafts={};state=null;jobData=null;retryId=null;openGroups={};libraryData=null;}};
  }
  const main=createEditor();window.loadUserPrompts=main.load;
  let source=null,onRetry=null;

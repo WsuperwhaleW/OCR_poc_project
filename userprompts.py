@@ -60,9 +60,9 @@ def unit_override(unit, instructions):
     return '\n\n'.join(key + ': ' + text for key, text in entries)
 
 
-def editor_value(code, value):
+def editor_value(code, value, steps=None):
     instructions = {}
-    for step in base_steps(code):
+    for step in steps if steps is not None else base_steps(code):
         for unit in rule_units(step):
             override = unit_override(unit, value.get('instructions', {}))
             if override and override.strip() != unit['text'].strip():
@@ -113,8 +113,8 @@ def leaf_values(values):
     return out
 
 
-def validate(code, body):
-    steps = base_steps(code)
+def validate(code, body, steps=None, active_keys=None):
+    steps = steps if steps is not None else base_steps(code)
     if not isinstance(body, dict) or set(body) - {'instructions', 'extra_groups'}:
         raise ValueError('แก้ได้เฉพาะคำอธิบายตัวแปรและก้อนคำถามเพิ่มเติม')
     instructions = body.get('instructions', {})
@@ -131,7 +131,8 @@ def validate(code, body):
     if not isinstance(groups, list) or len(groups) > 20:
         raise ValueError('เพิ่มได้ไม่เกิน 20 ก้อนคำถาม')
     reserved = set(prompts._SCALAR_KEYS) | {'income_items', 'line_items', 'other_fields', '__proto__', 'constructor', 'prototype'}
-    seen, destinations, ids, normalized = set(), {CORE_TARGETS[k] for k in keys if k in CORE_TARGETS}, set(), []
+    destination_keys = keys if active_keys is None else active_keys
+    seen, destinations, ids, normalized = set(), {CORE_TARGETS[k] for k in destination_keys if k in CORE_TARGETS}, set(), []
     for group in groups:
         if not isinstance(group, dict) or set(group) != {'id', 'title', 'fields'}:
             raise ValueError('ก้อนคำถามต้องมี id, title และ fields')
@@ -158,7 +159,7 @@ def validate(code, body):
             seen.add(key); destinations.add(target)
             normalized_fields.append(dict(key=key, instruction=instruction.strip(), target=target))
         normalized.append(dict(id=gid, title=title.strip(), fields=normalized_fields))
-    value = editor_value(code, {'instructions': clean, 'extra_groups': normalized})
+    value = editor_value(code, {'instructions': clean, 'extra_groups': normalized}, steps)
     if any(len(text) > 4000 for text in value['instructions'].values()):
         raise ValueError('คำอธิบายร่วมของตัวแปรต้องไม่เกิน 4,000 ตัวอักษร')
     return value
@@ -207,10 +208,10 @@ def compile_steps(table, codes, profiles):
     return tuple(result)
 
 
-def view(code, profile):
-    value = editor_value(code, profile['value'])
+def view(code, profile, steps=None):
+    value = editor_value(code, profile['value'], steps)
     groups = []
-    for step in base_steps(code):
+    for step in steps if steps is not None else base_steps(code):
         units = rule_units(step)
         fields = []
         for key in step['keys']:
@@ -228,7 +229,7 @@ def view(code, profile):
     return groups
 
 
-def changes_between(before, after):
+def changes_between(before, after, step_definitions=None):
     """Compare captured values, never today's team settings or default prose."""
     changes = []
     def changed(entity, path, old, new, **context):
@@ -237,17 +238,19 @@ def changes_between(before, after):
                             'action': 'added' if old is None else 'removed' if new is None else 'changed',
                             'before': copy.deepcopy(old), 'after': copy.deepcopy(new), **context})
     for code in prompts.TYPE_SPECIFICITY:
+        steps = step_definitions.get(code) if step_definitions else None
         old = (before.get(code) or {}).get('value') or {}
         new = (after.get(code) or {}).get('value') or {}
         if old or new:
-            old, new = editor_value(code, old), editor_value(code, new)
+            old, new = editor_value(code, old, steps), editor_value(code, new, steps)
         instructions_before, instructions_after = old.get('instructions', {}), new.get('instructions', {})
         for key in sorted(set(instructions_before) | set(instructions_after)):
             length = len(changes)
             changed('instruction', 'instructions.' + key, instructions_before.get(key), instructions_after.get(key),
                     doc_type=code, key=key)
             if len(changes) > length:
-                unit = next(unit for step in base_steps(code) for unit in rule_units(step) if key in unit['keys'])
+                unit = next(unit for step in (steps if steps is not None else base_steps(code))
+                            for unit in rule_units(step) if key in unit['keys'])
                 changes[-1].update(linked_keys=list(unit['keys']),
                     effective_before=instructions_before.get(key, unit['text']),
                     effective_after=instructions_after.get(key, unit['text']))

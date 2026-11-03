@@ -56,6 +56,7 @@ import normalise
 import prompts
 import priority
 import userprompts
+import userpromptsets
 import randomtest
 import runlog
 import runhistory
@@ -3066,6 +3067,9 @@ def _extract_once(text: str, status: dict, schema, form: dict) -> dict:
 def steps_for_types(codes, extras=True, mode="agentic"):
     table = _builtin_steps_for_types(codes, extras, mode=mode)
     if mode == 'hybrid' and workspace.get('user_pipeline', False):
+        snapshot = workspace.get('user_prompt_sets', {})
+        if snapshot:
+            return userpromptsets.runtime(table, codes, snapshot, extras)
         return userprompts.compile_steps(table, codes, workspace.get('user_prompt_profiles', {}))
     return table
 
@@ -4832,6 +4836,20 @@ def _extract_document(text: str, mode: str, case_id: str, steps, doc_type,
     form = _field_set(text, case_id, doc_type, status,
                       (record or {}).get("pages"), extras)
     form["schema_first"] = bool(schema_first and mode in ("agentic", "hybrid"))
+    if mode == 'hybrid' and workspace.get('user_pipeline', False):
+        selected = userpromptsets.select(workspace.get('user_prompt_sets', {}), form['doc_types'])
+        if selected:
+            user_table = steps_for_types(form['doc_types'], form['extras'], mode='hybrid')
+            active = {k for s in user_table
+                      if not s.get('custom_targets') for k in s['keys']}
+            form['keys'] = [k for k in prompts._SCALAR_KEYS if k in active]
+            form['mandatory'] = [k for k in form['mandatory'] if k in active]
+            if prompts.INCOME_ITEMS_KEY not in active:
+                form['items'], form['mandatory_items'] = [], []
+            form['user_prompt_sets'] = [{'doc_type':code, 'set_id':r['id'], 'name':r['name'], 'revision':r['revision'],
+                                        'keys':[key for step in user_table if step.get('user_prompt_set_id') == r['id'] for key in step['keys']]}
+                                        for code,r in selected]
+            form['user_disabled_fields'] = [k for k in fields_for_types(form['doc_types']) if k not in active]
     # Stage 0, announced before either shape starts. It is the one part of a
     # pass-2 run that is finished before the first request goes out, so a page
     # that shows it immediately is showing something true rather than a
@@ -5192,6 +5210,9 @@ def _validate_fields(result: dict, form: dict, text: str, mode: str) -> dict:
     # answer -- it is a question nobody put -- and an empty row for it would read
     # as a document that states nothing about it.
     result["fields_asked"] = list(form["keys"])
+    for key in ('user_prompt_sets', 'user_disabled_fields'):
+        if key in form:
+            result[key] = copy.deepcopy(form[key])
     # The table's cells, or []. Named apart from `fields_asked` for the reason
     # `_field_set` gives: the page draws them as a table and the scalars as rows.
     result["items_asked"] = list(form["items"])

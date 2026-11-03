@@ -10,6 +10,7 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 import userprompts
+import userpromptsets
 
 
 def now():
@@ -88,6 +89,8 @@ class UserStore:
             if 'prompt_changes' not in columns:
                 db.execute("ALTER TABLE jobs ADD COLUMN prompt_changes TEXT NOT NULL DEFAULT '{}'")
             db.execute("CREATE UNIQUE INDEX IF NOT EXISTS jobs_extraction_retry ON jobs(retry_of,upload_id) WHERE retry_of<>''")
+            db.commit()
+            userpromptsets.initialize(db)
 
     @contextmanager
     def connect(self):
@@ -130,6 +133,20 @@ class UserStore:
             rows = db.execute('SELECT * FROM prompt_profiles').fetchall()
         return {row['code']: {'revision': row['revision'], 'value': json.loads(row['value'])} for row in rows}
 
+    def prompt_set_snapshot(self):
+        with self.connect() as db:
+            db.execute('BEGIN')
+            return userpromptsets.snapshot(db)
+
+    def change_prompt_set(self, body):
+        with self.connect() as db:
+            return userpromptsets.change(db, body)
+
+    def prompt_set_history(self, set_id):
+        with self.connect() as db:
+            return [dict(row) | {'payload':json.loads(row['payload'])} for row in db.execute(
+                'SELECT revision,created_at,payload FROM prompt_set_versions WHERE set_id=? ORDER BY revision', (set_id,))]
+
     def original(self, job):
         key = job.get('original_id') or job['id']
         if not re.fullmatch('[0-9a-f]{32}', key):
@@ -171,6 +188,8 @@ class UserStore:
             audit = {'version': 1, 'scope': 'job', 'parent_job_id': source['id'], 'created_at': at,
                      'changes': userprompts.changes_between(source['configuration'].get('prompt_profiles', {}),
                                                             configuration.get('prompt_profiles', {}))}
+            audit['changes'] += userpromptsets.changes(source['configuration'].get('prompt_sets'),
+                                                       configuration.get('prompt_sets'))
             db.execute('INSERT INTO batches VALUES (?,?,?)', (batch_id, 1, json.dumps(configuration, ensure_ascii=False)))
             timeline = {'queued_extraction': {'started_at': at, 'progress': 'ใช้ OCR เดิม · กำลังรอคิว Extraction'}}
             db.execute('''INSERT INTO jobs(id,batch_id,upload_id,filename,created_at,updated_at,status,progress,
@@ -193,12 +212,22 @@ class UserStore:
             raise ValueError('เวอร์ชัน prompt ไม่ถูกต้อง')
         with self.connect() as db:
             db.execute('BEGIN IMMEDIATE')
+            state = userpromptsets.snapshot(db)
+            binding = state['bindings'].get(code)
+            if binding and state['sets'][binding['set_id']]['base_code'] != code:
+                raise ValueError('ชุดปัจจุบันใช้ต้นแบบอื่น กรุณาแก้ผ่านหน้าชุด Hybrid prompts')
             row = db.execute('SELECT revision FROM prompt_profiles WHERE code=?', (code,)).fetchone()
-            if (row['revision'] if row else 0) != revision:
+            actual = state['sets'][binding['set_id']]['revision'] if binding else (row['revision'] if row else 0)
+            if actual != revision:
                 return None
             next_revision = revision + 1
             db.execute('INSERT OR REPLACE INTO prompt_profiles VALUES (?,?,?)',
                        (code, next_revision, json.dumps(value, ensure_ascii=False)))
+            if binding:
+                record = state['sets'][binding['set_id']]
+                record.update(value=value, revision=record['revision'] + 1)
+                record['steps'] = userpromptsets.compile_record(record)
+                userpromptsets._write_version(db, record)
         return {'revision': next_revision, 'value': value}
 
     def batch(self, batch_id):

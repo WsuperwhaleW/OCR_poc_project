@@ -732,9 +732,20 @@ The User portal's **Doc types** menu opens the supported-type catalog and
 Required/Optional field matrix from the same `/api/schema` data as Benchmark.
 Opening it preserves selected files and any active results.
 
-The **Hybrid prompts** menu lets the team edit per-field reading guidance for
-the five types with dedicated field profiles. Existing variable names, response
-shapes and shared copy/role rules stay locked. The field editor shows exact
+The **Hybrid prompts** menu lists the 11 User catalog types by code and Thai name,
+plus additional internal types including RTV and WHT. A whole prompt set can be
+shared across types or copied as a separate set for one type. The workbench shows
+its name, revision, enabled question/field counts and every type affected by a
+shared edit. Types without a configured set retain their existing extraction until
+the User explicitly chooses a source set and saves a shared binding or an independent
+copy. No nearest-type mapping or new classification is inferred. “Configured” does
+not mean model accuracy has been tuned or verified.
+
+Existing variable names, response shapes and shared copy/role rules stay locked.
+Core question groups and fields can be disabled; inseparable joint-rule variables
+toggle together. Disabled fields leave the request schema, extraction completeness
+checks and image-recheck scope, while User JSON still reports its own missing data.
+The field editor shows exact
 English rule slices from the live Hybrid prompt, not translated summaries.
 Editing a field replaces its original slice once; it does not append a second,
 possibly contradictory description. Joint rules explicitly defining two keys
@@ -759,7 +770,58 @@ types remain system-owned, and duplicate destinations are rejected.
 Profiles are shared and persisted in the User database with optimistic version
 checks. **บันทึกสำหรับงานใหม่** applies to newly accepted Hybrid upload batches;
 each batch snapshots its profiles so queued work and past exports keep their
-original mappings. Custom responses remain in `custom_fields` with explicit
+original mappings. Versioned sets also snapshot their base/compiled steps and
+enabled fields, and literal type bindings take precedence over component profiles
+(for example an independent T02 is not overwritten by INVOICE). Existing saved
+profiles migrate on first startup without replacing their contents; INVOICE/T02
+and RECEIPT/T03/T06 initially retain their existing shared behavior. Other untuned
+types keep the broad legacy form until configured. Set revisions and binding changes
+are stored in the same User SQLite database. No new external service is required.
+
+Migration 2 explicitly binds User 380, 388, T02, T04 and T05 to
+**Invoice (Sup&Pay)**, 81 to **Credit Note (Sup&Pay)**, and T01 to
+**Receipt (Sup&Pay)**. T03/T06 retain Receipt pending confirmation. User 80/T07
+remain unbound. This changes the User Hybrid questions for standalone tax invoices,
+delivery/tax invoices and abbreviated tax invoices from the broad 34-field form to
+the 13-field Invoice form; classification and User JSON type codes do not change.
+Migration skips every existing binding or User binding event and runs once.
+Only untouched built-in set names are renamed; existing User names remain intact.
+RTV and WHT default names are **RTV** and **WHT 50 ทวิ (PCP)**.
+
+On mixed documents, fields are owned by the first selected type in
+`TYPE_SPECIFICITY`. Later sets ask only their remaining fields, including rebuilt
+schemas and rule slices, even when a field's guidance differs. User JSON destination
+collisions across distinct fields still fail validation. Each result's
+`user_prompt_sets[].keys` lists exactly which fields that set supplied.
+
+Measure this change on the model host with the local User adapter:
+
+```powershell
+python compare.py --fields --from-truth --mode hybrid --user-prompt-defaults before
+python compare.py --fields --from-truth --mode hybrid --user-prompt-defaults after
+```
+
+The adapter uses the actual local User Hybrid runtime and real configured model
+servers, without needing a running Flask web app or changing the team's database.
+Use `--extract-server URL` when the model is on another endpoint. It creates fresh
+default sets, captures their snapshots and saves results separately under
+`.work/compare-user-prompts/before` and `after`. The before variant omits only the
+three bindings introduced by migration 2. It does not compare private team edits.
+Scores use each result's actual requested fields: compare shared fields, request
+counts, errors and time, since changing the denominator alone cannot demonstrate
+better accuracy. Missing models stop the User comparison with exit code 2;
+local schema/routing tests are not an inference benchmark. Ordinary `compare.py`
+and Workspace/Stress retain their existing paths unless this flag is supplied.
+
+`GET /api/user/prompt-sets` lists sets, bindings and catalog types.
+`POST /api/user/prompt-sets` accepts `doc_type`, `set_id`, `revision`,
+`binding_revision`, `action` (`shared`, `detach`, `bind`), and for editable actions
+`name`/`value`. A stale set or binding returns 409. History is available at
+`GET /api/user/prompt-sets/<id>/history`. The editor uses
+`POST /api/user/hybrid-prompts/preview` for validated, unsaved question previews;
+it neither saves a profile nor calls a model. All mutations retain the existing
+User API origin checks. Historical jobs lacking set snapshots continue to use
+their captured legacy profiles. Custom responses remain in `custom_fields` with explicit
 `user_prompt_mappings`; scalar/cell values also appear under `other_fields`.
 The User JSON adapter validates, converts and audits the selected destinations;
 invalid or absent values do not become invented zeros. Benchmark, Agentic and
@@ -1343,9 +1405,10 @@ merged into the document in front of it.
 | `PAYMENT_ADVICE` | Pre-Payment Advice / Credit Advice |
 
 **RTV extraction profile:** a goods-return shipment (`RTV_SHIP_CREDIT`) asks for
-10 scalar fields: document type, its own return number/date, seller and buyer tax IDs
-and branches, subtotal, VAT and total including VAT. With Extra fields off this is
-five independent agentic steps; enabling Extra fields adds the `other` step. The
+12 scalar fields: document type, its own return number/date, seller and buyer tax IDs
+and branches (including branch locations), subtotal, VAT and total including VAT.
+With Extra fields off this is five independent Agentic steps or three grouped
+Hybrid questions; enabling Extra fields adds the `other` step. The
 seller is the original supplier receiving the goods back, and the buyer is the
 original customer returning them, even when the buyer prints the document. Explicit
 branch designations take precedence over internal store/location codes. Single mode
@@ -1936,9 +1999,9 @@ contains `data` (the v7 candidate), `schema_valid`, `schema_errors`, `warnings`,
 `missing_fields` and `unmapped`. `?download=1` downloads only the candidate as a
 `.user-v7.preview.json` file. The UI labels nonconforming candidates **Draft**.
 The **Hybrid prompts** page in `/user` shows which fields are requested together
-for each document type, including a second type on combined documents. It loads
-`GET /api/user/hybrid-prompts?doc_type=INVOICE` on demand; repeat `doc_type` for
-combined types or use `UNKNOWN` for the base form. Questions come from the same
+for each document type. It loads
+`GET /api/user/hybrid-prompts?doc_type=INVOICE` on demand. Unconfigured recognized
+types show their actual current form and the source-set chooser. Questions come from the same
 Hybrid step and message builders used by extraction, with an OCR placeholder
 instead of an uploaded document. Current extras/schema-first settings are shown;
 opening the page does not run a model or change settings. This is a current

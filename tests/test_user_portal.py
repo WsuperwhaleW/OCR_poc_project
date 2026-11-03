@@ -277,8 +277,8 @@ class UserWebTests(unittest.TestCase):
                 for code in app.prompts.TYPE_NAMES:
                     response = self.client.get(prefix + '/api/user/hybrid-prompts', query_string={'doc_type': code})
                     if not app.prompts.DOC_TYPE_FIELDS.get(code):
-                        self.assertEqual(response.status_code, 400)
-                        self.assertNotIn('groups', response.json)
+                        self.assertEqual(response.status_code, 200)
+                        self.assertIn('library', response.json)
                         continue
                     self.assertEqual(response.status_code, 200)
                     data = response.json
@@ -510,7 +510,7 @@ class UserWebTests(unittest.TestCase):
             for selector in ('promptType',):
                 options = re.search(r'id="' + selector + r'"[^>]*>(.*?)</select>', page.text, re.S)[1]
                 codes = set(re.findall(r'<option value="([^"]+)"', options))
-                self.assertEqual(codes, {code for code, fields in app.prompts.DOC_TYPE_FIELDS.items() if fields})
+                self.assertEqual(codes, set(app.prompts.TYPE_NAMES))
             self.assertIn('<title>OCR · เอกสารของทีม</title>', page.text)
             self.assertEqual(self.client.get(prefix + '/api/user/settings').status_code, 200)
             catalog = self.client.get(prefix + '/api/schema')

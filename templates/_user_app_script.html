@@ -587,7 +587,8 @@
     const names=new Map(attempts.map((attempt,index)=>[attempt.id,index?'Retry '+index:'ผลเริ่มต้น']));
     const actions={added:'เพิ่ม',changed:'แก้ไข',removed:'ลบ'};
     const entities={instruction:'คำอธิบายตัวแปร',group:'ก้อนคำถาม',group_title:'ชื่อก้อนคำถาม',field:'ตัวแปรเพิ่มเติม',
-      field_instruction:'วิธีอ่านตัวแปรเพิ่มเติม',destination:'ช่องปลายทาง User JSON',field_order:'ลำดับตัวแปร',group_order:'ลำดับก้อนคำถาม'};
+      field_instruction:'วิธีอ่านตัวแปรเพิ่มเติม',destination:'ช่องปลายทาง User JSON',field_order:'ลำดับตัวแปร',group_order:'ลำดับก้อนคำถาม',
+      prompt_set:'ชุด Prompt',field_enabled:'เปิดใช้งานฟิลด์',group_enabled:'เปิดใช้งานก้อนคำถาม'};
     for(const attempt of attempts){
       const card=node('section',undefined,'prompt-history-attempt'+(attempt.id===current?' current':''));
       const header=node('div',undefined,'toolbar');

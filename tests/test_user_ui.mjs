@@ -17,14 +17,113 @@ const clean = value => JSON.parse(JSON.stringify(value));
 
 class Element {
   constructor(tag='div'){this.tag=tag;this.hidden=false;this.listeners={};this.children=[];this.value='';this.disabled=false;
-    this.style={};
+    this.style={};this.dataset={};
     this.classList={toggle(){},add(){},remove(){}};}
   addEventListener(name,fn){this.listeners[name]=fn;}
   append(...items){this.children.push(...items);}
+  prepend(...items){this.children.unshift(...items);}
+  querySelectorAll(selector){const walk=e=>[e,...(e.children||[]).flatMap(walk)];return this.children.flatMap(walk).filter(e=>selector.startsWith('.')?e.className===selector.slice(1):e.tag===selector);}
+  querySelector(selector){return this.querySelectorAll(selector)[0]||null;}
   replaceChildren(...items){this.children=items;}
   setAttribute(name,value){this[name]=value;}
   removeAttribute(name){delete this[name];}
 }
+
+function promptSetData(code='INVOICE'){
+  const value={instructions:{},extra_groups:[]};
+  const definition={id:'document',title:'Document',fields:[{key:'document_number',edit_key:'document_number',
+    linked_keys:['document_number'],default_instruction:'Read its own number',target:'documentNo',enabled:true}],enabled:true};
+  const record={id:'invoice-set',name:'Invoice shared',base_code:'INVOICE',revision:2,value,
+    steps:[{id:'document',keys:['document_number']}],base_steps:[]};
+  return {doc_types:[code],editable_type:code,settings:{extras:false,schema_first:true},prompt_prefix:'OCR\n',
+    groups:[{id:'document',title:'Document',keys:['document_number'],question:'Read its own number',enabled:true}],
+    editor:{revision:2,value,groups:[definition],targets:[{path:'documentNo',type:'string'}]},
+    library:{record,binding:{set_id:record.id,revision:0},source_selected:false,
+      shared_types:[{code:'INVOICE',label:'380 · ใบแจ้งหนี้'},{code:'INVOICE_TAX_INVOICE',label:'T02 · ใบแจ้งหนี้/ใบกำกับภาษี'}],
+      sets:[{id:record.id,name:record.name,revision:2}],types:[{code,label:code}]}};
+}
+
+test('whole-set editor displays shared impact, previews disabled fields and saves an independent copy',async()=>{
+  const {el,document}=dom(),walk=e=>[e,...e.children.flatMap(walk)],timers=new Map();let seq=0;
+  const data=promptSetData('INVOICE_TAX_INVOICE'),requests=[];
+  const context=vm.createContext({document,setTimeout:fn=>{timers.set(++seq,fn);return seq;},clearTimeout:id=>timers.delete(id),
+    window:{USER_BASE:'/ocr',USER_API_TOKEN:'proof'},fetch:async(url,opts={})=>{
+      if(opts.method==='POST'){
+        const body=JSON.parse(opts.body);requests.push({url,body});
+        if(url.endsWith('/preview')){const preview=clean(data);preview.groups[0].enabled=false;preview.groups[0].question='';return response(preview);}
+        return response({record:{id:'new-set',revision:1}});
+      }
+      return response(clean(data));
+    }});
+  el('promptType').value='INVOICE_TAX_INVOICE';vm.runInContext(promptsSource,context);
+  await context.window.loadUserPrompts();
+  assert.match(el('promptSharedTypes').textContent,/380.*T02/);
+  assert.match(el('promptSetImpact').textContent,/งานใหม่ของ.*380/);
+  el('promptSetAction').value='detach';el('promptSetAction').listeners.change();
+  assert.match(el('promptSetImpact').textContent,/คัดลอกทั้งชุด/);
+  el('promptSetName').value='T02 only';el('promptSetName').listeners.input();
+  const toggle=walk(el('promptsContent')).find(e=>e['aria-label']==='เปิดฟิลด์ document_number');
+  toggle.checked=false;toggle.listeners.change();
+  await [...timers.values()].at(-1)();
+  assert.match(el('promptsNotice').textContent,/0 คำถาม/);
+  assert.ok(walk(el('promptsContent')).some(e=>e.tag==='pre'&&e.textContent==='ปิดก้อนนี้ · ไม่ส่งคำถาม'));
+  await el('promptSave').listeners.click();
+  const saved=requests.find(r=>r.url==='/ocr/api/user/prompt-sets').body;
+  assert.equal(saved.action,'detach');assert.equal(saved.doc_type,'INVOICE_TAX_INVOICE');
+  assert.equal(saved.name,'T02 only');assert.deepEqual(saved.value.disabled_fields,['document_number']);
+  assert.equal(saved.binding_revision,0);assert.equal(saved.revision,2);
+});
+
+test('an unconfigured User type chooses a source without saving and defaults to copying the whole set',async()=>{
+  const {el,document}=dom();const calls=[],data=promptSetData('DELIVERY_TAX_INVOICE');
+  const initial=clean(data);initial.editor=null;initial.library.record=null;initial.library.binding={set_id:null,revision:0};
+  const context=vm.createContext({document,setTimeout:()=>1,clearTimeout(){},window:{USER_BASE:'',USER_API_TOKEN:'proof'},
+    fetch:async(url,opts={})=>{calls.push({url,...opts});
+      if(opts.method==='POST')return response({record:{id:'copy',revision:1}});
+      const selected=clean(data);selected.library.source_selected=true;selected.library.binding={set_id:null,revision:0};
+      return response(url.includes('source_set_id=')?selected:clean(initial));
+    }});
+  el('promptType').value='DELIVERY_TAX_INVOICE';vm.runInContext(promptsSource,context);await context.window.loadUserPrompts();
+  assert.match(el('promptSetInfo').textContent,/ยังไม่มีชุดเฉพาะ/);
+  el('promptSourceSet').value='invoice-set';await el('promptUseSource').listeners.click();
+  // The listener starts the async load; flush its response before checking.
+  await settle();
+  assert.ok(calls.some(r=>r.url.includes('source_set_id=invoice-set')));
+  assert.equal(calls.filter(r=>r.method==='POST').length,0);
+  assert.equal(el('promptSetAction').value,'detach');
+  assert.equal(el('promptSave').disabled,false);
+  el('promptReset').listeners.click();assert.equal(el('promptSetAction').value,'detach');
+  await el('promptSave').listeners.click();
+  assert.equal(JSON.parse(calls.find(r=>r.url==='/api/user/prompt-sets').body).action,'detach');
+});
+
+test('source sharing text follows detach, bind and shared edit actions without suggesting a copy is shared',async()=>{
+  const {el,document}=dom(),data=promptSetData('DELIVERY_TAX_INVOICE');
+  data.library.source_selected=true;
+  data.library.types=[{code:'DELIVERY_TAX_INVOICE',user_code:'T04',label:'T04 · ใบส่งของ/ใบกำกับภาษี'}];
+  data.library.shared_types.push({code:'DELIVERY_TAX_INVOICE',label:'T04 · ใบส่งของ/ใบกำกับภาษี'});
+  const ctx=vm.createContext({document,setTimeout:()=>1,clearTimeout(){},window:{USER_BASE:'',USER_API_TOKEN:'proof'},
+    fetch:async()=>response(clean(data))});
+  el('promptType').value='DELIVERY_TAX_INVOICE';vm.runInContext(promptsSource,ctx);await ctx.window.loadUserPrompts();
+  assert.equal(el('promptSharedTypes').textContent,'คัดลอกจาก Invoice shared · หลังบันทึก T04 ใช้ชุดของตัวเอง');
+  assert.doesNotMatch(el('promptSharedTypes').textContent,/ใช้ชุดเดียวกัน/);
+  el('promptSetAction').value='bind';el('promptSetAction').listeners.change();
+  assert.match(el('promptSharedTypes').textContent,/หลังบันทึก T04 จะใช้ชุดร่วมกับ 380.*T02/);
+  assert.doesNotMatch(el('promptSharedTypes').textContent,/T04 ·/);
+  el('promptSetAction').value='shared';el('promptSetAction').listeners.change();
+  assert.match(el('promptSharedTypes').textContent,/^ใช้ชุดเดียวกัน: 380.*T02.*T04/);
+});
+
+test('the inline User set editor keeps Retry scope explicit instead of promising a team binding change',async()=>{
+  const {el,document}=dom(),data=promptSetData('INVOICE');
+  data.available_types=['INVOICE'];data.job_id='job-snapshot';data.library.source_selected=true;
+  const ctx=vm.createContext({document,setTimeout:()=>1,clearTimeout(){},window:{USER_BASE:'',USER_API_TOKEN:'proof'},
+    fetch:async()=>response(clean(data))});
+  vm.runInContext(promptsSource,ctx);
+  await ctx.window.loadUserJobPrompts({id:'job-snapshot'},{},()=>{});
+  assert.match(el('job_promptSharedTypes').textContent,/ต้นแบบสำหรับ Retry.*เฉพาะผลรอบใหม่ ไม่เปลี่ยนชุดกลาง/);
+  assert.doesNotMatch(el('job_promptSharedTypes').textContent,/หลังบันทึก/);
+});
 function dom(){
   const items={};
   const el=id=>items[id] ||= new Element();
