@@ -31,6 +31,8 @@
   let userJsonJob=null, userJsonLoadedKey='', userJsonPendingKey='', userJsonTicket=0, resultMode='text';
   let promptPanelJobId=null;
   let promptHistoryTicket=0,promptHistoryLoadedKey='';
+  // The running stage counts up in the browser between polls (liveStage, one interval).
+  let serverClock=null, liveStage=null, stageTicker=0;
   // A background tab shows nothing, so it asks for nothing until it is back.
   const asleep = () => pageClosed || document.hidden;
   $('homeLink').href = window.USER_BASE + '/user';
@@ -44,7 +46,8 @@
   async function api(path, options = {}) {
     if (options.method && !['GET', 'HEAD', 'OPTIONS'].includes(options.method.toUpperCase()))
       options = {...options, headers: {...options.headers, 'X-OCR-User-Token': window.USER_API_TOKEN}};
-    const response = await fetch(API + path, options);
+    const sent = Date.now(), response = await fetch(API + path, options);
+    noteServerClock(response.headers?.get?.('X-Server-Time'), sent, Date.now());
     if(response.status===204)return {};
     let body; try { body = await response.json(); } catch (_) {
       if(response.status!==413)
@@ -54,6 +57,28 @@
       ? 'เซิร์ฟเวอร์ปฏิเสธขนาดไฟล์ (413) กรุณาให้ผู้ดูแลตรวจขนาดอัปโหลดที่อนุญาตของเซิร์ฟเวอร์ด้านหน้าและแอป'
       : 'ดำเนินการไม่สำเร็จ (' + response.status + ')')), {status: response.status});
     return body;
+  }
+  // A stage's started_at is on the server's clock, which can be seconds away from the
+  // browser's. Offset = server reading minus the request's midpoint; the quickest round
+  // trip bounds it best, and a minute-old sample gives way in case either clock was reset.
+  function noteServerClock(header, sent, received) {
+    const server = Number(header); if (!header || !Number.isFinite(server)) return;
+    const rtt = Math.max(0, received - sent), offset = server - (sent + received) / 2;
+    if (!serverClock || rtt <= serverClock.rtt || received - serverClock.at > 60000) serverClock = {offset, rtt, at: received};
+  }
+  // Never shows less than it already showed for the same stage, so a new offset
+  // sample or a late poll cannot make the counter step backwards.
+  function paintLiveStage() {
+    if (!liveStage) return;
+    const seconds = Math.max(liveStage.shown, (Date.now() + (serverClock?.offset || 0) - liveStage.started) / 1000);
+    liveStage.shown = seconds; liveStage.element.textContent = seconds.toFixed(1) + ' วิ';
+  }
+  // One interval for the whole page, and only while a stage is running and the tab is visible.
+  // (typeof: test sandboxes may have no interval timers.)
+  function syncStageTicker() {
+    const wanted = !!liveStage && !asleep();
+    if (wanted && !stageTicker && typeof setInterval === 'function') stageTicker = setInterval(paintLiveStage, 100);
+    else if (!wanted && stageTicker) { clearInterval(stageTicker); stageTicker = 0; }
   }
   function paintModel(role, info, error) {
     const target = $(role === 'ocr' ? 'ocrModelStatus' : 'extractionModelStatus'); lastModels[role] = info || {};
@@ -460,15 +485,23 @@
   }
   function paintTimeline(job) {
     const stages=[['queued_ocr','รอคิว OCR'],['ocr','อ่านเอกสาร'],['queued_extraction','รอคิว Extraction'],['extraction','ดึงข้อมูล']];
-    const timeline=job.timeline||{}, timing=job.result?.timing||{}, rows=[];
+    const timeline=job.timeline||{}, timing=job.result?.timing||{}, rows=[], previous=liveStage;
+    liveStage=null;
     $('stageTimeline').classList.toggle('extraction-only',!!job.retry_of);
     for(const [key,label] of stages){
       if(job.retry_of&&(key==='ocr'||key==='queued_ocr'))continue;
       const saved=timeline[key], running=job.status===key, row=node('li',undefined,saved?.outcome?'stage-error':running?'current':saved?.finished_at?'done':'');
       const head=node('div',undefined,'stage-heading');head.append(node('strong',label));
-      let seconds=saved?.started_at ? ((saved.finished_at?Date.parse(saved.finished_at):Date.now())-Date.parse(saved.started_at))/1000 : timing[key];
-      const measured=Number.isFinite(seconds);
-      head.append(node('span', measured?Math.max(0,seconds).toFixed(1)+' วิ':'—','stage-duration'));row.append(head);
+      // A finished stage shows the server's own end minus start, never the browser's estimate.
+      const started=Date.parse(saved?.started_at), finished=Date.parse(saved?.finished_at);
+      const seconds=Number.isFinite(started)&&Number.isFinite(finished)?(finished-started)/1000:timing[key];
+      const live=running&&Number.isFinite(started)&&!saved.finished_at;
+      const duration=node('span',!live&&Number.isFinite(seconds)?Math.max(0,seconds).toFixed(1)+' วิ':'—','stage-duration');
+      if(live){
+        const same=previous&&previous.job===job.id&&previous.key===key&&previous.started===started;
+        liveStage={job:job.id,key,started,element:duration,shown:same?previous.shown:0};
+      }
+      head.append(duration);row.append(head);
       let detail=running?(key.startsWith('queued_')?'กำลังรอคิว…':job.progress):saved?.finished_at?saved.progress:
         typeof timing[key]==='number'?'เสร็จแล้ว':!Object.keys(timeline).length?'ไม่ได้บันทึกขั้นตอนนี้':'ยังไม่เริ่ม';
       if(saved?.finished_at&&!saved.outcome){
@@ -481,6 +514,7 @@
       row.append(node('span',detail,'muted small'));rows.push(row);
     }
     $('stageTimeline').replaceChildren(...rows);
+    paintLiveStage();syncStageTicker();
   }
   function paintJob(job){
     userJsonJob=job;
@@ -553,6 +587,7 @@
       message('jobPromptMessage','ยังมี Prompt ที่แก้ไว้ กรุณารัน Extraction ใหม่หรือยกเลิกการแก้ไขก่อนเปิดงานอื่น',true);return;
     }
     clearTimeout(detailTimer);const ticket=++detailRequest,changed=selected!==id;selected=id;
+    if(changed){liveStage=null;syncStageTicker();}
     if(show){
       view(false);message('jobLoadMessage','กำลังโหลดผลลัพธ์…');$('jobLoadRetry').hidden=true;
       if(changed){$('jobResult').hidden=true;$('emptyResult').hidden=true;$('resultStatus').hidden=true;clearPreview();}
@@ -650,9 +685,9 @@
   $('fieldsTab').addEventListener('click',()=>tab('fields'));$('textTab').addEventListener('click',()=>tab('text'));$('jsonTab').addEventListener('click',()=>tab('json'));
   $('userJsonTab').addEventListener('click',()=>tab('userJson'));
   window.addEventListener('beforeunload',event=>{if(sending){event.preventDefault();event.returnValue='';}});
-  function stopPolling(){clearTimeout(historyTimer);clearTimeout(detailTimer);clearTimeout(batchTimer);clearTimeout(modelsTimer);clearTimeout(stressTimer);}
+  function stopPolling(){clearTimeout(historyTimer);clearTimeout(detailTimer);clearTimeout(batchTimer);clearTimeout(modelsTimer);clearTimeout(stressTimer);syncStageTicker();}
   function resumePolling(){
-    refreshModels();refreshStress();loadHistory();pollBatch();
+    syncStageTicker();refreshModels();refreshStress();loadHistory();pollBatch();
     if(selected)openJob(selected,false);
   }
   window.addEventListener('pagehide',event=>{pageClosed=true;stopPolling();if(!event?.persisted)clearPreview();});

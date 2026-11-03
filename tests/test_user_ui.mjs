@@ -425,6 +425,55 @@ test('queued jobs retain measured stages, offer three result views and preview s
   el('textTab').listeners.click();assert.equal(el('textResult').hidden,false);assert.equal(el('textTab')['aria-selected'],'true');
 });
 
+test('a running stage counts up smoothly on the server clock and stops on the server time',async()=>{
+  const {el,document}=dom(),intervals=new Map();let serial=0,browser=Date.parse('2026-11-03T00:00:00Z'),skew=0;
+  const ahead=5000,start=browser+ahead-2000,iso=ms=>new Date(ms).toISOString();
+  const running=id=>({id,filename:'scan.png',created_at:iso(start),status:'ocr',progress:'กำลังอ่านเอกสารหน้า 1/2',
+    timeline:{ocr:{started_at:iso(start),progress:'กำลังอ่านเอกสารหน้า 1/2'}},result:{}});
+  const jobs={'job-a':running('job-a'),'job-b':running('job-b')};
+  const fetch=async url=>{
+    const id=url.split('/jobs/')[1];
+    const body=url.includes('/jobs?')?{jobs:Object.values(jobs),counts:{},more:false}:url.endsWith('/models')?{models:{ocr:{},extraction:{}}}:
+      url.endsWith('/settings')?{settings:config}:url.endsWith('/stress')?{runs:[]}:{job:jobs[id]};
+    // The server's clock reads 5 s ahead of the browser's; skew mimics a noisier sample.
+    return {ok:true,status:200,json:async()=>clean(body),headers:{get:name=>name==='X-Server-Time'?String(browser+ahead+skew):null}};
+  };
+  class Clock extends Date {static now(){return browser;}}
+  vm.runInContext(appSource,vm.createContext({document,fetch,Date:Clock,console,
+    window:{USER_BASE:'/ocr',addEventListener(){},renderUserOcr(){}},URL:{createObjectURL:()=>'blob:x',revokeObjectURL(){}},
+    setTimeout:()=>0,clearTimeout(){},setInterval:(fn,ms)=>{intervals.set(++serial,{fn,ms});return serial;},clearInterval:id=>intervals.delete(id)}));
+  await settle();
+  const shown=(stage=1)=>el('stageTimeline').children[stage].children[0].children[1].textContent;
+  const tick=ms=>{for(let i=0;i<ms/100;i++){browser+=100;for(const timer of intervals.values())timer.fn();}};
+  const open=async index=>{await el('historyRows').children[index].children.at(-1).children[0].listeners.click();await settle();};
+  await open(0);
+  assert.equal(shown(),'2.0 วิ','2 s on the server clock, not 0 s on the browser clock');
+  assert.deepEqual([...intervals.values()].map(timer=>timer.ms),[100]);
+  tick(100);assert.equal(shown(),'2.1 วิ');tick(200);assert.equal(shown(),'2.3 วิ');
+  skew=-400;await open(0);skew=0;
+  assert.equal(shown(),'2.3 วิ','a poll with a lower offset sample does not step back');
+  tick(100);assert.equal(shown(),'2.3 วิ');
+  await open(0);assert.equal(shown(),'2.4 วิ');
+  for(let i=0;i<5;i++)await open(0);
+  await open(1);await open(0);assert.equal(intervals.size,1,'re-renders and job switches keep one interval');
+  document.hidden=true;document.listeners.visibilitychange();assert.equal(intervals.size,0);
+  document.hidden=false;document.listeners.visibilitychange();await settle();assert.equal(intervals.size,1);
+  tick(5700);assert.equal(shown(),'8.1 วิ');
+  jobs['job-a']={...jobs['job-a'],status:'extraction',timeline:{ocr:{started_at:iso(start),finished_at:iso(start+7400)},
+    extraction:{started_at:iso(start+7400)}}};
+  await open(0);
+  assert.equal(shown(),'7.4 วิ','a finished stage shows the server time, not the 8.1 s estimate');
+  assert.equal(shown(3),'0.7 วิ');assert.equal(intervals.size,1);
+  jobs['job-a']={...jobs['job-a'],status:'completed',timeline:{...jobs['job-a'].timeline,
+    extraction:{started_at:iso(start+7400),finished_at:iso(start+9000)}}};
+  await open(0);assert.equal(shown(3),'1.6 วิ');assert.equal(intervals.size,0);
+  tick(1000);assert.equal(shown(3),'1.6 วิ');
+  await open(1);assert.equal(intervals.size,1);
+  jobs['job-b']={...jobs['job-b'],status:'failed'};
+  await open(1);assert.equal(shown(),'—','a failed job without an end time neither ticks nor invents one');
+  assert.equal(intervals.size,0);
+});
+
 test('OCR Rendered builds headings and tables while retaining untrusted markup as text',()=>{
   const {document}=dom(),window={},target=new Element();
   vm.runInContext(renderSource,vm.createContext({document,window}));

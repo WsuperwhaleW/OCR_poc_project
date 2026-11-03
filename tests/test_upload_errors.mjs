@@ -36,7 +36,7 @@ test('Workspace preview and OCR keep app errors and explain a non-JSON 413', asy
 test('User API handles HTML and JSON 413 responses without hiding the upload problem', async()=>{
   let response;
   const context = vm.createContext({Error, API:'/api/user', window:{USER_API_TOKEN:'token'},
-    fetch:async()=>response});
+    fetch:async()=>response, noteServerClock(){}});
   vm.runInContext(extract(portal, 'api'), context);
   response = rejected(413);
   await assert.rejects(context.api('/previews', {method:'POST'}), error=>

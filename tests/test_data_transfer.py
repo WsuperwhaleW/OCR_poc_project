@@ -108,6 +108,27 @@ class PortalTests(unittest.TestCase):
         moved = self.client.get(url, headers={**GZIP, 'If-None-Match': first.headers['ETag']})
         self.assertEqual(moved.status_code, 200)
 
+    def test_every_poll_reads_the_server_clock_without_breaking_the_304(self):
+        job = self.store.add_job(self.batch, 'upload_01', 'one.pdf', b'x')
+        url = '/api/user/jobs/' + job['id']
+        with patch('userweb.time.time', return_value=1793664000.25):
+            first = self.client.get(url, headers=GZIP)
+        self.assertEqual(first.headers['X-Server-Time'], '1793664000250')
+        with patch('userweb.time.time', return_value=1793664003.5):
+            same = self.client.get(url, headers={**GZIP, 'If-None-Match': first.headers['ETag']})
+        self.assertEqual(same.status_code, 304)
+        self.assertEqual(same.headers['X-Server-Time'], '1793664003500')
+        self.assertIn('X-Server-Time', self.client.post('/api/user/job-status', json={'ids': []}).headers)
+
+    def test_a_reply_the_browser_may_reuse_carries_no_clock_reading(self):
+        with app.fitz.open() as document:
+            document.new_page().insert_text((50, 50), 'Page 1')
+            content = document.tobytes()
+        job = self.store.add_job(self.batch, 'upload_01', 'one.pdf', content)
+        response = self.client.get('/api/user/jobs/' + job['id'] + '/preview/pages/1')
+        self.assertIn('max-age', response.headers['Cache-Control'])
+        self.assertNotIn('X-Server-Time', response.headers)
+
     def test_job_status_carries_no_ocr_text(self):
         job = self.store.add_job(self.batch, 'upload_01', 'one.pdf', b'x')
         self.store.update(job['id'], result={'text': 'OCR TEXT', 'pages': ['OCR TEXT']})

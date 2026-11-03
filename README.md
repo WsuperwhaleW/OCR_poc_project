@@ -861,6 +861,11 @@ The result has three views: **OCR · Rendered** (headings and tables by page),
 **Key-Value**, and **JSON**. The stage timeline keeps separate OCR queue, OCR,
 extraction queue and extraction durations after completion and in history.
 Existing history without recorded timestamps does not gain invented queue times.
+While a stage runs, its time counts up in the browser every 100 ms between polls,
+measured on the server's clock: each fresh `/api/user/` reply (a 304 included)
+carries `X-Server-Time` in epoch ms, and the page keeps the offset from its
+quickest round trip. The counter never steps back, and once the stage ends it
+shows the server's recorded end minus start rather than the browser's estimate.
 PDF previews show every original page in a scrollable, zoomable viewer, both
 before starting a job and when opening history. Preparing a preview uploads a
 temporary PDF but does not run OCR or create a history entry; page images render

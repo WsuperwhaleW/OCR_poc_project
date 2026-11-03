@@ -587,6 +587,13 @@ def register(application, engine):
                 response.make_conditional(request)
             else:
                 response.headers['Cache-Control'] = 'no-store'
+            if request.endpoint not in kept_seconds:
+                # The page times a running stage on the server's clock (started_at comes
+                # from it), so each fresh answer says what that clock reads, in epoch ms.
+                # A header, not the body: the body's hash is the ETag, and a 304 still
+                # carries a new reading. Responses a browser may reuse without asking
+                # (max-age above) would carry a stale reading, so they get none.
+                response.headers['X-Server-Time'] = str(int(time.time() * 1000))
         return response
 
     return service
