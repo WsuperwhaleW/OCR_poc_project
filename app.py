@@ -4844,7 +4844,9 @@ def _extract_document(text: str, mode: str, case_id: str, steps, doc_type,
                       if not s.get('custom_targets') for k in s['keys']}
             form['keys'] = [k for k in prompts._SCALAR_KEYS if k in active]
             form['mandatory'] = [k for k in form['mandatory'] if k in active]
-            if prompts.INCOME_ITEMS_KEY not in active:
+            if prompts.INCOME_ITEMS_KEY in active:
+                form['items'] = list(prompts.INCOME_ITEM_KEYS)
+            else:
                 form['items'], form['mandatory_items'] = [], []
             asked = {k for s in user_table for k in s['keys']}
             form['user_prompt_sets'], disabled = [], []

@@ -27,6 +27,8 @@ class Element {
   replaceChildren(...items){this.children=items;}
   setAttribute(name,value){this[name]=value;}
   removeAttribute(name){delete this[name];}
+  showModal(){this.open=true;}
+  close(){this.open=false;this.listeners.close?.();}
 }
 
 function promptSetData(code='INVOICE'){
@@ -656,6 +658,79 @@ test('Doc types menu loads the shared schema on demand, retries failures and pre
   el('navUpload').listeners.click();assert.equal(el('typesView').hidden,true);assert.equal(el('uploadView').hidden,false);
   assert.equal(el('selectedFiles').children[0].children[0].textContent,'selected.png');
   el('navTypes').listeners.click();assert.equal(probes,2);
+});
+
+test('User Doc types tab loads current sets independently, retries and refreshes on revisit',async()=>{
+  const {el,document}=dom();let probes=0,fail=true,revision=2;
+  const data=()=>({extras:false,types:[{code:'DELIVERY_TAX_INVOICE',user_code:'T04',name:'ใบส่งของ/ใบกำกับภาษี',
+    field_count:1,sets:[{name:'T04 <custom>',revision,shared_types:['T04']}],
+    groups:[{id:'custom',title:'Tax',fields:[{key:'custom_tax',target:'vatAmount'}]}]}]});
+  const fetch=async(url)=>{
+    if(url.endsWith('/doc-types')){probes++;return fail?{ok:false,status:503}:response(data());}
+    if(url.endsWith('/settings'))return response({settings:config});
+    if(url.endsWith('/models'))return response({models:{ocr:{},extraction:{}}});
+    return response({jobs:[],counts:{},more:false});
+  };
+  vm.runInContext(appSource,vm.createContext({document,window:{USER_BASE:'/ocr',addEventListener(){}},fetch,Date,
+    setTimeout:()=>1,clearTimeout(){},URL:{createObjectURL:()=> 'blob:local',revokeObjectURL(){}}}));
+  await settle();assert.equal(probes,0);
+  el('fileInput').listeners.change({target:{files:[{name:'selected.pdf',size:5}]}});
+  el('userTypesTab').listeners.click();await settle();
+  assert.equal(el('systemTypesPanel').hidden,true);assert.equal(el('userTypesPanel').hidden,false);
+  assert.equal(el('userTypesTab')['aria-selected'],'true');assert.match(el('userTypesError').textContent,/503/);
+  fail=false;await el('userTypesRefresh').listeners.click();
+  const walk=e=>[e,...e.children.flatMap(walk)];
+  assert.ok(walk(el('userTypesContent')).some(e=>e.textContent==='T04 <custom> · v2'));
+  assert.ok(walk(el('userTypesContent')).some(e=>e.textContent==='→ vatAmount'));
+  assert.equal(el('userTypesError').hidden,true);
+  el('navUpload').listeners.click();revision=3;
+  el('navTypes').listeners.click();await settle();
+  assert.equal(probes,3);assert.equal(el('systemTypesPanel').hidden,true);
+  assert.ok(walk(el('userTypesContent')).some(e=>e.textContent==='T04 <custom> · v3'));
+  assert.equal(el('selectedFiles').children[0].children[0].textContent,'selected.pdf');
+});
+
+test('User field matrix edits in a large dialog, links related toggles and keeps drafts after a save conflict',async()=>{
+  const {el,document}=dom();let saved=false,conflict=true,reads=0;const writes=[];
+  const choices=[
+    {key:'document_number',linked_keys:['document_number'],source:'Invoice',target:'documentNo'},
+    {key:'payer_name',linked_keys:['payer_name'],source:'WHT',target:''},
+    {key:'book_no',linked_keys:['book_no','certificate_no'],source:'WHT',target:''},
+    {key:'certificate_no',linked_keys:['book_no','certificate_no'],source:'WHT',target:''}];
+  const data=()=>({revision:'snapshot-1',extras:false,types:[{
+    code:'INVOICE',user_code:'380',name:'ใบแจ้งหนี้',mandatory:['document_number'],choices,
+    sets:[{name:'Shared Invoice',revision:2,shared_types:['380','T02']}],
+    field_count:saved?4:1,groups:[{title:'Fields',fields:(saved?choices:choices.slice(0,1)).map(f=>({key:f.key,target:f.target}))}]}]});
+  const fetch=async(url,opts={})=>{
+    if(url.endsWith('/doc-types/fields')){writes.push({url,...opts,body:JSON.parse(opts.body)});
+      if(conflict)return {ok:false,status:409,json:async()=>({error:'ชุดฟิลด์เปลี่ยนไปแล้ว'})};
+      saved=true;return response({set_id:'detached',revision:1});}
+    if(url.endsWith('/doc-types')){reads++;return response(data());}
+    if(url.endsWith('/settings'))return response({settings:config});
+    if(url.endsWith('/models'))return response({models:{ocr:{},extraction:{}}});
+    return response({jobs:[],counts:{},more:false});
+  };
+  vm.runInContext(appSource,vm.createContext({document,window:{USER_BASE:'/ocr',USER_API_TOKEN:'proof',addEventListener(){}},fetch,Date,
+    setTimeout:()=>1,clearTimeout(){}}));
+  el('userTypesTab').listeners.click();await settle();
+  const walk=e=>[e,...e.children.flatMap(walk)];
+  assert.ok(walk(el('userTypesContent')).some(e=>e.textContent==='Required'));
+  assert.ok(walk(el('userTypesContent')).some(e=>e.textContent==='—'));
+  const edit=()=>walk(el('userTypesContent')).find(e=>e['aria-label']==='เลือกฟิลด์สำหรับ 380').listeners.click();
+  const checkbox=key=>walk(el('userFieldsTable')).find(e=>e['aria-label']==='ใช้ฟิลด์ '+key+' สำหรับ 380');
+  edit();assert.equal(el('userFieldsEditor').open,true);assert.match(el('userFieldsImpact').textContent,/แยกเป็นชุดเฉพาะ/);
+  checkbox('payer_name').checked=true;checkbox('payer_name').listeners.change();
+  el('userFieldsCancel').listeners.click();assert.equal(writes.length,0);
+  edit();assert.equal(checkbox('payer_name').checked,false);
+  for(const key of ['payer_name','book_no']){checkbox(key).checked=true;checkbox(key).listeners.change();}
+  assert.equal(checkbox('certificate_no').checked,true);
+  await el('userFieldsSave').listeners.click();
+  assert.equal(el('userFieldsEditor').open,true);assert.match(el('userFieldsMessage').textContent,/เปลี่ยนไปแล้ว/);
+  assert.equal(checkbox('payer_name').checked,true);
+  conflict=false;await el('userFieldsSave').listeners.click();
+  assert.equal(el('userFieldsEditor').open,false);assert.equal(reads,2);
+  assert.equal(writes[1].method,'PUT');assert.equal(writes[1].headers['X-OCR-User-Token'],'proof');
+  assert.deepEqual(writes[1].body,{doc_type:'INVOICE',revision:'snapshot-1',enabled_keys:['document_number','payer_name','book_no','certificate_no']});
 });
 
 test('Hybrid prompts page loads on demand, retries, shows grouped fields safely and refreshes settings on revisit',async()=>{

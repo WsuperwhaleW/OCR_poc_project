@@ -1,5 +1,6 @@
 """Versioned, whole-form User Hybrid sets. Never changes built-in extraction."""
 import copy
+import hashlib
 import json
 import uuid
 from datetime import datetime, timezone
@@ -325,6 +326,114 @@ def snapshot(db):
             'sets':{r['id']:json.loads(r['payload']) for r in db.execute('SELECT * FROM prompt_sets')},
             'bindings':{r['code']:{'set_id':r['set_id'], 'revision':r['revision']}
                         for r in db.execute('SELECT * FROM prompt_bindings')}}
+
+
+def field_revision(state):
+    return hashlib.sha256(json.dumps(state, sort_keys=True, ensure_ascii=False).encode('utf-8')).hexdigest()
+
+
+def field_selection(state, code):
+    """Build a selectable superset, retaining each source's frozen field rules."""
+    row = next((r for r in catalog() if r['section'] == 'user' and r['code'] == code), None)
+    if row is None:
+        raise ValueError('เลือกประเภทเอกสารใน catalog ของ User')
+    selected = select(state, codes_for(code))
+    if selected:
+        record = copy.deepcopy(selected[0][1])
+    else:
+        record = {'base_code':code, 'name':row['label'], 'value':{'instructions':{}, 'extra_groups':[]},
+                  'base_steps':copy.deepcopy(prompts.steps_for_types(codes_for(code), False, mode='hybrid'))}
+    table = runtime(prompts.steps_for_types(codes_for(code), False, mode='hybrid'), codes_for(code), state)
+    enabled = {k for step in table for k in step['keys']}
+    base = list(record['base_steps'])
+    options, custom = {}, {}
+
+    def add_options(step, source, origins=None):
+        for unit in userprompts.rule_units(step):
+            for key in unit['keys']:
+                options[key] = {'key':key, 'linked_keys':list(unit['keys']),
+                                'target':userprompts.CORE_TARGETS.get(key, ''), 'source':(origins or {}).get(key, source)}
+
+    for step in base:
+        add_options(step, record['name'], record.get('field_sources'))
+    for group in record['value'].get('extra_groups', []):
+        for field in group['fields']:
+            options[field['key']] = {'key':field['key'], 'linked_keys':[field['key']],
+                                     'target':field['target'], 'source':record.get('field_sources', {}).get(field['key'], record['name'])}
+    sources = []
+    for item in catalog():
+        binding = state['bindings'].get(item['code'])
+        if binding and binding['set_id'] not in sources:
+            sources.append(binding['set_id'])
+    for source_id in sources:
+        source = state['sets'][source_id]
+        for step in source['base_steps']:
+            kept = [key for key in step['keys'] if key not in options]
+            if not kept:
+                continue
+            added = restrict_step(step, kept, source['value'].get('instructions', {}))
+            added['id'] = 'field_' + str(len(base)) + '_' + step['id']
+            base.append(added)
+            add_options(added, source['name'], source.get('field_sources'))
+        for group in source['value'].get('extra_groups', []):
+            for field in group['fields']:
+                if field['key'] not in options:
+                    options[field['key']] = {'key':field['key'], 'linked_keys':[field['key']],
+                                             'target':field['target'], 'source':source.get('field_sources', {}).get(field['key'], source['name'])}
+                    custom[field['key']] = copy.deepcopy(field)
+    record['base_steps'] = base
+    return record, list(options.values()), enabled, custom
+
+
+def save_fields(db, body):
+    """Save one type atomically; shared sets are copied, never edited in place."""
+    if not isinstance(body, dict) or set(body) != {'doc_type','revision','enabled_keys'}:
+        raise ValueError('ส่งประเภทเอกสาร เวอร์ชันตาราง และรายการฟิลด์ให้ครบ')
+    keys = body['enabled_keys']
+    if not isinstance(keys, list) or not keys or any(not isinstance(k, str) for k in keys) or len(set(keys)) != len(keys):
+        raise ValueError('เลือกอย่างน้อยหนึ่งฟิลด์และไม่ส่งชื่อฟิลด์ซ้ำ')
+    db.execute('BEGIN IMMEDIATE')
+    state = snapshot(db)
+    if body['revision'] != field_revision(state):
+        raise Conflict('ชุดฟิลด์เปลี่ยนไปแล้ว กรุณาปิด Edit และรีเฟรชตารางก่อนแก้ไขอีกครั้ง')
+    code = body['doc_type']
+    record, options, _, custom = field_selection(state, code)
+    available = {f['key'] for f in options}
+    if set(keys) - available:
+        raise ValueError('มีฟิลด์ที่ไม่อยู่ในรายการให้เลือก')
+    value = copy.deepcopy(record['value'])
+    groups = value.setdefault('extra_groups', [])
+    group_ids = {g['id'] for g in groups}
+    for key in keys:
+        if key not in custom:
+            continue
+        gid = 'extra_pick_' + hashlib.sha256(key.encode('utf-8')).hexdigest()[:12]
+        while gid in group_ids:
+            gid += '_'
+        group_ids.add(gid)
+        groups.append({'id':gid, 'title':custom[key]['key'], 'fields':[custom[key]]})
+    owned = {k for s in record['base_steps'] for k in s['keys']} | {f['key'] for g in groups for f in g['fields']}
+    value['disabled_fields'] = sorted(owned - set(keys))
+    value['disabled_groups'] = []
+    record['value'] = validate(record['base_code'], value, record['base_steps'])
+    record['field_sources'] = {f['key']:f['source'] for f in options if f['key'] in owned}
+    binding = state['bindings'].get(code)
+    shared = binding and sum(b['set_id'] == binding['set_id'] for b in state['bindings'].values()) > 1
+    if shared or not binding:
+        if binding:
+            record.update(parent_set_id=record['id'], parent_revision=record['revision'])
+        label = next(r['label'] for r in catalog() if r['code'] == code)
+        record.update(id=uuid.uuid4().hex, name=label, revision=1, created_at=now())
+    else:
+        record['revision'] += 1
+    record['steps'] = compile_record(record)
+    _write_version(db, record)
+    if shared or not binding:
+        after = {'set_id':record['id'], 'revision':(binding['revision'] if binding else 0) + 1}
+        db.execute('INSERT OR REPLACE INTO prompt_bindings VALUES (?,?,?)', (code, after['set_id'], after['revision']))
+        db.execute('INSERT INTO prompt_binding_events(code,created_at,action,before_value,after_value) VALUES (?,?,?,?,?)',
+                   (code, now(), 'field_selection', json.dumps(binding), json.dumps(after)))
+    return record
 
 
 def change(db, body):

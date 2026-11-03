@@ -28,6 +28,8 @@
   let modelsTimer, modelsLoading = false, pageClosed = false, lastModels = {};
   let previewKey = null, previewObjectUrl = null, previewId = null, imageZoom = 100;
   let typesLoaded = false, typesLoading = false;
+  let typesMode = 'system', userTypesLoading = false;
+  let userTypesData = null, fieldEdit = null, fieldsSaving = false;
   let userJsonJob=null, userJsonLoadedKey='', userJsonPendingKey='', userJsonTicket=0, resultMode='text';
   let promptPanelJobId=null;
   let promptHistoryTicket=0,promptHistoryLoadedKey='';
@@ -289,7 +291,7 @@
       $(key+'View').hidden=name!==key;$(id).classList.toggle('selected',name===key);$(id).setAttribute('aria-pressed',String(name===key));
     }
     if(name!=='history')clearTimeout(historyTimer);
-    if(name==='types')loadTypes();
+    if(name==='types')showTypes(typesMode);
     if(name==='prompts')window.loadUserPrompts?.(fieldLabels);
   }
   $('navUpload').addEventListener('click',()=>view(false));
@@ -297,6 +299,18 @@
   $('navTypes').addEventListener('click',()=>view('types'));
   $('navPrompts').addEventListener('click',()=>view('prompts'));
   $('typesRetry').addEventListener('click',()=>loadTypes());
+  $('systemTypesTab').addEventListener('click',()=>showTypes('system'));
+  $('userTypesTab').addEventListener('click',()=>showTypes('user'));
+  $('userTypesRefresh').addEventListener('click',()=>loadUserTypes());
+  function showTypes(mode){
+    typesMode=mode;
+    for(const key of ['system','user']){
+      $(key+'TypesPanel').hidden=mode!==key;
+      $(key+'TypesTab').classList.toggle('selected',mode===key);
+      $(key+'TypesTab').setAttribute('aria-selected',String(mode===key));
+    }
+    if(mode==='user')loadUserTypes();else loadTypes();
+  }
   const fieldName=key=>fieldLabels[key]||key.replace(/_/g,' ');
   const typeName=name=>(name||'').replace(/^(an|a|the) /,'');
   function renderTypes(schema){
@@ -357,6 +371,127 @@
     }catch(err){message('typesError',err.message,true);$('typesNotice').textContent='';$('typesRetry').hidden=false;}
     finally{typesLoading=false;}
   }
+  function renderUserTypes(data){
+    userTypesData=data;
+    const content=$('userTypesContent');content.replaceChildren();
+    const scroll=node('div',undefined,'table-scroll user-types-summary'),table=node('table');
+    const head=node('thead'),header=node('tr');
+    for(const title of ['รหัส User','ประเภทเอกสาร','ชุด Hybrid ที่ใช้','ใช้ร่วมกับ','ก้อน / ฟิลด์'])header.append(node('th',title));
+    head.append(header);table.append(head);const body=node('tbody');
+    for(const type of data.types){
+      const row=node('tr');row.append(node('td',type.user_code),node('td',type.name));
+      row.append(node('td',type.sets.length?type.sets.map(s=>s.name+' · v'+s.revision).join('\n'):'ชุดฟิลด์พื้นฐาน · ยังไม่กำหนดชุด'));
+      const shared=[...new Set(type.sets.flatMap(s=>s.shared_types))].filter(code=>code!==type.user_code);
+      row.append(node('td',shared.join(', ')||'—'),node('td',type.groups.length+' / '+type.field_count));body.append(row);
+    }
+    table.append(body);scroll.append(table);content.append(scroll);
+    content.append(node('h2','ตารางฟิลด์ตามประเภทเอกสาร User'));
+    const legend=node('p',undefined,'catalog-legend');
+    legend.append(node('span','Required · ฟิลด์บังคับเมื่อเปิดใช้','catalog-required'),
+      node('span','Optional · ถาม แต่ไม่บังคับ','catalog-optional'),node('span','— ไม่ได้ถาม','muted'));
+    content.append(legend);
+    const matrixScroll=node('div',undefined,'table-scroll catalog-matrix-wrap user-fields-matrix'),matrix=node('table',undefined,'catalog-matrix');
+    const matrixHead=node('thead'),matrixHeader=node('tr');matrixHeader.append(node('th','ฟิลด์'));
+    for(const type of data.types){
+      const cell=node('th');cell.append(node('strong',type.user_code),node('span',type.name,'user-matrix-name'));
+      const edit=node('button','Edit','subtle');edit.type='button';edit.setAttribute('aria-label','เลือกฟิลด์สำหรับ '+type.user_code);
+      edit.addEventListener('click',()=>editUserFields(type));cell.append(edit);matrixHeader.append(cell);
+    }
+    matrixHead.append(matrixHeader);matrix.append(matrixHead);const matrixBody=node('tbody');
+    const keys=[...new Set(data.types.flatMap(type=>[...(type.choices||[]).map(f=>f.key),...type.groups.flatMap(g=>g.fields.map(f=>f.key))]))];
+    for(const key of keys){
+      const row=node('tr'),label=node('th');label.setAttribute('scope','row');label.append(node('span',fieldName(key)),node('code',key));row.append(label);
+      for(const type of data.types){
+        const asked=type.groups.some(g=>g.fields.some(f=>f.key===key)),required=asked&&(type.mandatory||[]).includes(key);
+        const cell=node('td');cell.append(node('span',required?'Required':asked?'Optional':'—',required?'catalog-required':asked?'catalog-optional':'muted'));row.append(cell);
+      }
+      matrixBody.append(row);
+    }
+    matrix.append(matrixBody);matrixScroll.append(matrix);content.append(matrixScroll);
+    content.append(node('p','กดแต่ละประเภทเพื่อดูฟิลด์ที่เปิดใช้ การกำหนดชุดไม่ได้รับรองความแม่นยำของโมเดล','catalog-note'));
+    const cards=node('div',undefined,'catalog-cards');
+    for(const type of data.types){
+      const card=node('details',undefined,'catalog-type user-type-detail');
+      const summary=node('summary');summary.append(node('strong',type.user_code+' · '+type.name),
+        node('span',type.groups.length+' ก้อน · '+type.field_count+' ฟิลด์','muted small'));card.append(summary,node('code',type.code));
+      for(const group of type.groups){
+        card.append(node('h4',group.title));const fields=node('ul',undefined,'catalog-fields');
+        for(const field of group.fields){const item=node('li');item.append(node('span',fieldName(field.key)),node('code',field.key));
+          if(field.target)item.append(node('span','→ '+field.target,'catalog-target'));fields.append(item);}
+        card.append(fields);
+      }
+      cards.append(card);
+    }
+    content.append(cards);
+    content.append(node('p','ลูกศรแสดงปลายทางที่กำหนดตรงใน User JSON ส่วนฟิลด์อื่นอาจใช้ประกอบการแปลงหรือแสดงใน JSON ปกติ ดูและแก้ชุดได้ที่ Hybrid prompts','catalog-note'));
+    content.hidden=false;
+    $('userTypesNotice').textContent=data.types.length+' ประเภท · Hybrid · Extra fields '+(data.extras?'เปิด':'ปิด');
+  }
+  async function loadUserTypes(){
+    if(userTypesLoading)return;
+    userTypesLoading=true;$('userTypesRefresh').disabled=true;
+    $('userTypesContent').hidden=true;
+    $('userTypesNotice').textContent='กำลังโหลดชุดฟิลด์ของ User…';message('userTypesError','');
+    try{renderUserTypes(await api('/doc-types'));}
+    catch(err){message('userTypesError',err.message,true);$('userTypesNotice').textContent='โหลดไม่สำเร็จ กดรีเฟรชเพื่อลองอีกครั้ง';}
+    finally{userTypesLoading=false;$('userTypesRefresh').disabled=false;}
+  }
+  function editUserFields(type){
+    const enabled=new Set(type.groups.flatMap(g=>g.fields.map(f=>f.key)));
+    const choices=type.choices||type.groups.flatMap(g=>g.fields.map(f=>({...f,linked_keys:[f.key],source:''})));
+    fieldEdit={type,revision:userTypesData.revision,choices,enabled,original:new Set(enabled),inputs:new Map()};
+    $('userFieldsTitle').textContent='เลือกฟิลด์ · '+type.user_code+' · '+type.name;
+    const shared=type.sets.some(s=>s.shared_types.length>1);
+    $('userFieldsImpact').textContent=shared?'บันทึกแล้วแยกเป็นชุดเฉพาะของ '+type.user_code+' · มีผลกับงานใหม่ของประเภทนี้':
+      'บันทึกสำหรับงานใหม่ของ '+type.user_code+' · เก็บเวอร์ชันและประวัติการเปลี่ยนแปลง';
+    message('userFieldsMessage','');
+    const table=node('table',undefined,'user-fields-edit-table'),head=node('thead'),header=node('tr');
+    for(const label of ['ฟิลด์','เลือกใช้','ข้อกำหนดเมื่อเลือก','ต้นแบบ / ปลายทาง User JSON'])header.append(node('th',label));
+    head.append(header);table.append(head);const body=node('tbody');
+    for(const field of choices){
+      const row=node('tr'),label=node('th');label.setAttribute('scope','row');label.append(node('span',fieldName(field.key)),node('code',field.key));row.append(label);
+      const cell=node('td'),input=node('input');input.type='checkbox';input.checked=enabled.has(field.key);
+      input.setAttribute('aria-label','ใช้ฟิลด์ '+field.key+' สำหรับ '+type.user_code);
+      input.addEventListener('change',()=>{
+        for(const key of field.linked_keys){
+          if(input.checked)fieldEdit.enabled.add(key);else fieldEdit.enabled.delete(key);
+          if(fieldEdit.inputs.has(key))fieldEdit.inputs.get(key).checked=input.checked;
+        }
+        updateFieldCount();
+      });
+      fieldEdit.inputs.set(field.key,input);cell.append(input);row.append(cell);
+      row.append(node('td',(type.mandatory||[]).includes(field.key)?'Required':'Optional'));
+      const source=node('td',field.source||'ชุดปัจจุบัน');
+      if(field.target)source.append(node('code','→ '+field.target,'catalog-target'));
+      if(field.linked_keys.length>1)source.append(node('span','เปิด–ปิดร่วมกับ '+field.linked_keys.filter(k=>k!==field.key).join(', '),'muted small'));
+      row.append(source);body.append(row);
+    }
+    table.append(body);$('userFieldsTable').replaceChildren(table);updateFieldCount();
+    if(document.documentElement){fieldEdit.pageOverflow=document.documentElement.style.overflow;document.documentElement.style.overflow='hidden';}
+    $('userFieldsEditor').showModal();
+  }
+  function updateFieldCount(){
+    const {enabled,original}=fieldEdit;
+    const added=[...enabled].filter(k=>!original.has(k)).length,removed=[...original].filter(k=>!enabled.has(k)).length;
+    $('userFieldsCount').textContent=enabled.size+' ฟิลด์ · เพิ่ม '+added+' · ปิด '+removed;
+    $('userFieldsSave').disabled=fieldsSaving||!enabled.size||!added&&!removed;
+  }
+  $('userFieldsCancel').addEventListener('click',()=>{if(!fieldsSaving)$('userFieldsEditor').close();});
+  $('userFieldsEditor').addEventListener('cancel',event=>{if(fieldsSaving)event.preventDefault();});
+  $('userFieldsEditor').addEventListener('close',()=>{
+    if(document.documentElement)document.documentElement.style.overflow=fieldEdit?.pageOverflow||'';
+    fieldEdit=null;
+  });
+  $('userFieldsSave').addEventListener('click',async()=>{
+    if(!fieldEdit||fieldsSaving||$('userFieldsSave').disabled)return;
+    fieldsSaving=true;$('userFieldsCancel').disabled=true;updateFieldCount();message('userFieldsMessage','กำลังบันทึก…');
+    try{
+      await api('/doc-types/fields',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({
+        doc_type:fieldEdit.type.code,revision:fieldEdit.revision,enabled_keys:[...fieldEdit.enabled]})});
+      $('userFieldsEditor').close();await loadUserTypes();
+    }catch(err){message('userFieldsMessage',err.message,true);}
+    finally{fieldsSaving=false;$('userFieldsCancel').disabled=false;if(fieldEdit)updateFieldCount();}
+  });
   function valueText(value){return typeof value==='object'&&value!==null?JSON.stringify(value,null,2):String(value??'');}
   function docCodes(doc){return Array.isArray(doc.doc_types)&&doc.doc_types.length?doc.doc_types:doc.doc_type?[doc.doc_type]:[];}
   function typeBadges(doc){

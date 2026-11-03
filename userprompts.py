@@ -24,6 +24,8 @@ def rule_units(step):
     variables is one unit; both fields point to that same editable slice.
     """
     rules, keys = step['rules'], tuple(step['keys'])
+    if 'user_rule_units' in step:
+        return [{**unit, 'text':rules[unit['start']:unit['end']]} for unit in step['user_rule_units']]
     if len(keys) == 1:
         return [{'keys': keys, 'start': 0, 'end': len(rules), 'text': rules}]
     pattern = re.compile(r'(?m)^[-*][ \t]+(' + '|'.join(re.escape(k) for k in keys) + r')\b')

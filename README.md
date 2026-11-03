@@ -2011,6 +2011,17 @@ and the original JSON/export and job history are not changed. The response
 contains `data` (the v7 candidate), `schema_valid`, `schema_errors`, `warnings`,
 `missing_fields` and `unmapped`. `?download=1` downloads only the candidate as a
 `.user-v7.preview.json` file. The UI labels nonconforming candidates **Draft**.
+The **Doc types ของ User** subtab in `/user` lists all 11 User document codes,
+their current Hybrid sets, and a Required/Optional field matrix. Each column's
+**Edit** button opens a large dialog with one scrolling area. Users can enable
+fields from other types, including custom fields with their saved instructions
+and User JSON destinations. Related fields sharing one rule toggle together.
+Saving copies a shared set for the selected type, or versions its own set;
+new jobs capture the saved selection while existing jobs retain their snapshot.
+`GET /api/user/doc-types` reads this reference without inference;
+`PUT /api/user/doc-types/fields` checks the reference revision and rejects stale
+edits with 409, invalid linked selections, and conflicting JSON destinations.
+
 The **Hybrid prompts** page in `/user` shows which fields are requested together
 for each document type. It loads
 `GET /api/user/hybrid-prompts?doc_type=INVOICE` on demand. Unconfigured recognized
