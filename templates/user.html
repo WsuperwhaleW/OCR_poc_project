@@ -99,18 +99,42 @@
       </div>
     </section>
     <section id="typesView" hidden aria-labelledby="typesTitle">
-      <div class="intro"><span class="eyebrow">DOCUMENT TYPES</span><h1 id="typesTitle">Doc types</h1><p class="muted">ประเภทเอกสารและฟิลด์ที่ระบบรองรับ ใช้ข้อกำหนดชุดเดียวกับหน้า Benchmark</p></div>
-      <div class="card">
-        <p id="typesNotice" class="muted small" role="status"></p>
-        <p id="typesError" class="message error" role="alert" hidden></p><button id="typesRetry" type="button" class="subtle" hidden>ลองโหลดอีกครั้ง</button>
-        <div id="typesContent"></div>
+      <div class="intro"><span class="eyebrow">DOCUMENT TYPES</span><h1 id="typesTitle">Doc types</h1><p class="muted">ดูประเภทเอกสารของระบบ หรือชุดฟิลด์ที่ใช้อยู่ในหน้า User</p></div>
+      <div class="tabs catalog-tabs" role="tablist" aria-label="แหล่งข้อมูลประเภทเอกสาร">
+        <button id="systemTypesTab" type="button" role="tab" aria-controls="systemTypesPanel" aria-selected="true" class="selected">Doc types ของระบบ</button>
+        <button id="userTypesTab" type="button" role="tab" aria-controls="userTypesPanel" aria-selected="false">Doc types ของ User</button>
       </div>
+      <section id="systemTypesPanel" role="tabpanel" aria-labelledby="systemTypesTab">
+        <div class="card">
+          <p id="typesNotice" class="muted small" role="status"></p>
+          <p id="typesError" class="message error" role="alert" hidden></p><button id="typesRetry" type="button" class="subtle" hidden>ลองโหลดอีกครั้ง</button>
+          <div id="typesContent"></div>
+        </div>
+      </section>
+      <section id="userTypesPanel" class="card" role="tabpanel" aria-labelledby="userTypesTab" hidden>
+        <div class="toolbar"><h2>ประเภทเอกสารของ User</h2><button id="userTypesRefresh" type="button" class="subtle">รีเฟรช</button></div>
+        <p class="catalog-note">11 ประเภทตามรหัส User JSON · แสดงชุด Hybrid และฟิลด์ที่เปิดใช้สำหรับงานใหม่ตามการตั้งค่าปัจจุบัน งานเก่าใช้ชุดที่บันทึกไว้กับงานนั้น</p>
+        <p id="userTypesNotice" class="muted small" role="status"></p>
+        <p id="userTypesError" class="message error" role="alert" hidden></p>
+        <div id="userTypesContent"></div>
+      </section>
     </section>
     <section id="promptsView" hidden aria-labelledby="promptsTitle">
       <div class="intro"><span class="eyebrow">HYBRID PROMPTS</span><h1 id="promptsTitle">แต่ละเอกสารถามอะไรพร้อมกันบ้าง</h1><p class="muted">แต่ละกล่องคือหนึ่งคำถามที่ส่งให้โมเดล ฟิลด์ในกล่องเดียวกันจะถูกถามพร้อมกัน</p></div>
       <div class="card">{% with prompt_id_prefix='' %}{% include '_user_prompt_workbench.html' %}{% endwith %}</div>
     </section>
   </main>
+  <dialog id="userFieldsEditor" class="user-fields-editor" aria-labelledby="userFieldsTitle">
+    <div class="user-fields-toolbar">
+      <div><h2 id="userFieldsTitle">เลือกฟิลด์ของเอกสาร</h2><p id="userFieldsImpact" class="muted small"></p></div>
+      <div class="toolbar"><span id="userFieldsCount" class="muted small" role="status"></span><button id="userFieldsCancel" type="button" class="subtle">ยกเลิก</button><button id="userFieldsSave" type="button" class="primary">บันทึก</button></div>
+    </div>
+    <p id="userFieldsMessage" class="message" role="status" hidden></p>
+    <div class="user-fields-body">
+      <p class="catalog-note">เลือกเพิ่มฟิลด์จากประเภทอื่นได้ ฟิลด์ที่ใช้คำอธิบายร่วมกันจะเปิด–ปิดพร้อมกัน ชุด Prompt และปลายทาง User JSON ของฟิลด์จะถูกเก็บไว้ด้วย</p>
+      <div id="userFieldsTable"></div>
+    </div>
+  </dialog>
   <footer>OCR <span>ผลลัพธ์จาก AI ควรตรวจสอบกับเอกสารต้นฉบับ</span></footer>
   <script>
     {% include '_doctype_mapping_script.html' %}

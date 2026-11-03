@@ -74,6 +74,31 @@ class UserPromptSetTests(unittest.TestCase):
         self.assertEqual(state['bindings']['DELIVERY_TAX_INVOICE']['set_id'],first)
         self.assertEqual(UserStore(directory,32).prompt_set_snapshot(), state)
 
+    def test_user_doc_types_reference_follows_current_bindings_and_enabled_runtime_fields(self):
+        source = self.reference('INVOICE')['library']['record']['id']
+        value = {'disabled_fields':['vat_total'], 'extra_groups':[{
+            'id':'extra_tax', 'title':'Tax', 'fields':[
+                {'key':'custom_tax', 'instruction':'Read printed tax', 'target':'vatAmount'}]}]}
+        response, _ = self.change('DELIVERY_TAX_INVOICE', 'detach', source=source,
+                                   name='T04 test', value=value)
+        self.assertEqual(response.status_code, 200, response.json)
+        before = self.store.prompt_set_snapshot()
+        response = self.client.get('/ocr/api/user/doc-types')
+        self.assertEqual(response.status_code, 200)
+        rows = {row['user_code']: row for row in response.json['types']}
+        self.assertEqual(set(rows), {'80','81','380','388','T01','T02','T03','T04','T05','T06','T07'})
+        t04 = rows['T04']
+        fields = {field['key']:field for group in t04['groups'] for field in group['fields']}
+        self.assertNotIn('vat_total', fields)
+        self.assertEqual(fields['custom_tax']['target'], 'vatAmount')
+        self.assertEqual(t04['field_count'], len(fields))
+        self.assertEqual(t04['sets'][0]['name'], 'T04 test')
+        self.assertEqual(t04['sets'][0]['shared_types'], ['T04'])
+        self.assertNotEqual(t04['sets'][0]['id'], rows['380']['sets'][0]['id'])
+        self.assertIn('T02', rows['380']['sets'][0]['shared_types'])
+        self.assertEqual(rows['80']['sets'], [])
+        self.assertEqual(self.store.prompt_set_snapshot(), before)
+
     def test_shared_save_reaches_all_bound_types_and_retains_old_versions_and_snapshots(self):
         before = self.cfg()
         value = {'instructions':{'document_number':'Read only OUR NUMBER'}, 'extra_groups':[]}
@@ -86,6 +111,74 @@ class UserPromptSetTests(unittest.TestCase):
         versions = self.client.get('/api/user/prompt-sets/'+body['set_id']+'/history').json['versions']
         self.assertEqual([v['revision'] for v in versions],[0,1])
         self.assertEqual(self.client.post('/api/user/prompt-sets',json=body).status_code,409)
+
+    def save_fields(self, code, keys, revision=None):
+        revision = revision or self.client.get('/api/user/doc-types').json['revision']
+        return self.client.put('/ocr/api/user/doc-types/fields', json={
+            'doc_type':code, 'revision':revision, 'enabled_keys':keys})
+
+    def test_field_matrix_can_import_wht_rules_and_detaches_only_the_selected_user_type(self):
+        self.change('WHT_CERTIFICATE', value={'instructions':{'payer_name':'Copy the payer legal name only.'}})
+        before = self.store.prompt_set_snapshot()
+        data = self.client.get('/api/user/doc-types').json
+        invoice = next(row for row in data['types'] if row['code'] == 'INVOICE')
+        self.assertIn('payer_name', {f['key'] for f in invoice['choices']})
+        response = self.save_fields('INVOICE', ['document_number','payer_name'], data['revision'])
+        self.assertEqual(response.status_code, 200, response.json)
+        after = self.store.prompt_set_snapshot()
+        invoice_set = after['sets'][after['bindings']['INVOICE']['set_id']]
+        self.assertEqual({k for s in invoice_set['steps'] for k in s['keys']}, {'document_number','payer_name'})
+        self.assertTrue(any('Copy the payer legal name only.' in s['rules'] for s in invoice_set['steps']))
+        for code in ('INVOICE_TAX_INVOICE','DELIVERY_TAX_INVOICE'):
+            self.assertEqual(after['bindings'][code], before['bindings'][code])
+        old = before['sets'][before['bindings']['INVOICE']['set_id']]
+        self.assertNotIn('payer_name', {k for s in old['steps'] for k in s['keys']})
+        # The editor and runtime both understand captured foreign/free-form rules.
+        self.assertEqual(self.reference('INVOICE')['editor']['revision'], invoice_set['revision'])
+        with EngineAdapter(app).context('field_picker', self.cfg()):
+            steps = app.steps_for_types(['INVOICE'], False, mode='hybrid')
+            self.assertEqual({k for s in steps for k in s['keys']}, {'document_number','payer_name'})
+
+    def test_field_selection_configures_an_unbound_type_and_can_include_the_income_table(self):
+        response = self.save_fields('DEBIT_NOTE', ['document_number','income_items'])
+        self.assertEqual(response.status_code, 200, response.json)
+        state = self.store.prompt_set_snapshot()
+        record = state['sets'][state['bindings']['DEBIT_NOTE']['set_id']]
+        self.assertEqual({k for s in record['steps'] for k in s['keys']}, {'document_number','income_items'})
+        self.assertEqual(record['base_code'], 'DEBIT_NOTE')
+        self.assertEqual(self.reference('DEBIT_NOTE')['editor']['revision'], 1)
+        result = self.extract(['DEBIT_NOTE'])
+        self.assertEqual(result['items_asked'], list(prompts.INCOME_ITEM_KEYS))
+
+    def test_field_selection_imports_custom_fields_with_their_instruction_and_target(self):
+        response, _ = self.change('RECEIPT', value={'extra_groups':[{
+            'id':'extra_sales', 'title':'Sales', 'fields':[
+                {'key':'receipt_sales', 'instruction':'Read the named sales representative.', 'target':'salesman'}]}]})
+        self.assertEqual(response.status_code, 200, response.json)
+        response = self.save_fields('INVOICE', ['document_number','receipt_sales'])
+        self.assertEqual(response.status_code, 200, response.json)
+        record = userpromptsets.select(self.store.prompt_set_snapshot(), ['INVOICE'])[0][1]
+        step = next(s for s in record['steps'] if 'receipt_sales' in s['keys'])
+        self.assertEqual(step['custom_targets'], {'receipt_sales':'salesman'})
+        self.assertIn('Read the named sales representative.', step['rules'])
+
+    def test_field_selection_rejects_conflicts_partial_linked_rules_and_stale_edits_atomically(self):
+        response, _ = self.change('RECEIPT', value={'extra_groups':[{
+            'id':'extra_tax', 'title':'Tax', 'fields':[
+                {'key':'receipt_tax', 'instruction':'Read tax.', 'target':'vatAmount'}]}],
+            'disabled_fields':['vat_total']})
+        self.assertEqual(response.status_code, 200, response.json)
+        before = self.store.prompt_set_snapshot()
+        for keys in ([], ['not_a_field'], ['book_no'], ['vat_total','receipt_tax']):
+            response = self.save_fields('INVOICE', keys)
+            self.assertEqual(response.status_code, 400, response.json)
+            self.assertEqual(self.store.prompt_set_snapshot(), before)
+        revision = self.client.get('/api/user/doc-types').json['revision']
+        self.change('INVOICE', value={'instructions':{'document_number':'Changed elsewhere.'}})
+        changed = self.store.prompt_set_snapshot()
+        response = self.save_fields('INVOICE', ['document_number'], revision)
+        self.assertEqual(response.status_code, 409, response.json)
+        self.assertEqual(self.store.prompt_set_snapshot(), changed)
 
     def test_detach_copies_entire_set_and_literal_binding_blocks_component_override(self):
         value = {'instructions':{'document_number':'T02 ONLY'}, 'extra_groups':[]}

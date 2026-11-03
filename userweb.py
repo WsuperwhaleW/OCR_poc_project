@@ -132,6 +132,44 @@ def register(application, engine):
         state = service().store.prompt_set_snapshot()
         return jsonify(**state, types=userpromptsets.catalog())
 
+    @application.get('/api/user/doc-types')
+    def user_document_types():
+        current = service().store
+        cfg, state = current.settings(), current.prompt_set_snapshot()
+        catalog = [row for row in userpromptsets.catalog() if row['section'] == 'user']
+        types = []
+        for row in catalog:
+            codes = userpromptsets.codes_for(row['code'])
+            table = userpromptsets.runtime(
+                engine.prompts.steps_for_types(codes, cfg['extras'], mode='hybrid'),
+                codes, state, cfg['extras'])
+            selected = userpromptsets.select(state, codes)
+            _, choices, _, _ = userpromptsets.field_selection(state, row['code'])
+            groups = []
+            for step in table:
+                targets = step.get('custom_targets', {})
+                groups.append({'id': step['id'], 'title': step['title'], 'fields': [
+                    {'key': key, 'target': targets.get(key, userprompts.CORE_TARGETS.get(key, ''))}
+                    for key in step['keys']]})
+            types.append({**row, 'groups': groups, 'choices':choices,
+                'mandatory': list(engine.prompts.mandatory_for_types(codes)),
+                'field_count': len({key for step in table for key in step['keys']}),
+                'sets': [{'id': record['id'], 'name': record['name'], 'revision': record['revision'],
+                          'shared_types': [item['user_code'] for item in catalog
+                              if state['bindings'].get(item['code'], {}).get('set_id') == record['id']]}
+                         for _, record in selected]})
+        return jsonify(types=types, mode='hybrid', extras=cfg['extras'], revision=userpromptsets.field_revision(state))
+
+    @application.put('/api/user/doc-types/fields')
+    def user_save_document_fields():
+        try:
+            record = service().store.save_type_fields(request.get_json(silent=True))
+            return jsonify(set_id=record['id'], revision=record['revision'])
+        except userpromptsets.Conflict as err:
+            return jsonify(error=str(err)), 409
+        except (ValueError, TypeError) as err:
+            return jsonify(error=str(err)), 400
+
     @application.post('/api/user/prompt-sets')
     def user_change_prompt_set():
         try:
