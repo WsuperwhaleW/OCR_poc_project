@@ -193,8 +193,8 @@ def register(application, engine):
         if not isinstance(body, dict) or set(body) != {'doc_type', 'revision', 'value'}:
             return jsonify(error='ส่งประเภทเอกสาร เวอร์ชัน และค่า prompt ให้ครบ'), 400
         try:
-            value = userprompts.validate(body['doc_type'], body['value'])
-            profile = service().store.save_prompt_profile(body['doc_type'], value, body['revision'])
+            # The store validates, against the bound set's enabled fields.
+            profile = service().store.save_prompt_profile(body['doc_type'], body['value'], body['revision'])
         except (ValueError, TypeError) as err:
             return jsonify(error=str(err)), 400
         if profile is None:
@@ -486,13 +486,20 @@ def register(application, engine):
                         raise ValueError('เลือกชุดและค่า prompt จากเวอร์ชันของงานนี้')
                     snapshot['bindings'][code] = {'set_id':edit['set_id'], 'revision':0}
                 cfg['prompt_sets'] = userpromptsets.retry(snapshot, {c:e['value'] for c,e in edits.items()})
+            legacy_sets = 'prompt_profiles' in body and cfg.get('prompt_sets')
+            if legacy_sets:
+                # Older edit format on a job with set snapshots: keep the job's
+                # on/off state and validate against its enabled fields.
+                cfg['prompt_sets'] = userpromptsets.retry(cfg['prompt_sets'], edits, legacy=True)
             for code, value in (edits.items() if 'prompt_profiles' in body else []):
-                normalized = userprompts.validate(code, value)
+                if legacy_sets:
+                    sets = cfg['prompt_sets']
+                    normalized = userpromptsets.legacy_value(sets['sets'][sets['bindings'][code]['set_id']]['value'])
+                else:
+                    normalized = userprompts.validate(code, value)
                 profiles[code] = {'revision': profiles.get(code, {}).get('revision', 0) + 1,
                                   'scope': 'job', 'value': normalized}
             cfg['prompt_profiles'] = profiles
-            if 'prompt_profiles' in body and cfg.get('prompt_sets'):
-                cfg['prompt_sets'] = userpromptsets.retry(cfg['prompt_sets'], edits)
             cfg = current.adapter.snapshot_extraction(cfg)
             retried = current.store.retry_extraction(job_id, request_id, cfg)
         except (ValueError, TypeError, KeyError) as err:

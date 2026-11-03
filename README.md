@@ -797,8 +797,10 @@ the later field is not asked. Within one set a duplicate destination is still
 rejected on save. Each result's `user_prompt_sets[].keys` lists exactly which fields
 that set supplied, `skipped_keys` the enabled fields an earlier set took, and
 `user_disabled_fields` only the fields the User switched off (not fields the set never
-had). The older `PUT /api/user/hybrid-prompts` keeps a bound set's disabled fields and
-groups, since it carries no on/off state.
+had). The older `PUT /api/user/hybrid-prompts` and the `prompt_profiles` form of
+retry carry no on/off state, so they keep the bound set's (or the job's) disabled
+fields and groups and validate against the fields still enabled; a custom field may
+take the destination of a field the User switched off.
 
 Measure this change on the model host with the local User adapter:
 

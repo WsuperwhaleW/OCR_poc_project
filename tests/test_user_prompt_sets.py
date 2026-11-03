@@ -385,6 +385,43 @@ class UserPromptSetTests(unittest.TestCase):
         self.assertIn('Read only OUR NUMBER',json.dumps(record['steps']))
         self.assertNotIn('buyer_branch_location',[k for s in record['steps'] for k in s['keys']])
 
+    REPLACED = {'instructions':{}, 'disabled_fields':['seller_branch'], 'extra_groups':[{'id':'extra_branch',
+        'title':'Branch','fields':[{'key':'my_branch','instruction':'Supplier branch code.','target':'seller.branchCode'}]}]}
+
+    def test_legacy_profile_save_accepts_a_custom_field_replacing_a_disabled_one(self):
+        self.assertEqual(self.change(value=copy.deepcopy(self.REPLACED))[0].status_code,200)
+        record = self.store.prompt_set_snapshot()['sets']['builtin_invoice']
+        response = self.client.put('/api/user/hybrid-prompts',json={'doc_type':'INVOICE','revision':record['revision'],
+            'value':{'instructions':{'document_number':'Read only OUR NUMBER'},'extra_groups':self.REPLACED['extra_groups']}})
+        self.assertEqual(response.status_code,200,response.json)
+        self.assertNotIn('disabled_fields',response.json['profile']['value'])
+        record = self.store.prompt_set_snapshot()['sets']['builtin_invoice']
+        self.assertEqual(record['value']['disabled_fields'],['seller_branch'])
+        keys = [k for s in record['steps'] for k in s['keys']]
+        self.assertIn('my_branch',keys)
+        self.assertNotIn('seller_branch',keys)
+
+    def test_legacy_retry_keeps_the_jobs_disabled_fields(self):
+        self.assertEqual(self.change(value=copy.deepcopy(self.REPLACED))[0].status_code,200)
+        batch = self.client.post('/api/user/batches',json={'file_count':1}).json
+        parent = self.store.add_job(batch['batch_id'],'upload_02','old.pdf',b'pdf')
+        self.store.update(parent['id'],status='completed',result={'text':'Invoice','pages':['Invoice'],
+            'extracted':{'doc_types':['INVOICE'],'fields':{}}})
+        for request_id, extra in (('retry_legacy_01',[]),('retry_legacy_02',self.REPLACED['extra_groups'])):
+            with self.subTest(extra_groups=bool(extra)):
+                body = {'request_id':request_id,'prompt_profiles':{'INVOICE':{
+                    'instructions':{'document_number':'LOCAL'},'extra_groups':extra}}}
+                with patch.object(self.service,'start'):
+                    response = self.client.post('/api/user/jobs/'+parent['id']+'/retry-extraction',json=body)
+                self.assertEqual(response.status_code,202,response.json)
+                snapshot = response.json['job']['configuration']['prompt_sets']
+                record = snapshot['sets'][snapshot['bindings']['INVOICE']['set_id']]
+                self.assertEqual(record['value']['disabled_fields'],['seller_branch'])
+                keys = [k for s in record['steps'] for k in s['keys']]
+                self.assertNotIn('seller_branch',keys)
+                self.assertEqual('my_branch' in keys,bool(extra))
+                self.assertIn('LOCAL',json.dumps(record['steps']))
+
     def test_user_disabled_fields_lists_only_what_the_user_switched_off(self):
         self.change(value={'disabled_fields':['buyer_branch_location']})
         result = self.extract(userpromptsets.codes_for('DELIVERY_TAX_INVOICE'))

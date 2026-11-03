@@ -208,36 +208,34 @@ class UserStore:
         return [{**dict(row), 'prompt_changes': json.loads(row['prompt_changes'])} for row in rows]
 
     def save_prompt_profile(self, code, value, revision):
+        """Older whole-profile save. Takes the raw request value and validates it here,
+        against the bound set's enabled fields when there is one."""
         if isinstance(revision, bool) or not isinstance(revision, int) or revision < 0:
             raise ValueError('เวอร์ชัน prompt ไม่ถูกต้อง')
         with self.connect() as db:
             db.execute('BEGIN IMMEDIATE')
             state = userpromptsets.snapshot(db)
             binding = state['bindings'].get(code)
-            if binding and state['sets'][binding['set_id']]['base_code'] != code:
+            record = state['sets'][binding['set_id']] if binding else None
+            if record and record['base_code'] != code:
                 raise ValueError('ชุดปัจจุบันใช้ต้นแบบอื่น กรุณาแก้ผ่านหน้าชุด Hybrid prompts')
+            if record:
+                # The route sends no on/off state: keep the set's, and validate
+                # against what is enabled, so a custom field may still take
+                # the destination of a field the User switched off.
+                merged = userpromptsets.validate(record['base_code'], userpromptsets.carry_disabled(record, value),
+                                                 record['base_steps'])
+                value = userpromptsets.legacy_value(merged)
+            else:
+                value = userprompts.validate(code, value)
             row = db.execute('SELECT revision FROM prompt_profiles WHERE code=?', (code,)).fetchone()
-            actual = state['sets'][binding['set_id']]['revision'] if binding else (row['revision'] if row else 0)
+            actual = record['revision'] if record else (row['revision'] if row else 0)
             if actual != revision:
                 return None
             next_revision = revision + 1
             db.execute('INSERT OR REPLACE INTO prompt_profiles VALUES (?,?,?)',
                        (code, next_revision, json.dumps(value, ensure_ascii=False)))
-            if binding:
-                record = state['sets'][binding['set_id']]
-                # This older route sends no on/off state. Keep the set's
-                # disabled fields and groups that still exist, or a save here
-                # silently asks them again.
-                merged = dict(value)
-                groups = value.get('extra_groups', [])
-                fields = ({k for s in record['base_steps'] for k in s['keys']}
-                          | {f['key'] for g in groups for f in g['fields']})
-                group_ids = {s['id'] for s in record['base_steps']} | {g['id'] for g in groups}
-                for name, present in (('disabled_fields', fields), ('disabled_groups', group_ids)):
-                    kept = [k for k in record['value'].get(name, []) if k in present]
-                    if kept:
-                        merged[name] = kept
-                merged = userpromptsets.validate(record['base_code'], merged, record['base_steps'])
+            if record:
                 record.update(value=merged, revision=record['revision'] + 1)
                 record['steps'] = userpromptsets.compile_record(record)
                 userpromptsets._write_version(db, record)

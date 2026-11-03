@@ -371,13 +371,43 @@ def change(db, body):
     return record
 
 
-def retry(snapshot_value, edits):
+def carry_disabled(record, value):
+    """Add a set's on/off state to a value from an older route that never sends it.
+
+    Without this, a legacy save or retry asked disabled fields again, and a
+    custom field that replaced a disabled one failed as a duplicate destination.
+    Only fields and groups that still exist in the new value are carried.
+    """
+    if not isinstance(value, dict) or {'disabled_fields', 'disabled_groups'} & set(value):
+        return value
+    merged = dict(value)
+    groups = value.get('extra_groups')
+    groups = [g for g in groups if isinstance(g, dict)] if isinstance(groups, list) else []
+    fields = ({k for s in record['base_steps'] for k in s['keys']}
+              | {f.get('key') for g in groups if isinstance(g.get('fields'), list)
+                 for f in g['fields'] if isinstance(f, dict)})
+    group_ids = {s['id'] for s in record['base_steps']} | {g.get('id') for g in groups}
+    for name, present in (('disabled_fields', fields), ('disabled_groups', group_ids)):
+        kept = [k for k in record['value'].get(name, []) if k in present]
+        if kept:
+            merged[name] = kept
+    return merged
+
+
+def legacy_value(value):
+    """The instructions/extra_groups part that the older profile format stores."""
+    return {'instructions':value.get('instructions', {}), 'extra_groups':value.get('extra_groups', [])}
+
+
+def retry(snapshot_value, edits, legacy=False):
     result = copy.deepcopy(snapshot_value)
     for code, value in edits.items():
         binding = result['bindings'].get(code)
         if not binding:
             raise ValueError('เลือกชุดต้นแบบของประเภทนี้ก่อน Retry')
         record = copy.deepcopy(result['sets'][binding['set_id']])
+        if legacy:
+            value = carry_disabled(record, value)
         record['value'] = validate(record['base_code'], value, record['base_steps'])
         record.update(id='job_' + uuid.uuid4().hex, revision=record['revision'] + 1, scope='job')
         record['steps'] = compile_record(record)
