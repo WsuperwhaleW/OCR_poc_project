@@ -345,6 +345,53 @@ class UserPromptSetTests(unittest.TestCase):
                     first = userpromptsets.select(cfg['prompt_sets'],codes)[0][0]
                     self.assertEqual(next(step for step in table if 'seller_tax_id' in step['keys'])['user_prompt_doc_type'],first)
 
+    def extract(self, codes, cfg=None):
+        def ask(content,step,status,collect=None):
+            return {key:'' for key in step['keys']},[],False,0,False
+        with EngineAdapter(app).context('extract',cfg or self.cfg()),patch.object(app,'_ask_step',side_effect=ask), \
+                patch.object(app,'AGENTIC_RETRIES',0),patch.object(app,'AGENTIC_PARALLEL',False):
+            return app._drain(app._extract_document('printed evidence','hybrid',None,None,codes,
+                {'kind':'ollama','url':'http://mock','model':'fake'},extras=False))
+
+    def test_two_sets_mapping_one_user_json_destination_keep_the_first_on_a_mixed_document(self):
+        def note(key):
+            return {'instructions':{}, 'extra_groups':[{'id':'extra_sales','title':'Sales','fields':[
+                {'key':key,'instruction':'The salesperson name.','target':'salesman'}]}]}
+        self.assertEqual(self.change('INVOICE',value=note('inv_sales'))[0].status_code,200)
+        self.assertEqual(self.change('RECEIPT',value=note('rcp_sales'))[0].status_code,200)
+        for pair in (['INVOICE','RECEIPT'],['RECEIPT_TAX_INVOICE','INVOICE']):
+            with self.subTest(pair=pair):
+                codes = list(dict.fromkeys(c for kind in pair for c in userpromptsets.codes_for(kind)))
+                with EngineAdapter(app).context('targets',self.cfg()):
+                    table = app.steps_for_types(codes,False,mode='hybrid')
+                keys = [key for step in table for key in step['keys']]
+                first = userpromptsets.select(self.cfg()['prompt_sets'],codes)[0][1]['base_code']
+                kept, dropped = ('inv_sales','rcp_sales') if first == 'INVOICE' else ('rcp_sales','inv_sales')
+                self.assertIn(kept,keys)
+                self.assertNotIn(dropped,keys)
+                result = self.extract(codes)
+                self.assertNotIn('error',result,result)
+                skipped = [k for source in result['user_prompt_sets'] for k in source['skipped_keys']]
+                self.assertIn(dropped,skipped)
+
+    def test_legacy_profile_save_keeps_the_sets_disabled_fields(self):
+        self.change(value={'disabled_fields':['buyer_branch_location']})
+        revision = self.store.prompt_set_snapshot()['sets']['builtin_invoice']['revision']
+        response = self.client.put('/api/user/hybrid-prompts',json={'doc_type':'INVOICE','revision':revision,
+            'value':{'instructions':{'document_number':'Read only OUR NUMBER'},'extra_groups':[]}})
+        self.assertEqual(response.status_code,200,response.json)
+        record = self.store.prompt_set_snapshot()['sets']['builtin_invoice']
+        self.assertEqual(record['value']['disabled_fields'],['buyer_branch_location'])
+        self.assertIn('Read only OUR NUMBER',json.dumps(record['steps']))
+        self.assertNotIn('buyer_branch_location',[k for s in record['steps'] for k in s['keys']])
+
+    def test_user_disabled_fields_lists_only_what_the_user_switched_off(self):
+        self.change(value={'disabled_fields':['buyer_branch_location']})
+        result = self.extract(userpromptsets.codes_for('DELIVERY_TAX_INVOICE'))
+        self.assertNotIn('error',result,result)
+        self.assertEqual(result['user_disabled_fields'],['buyer_branch_location'])
+        self.assertEqual(result['user_prompt_sets'][0]['skipped_keys'],[])
+
     def test_sup_pay_defaults_names_and_thai_extra_labels(self):
         state = self.store.prompt_set_snapshot()
         invoice = 'builtin_invoice'

@@ -790,9 +790,15 @@ RTV and WHT default names are **RTV** and **WHT 50 ทวิ (PCP)**.
 
 On mixed documents, fields are owned by the first selected type in
 `TYPE_SPECIFICITY`. Later sets ask only their remaining fields, including rebuilt
-schemas and rule slices, even when a field's guidance differs. User JSON destination
-collisions across distinct fields still fail validation. Each result's
-`user_prompt_sets[].keys` lists exactly which fields that set supplied.
+schemas and rule slices, even when a field's guidance differs. The same rule covers
+User JSON destinations: a set is validated on its own, so two sets may map different
+custom fields to one destination, and on a mixed document the first set keeps it and
+the later field is not asked. Within one set a duplicate destination is still
+rejected on save. Each result's `user_prompt_sets[].keys` lists exactly which fields
+that set supplied, `skipped_keys` the enabled fields an earlier set took, and
+`user_disabled_fields` only the fields the User switched off (not fields the set never
+had). The older `PUT /api/user/hybrid-prompts` keeps a bound set's disabled fields and
+groups, since it carries no on/off state.
 
 Measure this change on the model host with the local User adapter:
 

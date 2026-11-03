@@ -225,7 +225,20 @@ class UserStore:
                        (code, next_revision, json.dumps(value, ensure_ascii=False)))
             if binding:
                 record = state['sets'][binding['set_id']]
-                record.update(value=value, revision=record['revision'] + 1)
+                # This older route sends no on/off state. Keep the set's
+                # disabled fields and groups that still exist, or a save here
+                # silently asks them again.
+                merged = dict(value)
+                groups = value.get('extra_groups', [])
+                fields = ({k for s in record['base_steps'] for k in s['keys']}
+                          | {f['key'] for g in groups for f in g['fields']})
+                group_ids = {s['id'] for s in record['base_steps']} | {g['id'] for g in groups}
+                for name, present in (('disabled_fields', fields), ('disabled_groups', group_ids)):
+                    kept = [k for k in record['value'].get(name, []) if k in present]
+                    if kept:
+                        merged[name] = kept
+                merged = userpromptsets.validate(record['base_code'], merged, record['base_steps'])
+                record.update(value=merged, revision=record['revision'] + 1)
                 record['steps'] = userpromptsets.compile_record(record)
                 userpromptsets._write_version(db, record)
         return {'revision': next_revision, 'value': value}

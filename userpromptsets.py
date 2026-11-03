@@ -197,21 +197,32 @@ def compile_record(record):
     return tuple(result)
 
 
+def _step_targets(step):
+    return step.get('custom_targets') or {k:userprompts.CORE_TARGETS[k] for k in step['keys']
+                                          if k in userprompts.CORE_TARGETS}
+
+
 def runtime(table, codes, snapshot, extras=False):
     selected = select(snapshot, codes)
     if not selected:
         return table
-    merged, owners = [], set()
+    merged, owners, taken = [], set(), set()
     for code, record in selected:
         # Older snapshots predate captured spans. Rebuild only from their own
         # frozen base/value, never from today's team settings or engine defaults.
         compiled = record['steps'] if all('user_rule_units' in s for s in record['steps']) else compile_record(record)
         for original in compiled:
-            kept = [key for key in original['keys'] if key not in owners]
+            # The first set in TYPE_SPECIFICITY owns a field and its User JSON
+            # destination. Each set is validated alone, so two sets may map
+            # different custom fields to one destination; on a mixed document
+            # that raised and the document got no fields at all.
+            targets = _step_targets(original)
+            kept = [key for key in original['keys'] if key not in owners and targets.get(key) not in taken]
             step = restrict_step(original, kept)
             if step is None:
                 continue
             owners.update(kept)
+            taken.update(targets[key] for key in kept if key in targets)
             step.update(user_prompt_set_id=record['id'], user_prompt_doc_type=code)
             merged.append(step)
     targets = {}
