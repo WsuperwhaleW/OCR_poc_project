@@ -300,6 +300,21 @@ class UserStore:
         out.pop('upload_id', None)
         return out
 
+    def batch_results(self, batch_id):
+        """Each file of a batch, in upload order, with its newest finished result
+        (a later Retry of that file wins), or None while none has finished."""
+        finished = ('completed', 'partial')
+        with self.connect() as db:
+            roots = [self.decode(r) for r in db.execute(
+                'SELECT * FROM jobs WHERE batch_id=? ORDER BY created_at,id', (batch_id,))]
+            pairs = []
+            for root in roots:
+                key = root.get('original_id') or root['id']
+                row = db.execute('SELECT * FROM jobs WHERE (id=? OR original_id=?) AND status IN (?,?) '
+                                 'ORDER BY created_at DESC,id DESC LIMIT 1', (key, key, *finished)).fetchone()
+                pairs.append((root, self.decode(row)))
+        return pairs
+
     def get(self, job_id):
         if not re.fullmatch('[0-9a-f]{32}', job_id or ''):
             return None

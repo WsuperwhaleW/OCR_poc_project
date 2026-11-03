@@ -5,6 +5,7 @@ import re
 import secrets
 import threading
 import time
+import zipfile
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -643,6 +644,46 @@ def register(application, engine):
             return send_file(io.BytesIO(output), mimetype='application/json', as_attachment=True,
                              download_name=Path(job['filename']).stem + '.user-v7.preview.json')
         return jsonify(report)
+
+    @application.get('/api/user/batches/<batch_id>/user-json.zip')
+    def user_batch_user_json(batch_id):
+        """Every file of one upload batch as its own User JSON v7 candidate, in one ZIP.
+
+        Built 2026-11-03 at the user's request: "แยก json ... มีปุ่มเพิ่มให้ download
+        ทั้งหมด". The v7 contract is one bundle per source file, so files are never
+        merged; manifest.json says what each file became and what was left out.
+        """
+        current = service()
+        if not re.fullmatch('[0-9a-f]{32}', batch_id) or not current.store.batch(batch_id):
+            abort(404)
+        manifest, used, buffer = [], set(), io.BytesIO()
+        with zipfile.ZipFile(buffer, 'w', zipfile.ZIP_DEFLATED) as archive:
+            for root, job in current.store.batch_results(batch_id):
+                entry = {'file':root['filename'], 'job_id':root['id'], 'status':root['status'], 'included':False}
+                if job is None:
+                    entry['reason'] = 'ยังไม่มีผลที่เสร็จ'
+                    manifest.append(entry)
+                    continue
+                report = userjson.convert(job)
+                stem, number = Path(root['filename']).stem or 'document', 1
+                name = stem + '.user-v7.preview.json'
+                while name.lower() in used:
+                    number += 1
+                    name = stem + ' (' + str(number) + ').user-v7.preview.json'
+                used.add(name.lower())
+                archive.writestr(name, json.dumps(report['data'], ensure_ascii=False, indent=2, allow_nan=False))
+                entry.update(included=True, path=name, result_job_id=job['id'], status=job['status'],
+                             from_retry=job['id'] != root['id'], schema_valid=report['schema_valid'],
+                             warnings=len(report['warnings']), missing_fields=len(report['missing_fields']))
+                manifest.append(entry)
+            if not any(entry['included'] for entry in manifest):
+                return jsonify(error='ยังไม่มีไฟล์ที่ประมวลผลเสร็จในชุดนี้'), 409
+            archive.writestr('manifest.json', json.dumps({'batch_id':batch_id, 'created_at':time.strftime('%Y-%m-%dT%H:%M:%S%z'),
+                'schema':'User JSON v7 · one file per source document · preview candidates', 'files':manifest},
+                ensure_ascii=False, indent=2))
+        buffer.seek(0)
+        return send_file(buffer, mimetype='application/zip', as_attachment=True,
+                         download_name='user-json-' + time.strftime('%Y%m%d-%H%M') + '.zip')
 
     # A job's original never changes and a temporary preview lasts 30 minutes, so
     # these need not be fetched again each time the same document is opened.

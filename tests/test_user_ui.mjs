@@ -359,7 +359,10 @@ test('User app uploads each selected file independently and shows shared history
   assert.ok(calls.filter(c=>c.options.method==='POST').every(c=>c.options.headers['X-OCR-User-Token']==='page-proof'));
   assert.match(el('uploadMessage').textContent,/2\/2/);
   assert.equal(el('historyRows').children.length,1);
-  assert.equal(el('batchJobs').children.length,2);
+  assert.equal(el('batchJobs').children.length,3);
+  const zip=el('batchJobs').children.at(-1);
+  assert.equal(zip.tag,'a');assert.equal(zip.href,'/ocr/api/user/batches/batch-id/user-json.zip');
+  assert.match(zip.textContent,/ดาวน์โหลด User JSON ทั้งหมด · 2\/2 ไฟล์/);
   await el('historyRows').children[0].children.at(-1).children[0].listeners.click();
   assert.equal(el('resultFile').textContent,'shared-job.png');
   await el('uploadForm').listeners.submit({preventDefault(){}});

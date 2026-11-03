@@ -246,6 +246,40 @@ class UserPromptSetTests(unittest.TestCase):
         state = self.store.prompt_set_snapshot()
         self.assertIn('GROUP RULE', json.dumps(userpromptsets.effective(state, 'INVOICE')[0]))
 
+    def test_batch_download_zips_one_user_json_per_file_with_the_latest_retry(self):
+        import io, zipfile
+        batch = self.client.post('/api/user/batches', json={'file_count':4}).json['batch_id']
+        self.assertEqual(self.client.get('/api/user/batches/'+batch+'/user-json.zip').status_code, 409)
+        sample = job()['result']
+        first = self.store.add_job(batch, 'upload_a1', 'invoice.pdf', b'pdf')
+        failed = self.store.add_job(batch, 'upload_b2', 'broken.pdf', b'pdf')
+        twin = self.store.add_job(batch, 'upload_c3', 'invoice.pdf', b'pdf')
+        running = self.store.add_job(batch, 'upload_d4', 'later.png', b'png')
+        self.store.update(first['id'], status='completed', result=sample)
+        self.store.update(failed['id'], status='failed', error='boom')
+        self.store.update(twin['id'], status='partial', result={**sample, 'text':'x', 'pages':['x']})
+        retried = copy.deepcopy(sample); retried['extracted']['fields']['document_number'] = 'INV-RETRY'
+        with patch.object(self.service, 'start'):
+            child = self.store.retry_extraction(twin['id'], 'retry_zip_0001', {**self.store.settings(),
+                **self.store.get(twin['id'])['configuration'], 'shape':'hybrid'})
+        self.store.update(child['id'], status='completed', result=retried)
+        response = self.client.get('/ocr/api/user/batches/'+batch+'/user-json.zip')
+        self.assertEqual(response.status_code, 200, response.data[:200])
+        self.assertEqual(response.mimetype, 'application/zip')
+        archive = zipfile.ZipFile(io.BytesIO(response.data))
+        self.assertEqual(sorted(archive.namelist()),
+                         ['invoice (2).user-v7.preview.json', 'invoice.user-v7.preview.json', 'manifest.json'])
+        manifest = json.loads(archive.read('manifest.json'))
+        self.assertEqual([f['file'] for f in manifest['files']], ['invoice.pdf','broken.pdf','invoice.pdf','later.png'])
+        self.assertEqual([f['included'] for f in manifest['files']], [True, False, True, False])
+        self.assertEqual(manifest['files'][2]['result_job_id'], child['id'])
+        self.assertTrue(manifest['files'][2]['from_retry'])
+        latest = json.loads(archive.read('invoice (2).user-v7.preview.json'))
+        self.assertEqual(latest['documents'][0]['documentNo'], 'INV-RETRY')
+        self.assertEqual(latest, userjson.convert(self.store.get(child['id']))['data'])
+        self.assertEqual(self.client.get('/api/user/batches/'+'0'*32+'/user-json.zip').status_code, 404)
+        self.assertEqual(self.client.get('/api/user/batches/not-a-batch/user-json.zip').status_code, 404)
+
     def test_every_type_opens_in_the_group_editor_including_combined_rules(self):
         # The billing-note totals rule is one combined instruction (it talks about
         # billing_total), so it has no per-key bullet for subtotal; it once broke the page.

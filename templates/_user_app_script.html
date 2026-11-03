@@ -22,7 +22,7 @@
     income_items:'Income items',income_type:'Income type',amount_paid:'Amount paid',wht_amount:'WHT amount',
     line_items:'Line items',other_fields:'Other fields',label:'Label',name:'Name',value:'Value'};
   const dates = value => new Date(value).toLocaleString('th-TH');
-  let files = [], settings = null, sending = false, jobs = [], batchJobs = [], selected = null;
+  let files = [], settings = null, sending = false, jobs = [], batchJobs = [], batchId = null, selected = null;
   let historyTimer, detailTimer, batchTimer, historyLoading = false, batchLoading = false, more = false;
   let detailRequest = 0;
   let modelsTimer, modelsLoading = false, pageClosed = false, lastModels = {};
@@ -242,10 +242,11 @@
     const tooLarge=files.find(file=>file.size>settings.max_upload_mb*1024*1024);
     if(tooLarge){message('uploadMessage',tooLarge.name+' ใหญ่เกิน '+settings.max_upload_mb+' MB',true);return;}
     sending=true;paintFiles();clearTimeout(batchTimer);clearTimeout(detailTimer);
-    selected=null;batchJobs=[];paintBatch();
+    selected=null;batchJobs=[];batchId=null;paintBatch();
     let received=0;const failed=[];
     try {
       const batch=await api('/batches',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({file_count:files.length})});
+      batchId=batch.batch_id;
       // One multipart request per file: the size limit never applies to the sum.
       // Keep three uploads in flight; model concurrency is controlled by the server.
       let next=0;
@@ -269,6 +270,15 @@
       button.append(node('span',job.filename),node('span',labels[job.status]||job.status,'badge '+job.status));
       button.addEventListener('click',()=>openJob(job.id));return button;
     }));
+    // Every finished file of this batch as its own User JSON, in one ZIP (a later Retry wins).
+    if(batchId&&batchJobs.length){
+      const done=batchJobs.filter(job=>['completed','partial'].includes(job.status)).length;
+      const text='↓ ดาวน์โหลด User JSON ทั้งหมด · '+done+'/'+batchJobs.length+' ไฟล์ (.zip)';
+      const link=node(done?'a':'span',text,'button batch-download'+(done?'':' is-disabled'));
+      if(done){link.href=API+'/batches/'+encodeURIComponent(batchId)+'/user-json.zip';link.setAttribute('download','');}
+      else link.title='รอให้มีไฟล์ที่ประมวลผลเสร็จอย่างน้อยหนึ่งไฟล์';
+      $('batchJobs').append(link);
+    }
   }
   async function pollBatch(){
     if(batchLoading||pageClosed)return;
