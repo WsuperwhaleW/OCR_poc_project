@@ -628,6 +628,25 @@ follows your desktop; Light is the one to pick for projecting or screenshotting.
             <input id="stJobs" type="number" min="1" max="5000" value="100">
           </label>
         </div>
+        <!-- The concurrency sweep (2026-11-03): one level after another, each
+             read off vLLM's /metrics as a delta, and a graph per metric. -->
+        <div class="row">
+          <label class="check" style="flex:0 0 auto"
+                 title="run the levels one after another, lowest first, and graph every vLLM /metrics figure against the concurrency; needs a vLLM server">
+            <input id="stSweep" type="checkbox">
+            Concurrency sweep
+          </label>
+          <label class="field" style="flex:1;min-width:140px" id="stSweepLevelsField"
+                 title="the concurrency of each level, run lowest first">
+            Levels
+            <input id="stSweepLevels" type="text" value="1, 2, 4, 8, 16, 32" disabled>
+          </label>
+          <label class="field" style="flex:1;min-width:90px" id="stSweepSlotField"
+                 title="each level queues this many jobs per concurrent request, so a level of 8 at 4 runs 32 jobs">
+            Jobs per slot
+            <input id="stSweepSlot" type="number" min="1" max="100" value="4" disabled>
+          </label>
+        </div>
         <div class="rt-ex" id="stSourceField">
           <span class="rt-ex-label">Document source</span>
           <div class="st-file-sets seg" id="stSource" role="group" aria-label="Document source">

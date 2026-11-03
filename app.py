@@ -41,6 +41,7 @@ from flask import Flask, Response, abort, jsonify, render_template, request, sen
 import backends
 import settings
 import blame
+import concurrencysweep
 import config
 import dryreplay
 import doctype_mapping
@@ -7716,6 +7717,10 @@ STRESS_PREPARE_PARALLEL = config.env_int("STRESS_PREPARE_PARALLEL", 2, minimum=1
 # How many "without the N longest jobs" reports a stress run carries, for the
 # page's Exclude picker (`stress.without_longest`). Each is a few KB.
 STRESS_OUTLIER_MAX = config.env_int("STRESS_OUTLIER_MAX", 10, minimum=0)
+# The concurrency sweep waits this long after a level's last job before its
+# closing /metrics read, so a request vLLM records an engine step after it
+# answered still lands in the level it ran in. Not on the level's clock.
+SWEEP_SETTLE_SECONDS = 1.0
 _STAGE_VERB = {"ocr": "reading", "extract": "extracting", "segment": "splitting",
                "classify": "classifying"}
 
@@ -7980,11 +7985,18 @@ class _StressLive:
 
 def _vllm_metrics(url: str) -> dict:
     """GET `/metrics` from a vLLM server, parsed. Raises on any failure."""
+    return _vllm_scrape(url)[0]
+
+
+def _vllm_scrape(url: str, buckets: bool = False) -> tuple:
+    """GET `/metrics`: `(values, histogram buckets)` -- the buckets only when
+    asked for (the concurrency sweep's percentiles), else `{}`. Raises on any failure."""
     res = backends.http_get(f"{url}/metrics", {"kind": "vllm"},
                             timeout=STRESS_METRICS_TIMEOUT)
     if res.status_code != 200:
         raise ValueError(f"/metrics answered HTTP {res.status_code}")
-    return stress.parse_prometheus(res.text)
+    return (stress.parse_prometheus(res.text),
+            concurrencysweep.parse_buckets(res.text) if buckets else {})
 
 
 def _stress_cases(mode: str) -> list:
@@ -8094,17 +8106,38 @@ def _stress_config(body: dict) -> dict:
         raise ValueError("Batch requests need a vLLM server; this mode uses "
                          + " and ".join(f"{i.get('kind') or 'no server'} at {i.get('url')}"
                                         for i in used) + ".")
+    # The concurrency sweep (2026-11-03): its figures ARE vLLM's /metrics, so a
+    # mode whose servers are none of them vLLM has nothing to draw.
+    sweep = None
+    if body.get("sweep") not in (None, False):
+        sweep = concurrencysweep.parse_levels(
+            None if body["sweep"] is True else body["sweep"])
+        if not any(backends.serves_metrics(info) for info in used):
+            raise ValueError("The concurrency sweep reads vLLM's /metrics; this mode uses "
+                             + " and ".join(f"{i.get('kind') or 'no server'} at {i.get('url')}"
+                                            for i in used) + ".")
+    per_slot = number("sweep_jobs_per_slot", concurrencysweep.DEFAULT_JOBS_PER_SLOT, 1,
+                      concurrencysweep.MAX_JOBS_PER_SLOT)
+    if sweep and sum(concurrencysweep.level_jobs(lv, per_slot) for lv in sweep) > stress.MAX_JOBS:
+        raise ValueError(f"The sweep would queue more than {stress.MAX_JOBS} jobs; "
+                         "use fewer levels or fewer jobs per slot.")
 
     return {
         "mode": mode,
-        "concurrency": number("concurrency", 4, 1, stress.MAX_CONCURRENCY),
-        "jobs": number("jobs", 20, 1, stress.MAX_JOBS),
+        # A sweep's pools and batcher are sized for its highest level.
+        "concurrency": (max(sweep) if sweep
+                        else number("concurrency", 4, 1, stress.MAX_CONCURRENCY)),
+        "sweep": sweep,
+        "sweep_jobs_per_slot": per_slot,
+        # A sweep's queue is per level; `jobs` is their sum.
+        "jobs": (sum(concurrencysweep.level_jobs(lv, per_slot) for lv in sweep) if sweep
+                 else number("jobs", 20, 1, stress.MAX_JOBS)),
         "warmup": number("warmup", 0, 0, stress.MAX_WARMUP),
         "max_seconds": number("max_seconds", 0, 0, 7 * 24 * 3600),
         "pack_pages": number("pack_pages", stress.DEFAULT_PACK_PAGES, 2,
                              stress.MAX_PACK_PAGES),
         "metrics_every": number("metrics_every", 5, 1, 600),
-        "metrics": bool(body.get("metrics")),
+        "metrics": bool(body.get("metrics")) or bool(sweep),
         "no_cache": bool(body.get("no_cache")),
         # A long file reads its pages on workers left idle once the queue is
         # empty (`_StressSlots`). On unless the request says otherwise.
@@ -10288,6 +10321,97 @@ def _stress_submit(pool, second, spec, cfg, prepared, cancel, live):
     return out
 
 
+def _sweep_scrape(targets: list) -> tuple:
+    """One full /metrics read of every target, buckets included:
+    `({url: (values, buckets)}, errors)`."""
+    snaps, errors = {}, []
+    for t in targets:
+        try:
+            snaps[t["url"]] = _vllm_scrape(t["url"], buckets=True)
+        except Exception as err:                    # noqa: BLE001
+            errors.append(f"{t['role']} {t['url']}: {err}"[:200])
+    return snaps, errors
+
+
+def _sweep_phases(specs: list, cfg: dict, prepared: dict, cancel, targets: list):
+    """The concurrency sweep: one `_stress_phase` per level, lowest first.
+
+    Every level's jobs run to the end before the next level starts, so each
+    level's /metrics delta -- a full scrape right before it and one
+    `SWEEP_SETTLE_SECONDS` after its last job -- is that level's requests and
+    nobody else's. Progress events carry the level; a `sweep_level` event goes
+    out as each level ends, so the page draws the curve as it grows.
+
+    Returns `_stress_phase`'s five values over the whole sweep (the timeline
+    laid end to end, one level after another) and the sweep's report part. A
+    Stop ends it at the level running; the levels never started are cancelled.
+    """
+    levels, per_slot = cfg["sweep"], cfg["sweep_jobs_per_slot"]
+    top = cfg["concurrency"]
+    records, timeline, rows, last, draining = [], [], [], {}, []
+    wall, at = 0.0, 0
+    try:
+        for index, level in enumerate(levels):
+            if cancel.is_set():
+                break
+            chunk = specs[at:at + concurrencysweep.level_jobs(level, per_slot)]
+            at += len(chunk)
+            cfg["concurrency"] = level
+            before, errors = _sweep_scrape(targets)
+            ticks = {t["url"]: [] for t in targets}
+            phase = _stress_phase(chunk, cfg, prepared, cancel, "run", targets,
+                                  {url: snap[0] for url, snap in before.items()})
+            try:
+                while True:
+                    try:
+                        line = next(phase)
+                    except StopIteration as stop:
+                        result = stop.value
+                        break
+                    event = json.loads(line)
+                    if event.get("event") == "progress":
+                        for srv in event.get("servers_metrics") or []:
+                            ticks.setdefault(srv["url"], []).append(srv["view"])
+                        event.update(level=level, level_index=index, levels=len(levels))
+                        line = json.dumps(event) + "\n"
+                    yield line
+            finally:
+                phase.close()
+            level_records, level_wall, level_timeline, level_last, draining = result
+            settle = time.perf_counter() + SWEEP_SETTLE_SECONDS
+            while not cancel.is_set() and time.perf_counter() < settle:
+                time.sleep(0.1)
+            after, more = _sweep_scrape(targets)
+            errors += more
+            servers = []
+            for t in targets:
+                if t["url"] in before and t["url"] in after:
+                    view = concurrencysweep.level_view(before[t["url"]], after[t["url"]],
+                                                       level_wall, ticks.get(t["url"]) or ())
+                else:
+                    view = None
+                servers.append({**t, "view": view})
+            row = {"level": level, "jobs": len(chunk), "wall_seconds": round(level_wall, 2),
+                   "stopped": cancel.is_set(),
+                   "client": concurrencysweep.client_view(
+                       stress.report(level_records, level_wall, cfg["mode"], level)),
+                   "servers": servers, "errors": errors}
+            rows.append(row)
+            yield json.dumps({"event": "sweep_level", "index": index,
+                              "levels": len(levels), **row}) + "\n"
+            timeline.extend([round(p[0] + wall, 1)] + p[1:] for p in level_timeline)
+            wall += level_wall
+            records.extend(level_records)
+            last.update(level_last)
+    finally:
+        cfg["concurrency"] = top
+    # The levels a Stop kept from starting: queued, never run.
+    records.extend({"status": "cancelled"} for _ in specs[at:])
+    sweep = {"levels": rows, "targets": targets, "jobs_per_slot": per_slot,
+             "summary": concurrencysweep.summary(rows)}
+    return records, wall, timeline, last, draining, sweep
+
+
 def _stress_detail_identity(cfg):
     """Hash the code and selected truth files outside the benchmark clock."""
     index = scoring.cases_index() if cfg.get("source", "benchmark") == "benchmark" else {}
@@ -10348,6 +10472,10 @@ def _stress_run(cfg: dict, cancel):
     yield json.dumps({
         "event": "plan", "mode": mode, "seed": seed,
         "concurrency": cfg["concurrency"], "jobs": cfg["jobs"],
+        # The concurrency sweep: each level's limit and its queue, in run order.
+        "sweep": ([{"level": lv, "jobs": concurrencysweep.level_jobs(
+                       lv, cfg["sweep_jobs_per_slot"])} for lv in cfg["sweep"]]
+                  if cfg.get("sweep") else None),
         "warmup": cfg["warmup"], "max_seconds": cfg["max_seconds"],
         "strategy": cfg["strategy"], "lock": cfg["lock"],
         "source": cfg.get("source", "benchmark"),
@@ -10439,7 +10567,11 @@ def _stress_run(cfg: dict, cancel):
     batcher = _batcher if cfg.get("vllm_batch") else None
     if batcher is not None:
         batcher.reset_counts()        # the warm-up's batches are not the run's
-    if not cancel.is_set():
+    sweep = None
+    if cfg.get("sweep") and not cancel.is_set():
+        records, wall, timeline, last, draining, sweep = yield from _sweep_phases(
+            specs[cfg["warmup"]:], cfg, prepared, cancel, targets)
+    elif not cancel.is_set():
         records, wall, timeline, last, draining = yield from _stress_phase(
             specs[cfg["warmup"]:], cfg, prepared, cancel, "run", targets, bases)
 
@@ -10447,8 +10579,13 @@ def _stress_run(cfg: dict, cancel):
     report["timeline"] = stress.thin_timeline(timeline)
     report["timeline_columns"] = ["t", *stress.STAGES, "done"]
     report["prepare_seconds"] = prepare_seconds
-    report["outliers"] = stress.without_longest(records, wall, mode, cfg["concurrency"],
-                                                STRESS_OUTLIER_MAX)
+    # A sweep's slowest jobs are its highest level's by construction, so
+    # dropping them would only cut that level; the per-level figures stand.
+    report["outliers"] = ([] if sweep is not None else
+                          stress.without_longest(records, wall, mode, cfg["concurrency"],
+                                                 STRESS_OUTLIER_MAX))
+    if sweep is not None:
+        report["sweep"] = sweep
     if batcher is not None:
         report["vllm_batch"] = batcher.summary()
     if targets:

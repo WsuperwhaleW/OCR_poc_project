@@ -2311,6 +2311,32 @@ is never asked.
 On llama-server, Ollama or any other server both controls are disabled and **nothing is
 requested** — the route refuses with `409` as well.
 
+### Concurrency sweep
+
+Tick **Concurrency sweep** under Concurrent to step the concurrency up over time instead of
+holding it: the run works through **Levels** (default `1, 2, 4, 8, 16, 32`) lowest first, and
+each level queues **Jobs per slot** × its concurrency jobs (4 × 8 = 32 jobs at level 8). A
+level's queue runs to the end before the next level starts. The Concurrent and Queue boxes
+are ignored while it is on; Warm-up runs once, at the highest level, and **Time limit** applies
+to each level.
+
+It needs a **vLLM** server for the mode it runs: every figure is read from vLLM's `/metrics`,
+once right before a level and once just after it, so each level's numbers cover that level's
+requests only. Percentiles (p50, p90, p99) come from vLLM's histogram buckets and are as fine
+as those buckets. The report opens with one graph per metric against the concurrency:
+
+- output throughput (generation tokens/s, beside the tokens/s measured here), prompt
+  throughput and requests finished per second;
+- time to first token, time between tokens (inter-token latency), end-to-end request latency,
+  queue time, prefill and decode time — p50, p99 and mean;
+- per-request decode rate, requests running and waiting in vLLM, KV-cache usage, preemptions;
+- latency per job measured here (end to end), the concurrency actually reached (jobs in flight
+  on average, against the limit) and the error rate.
+
+**Numbers per level** under the graphs holds the same figures as a table, with **Download
+CSV**. The note above the graphs names the level where output throughput peaked and the first
+level that added under 10% more. The rest of the report covers all levels together.
+
 ### Live monitor
 
 **Start live monitor** is in the top-right page menu beside the theme selector (vLLM only).
@@ -3828,12 +3854,16 @@ can run here, and `keys` is every key in the schema in the order the prompt list
 omitting it uses all eligible files, an empty list is rejected), `metrics` (sample vLLM `/metrics`),
 `metrics_every`, `no_cache` (bypass prompt cache), `save_log` (per-job accuracy rows),
 `history_monitor` (save monitor snapshots, default true), and `gpu_url` / `gpu_extract_url`
-(optional VRAM exporters).
+(optional VRAM exporters), `sweep` (concurrency levels, such as `"1,2,4,8"`, for a concurrency
+sweep — `concurrency` and `jobs` are then ignored; `400` unless the mode's server is vLLM) and
+`sweep_jobs_per_slot` (jobs per level = level × this, default 4).
 Streams NDJSON: `plan`, `preparing`, a `progress` event about once a second
 (jobs in each stage, done, live pages and tokens per second, and `server_metrics` when
 sampling), an `alert` the moment a job hits a problem (`kind` — `error`, `looped`,
 `truncated`, `partial` or `stalled` — with `job`, `case`, `stage`, `page` when known,
-`message`, `phase` and `elapsed`), then `done` with `report`. After a Stop, `draining` events follow until the
+`message`, `phase` and `elapsed`), on a sweep a `sweep_level` event as each level ends (its
+`level`, `client` figures and per-server `/metrics` `view`; progress events also carry `level`),
+then `done` with `report` (`report.sweep` on a sweep). After a Stop, `draining` events follow until the
 server's last request ends. `409` while a random test or another stress test is running.
 Events carry `history_id` when storage is available, or `history_error` when saving failed.
 The final event includes `monitor_samples` and `monitor_samples_total`.
@@ -4018,6 +4048,7 @@ still never parses `.env` itself.
 | `tables.py` | The item table of a document, read out of its transcript and repaired, and whether it is a master table |
 | `runlog.py` | The CSV run log |
 | `stress.py` | The stress test's dataset draw, 100+ page file builder, `/metrics` reader and report |
+| `concurrencysweep.py` | The concurrency sweep's levels, `/metrics` histogram buckets and percentiles, and per-level figures |
 | `monitor.py` | The live monitor's reading of vLLM `/metrics` and a GPU exporter: KV cache, queue, throughput, cache hits, VRAM |
 | `compare.py` | CLI benchmark runner |
 | `package.py` | Builds the deployable zip |

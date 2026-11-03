@@ -947,6 +947,28 @@
   .st-tip { position: absolute; top: 30px; background: var(--panel); border: 1px solid var(--border);
     border-radius: 8px; padding: 6px 9px; font-size: .76rem; pointer-events: none;
     box-shadow: 0 4px 14px rgba(0,0,0,.25); min-width: 120px; }
+  /* The concurrency sweep: one small line chart per metric against concurrency. */
+  .sw-grid-figs { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+    gap: 14px; margin-top: 10px; }
+  .sw-fig { margin: 0; padding: 10px 12px; border: 1px solid var(--border); border-radius: 10px;
+    background: var(--panel); min-width: 0; }
+  .sw-fig figcaption { font-size: .82rem; font-weight: 600; margin-bottom: 4px; }
+  .sw-chart { width: 100%; height: auto; display: block; margin-top: 4px; overflow: visible; }
+  .sw-grid { stroke: var(--border); stroke-width: 1; vector-effect: non-scaling-stroke; }
+  .sw-line { fill: none; stroke-width: 2; stroke-linejoin: round; stroke-linecap: round;
+    vector-effect: non-scaling-stroke; }
+  .sw-line.st-s1 { stroke: var(--st-1); }
+  .sw-line.st-s2 { stroke: var(--st-2); }
+  .sw-line.sw-mean { stroke: var(--muted); stroke-dasharray: 5 4; }
+  .sw-dot { stroke: var(--panel); stroke-width: 2; }
+  .sw-dot.st-s1 { fill: var(--st-1); }
+  .sw-dot.st-s2 { fill: var(--st-2); }
+  .sw-dot.sw-mean { fill: var(--muted); }
+  .sw-sw { display: inline-block; width: 14px; height: 0; border-top: 2px solid var(--muted); }
+  .sw-sw.st-s1 { border-top-color: var(--st-1); }
+  .sw-sw.st-s2 { border-top-color: var(--st-2); }
+  .sw-sw.sw-mean { border-top-style: dashed; }
+  .sw-x { font-size: .72rem; color: var(--muted); text-align: center; margin-top: 2px; }
   .tr-bar { flex-wrap: wrap; gap: 8px; }
   .tr-seg button { flex: none; padding: 4px 10px; font-size: .76rem; }
   .tr-sw-err { height: 0; width: 14px; border-top: 2px dashed var(--st-2); border-radius: 0; background: none; }

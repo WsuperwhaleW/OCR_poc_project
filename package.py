@@ -71,6 +71,7 @@ FILES = [
     "doctype_mapping.py",
     "randomtest.py",
     "stress.py",
+    "concurrencysweep.py",
     "vllmbatch.py",
     "monitor.py",
     "package.py",

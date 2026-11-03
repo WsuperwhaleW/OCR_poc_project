@@ -11381,7 +11381,20 @@ function stPaintMode() {
   stPaintVision();
   stPaintBatch();
   stPaintFill();
+  stPaintSweep();
   stPaintFiles();
+}
+
+/* The concurrency sweep sets each level's concurrency and queue itself, so the
+   two boxes it replaces are off while it is on. Hoisted, and looks its
+   elements up, like stPaintBatch. */
+function stPaintSweep() {
+  const box = document.getElementById('stSweep');
+  if (!box) return;
+  const busy = typeof stRunning !== 'undefined' && stRunning;
+  box.disabled = busy;
+  for (const id of ['stSweepLevels', 'stSweepSlot']) document.getElementById(id).disabled = !box.checked || busy;
+  for (const id of ['stConc', 'stJobs']) document.getElementById(id).disabled = box.checked;
 }
 
 /* Image mode sends page images to the EXTRACTION model, so say whether it takes
@@ -11495,6 +11508,7 @@ function stBusy(on) {
   stEl('stSaveDetails').disabled = on || !ST_EXTRACT_MODES.includes(stMode.value);
   stPaintBatch();
   stPaintFill();
+  stPaintSweep();
   stStop.disabled = stStop2.disabled = !on || stStopping;
   if (rtRun) rtRun.disabled = on;
   if (on) runBtn.disabled = true; else paintServer();
@@ -12024,6 +12038,146 @@ function stWireOutliers(host, s, rerender) {
   };
 }
 
+/* The concurrency sweep (2026-11-03): every figure against the concurrency it
+   was taken at, one small chart per metric. Each level's server figures are a
+   /metrics delta over that level alone (concurrencysweep.level_view); the x
+   axis is the levels evenly spaced, since they are usually powers of two. */
+const stSweepFmt = (v, unit) => v === null || v === undefined ? '—'
+  : unit === 's' ? (v < 1 ? stNum(v * 1000, v < 0.01 ? 2 : v < 0.1 ? 1 : 0) + ' ms' : stSec(v))
+  : unit === 'pct' ? stPct(v)
+  : unit === 'tps' ? stNum(v, v < 10 ? 2 : 0) + ' tok/s'
+  : unit === 'rps' ? stNum(v, 3) + ' req/s'
+  : stNum(v, v < 10 ? 2 : 0);
+
+// A percentile figure as three lines: the median, the tail and the mean.
+const stSweepPct = pick => [['p50', 'p50', 'st-s1'], ['p99', 'p99', 'st-s2'], ['mean', 'mean', 'sw-mean']]
+  .map(([key, label, cls]) => ({label, cls, value: row => (pick(row) || {})[key]}));
+
+function stSweepChart(levels, title, unit, series, note) {
+  const W = 300, H = 170, L = 52, R = 10, T = 10, B = 24;
+  const xs = levels.map((_, i) => levels.length < 2 ? (L + W - R) / 2
+    : L + (W - L - R) * i / (levels.length - 1));
+  const data = series.map(s => levels.map(row => {
+    const v = s.value(row);
+    return typeof v === 'number' && Number.isFinite(v) ? v : null;
+  }));
+  const all = data.flat().filter(v => v !== null);
+  if (!all.length) return '';
+  const top = Math.max(...all) * 1.08 || 1;
+  const y = v => T + (H - T - B) * (1 - v / top);
+  const grid = [0, top / 2, top].map(v => '<line x1="' + L + '" x2="' + (W - R) + '" y1="' + y(v)
+    + '" y2="' + y(v) + '" class="sw-grid"/><text x="' + (L - 5) + '" y="' + (y(v) + 3)
+    + '" class="st-axis" text-anchor="end">' + esc(stSweepFmt(v, unit)) + '</text>').join('');
+  const xt = levels.map((row, i) => '<text x="' + xs[i] + '" y="' + (H - 7)
+    + '" class="st-axis" text-anchor="middle">' + row.level + '</text>').join('');
+  const lines = series.map((s, si) => {
+    // A level with no figure breaks the line rather than bridging it.
+    let d = '', open = false;
+    data[si].forEach((v, i) => {
+      if (v === null) { open = false; return; }
+      d += (open ? ' L' : ' M') + xs[i].toFixed(1) + ',' + y(v).toFixed(1);
+      open = true;
+    });
+    const dots = data[si].map((v, i) => v === null ? '' : '<circle cx="' + xs[i].toFixed(1)
+      + '" cy="' + y(v).toFixed(1) + '" r="4" class="sw-dot ' + s.cls + '"><title>'
+      + esc(levels[i].level + ' concurrent · ' + s.label + ': ' + stSweepFmt(v, unit))
+      + '</title></circle>').join('');
+    return '<path d="' + d + '" class="sw-line ' + s.cls + '"/>' + dots;
+  }).join('');
+  const legend = series.length < 2 ? '' : '<div class="st-legend">' + series.map(s =>
+    '<span class="st-key"><i class="sw-sw ' + s.cls + '"></i>' + esc(s.label) + '</span>').join('') + '</div>';
+  return '<figure class="sw-fig"><figcaption>' + esc(title) + '</figcaption>' + legend
+    + '<svg class="sw-chart" viewBox="0 0 ' + W + ' ' + H + '" role="img" aria-label="'
+    + esc(title + ' against concurrency') + '">' + grid + lines + xt + '</svg>'
+    + '<div class="sw-x">concurrent requests' + (note ? ' · ' + esc(note) : '') + '</div></figure>';
+}
+
+function stSweepHtml(sweep, plan) {
+  const levels = (sweep.levels || []).filter(Boolean);
+  if (!levels.length) {
+    return plan && plan.sweep ? '<h3 class="st-h">Concurrency sweep</h3><p class="note">Levels '
+      + plan.sweep.map(l => l.level + ' (' + l.jobs + ' jobs)').join(', ')
+      + '. The graphs start when the first level ends.</p>' : '';
+  }
+  const servers = (levels[0].servers || []).map((t, i) => ({ ...t, i }));
+  const many = servers.length > 1;
+  const sv = (i, key) => row => (((row.servers || [])[i] || {}).view || {})[key];
+  let charts = '';
+  for (const t of servers) {
+    const tag = many ? ' · ' + t.role : '';
+    const v = key => sv(t.i, key);
+    charts += [
+      stSweepChart(levels, 'Output throughput' + tag, 'tps', [
+        {label: 'vLLM generation tokens/s', cls: 'st-s1', value: v('generation_tokens_per_s')},
+        ...(many ? [] : [{label: 'measured here', cls: 'st-s2', value: row => row.client.tokens_per_second}])]),
+      stSweepChart(levels, 'Prompt throughput' + tag, 'tps',
+        [{label: 'prompt tokens/s', cls: 'st-s1', value: v('prompt_tokens_per_s')}]),
+      stSweepChart(levels, 'Requests finished / s' + tag, 'rps',
+        [{label: 'requests/s', cls: 'st-s1', value: v('requests_per_s')}]),
+      stSweepChart(levels, 'Time to first token' + tag, 's', stSweepPct(v('ttft')), 'vLLM histogram'),
+      stSweepChart(levels, 'Time between tokens' + tag, 's', stSweepPct(v('itl')), 'inter-token latency'),
+      stSweepChart(levels, 'End-to-end request latency' + tag, 's', stSweepPct(v('e2e')), 'vLLM, arrival to finish'),
+      stSweepChart(levels, 'Queue time' + tag, 's', stSweepPct(v('queue')), 'waiting in vLLM'),
+      stSweepChart(levels, 'Prefill time' + tag, 's', stSweepPct(v('prefill'))),
+      stSweepChart(levels, 'Decode time' + tag, 's', stSweepPct(v('decode'))),
+      stSweepChart(levels, 'Per-request decode rate' + tag, 'tps',
+        [{label: '1 / mean time between tokens', cls: 'st-s1', value: v('decode_rate')}]),
+      stSweepChart(levels, 'Requests in vLLM' + tag, 'n', [
+        {label: 'running (mean)', cls: 'st-s1', value: row => (v('running')(row) || {}).mean},
+        {label: 'waiting (mean)', cls: 'st-s2', value: row => (v('waiting')(row) || {}).mean},
+        {label: 'limit', cls: 'sw-mean', value: row => row.level}]),
+      stSweepChart(levels, 'KV cache usage' + tag, 'pct', [
+        {label: 'mean', cls: 'st-s1', value: row => (v('kv_cache')(row) || {}).mean},
+        {label: 'peak', cls: 'st-s2', value: row => (v('kv_cache')(row) || {}).max}]),
+      stSweepChart(levels, 'Preemptions' + tag, 'n',
+        [{label: 'preemptions', cls: 'st-s1', value: v('preemptions')}]),
+    ].join('');
+  }
+  charts += [
+    stSweepChart(levels, 'Latency per job', 's', stSweepPct(row => row.client.latency), 'measured here, end to end'),
+    stSweepChart(levels, 'Concurrency reached', 'n', [
+      {label: 'jobs in flight (mean)', cls: 'st-s1', value: row => row.client.achieved},
+      {label: 'limit', cls: 'sw-mean', value: row => row.level}]),
+    stSweepChart(levels, 'Error rate', 'pct', [{label: 'errors', cls: 'st-s1', value: row => row.client.error_rate}]),
+  ].join('');
+  const sum = sweep.summary || {};
+  const head = '<h3 class="st-h">Concurrency sweep</h3><p class="note">Each level ran its queue to '
+    + 'the end before the next began; its vLLM figures are a /metrics delta over that level alone '
+    + '(percentiles from the histogram buckets, so they are as fine as vLLM\'s buckets). '
+    + (sum.peak_level ? 'Output throughput peaked at <b>' + stSweepFmt(sum.peak_tps, 'tps') + '</b> with <b>'
+      + sum.peak_level + '</b> concurrent' + (sum.knee_level ? '; from <b>' + sum.knee_level
+        + '</b> on, a level added under 10% throughput.' : '.') : '') + '</p>';
+  // The numbers behind the charts, as a table and as a CSV to take away.
+  const s0 = row => ((row.servers || [])[0] || {}).view || {};
+  const cols = [
+    ['Concurrent', row => row.level], ['Jobs', row => row.jobs], ['Wall s', row => row.wall_seconds],
+    ['Gen tok/s', row => s0(row).generation_tokens_per_s], ['Prompt tok/s', row => s0(row).prompt_tokens_per_s],
+    ['Req/s', row => s0(row).requests_per_s],
+    ...['ttft', 'itl', 'e2e', 'queue'].flatMap(k => ['p50', 'p99', 'mean'].map(q =>
+      [k.toUpperCase() + ' ' + q + ' s', row => (s0(row)[k] || {})[q]])),
+    ['Latency/job p50 s', row => row.client.latency.p50], ['Latency/job p99 s', row => row.client.latency.p99],
+    ['Running mean', row => (s0(row).running || {}).mean], ['Waiting mean', row => (s0(row).waiting || {}).mean],
+    ['KV mean', row => (s0(row).kv_cache || {}).mean], ['Preemptions', row => s0(row).preemptions],
+    ['Error rate', row => row.client.error_rate]];
+  const cell = v => v === null || v === undefined ? '' : String(v);
+  const csv = [cols.map(c => c[0]), ...levels.map(row => cols.map(c => cell(c[1](row))))]
+    .map(r => r.map(v => /[",\n]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v).join(',')).join('\n');
+  const table = '<div class="an-grid"><table class="queue"><tr>' + cols.map(c => '<th class="n">'
+    + esc(c[0]) + '</th>').join('') + '</tr>' + levels.map(row => '<tr>' + cols.map(c => {
+      const v = c[1](row);
+      return '<td class="n">' + (v === null || v === undefined ? '—'
+        : typeof v === 'number' ? stNum(v, v < 1 ? 4 : 2) : esc(v)) + '</td>';
+    }).join('') + '</tr>').join('') + '</table></div>';
+  const errs = levels.flatMap(row => (row.errors || []).map(e => row.level + ' concurrent: ' + e));
+  return head + '<div class="sw-grid-figs">' + charts + '</div>'
+    + (servers.length && levels.some(row => !((row.servers || [])[0] || {}).view)
+      ? '<p class="note err">A level whose /metrics could not be read has no vLLM figures.</p>' : '')
+    + (errs.length ? '<p class="note err">/metrics: ' + errs.map(esc).join(' · ') + '</p>' : '')
+    + '<details><summary>Numbers per level' + (many ? ' (' + esc(servers[0].role) + ')' : '')
+    + '</summary>' + table + '<p class="note"><a class="ghost-sm" download="concurrency-sweep.csv" href="'
+    + 'data:text/csv;charset=utf-8,' + encodeURIComponent(csv) + '">Download CSV</a></p></details>';
+}
+
 function stReportHtml(s, snapshot, host) {
   let html = '';
   if (s.restored) {
@@ -12044,8 +12198,10 @@ function stReportHtml(s, snapshot, host) {
         : plan.mode === 'ocr' ? 'OCR only' : plan.mode === 'extract' ? 'Extract only'
         : plan.mode === 'image' ? 'Image to extractor (no OCR)'
         : 'Classify ' + plan.pack_pages + '-page files')
-      + ' · ' + plan.concurrency + (plan.mode === 'full' ? ' OCR + ' + plan.concurrency
-        + ' extract concurrent' : ' concurrent') + ' · ' + plan.jobs + ' job(s)'
+      + ' · ' + (plan.sweep ? 'concurrency sweep ' + plan.sweep.map(l => l.level).join(' → ')
+        + (plan.mode === 'full' ? ' per stage' : '')
+        : plan.concurrency + (plan.mode === 'full' ? ' OCR + ' + plan.concurrency
+          + ' extract concurrent' : ' concurrent')) + ' · ' + plan.jobs + ' job(s)'
       + (plan.warmup ? ' + ' + plan.warmup + ' warm-up' : '')
       + ' · ' + esc(plan.server.kind || '') + ' ' + esc(plan.server.url || '')
       + (plan.reader ? ' · reads with <b>' + esc(csModel(plan.reader)) + '</b>' : '')
@@ -12081,6 +12237,8 @@ function stReportHtml(s, snapshot, host) {
     html += '<div class="st-progress"><div class="st-bar"><i style="width:'
       + (frac * 100).toFixed(1) + '%"></i></div><div class="st-live">'
       + '<b>' + (p.phase === 'warmup' ? 'Warming up' : 'Running') + '</b> · '
+      + (p.level ? 'level ' + (p.level_index + 1) + ' of ' + p.levels + ', <b>' + p.level
+        + ' concurrent</b> · ' : '')
       + p.done + ' of ' + p.total + ' done · ' + stSec(p.elapsed)
       + ' · queued ' + (st.queued || 0)
       + (st.ocr ? ' · reading ' + st.ocr : '')
@@ -12110,6 +12268,11 @@ function stReportHtml(s, snapshot, host) {
     }
     if (p.metrics_error) html += '<p class="note err">/metrics: ' + esc(p.metrics_error) + '</p>';
   }
+  // The sweep's graphs lead: they are what a sweep is run for. Drawn from the
+  // levels as they end, then from the report.
+  const sweep = (s.report && s.report.sweep)
+    || (plan && plan.sweep ? { levels: s.sweepLevels || [] } : null);
+  if (sweep) html += stSweepHtml(sweep, plan);
   const r = stOutlierReport(s);
   if (r) {
     html += stOutlierPicker(s);
@@ -12278,6 +12441,8 @@ function stBody() {
   return {
     mode: stMode.value, concurrency: Number(val('stConc')) || 1,
     jobs: Number(val('stJobs')) || 1, warmup: Number(val('stWarm')) || 0,
+    sweep: stEl('stSweep').checked ? val('stSweepLevels') : null,
+    sweep_jobs_per_slot: Number(val('stSweepSlot')) || 4,
     max_seconds: Number(val('stMax')) || 0, detail: val('stDetail'),
     extract_mode: val('stShape'), extras: stEl('stExtras').checked,
     schema_first: stEl('stSchemaFirst').checked && ST_EXTRACT_MODES.includes(stMode.value)
@@ -12424,6 +12589,11 @@ async function stReadStream(res) {
         const at = ev.id ? stState.alerts.findIndex(a => a.id === ev.id) : -1;
         if (at >= 0) stState.alerts[at] = ev; else stState.alerts.push(ev);
         if (ev.evidence) stResults.capture(stState.runId, ev.id, ev.updated ?? ev.elapsed ?? '');
+        lastPaint = 0;
+      } else if (ev.event === 'sweep_level') {
+        // One level of the concurrency sweep, read off /metrics as it ended.
+        stState.sweepLevels = stState.sweepLevels || [];
+        stState.sweepLevels[ev.index] = ev;
         lastPaint = 0;
       } else if (ev.event === 'draining') {
         stState.draining = ev.in_flight;
@@ -12636,6 +12806,7 @@ if (stRun) {
   stEl('stBatch').addEventListener('click', () => { stBatchOn = !stBatchOn; stPaintBatch(); });
   stEl('stFillImages').addEventListener('click', () => { stFillOn = !stFillOn; stPaintFill(); });
   stEl('stConc').addEventListener('input', stPaintBatch);
+  stEl('stSweep').addEventListener('change', stPaintSweep);
   stRun.addEventListener('click', () => stStart());
   stEl('stSavedList').addEventListener('click', async event => {
     const button = event.target.closest('button[data-saved-run]');
