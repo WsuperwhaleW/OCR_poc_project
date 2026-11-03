@@ -17,7 +17,7 @@ const {stSweepHtml, stSweepChart, stSweepFmt} = ctx.out;
 
 const pct = (p50, p99, mean) => ({count: 4, p50, p99, mean});
 const level = (lv, tps, view = {}) => ({
-  level: lv, jobs: lv * 4, wall_seconds: 10,
+  level: lv, jobs: 4, wall_seconds: 10,
   client: {tokens_per_second: tps * .9, latency: pct(lv, lv * 2, lv * 1.2), achieved: lv * .9,
            error_rate: 0, completed: lv * 4},
   servers: [{role: 'reader', url: 'http://vllm:8000', view: {
@@ -41,6 +41,7 @@ test('every metric gets its own chart, against the levels', () => {
   assert.match(html, />1<\/text>.*>2<\/text>.*>4<\/text>/s);
   assert.ok(html.includes('4 concurrent · p99'));
   assert.ok(html.includes('peaked at <b>300 tok/s</b> with <b>4</b> concurrent'));
+  assert.ok(html.includes('Every level ran the same 4 job(s)'));
   assert.ok(html.includes('download="concurrency-sweep.csv"'));
   const csv = decodeURIComponent(html.match(/data:text\/csv;charset=utf-8,([^"]+)/)[1]);
   assert.equal(csv.split('\n').length, 4);
@@ -56,8 +57,8 @@ test('a missing figure breaks the line instead of bridging it', () => {
 });
 
 test('before the first level ends, the plan is shown instead', () => {
-  const html = stSweepHtml({levels: []}, {sweep: [{level: 1, jobs: 4}, {level: 2, jobs: 8}]});
-  assert.ok(html.includes('1 (4 jobs), 2 (8 jobs)'));
+  const html = stSweepHtml({levels: []}, {sweep: [{level: 1, jobs: 4}, {level: 2, jobs: 4}]});
+  assert.ok(html.includes('Levels 1, 2, each running the same 4 job(s)'));
   assert.ok(!html.includes('<svg'));
 });
 

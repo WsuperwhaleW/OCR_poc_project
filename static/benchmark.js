@@ -11393,7 +11393,7 @@ function stPaintSweep() {
   if (!box) return;
   const busy = typeof stRunning !== 'undefined' && stRunning;
   box.disabled = busy;
-  for (const id of ['stSweepLevels', 'stSweepSlot']) document.getElementById(id).disabled = !box.checked || busy;
+  for (const id of ['stSweepLevels', 'stSweepJobs']) document.getElementById(id).disabled = !box.checked || busy;
   for (const id of ['stConc', 'stJobs']) document.getElementById(id).disabled = box.checked;
 }
 
@@ -12096,8 +12096,8 @@ function stSweepHtml(sweep, plan) {
   const levels = (sweep.levels || []).filter(Boolean);
   if (!levels.length) {
     return plan && plan.sweep ? '<h3 class="st-h">Concurrency sweep</h3><p class="note">Levels '
-      + plan.sweep.map(l => l.level + ' (' + l.jobs + ' jobs)').join(', ')
-      + '. The graphs start when the first level ends.</p>' : '';
+      + plan.sweep.map(l => l.level).join(', ') + ', each running the same '
+      + (plan.sweep[0] || {}).jobs + ' job(s). The graphs start when the first level ends.</p>' : '';
   }
   const servers = (levels[0].servers || []).map((t, i) => ({ ...t, i }));
   const many = servers.length > 1;
@@ -12141,8 +12141,9 @@ function stSweepHtml(sweep, plan) {
     stSweepChart(levels, 'Error rate', 'pct', [{label: 'errors', cls: 'st-s1', value: row => row.client.error_rate}]),
   ].join('');
   const sum = sweep.summary || {};
-  const head = '<h3 class="st-h">Concurrency sweep</h3><p class="note">Each level ran its queue to '
-    + 'the end before the next began; its vLLM figures are a /metrics delta over that level alone '
+  const head = '<h3 class="st-h">Concurrency sweep</h3><p class="note">Every level ran the same '
+    + levels[0].jobs + ' job(s), the same files in the same order, to the end before the next '
+    + 'began; its vLLM figures are a /metrics delta over that level alone '
     + '(percentiles from the histogram buckets, so they are as fine as vLLM\'s buckets). '
     + (sum.peak_level ? 'Output throughput peaked at <b>' + stSweepFmt(sum.peak_tps, 'tps') + '</b> with <b>'
       + sum.peak_level + '</b> concurrent' + (sum.knee_level ? '; from <b>' + sum.knee_level
@@ -12199,7 +12200,8 @@ function stReportHtml(s, snapshot, host) {
         : plan.mode === 'image' ? 'Image to extractor (no OCR)'
         : 'Classify ' + plan.pack_pages + '-page files')
       + ' · ' + (plan.sweep ? 'concurrency sweep ' + plan.sweep.map(l => l.level).join(' → ')
-        + (plan.mode === 'full' ? ' per stage' : '')
+        + (plan.mode === 'full' ? ' per stage' : '') + ', the same '
+        + (plan.sweep[0] || {}).jobs + ' job(s) at each level'
         : plan.concurrency + (plan.mode === 'full' ? ' OCR + ' + plan.concurrency
           + ' extract concurrent' : ' concurrent')) + ' · ' + plan.jobs + ' job(s)'
       + (plan.warmup ? ' + ' + plan.warmup + ' warm-up' : '')
@@ -12442,7 +12444,8 @@ function stBody() {
     mode: stMode.value, concurrency: Number(val('stConc')) || 1,
     jobs: Number(val('stJobs')) || 1, warmup: Number(val('stWarm')) || 0,
     sweep: stEl('stSweep').checked ? val('stSweepLevels') : null,
-    sweep_jobs_per_slot: Number(val('stSweepSlot')) || 4,
+    // Blank: as many jobs as the highest level, the same ones at every level.
+    sweep_jobs: Number(val('stSweepJobs')) || null,
     max_seconds: Number(val('stMax')) || 0, detail: val('stDetail'),
     extract_mode: val('stShape'), extras: stEl('stExtras').checked,
     schema_first: stEl('stSchemaFirst').checked && ST_EXTRACT_MODES.includes(stMode.value)

@@ -8116,11 +8116,13 @@ def _stress_config(body: dict) -> dict:
             raise ValueError("The concurrency sweep reads vLLM's /metrics; this mode uses "
                              + " and ".join(f"{i.get('kind') or 'no server'} at {i.get('url')}"
                                             for i in used) + ".")
-    per_slot = number("sweep_jobs_per_slot", concurrencysweep.DEFAULT_JOBS_PER_SLOT, 1,
-                      concurrencysweep.MAX_JOBS_PER_SLOT)
-    if sweep and sum(concurrencysweep.level_jobs(lv, per_slot) for lv in sweep) > stress.MAX_JOBS:
-        raise ValueError(f"The sweep would queue more than {stress.MAX_JOBS} jobs; "
-                         "use fewer levels or fewer jobs per slot.")
+    # Every level runs the same jobs (the same files, in the same order), so
+    # only the concurrency differs between them; blank is the highest level.
+    per_level = concurrencysweep.level_jobs(sweep, body.get("sweep_jobs")) if sweep else 0
+    if sweep and per_level * len(sweep) > stress.MAX_JOBS:
+        raise ValueError(f"The sweep would queue {per_level * len(sweep)} jobs ({per_level} at "
+                         f"each of {len(sweep)} levels), over the {stress.MAX_JOBS} ceiling; "
+                         "use fewer levels or fewer jobs per level.")
 
     return {
         "mode": mode,
@@ -8128,9 +8130,9 @@ def _stress_config(body: dict) -> dict:
         "concurrency": (max(sweep) if sweep
                         else number("concurrency", 4, 1, stress.MAX_CONCURRENCY)),
         "sweep": sweep,
-        "sweep_jobs_per_slot": per_slot,
+        "sweep_jobs": per_level,
         # A sweep's queue is per level; `jobs` is their sum.
-        "jobs": (sum(concurrencysweep.level_jobs(lv, per_slot) for lv in sweep) if sweep
+        "jobs": (per_level * len(sweep) if sweep
                  else number("jobs", 20, 1, stress.MAX_JOBS)),
         "warmup": number("warmup", 0, 0, stress.MAX_WARMUP),
         "max_seconds": number("max_seconds", 0, 0, 7 * 24 * 3600),
@@ -9719,7 +9721,7 @@ def _stress_job_steps(spec: dict, cfg: dict, prepared: dict, cancel,
     # its document -- for classification, the cases glued into its file.
     job = spec["index"] + 1
     if mode == "classify":
-        glued = prepared["packs"][spec["index"]].get("cases") or []
+        glued = prepared["packs"][spec.get("pack", spec["index"])].get("cases") or []
         who = f"file of {len(glued)} docs: " + ", ".join(dict.fromkeys(glued))
     else:
         who = spec["case"]
@@ -9747,7 +9749,8 @@ def _stress_job_steps(spec: dict, cfg: dict, prepared: dict, cancel,
     hooked = True
     try:
         if mode == "classify":
-            _stress_classify(prepared["packs"][spec["index"]], rec, live, cancel, job)
+            _stress_classify(prepared["packs"][spec.get("pack", spec["index"])],
+                             rec, live, cancel, job)
         else:
             case_id = spec["case"]
             # A realData file has no case: nothing it reads or extracts is scored.
@@ -10346,7 +10349,7 @@ def _sweep_phases(specs: list, cfg: dict, prepared: dict, cancel, targets: list)
     laid end to end, one level after another) and the sweep's report part. A
     Stop ends it at the level running; the levels never started are cancelled.
     """
-    levels, per_slot = cfg["sweep"], cfg["sweep_jobs_per_slot"]
+    levels, per_level = cfg["sweep"], cfg["sweep_jobs"]
     top = cfg["concurrency"]
     records, timeline, rows, last, draining = [], [], [], {}, []
     wall, at = 0.0, 0
@@ -10354,7 +10357,7 @@ def _sweep_phases(specs: list, cfg: dict, prepared: dict, cancel, targets: list)
         for index, level in enumerate(levels):
             if cancel.is_set():
                 break
-            chunk = specs[at:at + concurrencysweep.level_jobs(level, per_slot)]
+            chunk = specs[at:at + per_level]
             at += len(chunk)
             cfg["concurrency"] = level
             before, errors = _sweep_scrape(targets)
@@ -10407,7 +10410,7 @@ def _sweep_phases(specs: list, cfg: dict, prepared: dict, cancel, targets: list)
         cfg["concurrency"] = top
     # The levels a Stop kept from starting: queued, never run.
     records.extend({"status": "cancelled"} for _ in specs[at:])
-    sweep = {"levels": rows, "targets": targets, "jobs_per_slot": per_slot,
+    sweep = {"levels": rows, "targets": targets, "jobs_per_level": per_level,
              "summary": concurrencysweep.summary(rows)}
     return records, wall, timeline, last, draining, sweep
 
@@ -10453,6 +10456,13 @@ def _stress_run(cfg: dict, cancel):
                               extractor or backends.extract_status())         if cfg["metrics"] else []
 
     specs = [{"index": i} for i in range(total)]
+    # A concurrency sweep draws ONE level's jobs and runs them again at every
+    # level, same files in the same order: only the concurrency differs.
+    sweep_jobs = cfg["sweep_jobs"] if cfg.get("sweep") else 0
+    measured = sweep_jobs or cfg["jobs"]
+    if sweep_jobs:
+        for k, spec in enumerate(specs[cfg["warmup"]:]):
+            spec["pack"] = cfg["warmup"] + k % sweep_jobs     # classify: the same glued file
     if mode != "classify":
         # realData files are never in the run log's case counts, so "balanced"
         # balances over this run's own draws.
@@ -10460,12 +10470,16 @@ def _stress_run(cfg: dict, cancel):
                    and cfg.get("source") != "realdata" else {})
         if cfg["strategy"] == "sequential":
             # Measured jobs start at the first selected file even after warm-up.
-            drawn = [case_id for count in (cfg["warmup"], cfg["jobs"])
+            drawn = [case_id for count in (cfg["warmup"], measured)
                      for case_id in stress.draw_cases(
                          count, cfg["cases"], cfg["strategy"], rng, history, cfg["lock"])]
         else:
             drawn = stress.draw_cases(
-                total, cfg["cases"], cfg["strategy"], rng, history, cfg["lock"])
+                cfg["warmup"] + measured, cfg["cases"], cfg["strategy"], rng, history,
+                cfg["lock"])
+        if sweep_jobs:
+            level = drawn[cfg["warmup"]:]
+            drawn = drawn[:cfg["warmup"]] + [level[k % sweep_jobs] for k in range(cfg["jobs"])]
         for spec, case_id in zip(specs, drawn):
             spec["case"] = case_id
 
@@ -10473,9 +10487,11 @@ def _stress_run(cfg: dict, cancel):
         "event": "plan", "mode": mode, "seed": seed,
         "concurrency": cfg["concurrency"], "jobs": cfg["jobs"],
         # The concurrency sweep: each level's limit and its queue, in run order.
-        "sweep": ([{"level": lv, "jobs": concurrencysweep.level_jobs(
-                       lv, cfg["sweep_jobs_per_slot"])} for lv in cfg["sweep"]]
-                  if cfg.get("sweep") else None),
+        "sweep": ([{"level": lv, "jobs": sweep_jobs} for lv in cfg["sweep"]]
+                  if sweep_jobs else None),
+        # The files every level runs, in the order it runs them.
+        "sweep_cases": ([s.get("case") for s in specs[cfg["warmup"]:][:sweep_jobs]]
+                        if sweep_jobs and mode != "classify" else None),
         "warmup": cfg["warmup"], "max_seconds": cfg["max_seconds"],
         "strategy": cfg["strategy"], "lock": cfg["lock"],
         "source": cfg.get("source", "benchmark"),
@@ -10525,11 +10541,11 @@ def _stress_run(cfg: dict, cancel):
         docs_of = {cid: index[cid].get("documents") or [] for cid in cfg["cases"]}
         docs_of["_types"] = {cid: index[cid].get("doc_types") or []
                              for cid in cfg["cases"]}
-        for i in range(total):
+        for i in range(cfg["warmup"] + measured):
             prepared["packs"].append(stress.build_pack(
                 cfg["cases"], truths, docs_of, cfg["pack_pages"], rng))
             yield json.dumps({"event": "preparing", "done": i + 1,
-                              "total": total}) + "\n"
+                              "total": cfg["warmup"] + measured}) + "\n"
     elif cfg.get("source") == "realdata":
         # Each file is prepared by the first job that draws it and freed after
         # the last one (`_StressPages`), not all of them here.

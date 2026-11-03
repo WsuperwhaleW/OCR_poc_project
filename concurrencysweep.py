@@ -5,8 +5,14 @@ and every vLLM /metrics figure against the concurrency it was taken at.
 concurrency over time, working directly with vLLM /metrics: throughput, time
 between tokens, time to first token, e2e and latency, every metric against the
 concurrency, each with a graph*. It is the curve the stress test's *Not done*
-named: concurrency 1, 2, 4, 8, ... at a queue sized to each level, reading the
-aggregate tokens/s against one request's decode rate and the latency tails.
+named: concurrency 1, 2, 4, 8, ... at a fixed queue, reading the aggregate
+tokens/s against one request's decode rate and the latency tails.
+
+**Every level runs the SAME files, in the same order** (the user's rule: *a
+sweep up to 128 OCRs the same 128 files at 1 concurrent as at 128*). The levels
+then differ in one thing only, the concurrency; a different draw per level
+would put the documents' own spread -- a 1-page receipt against a 13-page
+statement -- into the curve.
 
 The runner is the stress test's own (`app._stress_run` runs one `_stress_phase`
 per level), so a level's jobs are exactly a stress run's jobs. This module holds
@@ -29,10 +35,6 @@ import stress
 # curve; a box can ask for any ascending list.
 DEFAULT_LEVELS = (1, 2, 4, 8, 16, 32)
 MAX_LEVELS = 16
-# Jobs queued per level = level x this, so every level runs several waves and
-# its tail (the last jobs, run with fewer in flight) is a small share of it.
-DEFAULT_JOBS_PER_SLOT = 4
-MAX_JOBS_PER_SLOT = 100
 
 # The histograms read per level. Each is a list of names, the first one the
 # server exposes wins -- vLLM renamed time-per-output-token between versions.
@@ -87,9 +89,18 @@ def parse_levels(value) -> list:
     return sorted(levels)
 
 
-def level_jobs(level: int, per_slot: int) -> int:
-    """How many jobs a level queues."""
-    return max(1, min(level * per_slot, stress.MAX_JOBS))
+def level_jobs(levels: list, asked=None) -> int:
+    """How many jobs every level queues: `asked`, or the highest level.
+
+    The highest level is the default because it is the smallest queue that
+    fills that level once; every lower level works through the same jobs in
+    more waves.
+    """
+    try:
+        asked = int(asked) if asked not in (None, "") else 0
+    except (TypeError, ValueError):
+        raise ValueError("sweep_jobs must be a whole number.")
+    return max(1, min(asked or max(levels), stress.MAX_JOBS))
 
 
 # --------------------------------------------------------------------------

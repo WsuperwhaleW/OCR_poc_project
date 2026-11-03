@@ -2314,9 +2314,11 @@ requested** — the route refuses with `409` as well.
 ### Concurrency sweep
 
 Tick **Concurrency sweep** under Concurrent to step the concurrency up over time instead of
-holding it: the run works through **Levels** (default `1, 2, 4, 8, 16, 32`) lowest first, and
-each level queues **Jobs per slot** × its concurrency jobs (4 × 8 = 32 jobs at level 8). A
-level's queue runs to the end before the next level starts. The Concurrent and Queue boxes
+holding it: the run works through **Levels** (default `1, 2, 4, 8, 16, 32`) lowest first.
+**Every level runs the same jobs** — the same files, in the same order — so only the
+concurrency changes between levels. **Jobs per level** sets how many; left blank it is the
+highest level, so a sweep up to 128 reads the same 128 files at 1 concurrent (one after
+another) as at 128 (all at once). A level's jobs run to the end before the next level starts. The Concurrent and Queue boxes
 are ignored while it is on; Warm-up runs once, at the highest level, and **Time limit** applies
 to each level.
 
@@ -3856,7 +3858,8 @@ omitting it uses all eligible files, an empty list is rejected), `metrics` (samp
 `history_monitor` (save monitor snapshots, default true), and `gpu_url` / `gpu_extract_url`
 (optional VRAM exporters), `sweep` (concurrency levels, such as `"1,2,4,8"`, for a concurrency
 sweep — `concurrency` and `jobs` are then ignored; `400` unless the mode's server is vLLM) and
-`sweep_jobs_per_slot` (jobs per level = level × this, default 4).
+`sweep_jobs` (how many jobs every level runs — the same files at each level; default the
+highest level). The `plan` event's `sweep_cases` lists those files in run order.
 Streams NDJSON: `plan`, `preparing`, a `progress` event about once a second
 (jobs in each stage, done, live pages and tokens per second, and `server_metrics` when
 sampling), an `alert` the moment a job hits a problem (`kind` — `error`, `looped`,

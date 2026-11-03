@@ -26,9 +26,12 @@ class LevelTests(unittest.TestCase):
             with self.subTest(bad=bad), self.assertRaises(ValueError):
                 cs.parse_levels(bad)
 
-    def test_a_level_queues_jobs_per_slot(self):
-        self.assertEqual(cs.level_jobs(8, 4), 32)
-        self.assertEqual(cs.level_jobs(1, 1), 1)
+    def test_every_level_queues_the_highest_level_unless_asked(self):
+        self.assertEqual(cs.level_jobs([1, 8, 128]), 128)
+        self.assertEqual(cs.level_jobs([1, 8, 128], "20"), 20)
+        self.assertEqual(cs.level_jobs([1, 2], ""), 2)
+        with self.assertRaises(ValueError):
+            cs.level_jobs([1], "many")
 
 
 class HistogramTests(unittest.TestCase):
@@ -108,13 +111,14 @@ class _FakeVllm:
 
     def __init__(self, hold=0.05):
         self.lock = threading.Lock()
-        self.e2e, self.gen = [], 0
+        self.e2e, self.gen, self.cases = [], 0, []
         self.now = self.peak = 0
         self.hold = hold
 
-    def extract(self, *_a, **_k):
+    def extract(self, _text, _mode=None, case_id=None, **_k):
         began = time.perf_counter()
         with self.lock:
+            self.cases.append(case_id)
             self.now += 1
             self.peak = max(self.peak, self.now)
         time.sleep(self.hold)
@@ -155,6 +159,7 @@ class SweepRunTests(unittest.TestCase):
         try:
             cfg = app._stress_config({"mode": "extract", "seed": 1, "metrics_every": 1, **body})
             cancel, events, peaks = app.MultiCancel(), [], []
+            self.level_cases = []
             for line in app._stress_run(cfg, cancel):
                 event = json.loads(line)
                 events.append(event)
@@ -162,6 +167,8 @@ class SweepRunTests(unittest.TestCase):
                     with fake.lock:
                         peaks.append(fake.peak)
                         fake.peak = 0
+                        self.level_cases.append(fake.cases)
+                        fake.cases = []
                     if stop_after_level is not None and event["index"] == stop_after_level:
                         cancel.set()
         finally:
@@ -175,15 +182,17 @@ class SweepRunTests(unittest.TestCase):
         for p in patches:
             p.start()
         try:
-            cfg = app._stress_config({"mode": "extract", "sweep": "4, 1, 2",
-                                      "sweep_jobs_per_slot": 3})
+            cfg = app._stress_config({"mode": "extract", "sweep": "4, 1, 2"})
             self.assertEqual(cfg["sweep"], [1, 2, 4])
             self.assertEqual(cfg["concurrency"], 4)
-            self.assertEqual(cfg["jobs"], 3 + 6 + 12)
+            self.assertEqual(cfg["sweep_jobs"], 4)            # the highest level, at every level
+            self.assertEqual(cfg["jobs"], 4 * 3)
             self.assertTrue(cfg["metrics"])
+            cfg = app._stress_config({"mode": "extract", "sweep": "1, 128", "sweep_jobs": 10})
+            self.assertEqual((cfg["sweep_jobs"], cfg["jobs"]), (10, 20))
             with self.assertRaises(ValueError):
-                app._stress_config({"mode": "extract", "sweep": "128, 256",
-                                    "sweep_jobs_per_slot": 100})
+                app._stress_config({"mode": "extract", "sweep": "1, 2, 4",
+                                    "sweep_jobs": 2000})
         finally:
             for p in patches:
                 p.stop()
@@ -203,9 +212,9 @@ class SweepRunTests(unittest.TestCase):
                 p.stop()
 
     def test_each_level_runs_at_its_own_limit_and_reads_its_own_delta(self):
-        cfg, events, peaks = self._run({"sweep": "1,2,4", "sweep_jobs_per_slot": 2})
+        cfg, events, peaks = self._run({"sweep": "1,2,4", "sweep_jobs": 8})
         plan = events[0]
-        self.assertEqual(plan["sweep"], [{"level": 1, "jobs": 2}, {"level": 2, "jobs": 4},
+        self.assertEqual(plan["sweep"], [{"level": 1, "jobs": 8}, {"level": 2, "jobs": 8},
                                          {"level": 4, "jobs": 8}])
         levels = [e for e in events if e["event"] == "sweep_level"]
         self.assertEqual([e["level"] for e in levels], [1, 2, 4])
@@ -220,20 +229,59 @@ class SweepRunTests(unittest.TestCase):
         progress = [e for e in events if e["event"] == "progress" and e.get("level")]
         self.assertEqual(sorted({e["level"] for e in progress}), [1, 2, 4])
         report = events[-1]["report"]
-        self.assertEqual(report["completed"], 14)
+        self.assertEqual(report["completed"], 24)
         self.assertEqual([r["level"] for r in report["sweep"]["levels"]], [1, 2, 4])
         self.assertEqual(report["concurrency"], 4)           # put back after the levels
         self.assertEqual(report["outliers"], [])
         self.assertEqual(cfg["concurrency"], 4)
 
     def test_stop_ends_the_sweep_at_the_level_running(self):
-        _, events, _ = self._run({"sweep": "1,2,4", "sweep_jobs_per_slot": 2},
+        _, events, _ = self._run({"sweep": "1,2,4", "sweep_jobs": 2},
                                  stop_after_level=0)
         done = events[-1] if events[-1]["event"] == "done" else next(
             e for e in events if e["event"] == "done")
         self.assertTrue(done["stopped"])
         self.assertEqual([r["level"] for r in done["report"]["sweep"]["levels"]], [1])
-        self.assertEqual(done["report"]["counts"]["cancelled"], 12)
+        self.assertEqual(done["report"]["counts"]["cancelled"], 4)
+
+    def test_every_level_reads_the_same_files(self):
+        _, events, _ = self._run({"sweep": "1,2,4", "sweep_jobs": 6,
+                                  "strategy": "uniform", "warmup": 2})
+        plan = events[0]
+        self.assertEqual(len(plan["sweep_cases"]), 6)
+        self.assertGreater(len(set(plan["sweep_cases"])), 1)  # a real draw, not one file
+        # One level's requests are the plan's files; the warm-up's are its own.
+        self.assertEqual(len(self.level_cases), 3)
+        for got in self.level_cases[1:]:
+            self.assertEqual(sorted(got), sorted(plan["sweep_cases"]))
+        self.assertEqual(sorted(self.level_cases[0][-6:]), sorted(plan["sweep_cases"]))
+        # At one concurrent the files are read in the plan's order.
+        self.assertEqual(self.level_cases[0][-6:], plan["sweep_cases"])
+
+    def test_classify_reuses_the_same_glued_files(self):
+        fake, seen = _FakeVllm(), []
+
+        def classify(pack, rec, live, cancel, job):
+            fake.extract("", case_id=None)
+            with fake.lock:
+                seen.append(id(pack))
+            rec["status"] = "ok"
+
+        patches = self._patches(fake) + [
+            mock.patch.object(app, "_stress_classify", side_effect=classify)]
+        for p in patches:
+            p.start()
+        try:
+            cfg = app._stress_config({"mode": "classify", "sweep": "1,2", "sweep_jobs": 3,
+                                      "pack_pages": 4, "seed": 1})
+            events = [json.loads(line) for line in app._stress_run(cfg, app.MultiCancel())]
+        finally:
+            for p in patches:
+                p.stop()
+        self.assertEqual([e["event"] for e in events].count("preparing"), 3)   # 3 packs, not 6
+        self.assertEqual(len(seen), 6)
+        self.assertEqual(sorted(seen[:3]), sorted(seen[3:]))
+        self.assertEqual(len(set(seen)), 3)
 
 
 if __name__ == "__main__":
