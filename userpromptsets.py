@@ -494,6 +494,176 @@ def _save_type_fields(db, state, code, item):
     return record
 
 
+def effective(state, code):
+    """What a new job of this type is asked: the Hybrid steps and its Required fields."""
+    codes = codes_for(code)
+    table = runtime(prompts.steps_for_types(codes, False, mode='hybrid'), codes, state)
+    builtin = list(prompts.mandatory_for_types(codes))
+    selected = select(state, codes)
+    required = set(builtin)
+    if selected:
+        required = set()
+        for _, record in selected:
+            supplied = [k for s in table if s.get('user_prompt_set_id') == record['id'] for k in s['keys']]
+            required |= required_keys(record, supplied, builtin)
+    asked = {k for s in table for k in s['keys']}
+    return table, [k for k in prompts._SCALAR_KEYS if k in required and k in asked]
+
+
+_STEP_PARTS = ('title', 'keys', 'rules', 'skeleton', 'custom_targets', 'custom_schema', 'request_aliases')
+
+
+def fingerprint(state, code):
+    """Same fingerprint = same questions, fields, Required and wording, whatever set ids say.
+
+    Built 2026-11-03 at the user's request: "ถ้า field เหมือน ข้อความเหมือนคืออันเดียวกัน
+    หากมีอะไรต่างก็ถือว่าแยกก้อนเลย". The board groups types by this, not by binding,
+    so two types sharing a set but differing in built-in Required are two groups.
+    """
+    table, required = effective(state, code)
+    content = [[{part: (list(s[part]) if part == 'keys' else s.get(part)) for part in _STEP_PARTS} for s in table], required]
+    return hashlib.sha256(json.dumps(content, sort_keys=True, ensure_ascii=False).encode('utf-8')).hexdigest()[:16]
+
+
+def prompt_groups(state):
+    found = {}
+    for row in catalog():
+        found.setdefault(fingerprint(state, row['code']), []).append(row)
+    result = []
+    for group_id, members in found.items():
+        table, required = effective(state, members[0]['code'])
+        names = []
+        for row in members:
+            for _, record in select(state, codes_for(row['code'])):
+                if record['name'] not in names:
+                    names.append(record['name'])
+        result.append({'id':group_id, 'names':names or ['ชุดพื้นฐาน · ยังไม่กำหนดชุด'], 'configured':bool(names),
+                       'types':[{k:row[k] for k in ('code','user_code','label','section')} for row in members],
+                       'question_count':len(table), 'field_count':len({k for s in table for k in s['keys']}),
+                       'required':required})
+    return result
+
+
+def template(state, code):
+    """One editable set equal to what this type is asked now (its set, or the built-in form)."""
+    selected = select(state, codes_for(code))
+    if len(selected) > 1:
+        raise ValueError('ประเภทนี้ใช้หลายชุดรวมกัน กรุณากำหนดฟิลด์ในตาราง Doc types ก่อน')
+    if selected:
+        return copy.deepcopy(selected[0][1])
+    label = next(r['label'] for r in catalog() if r['code'] == code)
+    record = {'id':None, 'base_code':code, 'name':label, 'revision':0, 'value':{'instructions':{}, 'extra_groups':[]},
+              'base_steps':copy.deepcopy(prompts.steps_for_types(codes_for(code), False, mode='hybrid'))}
+    record['steps'] = compile_record(record)
+    return record
+
+
+TEMPLATE_ID = '__template__'
+
+
+def with_template(snapshot_value, code):
+    """A snapshot copy where `code` is bound to its template, plus that set's id (no writes)."""
+    result = copy.deepcopy(snapshot_value)
+    record = template(result, code)
+    if record['id'] is None:
+        record['id'] = TEMPLATE_ID
+    result['sets'][record['id']] = record
+    result['bindings'][code] = {'set_id':record['id'], 'revision':(result['bindings'].get(code) or {}).get('revision', 0)}
+    return result, record['id']
+
+
+def _bind_group(db, state, codes, record, name, action):
+    """Write `record` as one set used by exactly `codes`: a new version in place when the
+    set is already theirs alone, else a copy, so no type outside `codes` changes."""
+    owners = {c for c, b in state['bindings'].items() if record['id'] not in (None, TEMPLATE_ID) and b['set_id'] == record['id']}
+    if owners and owners == set(codes):
+        record['revision'] += 1
+    else:
+        parent = record['id'] if record['id'] not in (None, TEMPLATE_ID) else None
+        if parent:
+            record.update(parent_set_id=parent, parent_revision=record['revision'])
+        record.update(id=uuid.uuid4().hex, revision=1, created_at=now(), name=name)
+    record['steps'] = compile_record(record)
+    _write_version(db, record)
+    for code in codes:
+        binding = state['bindings'].get(code)
+        if binding and binding['set_id'] == record['id']:
+            continue
+        after = {'set_id':record['id'], 'revision':(binding['revision'] if binding else 0) + 1}
+        db.execute('INSERT OR REPLACE INTO prompt_bindings VALUES (?,?,?)', (code, after['set_id'], after['revision']))
+        db.execute('INSERT INTO prompt_binding_events(code,created_at,action,before_value,after_value) VALUES (?,?,?,?,?)',
+                   (code, now(), action, json.dumps(binding), json.dumps(after)))
+    return record
+
+
+def _group_state(db, body, keys):
+    if not isinstance(body, dict) or set(body) != keys:
+        raise ValueError('ส่งข้อมูลก้อน prompt ให้ครบ')
+    db.execute('BEGIN IMMEDIATE')
+    state = snapshot(db)
+    if body['revision'] != field_revision(state):
+        raise Conflict('ก้อน prompt เปลี่ยนไปแล้ว กรุณารีเฟรชก่อนแก้ไขอีกครั้ง')
+    return state, {g['id']:g for g in prompt_groups(state)}
+
+
+def move_types(db, body):
+    """Drag a type into another group: it takes that group's fields, Required and wording.
+
+    {revision, moves:{CODE: group_id}}, all moves or none. Each target group (with the
+    types moved in) is written as one set of its own with an explicit Required list, so
+    the moved type is asked exactly what the group is asked; types left behind keep theirs.
+    """
+    state, groups = _group_state(db, body, {'revision', 'moves'})
+    moves = body['moves']
+    labels = {r['code']:r['label'] for r in catalog()}
+    if not isinstance(moves, dict) or not moves or any(code not in labels or target not in groups
+                                                       for code, target in moves.items()):
+        raise ValueError('เลือกประเภทและก้อนปลายทางจากกระดานล่าสุด')
+    saved = []
+    for target_id in dict.fromkeys(moves.values()):
+        group = groups[target_id]
+        members = [t['code'] for t in group['types']]
+        moved = [c for c, t in moves.items() if t == target_id and c not in members]
+        if not moved:
+            continue
+        record = template(state, members[0])
+        value = copy.deepcopy(record['value'])
+        value['required_fields'] = list(group['required'])
+        try:
+            record['value'] = validate(record['base_code'], value, record['base_steps'])
+        except ValueError as err:
+            raise ValueError(', '.join(labels[c] for c in moved) + ': ' + str(err))
+        name = 'ชุดพื้นฐาน' if record['id'] is None else record['name']
+        saved.append(_bind_group(db, state, members + moved, record, name, 'group_move'))
+        state = snapshot(db)
+    return saved
+
+
+def save_group(db, body):
+    """Save wording for a whole group, or for one type split out of its group.
+
+    {revision, doc_types, value}. doc_types is every type of one group, or a single type
+    being split out. Types outside doc_types never change, even if they share the set.
+    """
+    state, groups = _group_state(db, body, {'revision', 'doc_types', 'value'})
+    codes = body['doc_types']
+    group = next((g for g in groups.values() if codes and codes[0] in [t['code'] for t in g['types']]), None)
+    members = [t['code'] for t in group['types']] if group else []
+    if not isinstance(codes, list) or not codes or (sorted(codes) != sorted(members) and (len(codes) != 1 or codes[0] not in members)):
+        raise ValueError('บันทึกได้ทั้งก้อน หรือแยกออกมาทีละประเภท')
+    record = template(state, codes[0])
+    value = body['value']
+    if isinstance(value, dict) and 'required_fields' not in value:
+        value = {**value, 'required_fields':list(group['required'])}
+    record['value'] = validate(record['base_code'], value, record['base_steps'])
+    labels = {r['code']:r['label'] for r in catalog()}
+    if len(codes) == 1 and len(members) > 1:
+        name = labels[codes[0]]
+    else:
+        name = 'ชุดพื้นฐาน' if record['id'] is None and len(codes) > 1 else record['name']
+    return _bind_group(db, state, codes, record, name, 'group_save' if len(codes) == len(members) else 'group_split')
+
+
 def change(db, body):
     allowed = {'doc_type','binding_revision','set_id','revision','action','name','value'}
     if not isinstance(body, dict) or set(body) - allowed or not {'doc_type','binding_revision','set_id','revision','action'} <= set(body):

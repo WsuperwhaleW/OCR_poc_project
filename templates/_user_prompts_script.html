@@ -80,7 +80,7 @@
     $('promptSave').disabled=(!dirty&&!options.job)||saving;$('promptDiscard').disabled=!dirty||saving;
     $('promptReset').disabled=saving||!state;$('promptType').disabled=saving||!!(options.job&&!jobData?.available_types.length);
     $('promptEditStatus').textContent=saving?'กำลังบันทึก…':dirty?'ยังไม่ได้บันทึก':'เวอร์ชัน '+(state?.revision||0)+(options.job?' · ใช้เฉพาะผลรอบใหม่':' · ใช้กับงาน Hybrid ใหม่');
-    if(libraryData){
+    if(libraryData&&!options.board){
       $('promptLibrary').inert=saving;
       $('promptSave').disabled=saving||(!state&&!options.job)||(!dirty&&!options.job);
       $('promptSetName').disabled=!!options.job||$('promptSetAction').value==='bind';
@@ -91,8 +91,8 @@
   function markDirty(){dirty=true;retryId=null;if(options.job&&state)drafts[state.code]=libraryData?
     {set_id:libraryData.record.id,value:JSON.parse(JSON.stringify(state.value))}:JSON.parse(JSON.stringify(state.value));syncTools();queuePreview();}
   function paintLibrary(data){
-    const info=data.library;$('promptLibrary').hidden=!info;
-    if(!info)return;
+    const info=data.library;$('promptLibrary').hidden=!info||!!options.board;
+    if(!info||options.board)return;
     $('promptLibrary').inert=false;
     const record=info.record;
     $('promptSetInfo').textContent=record?(info.source_selected?'เลือกต้นแบบแล้ว · ยังไม่บันทึก · ':'กำหนดชุดแล้ว · ')+record.name+' · เวอร์ชัน '+record.revision+
@@ -109,7 +109,7 @@
     paintImpact();
   }
   function paintImpact(){
-    if(!libraryData)return;
+    if(!libraryData||options.board)return;
     const action=$('promptSetAction').value;
     const type=libraryData.types.find(t=>t.code===(state?.code||$('promptType').value));
     const code=type?.user_code||type?.label?.split(' · ')[0]||state?.code||$('promptType').value;
@@ -168,7 +168,7 @@
     const tools=node('div',undefined,'prompt-section-tools'),mode=node('span','คำอธิบายที่ส่งให้โมเดล','muted small');
     const edit=node('button','แก้ไขวิธีอ่านตัวแปร','subtle');edit.type='button';let editing=false;
     tools.append(mode,edit);host.append(tools);
-    if(libraryData){
+    if(libraryData&&!options.board){
       const enabled=node('input');enabled.type='checkbox';enabled.checked=!(state.value.disabled_groups||[]).includes(definition.id);
       enabled.setAttribute('aria-label','เปิดก้อน '+definition.id);
       enabled.addEventListener('change',()=>{if(saving)return;const off=new Set(state.value.disabled_groups||[]);
@@ -183,7 +183,7 @@
       label.append(node('strong',related.map(item=>labels[item.key]||item.key.replace(/_/g,' ')).join(' / '),'prompt-field-name'));
       const keys=node('div',undefined,'prompt-key-pills');for(const item of related)keys.append(node('code',item.key));label.append(keys);
       if(linkedKeys.length>1)label.append(node('span','ใช้คำอธิบายร่วมกัน','prompt-linked-note'));
-      if(libraryData){
+      if(libraryData&&!options.board){
         const enabled=node('input');enabled.type='checkbox';enabled.checked=!(state.value.disabled_fields||[]).includes(field.key);
         enabled.setAttribute('aria-label','เปิดฟิลด์ '+editKey);
         enabled.addEventListener('change',()=>{if(saving)return;const off=new Set(state.value.disabled_fields||[]);
@@ -223,7 +223,7 @@
       .flatMap(group=>group.fields.filter(f=>!(state.value.disabled_fields||[]).includes(f.key)).map(f=>f.target).filter(Boolean)));
     for(const group of state.value.extra_groups){
       const card=node('section',undefined,'prompt-group prompt-custom-group');
-      if(libraryData){
+      if(libraryData&&!options.board){
         const enabled=node('input');enabled.type='checkbox';enabled.checked=!(state.value.disabled_groups||[]).includes(group.id);
         enabled.setAttribute('aria-label','เปิดก้อน '+group.id);
         enabled.addEventListener('change',()=>{if(saving)return;const off=new Set(state.value.disabled_groups||[]);
@@ -241,7 +241,7 @@
         for(const option of state.data.editor.targets){const entry=node('option','documents[].'+option.path+' · '+option.type);entry.value=option.path;entry.disabled=occupied.has(option.path);destination.append(entry);}
         destination.value=field.target;destination.addEventListener('change',()=>{if(saving)return;field.target=destination.value;markDirty();});
         row.append(labeled('ตัวแปร (key)',key),labeled('วิธีอ่านจากเอกสาร',instruction),labeled('ช่องปลายทาง User JSON',destination));
-        if(libraryData){const enabled=node('input');enabled.type='checkbox';enabled.checked=!(state.value.disabled_fields||[]).includes(field.key);
+        if(libraryData&&!options.board){const enabled=node('input');enabled.type='checkbox';enabled.checked=!(state.value.disabled_fields||[]).includes(field.key);
           enabled.setAttribute('aria-label','เปิดฟิลด์ '+field.key);enabled.addEventListener('change',()=>{if(saving)return;const off=new Set(state.value.disabled_fields||[]);
             if(enabled.checked)off.delete(field.key);else off.add(field.key);state.value.disabled_fields=[...off];markDirty();});row.append(labeled('เปิดฟิลด์',enabled));}
         const remove=node('button','ลบตัวแปร');remove.type='button';remove.className='subtle';remove.addEventListener('click',()=>{if(saving)return;
@@ -272,6 +272,14 @@
         const body=await response.json();if(!response.ok)throw new Error(body.error||'รัน Extraction ใหม่ไม่สำเร็จ');
         dirty=false;drafts={};retryId=null;saving=false;syncTools();await options.onRetry(body.job);return;
       }
+      if(options.board){
+        // The whole group (or the one type split out of it) gets this wording.
+        const response=await fetch(window.USER_BASE+'/api/user/prompt-groups/save',{
+          method:'POST',headers:{'Content-Type':'application/json','X-OCR-User-Token':window.USER_API_TOKEN},
+          body:JSON.stringify({revision:options.board.revision(),doc_types:options.board.codes(),value:state.value})});
+        const data=await response.json();if(!response.ok)throw new Error(data.error||'บันทึกก้อนไม่สำเร็จ');
+        dirty=false;saving=false;await options.board.saved(state.code);return;
+      }
       if(libraryData){
         const response=await fetch(window.USER_BASE+'/api/user/prompt-sets',{
           method:'POST',headers:{'Content-Type':'application/json','X-OCR-User-Token':window.USER_API_TOKEN},
@@ -301,6 +309,7 @@
       let url=options.job?'/api/user/jobs/'+encodeURIComponent(options.job().id)+'/prompts'+(jobData?.available_types.length?'?doc_type='+encodeURIComponent(primary):''):'/api/user/hybrid-prompts?doc_type='+encodeURIComponent(primary);
       if(!sourceSet&&options.job&&drafts[primary]?.set_id)sourceSet=drafts[primary].set_id;
       if(sourceSet)url+=(url.includes('?')?'&':'?')+'source_set_id='+encodeURIComponent(sourceSet);
+      else if(options.board)url+='&template=1';
       const response=await fetch(window.USER_BASE+url);
       const data=await response.json();
       if(!response.ok)throw new Error(data.error||'โหลดคำถามไม่สำเร็จ ('+response.status+')');
@@ -348,7 +357,154 @@
   window.addEventListener?.('beforeunload',event=>{if(dirty){event.preventDefault();event.returnValue='';}});
   return {load,dirty:()=>dirty||saving,clear(){ticket++;previewTicket++;if(previewTimer)clearTimeout(previewTimer);dirty=false;saving=false;drafts={};state=null;jobData=null;retryId=null;openGroups={};libraryData=null;}};
  }
- const main=createEditor();window.loadUserPrompts=main.load;
+ // Prompt group board (2026-11-03, at the user's request: "ก้อนนี้ใช้ prompt เดียวกัน
+ // แล้วหากอยากจะแยก ก็ลากออกมาเป็นก้อนใหม่"). A group is every type asked exactly the
+ // same fields, Required and wording; anything different is another group.
+ const B=id=>document.getElementById(id);
+ const board={data:null,selected:null,split:null,moves:new Map(),drag:null,picked:null,labels:{},loading:false};
+ const bnode=(tag,text,className)=>{const e=document.createElement(tag);if(text!==undefined)e.textContent=text;if(className)e.className=className;return e;};
+ // User codes (380, T02…); extra types by their short code (WHT, RTV) or Thai name.
+ const typeName=t=>{if(t.user_code)return t.user_code;const [short,name]=String(t.label||t.code).split(' · ');return short.length<=5||!name?short:name;};
+ // Two groups can carry the same set name (one set, different built-in Required): say what differs.
+ function sameNameNote(group){
+  const others=board.data.groups.filter(g=>g!==group&&groupName(g)===groupName(group));if(!others.length)return '';
+  const parts=[];
+  if(others.some(g=>JSON.stringify(g.required)!==JSON.stringify(group.required)))parts.push('Required');
+  if(others.some(g=>g.field_count!==group.field_count||g.question_count!==group.question_count))parts.push('ฟิลด์');
+  return 'ชื่อชุดเดียวกับอีกก้อน · ต่างกันที่ '+(parts.join(' และ ')||'ข้อความ');
+ }
+ const groupName=g=>g.names.join(' / ');
+ const groupOf=code=>board.moves.get(code)||board.data.groups.find(g=>g.types.some(t=>t.code===code))?.id;
+ const members=id=>board.data.groups.find(g=>g.id===id)?.types||[];
+ function boardError(text){B('promptBoardError').textContent=text||'';B('promptBoardError').hidden=!text;}
+ function paintBoard(){
+  const target=B('promptBoard');target.replaceChildren();
+  const all=board.data.groups.flatMap(g=>g.types);
+  for(const group of board.data.groups){
+   const card=bnode('section',undefined,'prompt-board-group'+(board.selected===group.id&&!board.split?' selected':''));
+   const head=bnode('button',undefined,'prompt-board-head');head.type='button';
+   head.append(bnode('strong',groupName(group)),bnode('span',group.question_count+' คำถาม · '+group.field_count+' ฟิลด์ · Required '+group.required.length,'muted small'));
+   const note=sameNameNote(group);if(note)head.append(bnode('span',note,'prompt-board-note'));
+   head.setAttribute('aria-label','แก้ข้อความของก้อน '+groupName(group));
+   // With a type picked, the click belongs to the card (it places the type), not to editing.
+   head.addEventListener('click',()=>{if(!board.picked)selectGroup(group.id);});card.append(head);
+   const chips=bnode('div',undefined,'prompt-board-chips');
+   for(const type of all.filter(t=>groupOf(t.code)===group.id))chips.append(chip(type));
+   card.append(chips);dropZone(card,group.id);pickTarget(card,group.id);
+   if(board.picked&&groupOf(board.picked)!==group.id)card.classList.add('target');target.append(card);
+  }
+  const split=bnode('section',undefined,'prompt-board-group prompt-board-split'+(board.split?' selected':''));
+  split.append(bnode('strong','แยกออกมาแก้'),bnode('span',board.split?'กำลังแก้ '+typeName(all.find(t=>t.code===board.split))+' แยกจากก้อนเดิม':'ลากประเภทมาวางที่นี่ เพื่อแก้เฉพาะประเภทนั้น','muted small'));
+  split.tabIndex=0;split.setAttribute('role','button');split.setAttribute('aria-label','แยกออกมาแก้');
+  split.addEventListener('keydown',event=>{if(event.key==='Enter'||event.key===' '){event.preventDefault?.();split.click?.();}});
+  dropZone(split,'__split');pickTarget(split,'__split');if(board.picked)split.classList.add('target');target.append(split);
+  const picked=board.picked&&all.find(t=>t.code===board.picked);
+  B('promptBoardHint').textContent=picked?'เลือก '+typeName(picked)+' แล้ว · กดก้อนที่จะย้ายไป หรือกด “แยกออกมาแก้” · กด '+typeName(picked)+' อีกครั้งเพื่อยกเลิก':'';
+  B('promptBoardHint').hidden=!picked;
+  const count=board.moves.size;B('promptBoardBar').hidden=!count;
+  B('promptBoardBarText').textContent='ย้าย '+count+' ประเภท · ยังไม่บันทึก';
+ }
+ function chip(type){
+  const item=bnode('span',undefined,'prompt-board-chip'+(board.moves.has(type.code)?' moved':''));
+  if(board.picked===type.code)item.className+=' picked';
+  item.draggable=true;item.title=type.label;item.tabIndex=0;item.setAttribute('role','button');
+  item.setAttribute('aria-pressed',String(board.picked===type.code));
+  item.setAttribute('aria-label',typeName(type)+' · กดเพื่อเลือก แล้วกดก้อนปลายทาง');
+  item.addEventListener('dragstart',event=>{board.drag=type.code;board.picked=null;event.dataTransfer?.setData?.('text/plain',type.code);});
+  item.addEventListener('dragend',()=>{board.drag=null;});
+  // Without dragging (touch, keyboard): pick the type, then tap the group to move it to.
+  const pick=event=>{event?.stopPropagation?.();board.picked=board.picked===type.code?null:type.code;paintBoard();};
+  item.addEventListener('click',pick);
+  item.addEventListener('keydown',event=>{if(event.key==='Enter'||event.key===' '){event.preventDefault?.();pick(event);}});
+  item.append(bnode('span',typeName(type),'prompt-board-chip-label'));return item;
+ }
+ // A tap on a group (or the split zone) places the picked type there.
+ function pickTarget(element,target){
+  element.addEventListener('click',()=>{if(!board.picked)return;const code=board.picked;board.picked=null;place(code,target);});
+ }
+ function dropZone(element,target){
+  element.addEventListener('dragover',event=>{event.preventDefault?.();element.classList.add('over');});
+  element.addEventListener('dragleave',()=>element.classList.remove('over'));
+  element.addEventListener('drop',event=>{event.preventDefault?.();element.classList.remove('over');
+   const code=board.drag||event.dataTransfer?.getData?.('text/plain');board.drag=null;if(code)place(code,target);});
+ }
+ function place(code,target){
+  if(window.hasUnsavedPromptEdits?.())return boardError('มีข้อความที่ยังไม่บันทึก กรุณาบันทึกหรือยกเลิกการแก้ไขก่อน');
+  boardError('');
+  if(target==='__split')return splitType(code);
+  const home=board.data.groups.find(g=>g.types.some(t=>t.code===code))?.id;
+  if(target===home)board.moves.delete(code);else board.moves.set(code,target);
+  paintBoard();
+ }
+ function editingNote(text){B('promptBoardEditing').textContent=text||'';B('promptBoardEditing').hidden=!text;}
+ function selectGroup(id){
+  if(board.moves.size)return boardError('บันทึกหรือยกเลิกการย้ายประเภทก่อนแก้ข้อความ');
+  if(window.hasUnsavedPromptEdits?.()){
+   if(board.selected===id&&!board.split)return;
+   return boardError('มีข้อความที่ยังไม่บันทึก กรุณาบันทึกหรือยกเลิกการแก้ไขก่อน');
+  }
+  const group=board.data.groups.find(g=>g.id===id);if(!group)return;
+  boardError('');board.selected=id;board.split=null;paintBoard();
+  editingNote('กำลังแก้ก้อน '+groupName(group)+' · บันทึกแล้วมีผลกับงานใหม่ของ '+group.types.map(typeName).join(', '));
+  B('promptType').value=group.types[0].code;return main.load(board.labels,true);
+ }
+ function splitType(code){
+  if(board.moves.size)return boardError('บันทึกหรือยกเลิกการย้ายประเภทก่อนแยกออกมาแก้');
+  const group=board.data.groups.find(g=>g.types.some(t=>t.code===code)),type=group.types.find(t=>t.code===code);
+  if(group.types.length===1){const loading=selectGroup(group.id);boardError(typeName(type)+' อยู่ก้อนของตัวเองแล้ว แก้ข้อความด้านล่างได้เลย');return loading;}
+  board.selected=group.id;board.split=code;paintBoard();
+  editingNote('แยก '+typeName(type)+' ออกจากก้อน '+groupName(group)+' · แก้ให้ต่างจากเดิมแล้วบันทึก '+typeName(type)+' จะเป็นก้อนของตัวเอง ถ้ายังเหมือนเดิมจะอยู่ก้อนเดิม');
+  B('promptType').value=code;return main.load(board.labels,true);
+ }
+ async function loadBoard(focusCode){
+  if(board.loading)return;board.loading=true;B('promptBoardRefresh').disabled=true;
+  try{
+   const response=await fetch(window.USER_BASE+'/api/user/prompt-groups'),data=await response.json();
+   if(!response.ok)throw new Error(data.error||'โหลดก้อน prompt ไม่สำเร็จ ('+response.status+')');
+   const changed=board.data&&board.data.revision!==data.revision;board.data=data;board.picked=null;boardError('');
+   for(const [code,target]of board.moves)if(changed||!data.groups.some(g=>g.id===target))board.moves.delete(code);
+   const keep=focusCode?groupOf(focusCode):board.selected&&data.groups.some(g=>g.id===board.selected)?board.selected:null;
+   const first=keep||data.groups.find(g=>g.configured)?.id||data.groups[0]?.id;
+   if(board.moves.size){paintBoard();return;}
+   board.split=null;board.selected=null;paintBoard();if(first)await selectGroup(first);
+  }catch(err){boardError(err.message);}
+  finally{board.loading=false;B('promptBoardRefresh').disabled=false;}
+ }
+ function reviewMoves(){
+  if(!board.moves.size)return;
+  const list=B('promptMovesList');list.replaceChildren();
+  for(const [code,target]of board.moves){
+   const group=board.data.groups.find(g=>g.id===target),from=board.data.groups.find(g=>g.types.some(t=>t.code===code));
+   const type=from.types.find(t=>t.code===code),section=bnode('section');
+   section.append(bnode('h3',type.label),bnode('p','จาก '+groupName(from)+' → ใช้แบบเดียวกับ '+group.types.map(typeName).join(', ')+' ('+groupName(group)+')','small'),
+     bnode('p','ฟิลด์ '+(from.field_count!==group.field_count?from.field_count+' → ':'')+group.field_count+
+       ' · Required '+(from.required.length!==group.required.length?from.required.length+' → ':'')+group.required.length+
+       ' · '+group.question_count+' คำถาม','muted small'));
+   list.append(section);
+  }
+  B('promptMovesMessage').hidden=true;B('promptMovesDialog').showModal();
+ }
+ let movesSaving=false;
+ B('promptMovesSave').addEventListener('click',async()=>{
+  if(movesSaving||!board.moves.size)return;movesSaving=true;B('promptMovesSave').disabled=true;B('promptMovesCancel').disabled=true;
+  B('promptMovesMessage').className='message';B('promptMovesMessage').textContent='กำลังบันทึก…';B('promptMovesMessage').hidden=false;
+  try{
+   const response=await fetch(window.USER_BASE+'/api/user/prompt-groups/moves',{method:'POST',
+     headers:{'Content-Type':'application/json','X-OCR-User-Token':window.USER_API_TOKEN},
+     body:JSON.stringify({revision:board.data.revision,moves:Object.fromEntries(board.moves)})});
+   const data=await response.json();if(!response.ok)throw new Error(data.error||'ย้ายประเภทไม่สำเร็จ');
+   const focus=[...board.moves.keys()][0];board.moves.clear();B('promptMovesDialog').close();await loadBoard(focus);
+  }catch(err){B('promptMovesMessage').className='message error';B('promptMovesMessage').textContent=err.message;}
+  finally{movesSaving=false;B('promptMovesSave').disabled=false;B('promptMovesCancel').disabled=false;}
+ });
+ B('promptMovesCancel').addEventListener('click',()=>{if(!movesSaving)B('promptMovesDialog').close();});
+ B('promptBoardReview').addEventListener('click',reviewMoves);
+ B('promptBoardUndo').addEventListener('click',()=>{board.moves.clear();boardError('');paintBoard();});
+ B('promptBoardRefresh').addEventListener('click',()=>loadBoard());
+ const main=createEditor('',{board:{revision:()=>board.data.revision,
+   codes:()=>board.split?[board.split]:members(board.selected).map(t=>t.code),saved:code=>loadBoard(code)}});
+ window.hasUnsavedPromptEdits=()=>main.dirty();
+ window.loadUserPrompts=labels=>{if(labels)board.labels=labels;return loadBoard();};
  let source=null,onRetry=null;
  const inline=createEditor('job_', {job:()=>source,onRetry:job=>onRetry?.(job)});
  window.hasUserJobPromptEdits=()=>inline.dirty();

@@ -146,6 +146,14 @@ class UserStore:
         with self.connect() as db:
             return userpromptsets.save_fields(db, body)
 
+    def move_prompt_types(self, body):
+        with self.connect() as db:
+            return userpromptsets.move_types(db, body)
+
+    def save_prompt_group(self, body):
+        with self.connect() as db:
+            return userpromptsets.save_group(db, body)
+
     def prompt_set_history(self, set_id):
         with self.connect() as db:
             return [dict(row) | {'payload':json.loads(row['payload'])} for row in db.execute(

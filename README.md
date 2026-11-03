@@ -2038,10 +2038,28 @@ one type and keeps its Required list. It rejects stale edits with 409, and inval
 linked selections, Required fields that are not enabled core fields, and conflicting
 JSON destinations with 400 naming the type.
 
-The **Hybrid prompts** page in `/user` shows which fields are requested together
-for each document type. It loads
-`GET /api/user/hybrid-prompts?doc_type=INVOICE` on demand. Unconfigured recognized
-types show their actual current form and the source-set chooser. Questions come from the same
+The **Hybrid prompts** page in `/user` opens on a board of **prompt groups**. A group
+is every User or extra type asked exactly the same: the same Hybrid questions, fields,
+Required list and wording (`userpromptsets.fingerprint`). Anything different is
+another group, whichever sets the types are bound to, so 380 and 388 sharing the
+Invoice set but differing in built-in Required are two groups. Dragging a type
+onto another group (or choosing it in the type's menu, for touch and keyboards)
+stages a move; **ตรวจและบันทึก** lists them and `POST /api/user/prompt-groups/moves`
+`{revision, moves:{CODE: group_id}}` applies all or none: the target group, with the
+moved types, is written as one set of its own with an explicit Required list, so a
+moved type is asked exactly what the group is asked, and nothing else changes.
+Clicking a group edits its wording for every type in it; dropping a type on
+**แยกออกมาแก้** edits that type alone, and once saved different from the group it
+becomes its own group (saved unchanged, it stays where it was).
+`POST /api/user/prompt-groups/save` `{revision, doc_types, value}` takes a whole
+group or one type. Types outside `doc_types` never change, even when they share
+the set. Fields and Required are chosen in the Doc types matrix; the board's
+editor changes wording and extra questions only. Unconfigured types are edited
+from their built-in form (`?template=1`); the first save names that set ชุดพื้นฐาน.
+`GET /api/user/prompt-groups` returns the groups and the revision.
+
+The editor below the board loads
+`GET /api/user/hybrid-prompts?doc_type=INVOICE&template=1` on demand. Questions come from the same
 Hybrid step and message builders used by extraction, with an OCR placeholder
 instead of an uploaded document. Current extras/schema-first settings are shown;
 opening the page does not run a model or change settings. This is a current

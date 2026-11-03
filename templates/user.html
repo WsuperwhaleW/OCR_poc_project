@@ -121,7 +121,16 @@
     </section>
     <section id="promptsView" hidden aria-labelledby="promptsTitle">
       <div class="intro"><span class="eyebrow">HYBRID PROMPTS</span><h1 id="promptsTitle">แต่ละเอกสารถามอะไรพร้อมกันบ้าง</h1><p class="muted">แต่ละกล่องคือหนึ่งคำถามที่ส่งให้โมเดล ฟิลด์ในกล่องเดียวกันจะถูกถามพร้อมกัน</p></div>
-      <div class="card">{% with prompt_id_prefix='' %}{% include '_user_prompt_workbench.html' %}{% endwith %}</div>
+      <div class="card prompt-board-card">
+        <div class="toolbar"><h2>ก้อน prompt</h2><button id="promptBoardRefresh" type="button" class="subtle">รีเฟรช</button></div>
+        <p class="catalog-note">ประเภทที่ถามฟิลด์ Required และข้อความเหมือนกันทุกอย่างอยู่ก้อนเดียวกัน ลากประเภทไปก้อนอื่นเพื่อใช้แบบเดียวกัน ลากไปช่อง “แยกออกมาแก้” เพื่อแก้เฉพาะประเภทนั้น หรือกดที่ก้อนเพื่อแก้ข้อความของทั้งก้อน เลือกฟิลด์และ Required ได้ที่ Doc types ของ User</p>
+        <p id="promptBoardError" class="message error" role="alert" hidden></p>
+        <p id="promptBoardHint" class="message prompt-board-hint" role="status" hidden></p>
+        <div id="promptBoardBar" class="user-fields-bar" hidden><span id="promptBoardBarText"></span><button id="promptBoardUndo" type="button" class="subtle">ยกเลิกการย้าย</button><button id="promptBoardReview" type="button" class="primary">ตรวจและบันทึก…</button></div>
+        <div id="promptBoard" class="prompt-board"></div>
+      </div>
+      <p id="promptBoardEditing" class="message prompt-board-editing" role="status" hidden></p>
+      <div class="card prompt-board-editor">{% with prompt_id_prefix='' %}{% include '_user_prompt_workbench.html' %}{% endwith %}</div>
     </section>
   </main>
   <dialog id="userFieldsEditor" class="user-fields-editor" aria-labelledby="userFieldsTitle">
@@ -133,6 +142,14 @@
     <div class="user-fields-body">
       <div id="userFieldsTable"></div>
     </div>
+  </dialog>
+  <dialog id="promptMovesDialog" class="user-fields-editor" aria-labelledby="promptMovesTitle">
+    <div class="user-fields-toolbar">
+      <div><h2 id="promptMovesTitle">ยืนยันการย้ายประเภท</h2><p class="muted small">ประเภทที่ย้ายจะถามฟิลด์ Required และข้อความตามก้อนปลายทาง มีผลกับงานใหม่เท่านั้น งานเก่ายังใช้ชุดที่บันทึกไว้กับงานนั้น</p></div>
+      <div class="toolbar"><button id="promptMovesCancel" type="button" class="subtle">กลับไปแก้ต่อ</button><button id="promptMovesSave" type="button" class="primary">ยืนยันบันทึก</button></div>
+    </div>
+    <p id="promptMovesMessage" class="message" role="status" hidden></p>
+    <div class="user-fields-body"><div id="promptMovesList" class="user-fields-review"></div></div>
   </dialog>
   <footer>OCR <span>ผลลัพธ์จาก AI ควรตรวจสอบกับเอกสารต้นฉบับ</span></footer>
   <script>

@@ -169,6 +169,101 @@ class UserPromptSetTests(unittest.TestCase):
         record = userpromptsets.select(self.store.prompt_set_snapshot(), ['INVOICE'])[0][1]
         self.assertEqual(record['value']['required_fields'], ['payer_name'])
 
+    def board(self):
+        data = self.client.get('/api/user/prompt-groups').json
+        where = {t['code']:g['id'] for g in data['groups'] for t in g['types']}
+        return data, where
+
+    def group_codes(self, data, group_id):
+        return [t['code'] for g in data['groups'] if g['id'] == group_id for t in g['types']]
+
+    def test_prompt_groups_are_types_asked_exactly_the_same(self):
+        data, where = self.board()
+        self.assertEqual({t['code'] for g in data['groups'] for t in g['types']}, set(prompts.TYPE_NAMES))
+        self.assertEqual(where['INVOICE'], where['INVOICE_TAX_INVOICE'])
+        self.assertEqual(where['DEBIT_NOTE'], where['CANCELLATION_NOTE'])
+        # Same set, different built-in Required: not the same group.
+        self.assertNotEqual(where['INVOICE'], where['TAX_INVOICE'])
+        self.assertEqual(where['TAX_INVOICE'], where['DELIVERY_TAX_INVOICE'])
+        # Equal content on two different sets is still one group.
+        self.save_matrix({'TAX_INVOICE':{'enabled_keys':['document_number'], 'required_keys':['document_number']},
+                          'DELIVERY_TAX_INVOICE':{'enabled_keys':['document_number'], 'required_keys':['document_number']}})
+        state = self.store.prompt_set_snapshot()
+        self.assertNotEqual(state['bindings']['TAX_INVOICE']['set_id'], state['bindings']['DELIVERY_TAX_INVOICE']['set_id'])
+        data, where = self.board()
+        self.assertEqual(where['TAX_INVOICE'], where['DELIVERY_TAX_INVOICE'])
+        self.assertNotEqual(where['TAX_INVOICE'], where['ABBREVIATED_TAX_INVOICE'])
+
+    def test_moving_a_type_into_a_group_asks_it_exactly_what_the_group_is_asked(self):
+        data, where = self.board()
+        before = self.store.prompt_set_snapshot()
+        target = where['INVOICE']
+        response = self.client.post('/ocr/api/user/prompt-groups/moves', json={'revision':data['revision'],
+            'moves':{'CREDIT_NOTE':target, 'DEBIT_NOTE':target}})
+        self.assertEqual(response.status_code, 200, response.json)
+        after, where = self.board()
+        self.assertEqual({where[c] for c in ('INVOICE','INVOICE_TAX_INVOICE','CREDIT_NOTE','DEBIT_NOTE')}, {target})
+        self.assertEqual(next(g for g in after['groups'] if g['id'] == target)['required'],
+                         next(g for g in data['groups'] if g['id'] == target)['required'])
+        # Types left in their old groups, and types sharing the old set, keep what they had.
+        state = self.store.prompt_set_snapshot()
+        for code in ('TAX_INVOICE','DELIVERY_TAX_INVOICE','CANCELLATION_NOTE'):
+            self.assertEqual(userpromptsets.fingerprint(state, code), userpromptsets.fingerprint(before, code))
+        result = self.extract(['CREDIT_NOTE'])
+        self.assertEqual(result['classified']['mandatory'], next(g for g in after['groups'] if g['id'] == target)['required'])
+        for body, status in (({'revision':'stale', 'moves':{'RECEIPT':target}}, 409),
+                             ({'revision':after['revision'], 'moves':{'RECEIPT':'nope'}}, 400),
+                             ({'revision':after['revision'], 'moves':{}}, 400)):
+            with self.subTest(body=body):
+                self.assertEqual(self.client.post('/api/user/prompt-groups/moves', json=body).status_code, status)
+        self.assertEqual(self.board()[0]['revision'], after['revision'])
+
+    def test_saving_a_group_reaches_every_type_in_it_and_nothing_else_and_one_type_can_split_out(self):
+        data, where = self.board()
+        codes = self.group_codes(data, where['INVOICE'])
+        reference = self.client.get('/api/user/hybrid-prompts', query_string={'doc_type':codes[0], 'template':'1'}).json
+        value = copy.deepcopy(reference['editor']['value'])
+        value['instructions']['document_number'] = 'GROUP RULE'
+        response = self.client.post('/ocr/api/user/prompt-groups/save', json={'revision':data['revision'], 'doc_types':codes, 'value':value})
+        self.assertEqual(response.status_code, 200, response.json)
+        state = self.store.prompt_set_snapshot()
+        for code in codes:
+            self.assertIn('GROUP RULE', json.dumps(userpromptsets.effective(state, code)[0]))
+        # 388 shared the same set but is another group (different Required): unchanged.
+        self.assertNotIn('GROUP RULE', json.dumps(userpromptsets.effective(state, 'TAX_INVOICE')[0]))
+        data, where = self.board()
+        self.assertEqual(self.group_codes(data, where['INVOICE']), codes)
+        # Part of a group is rejected; one type alone splits out.
+        self.assertEqual(self.client.post('/api/user/prompt-groups/save', json={'revision':data['revision'],
+            'doc_types':['TAX_INVOICE','DELIVERY_TAX_INVOICE'], 'value':value}).status_code, 400)
+        value['instructions']['document_number'] = 'T02 ONLY'
+        response = self.client.post('/api/user/prompt-groups/save', json={'revision':data['revision'],
+            'doc_types':['INVOICE_TAX_INVOICE'], 'value':value})
+        self.assertEqual(response.status_code, 200, response.json)
+        self.assertTrue(response.json['name'].startswith('T02'))
+        data, where = self.board()
+        self.assertNotEqual(where['INVOICE_TAX_INVOICE'], where['INVOICE'])
+        state = self.store.prompt_set_snapshot()
+        self.assertIn('GROUP RULE', json.dumps(userpromptsets.effective(state, 'INVOICE')[0]))
+
+    def test_an_unconfigured_group_is_editable_from_its_built_in_form(self):
+        data, where = self.board()
+        codes = self.group_codes(data, where['DEBIT_NOTE'])
+        reference = self.client.get('/api/user/hybrid-prompts', query_string={'doc_type':'DEBIT_NOTE', 'template':'1'}).json
+        self.assertEqual(reference['library']['record']['id'], userpromptsets.TEMPLATE_ID)
+        preview = self.client.post('/api/user/hybrid-prompts/preview', json={'doc_type':'DEBIT_NOTE',
+            'set_id':userpromptsets.TEMPLATE_ID, 'value':reference['editor']['value']})
+        self.assertEqual(preview.status_code, 200, preview.json)
+        before = self.store.prompt_set_snapshot()
+        response = self.client.post('/api/user/prompt-groups/save', json={'revision':data['revision'], 'doc_types':codes,
+                                                                       'value':reference['editor']['value']})
+        self.assertEqual(response.status_code, 200, response.json)
+        self.assertEqual(response.json['name'], 'ชุดพื้นฐาน')
+        state = self.store.prompt_set_snapshot()
+        for code in codes:
+            self.assertEqual(userpromptsets.fingerprint(state, code), userpromptsets.fingerprint(before, code))
+        self.assertEqual(sorted(self.group_codes(*[self.board()[0], self.board()[1]['DEBIT_NOTE']])), sorted(codes))
+
     def test_matrix_rejects_bad_required_fields_and_saves_nothing(self):
         self.change('RECEIPT', value={'extra_groups':[{'id':'extra_sales','title':'Sales','fields':[
             {'key':'receipt_sales','instruction':'Read the sales name.','target':'salesman'}]}]})

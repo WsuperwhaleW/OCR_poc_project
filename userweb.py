@@ -83,8 +83,39 @@ def register(application, engine):
             except ValueError as err:
                 return jsonify(error=str(err)), 400
         try:
+            if request.args.get('template') == '1':
+                # The group board edits what a type is asked now, configured or not.
+                cfg['prompt_sets'], source = userpromptsets.with_template(cfg['prompt_sets'], codes[0])
+                data = set_reference(codes[0], cfg, source)
+                data['library']['source_selected'] = False
+                return jsonify(data)
             return jsonify(set_reference(codes[0], cfg, request.args.get('source_set_id')))
         except ValueError as err:
+            return jsonify(error=str(err)), 400
+
+    @application.get('/api/user/prompt-groups')
+    def user_prompt_groups():
+        state = service().store.prompt_set_snapshot()
+        return jsonify(groups=userpromptsets.prompt_groups(state), revision=userpromptsets.field_revision(state))
+
+    @application.post('/api/user/prompt-groups/moves')
+    def user_move_prompt_types():
+        try:
+            records = service().store.move_prompt_types(request.get_json(silent=True))
+            return jsonify(saved=[{'set_id':r['id'], 'revision':r['revision'], 'name':r['name']} for r in records])
+        except userpromptsets.Conflict as err:
+            return jsonify(error=str(err)), 409
+        except (ValueError, TypeError) as err:
+            return jsonify(error=str(err)), 400
+
+    @application.post('/api/user/prompt-groups/save')
+    def user_save_prompt_group():
+        try:
+            record = service().store.save_prompt_group(request.get_json(silent=True))
+            return jsonify(set_id=record['id'], revision=record['revision'], name=record['name'])
+        except userpromptsets.Conflict as err:
+            return jsonify(error=str(err)), 409
+        except (ValueError, TypeError) as err:
             return jsonify(error=str(err)), 400
 
     def set_reference(code, cfg, source_id=None, codes_override=None):
@@ -152,15 +183,9 @@ def register(application, engine):
                     {'key': key, 'target': targets.get(key, userprompts.CORE_TARGETS.get(key, ''))}
                     for key in step['keys']]})
             # What extraction will treat as Required: the User's list, else built-in.
-            builtin = list(engine.prompts.mandatory_for_types(codes))
-            required = set(builtin)
-            if selected:
-                required = set()
-                for _, record in selected:
-                    supplied = [k for step in table if step.get('user_prompt_set_id') == record['id'] for k in step['keys']]
-                    required |= userpromptsets.required_keys(record, supplied, builtin)
+            _, required = userpromptsets.effective(state, row['code'])
             types.append({**row, 'groups': groups, 'choices':choices,
-                'mandatory': [k for k in engine.prompts._SCALAR_KEYS if k in required],
+                'mandatory': required,
                 'field_count': len({key for step in table for key in step['keys']}),
                 'sets': [{'id': record['id'], 'name': record['name'], 'revision': record['revision'],
                           'shared_types': [item['user_code'] for item in catalog
@@ -209,6 +234,8 @@ def register(application, engine):
             code, set_id = body['doc_type'], body['set_id']
             if body.get('job_id') and code not in prompt_types_for_job(job_or_404(body['job_id']))[0]:
                 raise ValueError('แก้ได้เฉพาะประเภทที่พบในงานนี้')
+            if set_id == userpromptsets.TEMPLATE_ID and not body.get('job_id'):
+                cfg['prompt_sets'] = snapshot = userpromptsets.with_template(snapshot, code)[0]
             record = snapshot['sets'][set_id]
             record['value'] = userpromptsets.validate(record['base_code'], body['value'], record['base_steps'])
             record['steps'] = userpromptsets.compile_record(record)

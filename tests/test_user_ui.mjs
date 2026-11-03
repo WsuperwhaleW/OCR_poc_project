@@ -45,75 +45,92 @@ function promptSetData(code='INVOICE'){
       sets:[{id:record.id,name:record.name,revision:2}],types:[{code,label:code}]}};
 }
 
-test('whole-set editor displays shared impact, previews disabled fields and saves an independent copy',async()=>{
-  const {el,document}=dom(),walk=e=>[e,...e.children.flatMap(walk)],timers=new Map();let seq=0;
-  const data=promptSetData('INVOICE_TAX_INVOICE'),requests=[];
-  const context=vm.createContext({document,setTimeout:fn=>{timers.set(++seq,fn);return seq;},clearTimeout:id=>timers.delete(id),
-    window:{USER_BASE:'/ocr',USER_API_TOKEN:'proof'},fetch:async(url,opts={})=>{
-      if(opts.method==='POST'){
-        const body=JSON.parse(opts.body);requests.push({url,body});
-        if(url.endsWith('/preview')){const preview=clean(data);preview.groups[0].enabled=false;preview.groups[0].question='';return response(preview);}
-        return response({record:{id:'new-set',revision:1}});
-      }
-      return response(clean(data));
-    }});
-  el('promptType').value='INVOICE_TAX_INVOICE';vm.runInContext(promptsSource,context);
-  await context.window.loadUserPrompts();
-  assert.match(el('promptSharedTypes').textContent,/380.*T02/);
-  assert.match(el('promptSetImpact').textContent,/งานใหม่ของ.*380/);
-  el('promptSetAction').value='detach';el('promptSetAction').listeners.change();
-  assert.match(el('promptSetImpact').textContent,/คัดลอกทั้งชุด/);
-  el('promptSetName').value='T02 only';el('promptSetName').listeners.input();
-  const toggle=walk(el('promptsContent')).find(e=>e['aria-label']==='เปิดฟิลด์ document_number');
-  toggle.checked=false;toggle.listeners.change();
-  await [...timers.values()].at(-1)();
-  assert.match(el('promptsNotice').textContent,/0 คำถาม/);
-  assert.ok(walk(el('promptsContent')).some(e=>e.tag==='pre'&&e.textContent==='ปิดก้อนนี้ · ไม่ส่งคำถาม'));
-  await el('promptSave').listeners.click();
-  const saved=requests.find(r=>r.url==='/ocr/api/user/prompt-sets').body;
-  assert.equal(saved.action,'detach');assert.equal(saved.doc_type,'INVOICE_TAX_INVOICE');
-  assert.equal(saved.name,'T02 only');assert.deepEqual(saved.value.disabled_fields,['document_number']);
-  assert.equal(saved.binding_revision,0);assert.equal(saved.revision,2);
+function boardData(){return {revision:'board-1',groups:[
+  {id:'g-inv',names:['Invoice (Sup&Pay)'],configured:true,question_count:4,field_count:13,required:['document_number'],
+   types:[{code:'INVOICE',user_code:'380',label:'380 · ใบแจ้งหนี้',section:'user'},
+     {code:'INVOICE_TAX_INVOICE',user_code:'T02',label:'T02 · ใบแจ้งหนี้/ใบกำกับภาษี',section:'user'}]},
+  {id:'g-cn',names:['Credit Note (Sup&Pay)'],configured:true,question_count:4,field_count:13,required:[],
+   types:[{code:'CREDIT_NOTE',user_code:'81',label:'81 · ใบลดหนี้',section:'user'}]},
+  {id:'g-base',names:['ชุดพื้นฐาน · ยังไม่กำหนดชุด'],configured:false,question_count:15,field_count:34,required:[],
+   types:[{code:'DEBIT_NOTE',user_code:'80',label:'80 · ใบเพิ่มหนี้',section:'user'}]}]};}
+function boardOne(code){return {revision:'b',groups:[{id:'g',names:['Set'],configured:true,question_count:1,field_count:1,required:[],
+  types:[{code,user_code:code,label:code,section:'user'}]}]};}
+const dragEvent=code=>({preventDefault(){},dataTransfer:{setData(){},getData:()=>code}});
+
+test('prompt board groups types, moves them by drag or menu, and confirms before saving the moves',async()=>{
+  const {el,document}=dom(),walk=e=>[e,...e.children.flatMap(walk)],requests=[];let boardReads=0,conflict=true;
+  const fetch=async(url,opts={})=>{
+    if(url.endsWith('/prompt-groups')){boardReads++;return response(boardData());}
+    if(url.endsWith('/prompt-groups/moves')){requests.push(JSON.parse(opts.body));
+      return conflict?{ok:false,status:409,json:async()=>({error:'ก้อน prompt เปลี่ยนไปแล้ว'})}:response({saved:[]});}
+    if(url.includes('/hybrid-prompts?'))return response(clean(promptSetData(url.split('doc_type=')[1].split('&')[0])));
+    return response({});
+  };
+  const ctx=vm.createContext({document,setTimeout:()=>1,clearTimeout(){},window:{USER_BASE:'/ocr',USER_API_TOKEN:'proof'},fetch});
+  vm.runInContext(promptsSource,ctx);await ctx.window.loadUserPrompts({});await settle();
+  const cards=()=>el('promptBoard').children;
+  const chips=card=>walk(card).filter(e=>/^prompt-board-chip( moved)?$/.test(e.className||''));
+  assert.equal(cards().length,4);
+  assert.deepEqual(chips(cards()[0]).map(c=>c.title),['380 · ใบแจ้งหนี้','T02 · ใบแจ้งหนี้/ใบกำกับภาษี']);
+  assert.match(el('promptBoardEditing').textContent,/กำลังแก้ก้อน Invoice \(Sup&Pay\).*380, T02/);
+  assert.equal(el('promptLibrary').hidden,true);
+  chips(cards()[1])[0].listeners.dragstart(dragEvent('CREDIT_NOTE'));cards()[0].listeners.drop(dragEvent('CREDIT_NOTE'));
+  assert.equal(chips(cards()[0]).length,3);assert.equal(chips(cards()[1]).length,0);
+  assert.equal(el('promptBoardBar').hidden,false);assert.match(el('promptBoardBarText').textContent,/ย้าย 1 ประเภท/);
+  // Without dragging: tap a type, then tap the group. Moving back home cancels that move.
+  const tap={stopPropagation(){}};
+  const chipOf=code=>walk(el('promptBoard')).find(e=>typeof e['aria-label']==='string'&&e['aria-label'].startsWith(code+' · กดเพื่อเลือก'));
+  assert.ok(!walk(el('promptBoard')).some(e=>e.tag==='select'));
+  chipOf('80').listeners.click(tap);assert.equal(el('promptBoardHint').hidden,false);assert.match(el('promptBoardHint').textContent,/เลือก 80 แล้ว/);
+  assert.equal(chipOf('80')['aria-pressed'],'true');
+  cards()[0].listeners.click();assert.match(el('promptBoardBarText').textContent,/ย้าย 2/);assert.equal(el('promptBoardHint').hidden,true);
+  chipOf('80').listeners.click(tap);cards()[2].listeners.click();assert.match(el('promptBoardBarText').textContent,/ย้าย 1/);
+  chipOf('380').listeners.click(tap);chipOf('380').listeners.click(tap);assert.equal(el('promptBoardHint').hidden,true);
+  chipOf('380').listeners.keydown({key:'Enter',preventDefault(){},stopPropagation(){}});assert.match(el('promptBoardHint').textContent,/เลือก 380/);
+  chipOf('380').listeners.click(tap);
+  walk(cards()[1]).find(e=>e.className==='prompt-board-head').listeners.click();
+  assert.match(el('promptBoardError').textContent,/บันทึกหรือยกเลิกการย้าย/);
+  el('promptBoardReview').listeners.click();assert.equal(el('promptMovesDialog').open,true);
+  const text=walk(el('promptMovesList')).map(e=>e.textContent).join('\n');
+  assert.match(text,/81 · ใบลดหนี้/);assert.match(text,/ใช้แบบเดียวกับ 380, T02/);
+  await el('promptMovesSave').listeners.click();
+  assert.equal(el('promptMovesDialog').open,true);assert.match(el('promptMovesMessage').textContent,/เปลี่ยนไปแล้ว/);
+  conflict=false;await el('promptMovesSave').listeners.click();await settle();
+  assert.deepEqual(requests.at(-1),{revision:'board-1',moves:{CREDIT_NOTE:'g-inv'}});
+  assert.equal(el('promptMovesDialog').open,false);assert.equal(el('promptBoardBar').hidden,true);assert.equal(boardReads,2);
 });
 
-test('an unconfigured User type chooses a source without saving and defaults to copying the whole set',async()=>{
-  const {el,document}=dom();const calls=[],data=promptSetData('DELIVERY_TAX_INVOICE');
-  const initial=clean(data);initial.editor=null;initial.library.record=null;initial.library.binding={set_id:null,revision:0};
-  const context=vm.createContext({document,setTimeout:()=>1,clearTimeout(){},window:{USER_BASE:'',USER_API_TOKEN:'proof'},
-    fetch:async(url,opts={})=>{calls.push({url,...opts});
-      if(opts.method==='POST')return response({record:{id:'copy',revision:1}});
-      const selected=clean(data);selected.library.source_selected=true;selected.library.binding={set_id:null,revision:0};
-      return response(url.includes('source_set_id=')?selected:clean(initial));
-    }});
-  el('promptType').value='DELIVERY_TAX_INVOICE';vm.runInContext(promptsSource,context);await context.window.loadUserPrompts();
-  assert.match(el('promptSetInfo').textContent,/ยังไม่มีชุดเฉพาะ/);
-  el('promptSourceSet').value='invoice-set';await el('promptUseSource').listeners.click();
-  // The listener starts the async load; flush its response before checking.
-  await settle();
-  assert.ok(calls.some(r=>r.url.includes('source_set_id=invoice-set')));
-  assert.equal(calls.filter(r=>r.method==='POST').length,0);
-  assert.equal(el('promptSetAction').value,'detach');
-  assert.equal(el('promptSave').disabled,false);
-  el('promptReset').listeners.click();assert.equal(el('promptSetAction').value,'detach');
-  await el('promptSave').listeners.click();
-  assert.equal(JSON.parse(calls.find(r=>r.url==='/api/user/prompt-sets').body).action,'detach');
-});
-
-test('source sharing text follows detach, bind and shared edit actions without suggesting a copy is shared',async()=>{
-  const {el,document}=dom(),data=promptSetData('DELIVERY_TAX_INVOICE');
-  data.library.source_selected=true;
-  data.library.types=[{code:'DELIVERY_TAX_INVOICE',user_code:'T04',label:'T04 · ใบส่งของ/ใบกำกับภาษี'}];
-  data.library.shared_types.push({code:'DELIVERY_TAX_INVOICE',label:'T04 · ใบส่งของ/ใบกำกับภาษี'});
-  const ctx=vm.createContext({document,setTimeout:()=>1,clearTimeout(){},window:{USER_BASE:'',USER_API_TOKEN:'proof'},
-    fetch:async()=>response(clean(data))});
-  el('promptType').value='DELIVERY_TAX_INVOICE';vm.runInContext(promptsSource,ctx);await ctx.window.loadUserPrompts();
-  assert.equal(el('promptSharedTypes').textContent,'คัดลอกจาก Invoice shared · หลังบันทึก T04 ใช้ชุดของตัวเอง');
-  assert.doesNotMatch(el('promptSharedTypes').textContent,/ใช้ชุดเดียวกัน/);
-  el('promptSetAction').value='bind';el('promptSetAction').listeners.change();
-  assert.match(el('promptSharedTypes').textContent,/หลังบันทึก T04 จะใช้ชุดร่วมกับ 380.*T02/);
-  assert.doesNotMatch(el('promptSharedTypes').textContent,/T04 ·/);
-  el('promptSetAction').value='shared';el('promptSetAction').listeners.change();
-  assert.match(el('promptSharedTypes').textContent,/^ใช้ชุดเดียวกัน: 380.*T02.*T04/);
+test('a group saves wording for every type in it, a split saves one type, and unsaved text blocks switching',async()=>{
+  const {el,document}=dom(),walk=e=>[e,...e.children.flatMap(walk)],saves=[],loads=[];
+  const fetch=async(url,opts={})=>{
+    if(url.endsWith('/prompt-groups'))return response(boardData());
+    if(url.endsWith('/prompt-groups/save')){saves.push({url,...opts,body:JSON.parse(opts.body)});return response({set_id:'s',revision:3});}
+    if(url.includes('/hybrid-prompts?')){loads.push(url);return response(clean(promptSetData(url.split('doc_type=')[1].split('&')[0])));}
+    return response({});
+  };
+  const ctx=vm.createContext({document,setTimeout:()=>1,clearTimeout(){},window:{USER_BASE:'/ocr',USER_API_TOKEN:'proof'},fetch});
+  vm.runInContext(promptsSource,ctx);await ctx.window.loadUserPrompts({});await settle();
+  assert.equal(loads[0],'/ocr/api/user/hybrid-prompts?doc_type=INVOICE&template=1');
+  const nodes=()=>walk(el('promptsContent')),find=text=>nodes().find(e=>e.textContent===text);
+  assert.ok(!nodes().some(e=>e['aria-label']==='เปิดฟิลด์ document_number'));
+  const edit=async value=>{find('แก้ไขวิธีอ่านตัวแปร').listeners.click();
+    const area=nodes().find(e=>e['aria-label']==='วิธีอ่าน document_number');area.value=value;area.listeners.input();};
+  await edit('Group rule');
+  const cards=()=>el('promptBoard').children;
+  walk(cards()[1]).find(e=>e.className==='prompt-board-head').listeners.click();
+  assert.match(el('promptBoardError').textContent,/ยังไม่บันทึก/);assert.equal(loads.length,1);
+  await el('promptSave').listeners.click();await settle();
+  assert.equal(saves[0].headers['X-OCR-User-Token'],'proof');
+  assert.deepEqual(saves[0].body.doc_types,['INVOICE','INVOICE_TAX_INVOICE']);assert.equal(saves[0].body.revision,'board-1');
+  assert.equal(saves[0].body.value.instructions.document_number,'Group rule');
+  cards().at(-1).listeners.drop(dragEvent('INVOICE_TAX_INVOICE'));await settle();
+  assert.match(el('promptBoardEditing').textContent,/แยก T02 ออกจากก้อน Invoice/);
+  assert.equal(loads.at(-1),'/ocr/api/user/hybrid-prompts?doc_type=INVOICE_TAX_INVOICE&template=1');
+  await edit('T02 only');await el('promptSave').listeners.click();
+  assert.deepEqual(saves[1].body.doc_types,['INVOICE_TAX_INVOICE']);
+  // A type alone in its group is edited in place rather than split.
+  cards().at(-1).listeners.drop(dragEvent('CREDIT_NOTE'));await settle();
+  assert.match(el('promptBoardError').textContent,/81 อยู่ก้อนของตัวเองแล้ว/);assert.match(el('promptBoardEditing').textContent,/กำลังแก้ก้อน Credit Note/);
 });
 
 test('the inline User set editor keeps Retry scope explicit instead of promising a team binding change',async()=>{
@@ -767,7 +784,8 @@ test('Hybrid prompts page loads on demand, retries, shows grouped fields safely 
     prompt_prefix:'Shared OCR placeholder\n',groups:[{id:'parties',title:'seller and buyer',
       keys:['seller_tax_id','buyer_tax_id'],question:'<img onerror="bad"> Read both parties'}]};
   const fetch=async url=>{
-    if(url.includes('/hybrid-prompts?')){calls++;assert.equal(url,'/ocr/api/user/hybrid-prompts?doc_type=INVOICE');
+    if(url.endsWith('/prompt-groups'))return response(boardOne('INVOICE'));
+    if(url.includes('/hybrid-prompts?')){calls++;assert.equal(url,'/ocr/api/user/hybrid-prompts?doc_type=INVOICE&template=1');
       return fail?response({error:'try again'},false):response(data);}
     if(url.endsWith('/settings'))return response({settings:config});
     if(url.endsWith('/models'))return response({models:{ocr:{},extraction:{}}});
@@ -797,13 +815,14 @@ test('a slow prompt response cannot replace a newer supported type',async()=>{
   const data=types=>({doc_types:types,has_requirement:false,settings:{extras:false,schema_first:false},prompt_prefix:'',groups:[]});
   const urls=[];
   const context=vm.createContext({document,window:{USER_BASE:''},fetch:async url=>{
-    urls.push(url);return url.endsWith('INVOICE')?old:response(data(['WHT_CERTIFICATE']));
+    urls.push(url);if(url.endsWith('/prompt-groups'))return response(boardOne('INVOICE'));
+    return url.includes('doc_type=INVOICE&')?old:response(data(['WHT_CERTIFICATE']));
   }});
   vm.runInContext(promptsSource,context);
-  const pending=context.window.loadUserPrompts();
+  const pending=context.window.loadUserPrompts();await settle();
   el('promptType').value='WHT_CERTIFICATE';
   await el('promptType').listeners.change();
-  assert.equal(urls[1],'/api/user/hybrid-prompts?doc_type=WHT_CERTIFICATE');
+  assert.equal(urls[2],'/api/user/hybrid-prompts?doc_type=WHT_CERTIFICATE&template=1');
   release(response(data(['INVOICE'])));await pending;
   assert.match(el('promptsNotice').textContent,/^WHT_CERTIFICATE/);
 });
@@ -818,11 +837,12 @@ test('User prompt editor saves only field guidance and explicit extra destinatio
       targets:[{path:'documentNo',type:'string'},{path:'seller.name',type:'string'}]}};
   const calls=[];let conflict=false;
   const context=vm.createContext({document,window:{USER_BASE:'/ocr',USER_API_TOKEN:'proof'},fetch:async(url,options={})=>{
-    if(options.method==='PUT'){
+    if(url.endsWith('/prompt-groups'))return response(boardOne('INVOICE'));
+    if(options.method==='POST'&&url.endsWith('/prompt-groups/save')){
       calls.push({url,...options});
       if(conflict)return response({error:'มีผู้แก้ prompt นี้แล้ว'},false);
       const body=JSON.parse(options.body);data.editor.value=body.value;data.editor.revision++;
-      return response({profile:{revision:data.editor.revision,value:body.value}});
+      return response({set_id:'s',revision:data.editor.revision});
     }
     return response(clean(data));
   }});
@@ -845,9 +865,9 @@ test('User prompt editor saves only field guidance and explicit extra destinatio
   assert.equal(target.children.find(e=>e.value==='documentNo').disabled,true);
   target.value='seller.name';target.listeners.change();
   await el('promptSave').listeners.click();
-  assert.equal(calls[0].url,'/ocr/api/user/hybrid-prompts');assert.equal(calls[0].headers['X-OCR-User-Token'],'proof');
+  assert.equal(calls[0].url,'/ocr/api/user/prompt-groups/save');assert.equal(calls[0].headers['X-OCR-User-Token'],'proof');
   const sent=JSON.parse(calls[0].body);
-  assert.equal(sent.revision,0);assert.equal(sent.value.instructions.document_number,'Use its own printed number — top right');
+  assert.equal(sent.revision,'b');assert.deepEqual(sent.doc_types,['INVOICE']);assert.equal(sent.value.instructions.document_number,'Use its own printed number — top right');
   assert.equal(sent.value.extra_groups[0].fields[0].target,'seller.name');
   assert.equal(el('promptSave').disabled,true);assert.match(el('promptEditStatus').textContent,/เวอร์ชัน 1/);
   find('แก้ไขวิธีอ่านตัวแปร').listeners.click();textarea().value='conflicting edit';textarea().listeners.input();
@@ -872,7 +892,8 @@ test('linked prompt variables share one editor and collapsing or viewing keeps t
       ['book_no','certificate_no'].map(key=>({key,edit_key:'book_no',linked_keys:['book_no','certificate_no'],default_instruction:shared,target:''}))}]}};
   const requests=[];
   const context=vm.createContext({document,window:{USER_BASE:'',USER_API_TOKEN:'proof'},fetch:async(url,options={})=>{
-    if(options.method==='PUT'){const body=JSON.parse(options.body);requests.push(body);data.editor.value=body.value;data.editor.revision++;return response({profile:{revision:data.editor.revision}});}
+    if(url.endsWith('/prompt-groups'))return response(boardOne('WHT_CERTIFICATE'));
+    if(options.method==='POST'){const body=JSON.parse(options.body);requests.push(body);data.editor.value=body.value;data.editor.revision++;return response({set_id:'s',revision:data.editor.revision});}
     return response(clean(data));
   }});
   el('promptType').value='WHT_CERTIFICATE';vm.runInContext(promptsSource,context);await context.window.loadUserPrompts();
