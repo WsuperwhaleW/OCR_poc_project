@@ -139,6 +139,54 @@ class UserPromptSetTests(unittest.TestCase):
             steps = app.steps_for_types(['INVOICE'], False, mode='hybrid')
             self.assertEqual({k for s in steps for k in s['keys']}, {'document_number','payer_name'})
 
+    def save_matrix(self, changes, revision=None):
+        revision = revision or self.client.get('/api/user/doc-types').json['revision']
+        return self.client.put('/ocr/api/user/doc-types/fields', json={'revision':revision, 'changes':changes})
+
+    def test_matrix_saves_many_types_at_once_with_the_users_required_fields(self):
+        before = self.store.prompt_set_snapshot()
+        response = self.save_matrix({
+            'INVOICE':{'enabled_keys':['document_number','issue_date','payer_name'], 'required_keys':['issue_date','payer_name']},
+            'DELIVERY_TAX_INVOICE':{'enabled_keys':['document_number','seller_tax_id'], 'required_keys':['seller_tax_id']}})
+        self.assertEqual(response.status_code, 200, response.json)
+        self.assertEqual(len(response.json['saved']), 2)
+        after = self.store.prompt_set_snapshot()
+        # Each saved type got its own copy; types that were not edited keep the shared set.
+        self.assertNotEqual(after['bindings']['INVOICE']['set_id'], after['bindings']['DELIVERY_TAX_INVOICE']['set_id'])
+        self.assertEqual(after['bindings']['INVOICE_TAX_INVOICE'], before['bindings']['INVOICE_TAX_INVOICE'])
+        rows = {row['user_code']:row for row in self.client.get('/api/user/doc-types').json['types']}
+        self.assertEqual(rows['380']['mandatory'], ['issue_date','payer_name'])
+        self.assertEqual(rows['T04']['mandatory'], ['seller_tax_id'])
+        self.assertIn('document_number', rows['T02']['mandatory'])
+        self.assertIn('seller_tax_id', self.client.get('/api/user/doc-types').json['requirable'])
+        result = self.extract(['INVOICE'])
+        self.assertEqual(result['classified']['mandatory'], ['issue_date','payer_name'])
+        self.assertNotIn('document_number', str(app._missing_required(result)))
+        self.assertIn('payer_name', str(app._missing_required(result)))
+        # The older one-type body keeps the saved Required list (minus fields switched off).
+        response = self.save_fields('INVOICE', ['document_number','payer_name'])
+        self.assertEqual(response.status_code, 200, response.json)
+        record = userpromptsets.select(self.store.prompt_set_snapshot(), ['INVOICE'])[0][1]
+        self.assertEqual(record['value']['required_fields'], ['payer_name'])
+
+    def test_matrix_rejects_bad_required_fields_and_saves_nothing(self):
+        self.change('RECEIPT', value={'extra_groups':[{'id':'extra_sales','title':'Sales','fields':[
+            {'key':'receipt_sales','instruction':'Read the sales name.','target':'salesman'}]}]})
+        before = self.store.prompt_set_snapshot()
+        good = {'enabled_keys':['document_number'], 'required_keys':[]}
+        for bad in ({'enabled_keys':['document_number'], 'required_keys':['issue_date']},
+                    {'enabled_keys':['document_number','receipt_sales'], 'required_keys':['receipt_sales']},
+                    {'enabled_keys':['document_number'], 'required_keys':'document_number'},
+                    {'enabled_keys':[], 'required_keys':[]}):
+            with self.subTest(bad=bad):
+                response = self.save_matrix({'CREDIT_NOTE':good, 'INVOICE':bad})
+                self.assertEqual(response.status_code, 400, response.json)
+                self.assertIn('380', response.json['error'])
+                self.assertEqual(self.store.prompt_set_snapshot(), before)
+        response = self.save_matrix({'INVOICE':good}, revision='stale')
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(self.store.prompt_set_snapshot(), before)
+
     def test_field_selection_configures_an_unbound_type_and_can_include_the_income_table(self):
         response = self.save_fields('DEBIT_NOTE', ['document_number','income_items'])
         self.assertEqual(response.status_code, 200, response.json)

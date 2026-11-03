@@ -690,21 +690,26 @@ test('User Doc types tab loads current sets independently, retries and refreshes
   assert.equal(el('selectedFiles').children[0].children[0].textContent,'selected.pdf');
 });
 
-test('User field matrix edits in a large dialog, links related toggles and keeps drafts after a save conflict',async()=>{
+test('User field matrix cycles any cell of any type, reviews every change, keeps drafts after a conflict and saves all at once',async()=>{
   const {el,document}=dom();let saved=false,conflict=true,reads=0;const writes=[];
   const choices=[
     {key:'document_number',linked_keys:['document_number'],source:'Invoice',target:'documentNo'},
     {key:'payer_name',linked_keys:['payer_name'],source:'WHT',target:''},
     {key:'book_no',linked_keys:['book_no','certificate_no'],source:'WHT',target:''},
-    {key:'certificate_no',linked_keys:['book_no','certificate_no'],source:'WHT',target:''}];
-  const data=()=>({revision:'snapshot-1',extras:false,types:[{
-    code:'INVOICE',user_code:'380',name:'ใบแจ้งหนี้',mandatory:['document_number'],choices,
-    sets:[{name:'Shared Invoice',revision:2,shared_types:['380','T02']}],
-    field_count:saved?4:1,groups:[{title:'Fields',fields:(saved?choices:choices.slice(0,1)).map(f=>({key:f.key,target:f.target}))}]}]});
+    {key:'certificate_no',linked_keys:['book_no','certificate_no'],source:'WHT',target:''},
+    {key:'custom_tax',linked_keys:['custom_tax'],source:'T04',target:'vatAmount'}];
+  const data=()=>({revision:saved?'snapshot-2':'snapshot-1',extras:false,
+    requirable:['document_number','payer_name','book_no','certificate_no'],types:[
+    {code:'INVOICE',user_code:'380',name:'ใบแจ้งหนี้',mandatory:['document_number'],choices,
+     sets:[{name:'Shared Invoice',revision:2,shared_types:['380','T02']}],field_count:1,
+     groups:[{title:'Fields',fields:[{key:'document_number',target:'documentNo'}]}]},
+    {code:'DELIVERY_TAX_INVOICE',user_code:'T04',name:'ใบส่งของ/ใบกำกับภาษี',mandatory:[],choices,
+     sets:[{name:'T04',revision:1,shared_types:['T04']}],field_count:2,
+     groups:[{title:'Fields',fields:[{key:'document_number',target:'documentNo'},{key:'custom_tax',target:'vatAmount'}]}]}]});
   const fetch=async(url,opts={})=>{
     if(url.endsWith('/doc-types/fields')){writes.push({url,...opts,body:JSON.parse(opts.body)});
       if(conflict)return {ok:false,status:409,json:async()=>({error:'ชุดฟิลด์เปลี่ยนไปแล้ว'})};
-      saved=true;return response({set_id:'detached',revision:1});}
+      saved=true;return response({saved:[]});}
     if(url.endsWith('/doc-types')){reads++;return response(data());}
     if(url.endsWith('/settings'))return response({settings:config});
     if(url.endsWith('/models'))return response({models:{ocr:{},extraction:{}}});
@@ -714,23 +719,45 @@ test('User field matrix edits in a large dialog, links related toggles and keeps
     setTimeout:()=>1,clearTimeout(){}}));
   el('userTypesTab').listeners.click();await settle();
   const walk=e=>[e,...e.children.flatMap(walk)];
-  assert.ok(walk(el('userTypesContent')).some(e=>e.textContent==='Required'));
-  assert.ok(walk(el('userTypesContent')).some(e=>e.textContent==='—'));
-  const edit=()=>walk(el('userTypesContent')).find(e=>e['aria-label']==='เลือกฟิลด์สำหรับ 380').listeners.click();
-  const checkbox=key=>walk(el('userFieldsTable')).find(e=>e['aria-label']==='ใช้ฟิลด์ '+key+' สำหรับ 380');
-  edit();assert.equal(el('userFieldsEditor').open,true);assert.match(el('userFieldsImpact').textContent,/แยกเป็นชุดเฉพาะ/);
-  checkbox('payer_name').checked=true;checkbox('payer_name').listeners.change();
-  el('userFieldsCancel').listeners.click();assert.equal(writes.length,0);
-  edit();assert.equal(checkbox('payer_name').checked,false);
-  for(const key of ['payer_name','book_no']){checkbox(key).checked=true;checkbox(key).listeners.change();}
-  assert.equal(checkbox('certificate_no').checked,true);
+  const cell=(code,key)=>walk(el('userTypesContent')).find(e=>typeof e['aria-label']==='string'&&e['aria-label'].startsWith(code+' · '+key+':'));
+  const click=(code,key,times=1)=>{for(let i=0;i<times;i++)cell(code,key).listeners.click();};
+  const bar=()=>walk(el('userTypesContent')).find(e=>e.className==='user-fields-bar');
+  assert.equal(cell('380','document_number').textContent,'Required');
+  assert.equal(cell('380','payer_name').textContent,'—');
+  assert.equal(bar().hidden,true);
+  // No Edit button: any cell of any type cycles Required → Optional → not asked.
+  assert.ok(!walk(el('userTypesContent')).some(e=>e.textContent==='Edit'));
+  click('380','payer_name');assert.equal(cell('380','payer_name').textContent,'Required');
+  click('380','payer_name');assert.equal(cell('380','payer_name').textContent,'Optional');
+  assert.match(cell('380','payer_name').className,/changed/);
+  click('380','book_no');assert.equal(cell('380','certificate_no').textContent,'Required');
+  click('380','document_number');assert.equal(cell('380','document_number').textContent,'Optional');
+  // A custom field cannot be Required: Optional → not asked → Optional (back to saved, no longer a change).
+  click('T04','custom_tax');assert.equal(cell('T04','custom_tax').textContent,'—');
+  click('T04','custom_tax');assert.equal(cell('T04','custom_tax').textContent,'Optional');
+  assert.doesNotMatch(cell('T04','custom_tax').className,/changed/);
+  click('T04','custom_tax');
+  assert.equal(bar().hidden,false);assert.match(bar().children[0].textContent,/แก้ 5 ช่อง ใน 2 ประเภท/);
+  // A reload at the same revision keeps the drafts.
+  await el('userTypesRefresh').listeners.click();await settle();
+  assert.equal(cell('380','book_no').textContent,'Required');assert.match(bar().children[0].textContent,/แก้ 5 ช่อง/);
+  const review=()=>walk(el('userTypesContent')).find(e=>e.textContent==='ตรวจและบันทึก…').listeners.click();
+  review();assert.equal(el('userFieldsEditor').open,true);assert.equal(writes.length,0);
+  const text=walk(el('userFieldsTable')).map(e=>e.textContent).join('\n');
+  assert.match(text,/380 · ใบแจ้งหนี้/);assert.match(text,/ใช้ชุดร่วมกับ T02/);
+  assert.match(text,/เพิ่ม · 3/);assert.match(text,/เปลี่ยนเป็น Optional · 1/);assert.match(text,/เอาออก · ไม่ถาม · 1/);
+  assert.match(el('userFieldsCount').textContent,/2 ประเภท · 5 ช่อง/);
   await el('userFieldsSave').listeners.click();
   assert.equal(el('userFieldsEditor').open,true);assert.match(el('userFieldsMessage').textContent,/เปลี่ยนไปแล้ว/);
-  assert.equal(checkbox('payer_name').checked,true);
-  conflict=false;await el('userFieldsSave').listeners.click();
-  assert.equal(el('userFieldsEditor').open,false);assert.equal(reads,2);
+  el('userFieldsCancel').listeners.click();assert.equal(el('userFieldsEditor').open,false);
+  assert.equal(cell('380','payer_name').textContent,'Optional');
+  conflict=false;review();await el('userFieldsSave').listeners.click();await settle();
+  assert.equal(el('userFieldsEditor').open,false);
   assert.equal(writes[1].method,'PUT');assert.equal(writes[1].headers['X-OCR-User-Token'],'proof');
-  assert.deepEqual(writes[1].body,{doc_type:'INVOICE',revision:'snapshot-1',enabled_keys:['document_number','payer_name','book_no','certificate_no']});
+  assert.deepEqual(writes[1].body,{revision:'snapshot-1',changes:{
+    INVOICE:{enabled_keys:['document_number','payer_name','book_no','certificate_no'],required_keys:['book_no','certificate_no']},
+    DELIVERY_TAX_INVOICE:{enabled_keys:['document_number'],required_keys:[]}}});
+  assert.equal(bar().hidden,true);assert.equal(reads,3);
 });
 
 test('Hybrid prompts page loads on demand, retries, shows grouped fields safely and refreshes settings on revisit',async()=>{

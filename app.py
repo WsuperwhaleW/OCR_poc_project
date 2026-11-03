@@ -4843,7 +4843,7 @@ def _extract_document(text: str, mode: str, case_id: str, steps, doc_type,
             active = {k for s in user_table
                       if not s.get('custom_targets') for k in s['keys']}
             form['keys'] = [k for k in prompts._SCALAR_KEYS if k in active]
-            form['mandatory'] = [k for k in form['mandatory'] if k in active]
+            builtin, required = list(form['mandatory']), set()
             if prompts.INCOME_ITEMS_KEY in active:
                 form['items'] = list(prompts.INCOME_ITEM_KEYS)
             else:
@@ -4857,12 +4857,16 @@ def _extract_document(text: str, mode: str, case_id: str, steps, doc_type,
                 # field or fills its User JSON destination.
                 form['user_prompt_sets'].append({'doc_type':code, 'set_id':r['id'], 'name':r['name'], 'revision':r['revision'],
                                                  'keys':supplied, 'skipped_keys':[k for k in enabled if k not in supplied]})
+                # Required set in the User field matrix, else the type's built-in list.
+                # It drives the missing-field retry, image recheck and validation.
+                required |= userpromptsets.required_keys(r, supplied, builtin)
                 every = ([k for s in r['base_steps'] for k in s['keys']]
                          + [f['key'] for g in r['value'].get('extra_groups', []) for f in g['fields']])
                 disabled += [k for k in every if k not in enabled and k not in asked and k not in disabled]
             # Only what the User switched off. A field the set never had (the
             # broad form's WHT fields on a T04 bound to Invoice) is not listed.
             form['user_disabled_fields'] = disabled
+            form['mandatory'] = [k for k in prompts._SCALAR_KEYS if k in required and k in active]
     # Stage 0, announced before either shape starts. It is the one part of a
     # pass-2 run that is finished before the first request goes out, so a page
     # that shows it immediately is showing something true rather than a

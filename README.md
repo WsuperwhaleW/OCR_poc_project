@@ -2012,15 +2012,31 @@ contains `data` (the v7 candidate), `schema_valid`, `schema_errors`, `warnings`,
 `missing_fields` and `unmapped`. `?download=1` downloads only the candidate as a
 `.user-v7.preview.json` file. The UI labels nonconforming candidates **Draft**.
 The **Doc types ของ User** subtab in `/user` lists all 11 User document codes,
-their current Hybrid sets, and a Required/Optional field matrix. Each column's
-**Edit** button opens a large dialog with one scrolling area. Users can enable
-fields from other types, including custom fields with their saved instructions
-and User JSON destinations. Related fields sharing one rule toggle together.
-Saving copies a shared set for the selected type, or versions its own set;
-new jobs capture the saved selection while existing jobs retain their snapshot.
-`GET /api/user/doc-types` reads this reference without inference;
-`PUT /api/user/doc-types/fields` checks the reference revision and rejects stale
-edits with 409, invalid linked selections, and conflicting JSON destinations.
+their current Hybrid sets, and a Required/Optional field matrix. Every cell of
+every type is clickable and cycles **Required → Optional → not asked**, so several
+types can be changed before one save. Users can enable fields from other types,
+including custom fields with their saved instructions and User JSON destinations;
+a custom field can be Optional but not Required. Related fields sharing one rule
+change together. Changed cells are outlined and a bar counts them; **ตรวจและบันทึก**
+opens a confirmation listing, per type, what is added, removed and switched between
+Required and Optional, and which shared set the type will leave. Drafts survive a
+reload; a cell whose saved state changed elsewhere meanwhile is dropped.
+
+Saving copies a shared set for each saved type, or versions its own set; new jobs
+capture the saved selection while existing jobs retain their snapshot. Required is
+stored per set as `required_fields`; without it the type's built-in Mandatory list
+applies. It is what extraction treats as Mandatory: the missing-field retry, image
+recheck, grounding and validation all read it, so marking more fields Required can
+mean more retries. The User JSON v7 check still reports the client contract's own
+missing fields.
+
+`GET /api/user/doc-types` reads this reference without inference, including each
+type's effective `mandatory` and the `requirable` keys. `PUT /api/user/doc-types/fields`
+takes `{revision, changes:{CODE:{enabled_keys, required_keys}}}` and saves every type
+in one transaction or none; the older `{doc_type, revision, enabled_keys}` still saves
+one type and keeps its Required list. It rejects stale edits with 409, and invalid
+linked selections, Required fields that are not enabled core fields, and conflicting
+JSON destinations with 400 naming the type.
 
 The **Hybrid prompts** page in `/user` shows which fields are requested together
 for each document type. It loads

@@ -79,7 +79,8 @@ def select(snapshot, codes):
 
 
 def validate(base_code, value, base=None):
-    if not isinstance(value, dict) or set(value) - {'instructions', 'extra_groups', 'disabled_fields', 'disabled_groups'}:
+    if not isinstance(value, dict) or set(value) - {'instructions', 'extra_groups', 'disabled_fields', 'disabled_groups',
+                                                    'required_fields'}:
         raise ValueError('แก้ได้เฉพาะตัวแปร ก้อนคำถาม และสถานะเปิดใช้งาน')
     base = base or userprompts.base_steps(base_code)
     keys = {key for step in base for key in step['keys']}
@@ -106,7 +107,25 @@ def validate(base_code, value, base=None):
         clean['disabled_fields'] = sorted(set(disabled))
     if groups:
         clean['disabled_groups'] = sorted(set(groups))
+    # Absent = the type's built-in requirement; a list (even empty) is the User's own.
+    # Only enabled core scalars can be Required: those are what the missing-field
+    # retry, image recheck and validation read.
+    if 'required_fields' in value:
+        required = value['required_fields']
+        if (not isinstance(required, list) or any(not isinstance(k, str) for k in required)
+                or set(required) - (active & REQUIRABLE)):
+            raise ValueError('ฟิลด์ Required ต้องเป็นฟิลด์หลักที่เปิดใช้อยู่')
+        clean['required_fields'] = sorted(set(required))
     return clean
+
+
+REQUIRABLE = frozenset(prompts._SCALAR_KEYS)
+
+
+def required_keys(record, supplied, builtin):
+    """Which of the fields this set supplied are Required: the User's list, else built-in."""
+    explicit = record['value'].get('required_fields')
+    return set(supplied) & set(builtin if explicit is None else explicit)
 
 
 def restrict_step(original, kept, notes=None):
@@ -385,18 +404,51 @@ def field_selection(state, code):
     return record, list(options.values()), enabled, custom
 
 
+def _key_list(keys, allow_empty=False):
+    return (isinstance(keys, list) and (allow_empty or keys) and all(isinstance(k, str) for k in keys)
+            and len(set(keys)) == len(keys))
+
+
 def save_fields(db, body):
-    """Save one type atomically; shared sets are copied, never edited in place."""
-    if not isinstance(body, dict) or set(body) != {'doc_type','revision','enabled_keys'}:
-        raise ValueError('ส่งประเภทเอกสาร เวอร์ชันตาราง และรายการฟิลด์ให้ครบ')
-    keys = body['enabled_keys']
-    if not isinstance(keys, list) or not keys or any(not isinstance(k, str) for k in keys) or len(set(keys)) != len(keys):
-        raise ValueError('เลือกอย่างน้อยหนึ่งฟิลด์และไม่ส่งชื่อฟิลด์ซ้ำ')
+    """Save the field matrix: one or many types in one transaction, all or none.
+
+    Built 2026-11-03 at the user's request: "อยากให้กดได้ทุกอันเลย เผื่อแก้หลายอันพร้อมกัน"
+    (click any cell, several types at once, confirm before saving). Body is
+    {revision, changes:{CODE:{enabled_keys, required_keys}}}; the older
+    {doc_type, revision, enabled_keys} still saves one type and keeps its Required.
+    Shared sets are copied for each saved type, never edited in place.
+    """
+    if isinstance(body, dict) and set(body) == {'doc_type','revision','enabled_keys'}:
+        changes = {body['doc_type']:{'enabled_keys':body['enabled_keys']}}
+    elif isinstance(body, dict) and set(body) == {'revision','changes'} and isinstance(body['changes'], dict) and body['changes']:
+        changes = body['changes']
+    else:
+        raise ValueError('ส่งเวอร์ชันตารางและรายการฟิลด์ของแต่ละประเภทให้ครบ')
+    labels = {r['code']:r['label'] for r in catalog()}
+    for code, item in changes.items():
+        if (not isinstance(item, dict) or not {'enabled_keys'} <= set(item) <= {'enabled_keys','required_keys'}
+                or not _key_list(item['enabled_keys'])
+                or ('required_keys' in item and not _key_list(item['required_keys'], allow_empty=True))):
+            raise ValueError(labels.get(code, str(code)) + ': เลือกอย่างน้อยหนึ่งฟิลด์และไม่ส่งชื่อฟิลด์ซ้ำ')
     db.execute('BEGIN IMMEDIATE')
     state = snapshot(db)
     if body['revision'] != field_revision(state):
-        raise Conflict('ชุดฟิลด์เปลี่ยนไปแล้ว กรุณาปิด Edit และรีเฟรชตารางก่อนแก้ไขอีกครั้ง')
-    code = body['doc_type']
+        raise Conflict('ชุดฟิลด์เปลี่ยนไปแล้ว กรุณารีเฟรชตารางก่อนแก้ไขอีกครั้ง')
+    saved = []
+    for code in sorted(changes, key=lambda c: list(labels).index(c) if c in labels else len(labels)):
+        try:
+            saved.append(_save_type_fields(db, state, code, changes[code]))
+        except Conflict:
+            raise
+        except ValueError as err:
+            raise ValueError(labels.get(code, str(code)) + ': ' + str(err))
+        # A later type may copy from a set this one just wrote; read it back.
+        state = snapshot(db)
+    return saved
+
+
+def _save_type_fields(db, state, code, item):
+    keys = item['enabled_keys']
     record, options, _, custom = field_selection(state, code)
     available = {f['key'] for f in options}
     if set(keys) - available:
@@ -415,6 +467,12 @@ def save_fields(db, body):
     owned = {k for s in record['base_steps'] for k in s['keys']} | {f['key'] for g in groups for f in g['fields']}
     value['disabled_fields'] = sorted(owned - set(keys))
     value['disabled_groups'] = []
+    if 'required_keys' in item:
+        if set(item['required_keys']) - set(keys):
+            raise ValueError('ฟิลด์ Required ต้องเปิดใช้อยู่ด้วย')
+        value['required_fields'] = list(item['required_keys'])
+    elif value.get('required_fields') is not None:
+        value['required_fields'] = [k for k in value['required_fields'] if k in keys]
     record['value'] = validate(record['base_code'], value, record['base_steps'])
     record['field_sources'] = {f['key']:f['source'] for f in options if f['key'] in owned}
     binding = state['bindings'].get(code)
@@ -487,7 +545,7 @@ def carry_disabled(record, value):
     custom field that replaced a disabled one failed as a duplicate destination.
     Only fields and groups that still exist in the new value are carried.
     """
-    if not isinstance(value, dict) or {'disabled_fields', 'disabled_groups'} & set(value):
+    if not isinstance(value, dict) or {'disabled_fields', 'disabled_groups', 'required_fields'} & set(value):
         return value
     merged = dict(value)
     groups = value.get('extra_groups')
@@ -500,6 +558,9 @@ def carry_disabled(record, value):
         kept = [k for k in record['value'].get(name, []) if k in present]
         if kept:
             merged[name] = kept
+    if record['value'].get('required_fields') is not None:
+        off = set(merged.get('disabled_fields', []))
+        merged['required_fields'] = [k for k in record['value']['required_fields'] if k in fields and k not in off]
     return merged
 
 
@@ -547,4 +608,12 @@ def changes(before, after):
             for key in sorted(first ^ last):
                 result.append({'entity':entity, 'action':'changed', 'doc_type':code, 'key':key,
                                'before':key not in first, 'after':key not in last})
+        # None = the type's built-in requirement, so only a list can be compared per field.
+        ar, br = av.get('required_fields'), bv.get('required_fields')
+        if ar != br and (ar is None or br is None):
+            result.append({'entity':'required_fields', 'action':'changed', 'doc_type':code, 'before':ar, 'after':br})
+        elif ar != br:
+            for key in sorted(set(ar) ^ set(br)):
+                result.append({'entity':'field_required', 'action':'changed', 'doc_type':code, 'key':key,
+                               'before':key in ar, 'after':key in br})
     return result

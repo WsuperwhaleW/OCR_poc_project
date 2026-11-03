@@ -151,20 +151,32 @@ def register(application, engine):
                 groups.append({'id': step['id'], 'title': step['title'], 'fields': [
                     {'key': key, 'target': targets.get(key, userprompts.CORE_TARGETS.get(key, ''))}
                     for key in step['keys']]})
+            # What extraction will treat as Required: the User's list, else built-in.
+            builtin = list(engine.prompts.mandatory_for_types(codes))
+            required = set(builtin)
+            if selected:
+                required = set()
+                for _, record in selected:
+                    supplied = [k for step in table if step.get('user_prompt_set_id') == record['id'] for k in step['keys']]
+                    required |= userpromptsets.required_keys(record, supplied, builtin)
             types.append({**row, 'groups': groups, 'choices':choices,
-                'mandatory': list(engine.prompts.mandatory_for_types(codes)),
+                'mandatory': [k for k in engine.prompts._SCALAR_KEYS if k in required],
                 'field_count': len({key for step in table for key in step['keys']}),
                 'sets': [{'id': record['id'], 'name': record['name'], 'revision': record['revision'],
                           'shared_types': [item['user_code'] for item in catalog
                               if state['bindings'].get(item['code'], {}).get('set_id') == record['id']]}
                          for _, record in selected]})
-        return jsonify(types=types, mode='hybrid', extras=cfg['extras'], revision=userpromptsets.field_revision(state))
+        return jsonify(types=types, mode='hybrid', extras=cfg['extras'], revision=userpromptsets.field_revision(state),
+                       requirable=[k for k in engine.prompts._SCALAR_KEYS if k in userpromptsets.REQUIRABLE])
 
     @application.put('/api/user/doc-types/fields')
     def user_save_document_fields():
         try:
-            record = service().store.save_type_fields(request.get_json(silent=True))
-            return jsonify(set_id=record['id'], revision=record['revision'])
+            body = request.get_json(silent=True)
+            records = service().store.save_type_fields(body)
+            if isinstance(body, dict) and 'changes' not in body:
+                return jsonify(set_id=records[0]['id'], revision=records[0]['revision'])
+            return jsonify(saved=[{'set_id':r['id'], 'revision':r['revision'], 'name':r['name']} for r in records])
         except userpromptsets.Conflict as err:
             return jsonify(error=str(err)), 409
         except (ValueError, TypeError) as err:

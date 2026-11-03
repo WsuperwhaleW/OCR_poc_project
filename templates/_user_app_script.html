@@ -29,7 +29,7 @@
   let previewKey = null, previewObjectUrl = null, previewId = null, imageZoom = 100;
   let typesLoaded = false, typesLoading = false;
   let typesMode = 'system', userTypesLoading = false;
-  let userTypesData = null, fieldEdit = null, fieldsSaving = false;
+  let userTypesData = null, fieldDraft = null, fieldsSaving = false;
   let userJsonJob=null, userJsonLoadedKey='', userJsonPendingKey='', userJsonTicket=0, resultMode='text';
   let promptPanelJobId=null;
   let promptHistoryTicket=0,promptHistoryLoadedKey='';
@@ -387,15 +387,23 @@
     table.append(body);scroll.append(table);content.append(scroll);
     content.append(node('h2','ตารางฟิลด์ตามประเภทเอกสาร User'));
     const legend=node('p',undefined,'catalog-legend');
-    legend.append(node('span','Required · ฟิลด์บังคับเมื่อเปิดใช้','catalog-required'),
-      node('span','Optional · ถาม แต่ไม่บังคับ','catalog-optional'),node('span','— ไม่ได้ถาม','muted'));
+    legend.append(node('span','Required · บังคับ ถามซ้ำเมื่อว่าง','catalog-required'),
+      node('span','Optional · ถาม แต่ไม่บังคับ','catalog-optional'),node('span','— ไม่ถาม','muted'));
     content.append(legend);
+    content.append(node('p','คลิกช่องเพื่อเปลี่ยน Required → Optional → ไม่ถาม แก้ได้หลายประเภทพร้อมกัน แล้วกด ตรวจและบันทึก ฟิลด์ที่ใช้คำอธิบายร่วมกันจะเปลี่ยนพร้อมกัน','catalog-note'));
+    // Drafts survive a reload. A cell changed elsewhere since (its saved state moved) is dropped.
+    const previous=fieldDraft;
+    fieldDraft={revision:data.revision,types:new Map(data.types.map(t=>[t.code,t])),original:new Map(),edits:new Map(),cells:new Map()};
+    const bar=node('div',undefined,'user-fields-bar'),barText=node('span');
+    const discard=node('button','ล้างการแก้ไข','subtle');discard.type='button';
+    const review=node('button','ตรวจและบันทึก…','primary');review.type='button';
+    discard.addEventListener('click',()=>{fieldDraft.edits.clear();paintAllFieldCells();});
+    review.addEventListener('click',reviewFieldChanges);
+    bar.append(barText,discard,review);content.append(bar);Object.assign(fieldDraft,{bar,barText,review});
     const matrixScroll=node('div',undefined,'table-scroll catalog-matrix-wrap user-fields-matrix'),matrix=node('table',undefined,'catalog-matrix');
     const matrixHead=node('thead'),matrixHeader=node('tr');matrixHeader.append(node('th','ฟิลด์'));
     for(const type of data.types){
-      const cell=node('th');cell.append(node('strong',type.user_code),node('span',type.name,'user-matrix-name'));
-      const edit=node('button','Edit','subtle');edit.type='button';edit.setAttribute('aria-label','เลือกฟิลด์สำหรับ '+type.user_code);
-      edit.addEventListener('click',()=>editUserFields(type));cell.append(edit);matrixHeader.append(cell);
+      const cell=node('th');cell.append(node('strong',type.user_code),node('span',type.name,'user-matrix-name'));matrixHeader.append(cell);
     }
     matrixHead.append(matrixHeader);matrix.append(matrixHead);const matrixBody=node('tbody');
     const keys=[...new Set(data.types.flatMap(type=>[...(type.choices||[]).map(f=>f.key),...type.groups.flatMap(g=>g.fields.map(f=>f.key))]))];
@@ -403,12 +411,26 @@
       const row=node('tr'),label=node('th');label.setAttribute('scope','row');label.append(node('span',fieldName(key)),node('code',key));row.append(label);
       for(const type of data.types){
         const asked=type.groups.some(g=>g.fields.some(f=>f.key===key)),required=asked&&(type.mandatory||[]).includes(key);
-        const cell=node('td');cell.append(node('span',required?'Required':asked?'Optional':'—',required?'catalog-required':asked?'catalog-optional':'muted'));row.append(cell);
+        const td=node('td'),id=type.code+'|'+key;
+        if(!asked&&!fieldChoice(type,key)){
+          const off=node('span','—','muted');off.title='ประเภทนี้เลือกฟิลด์นี้ไม่ได้';td.append(off);row.append(td);continue;
+        }
+        fieldDraft.original.set(id,required?'R':asked?'O':'N');
+        const cell=node('button');cell.type='button';cell.addEventListener('click',()=>cycleField(type.code,key));
+        fieldDraft.cells.set(id,cell);td.append(cell);row.append(td);
       }
       matrixBody.append(row);
     }
+    let dropped=0;
+    for(const [id,state] of previous?.edits||[]){
+      const now=fieldDraft.original.get(id);
+      if(now!==undefined&&(previous.revision===data.revision||now===previous.original.get(id))){if(state!==now)fieldDraft.edits.set(id,state);}
+      else dropped++;
+    }
+    paintAllFieldCells();
+    if(dropped)message('userTypesError','ตารางมีการเปลี่ยนจากที่อื่น ล้างการแก้ที่ชนกัน '+dropped+' ช่อง ส่วนที่เหลือยังอยู่',true);
     matrix.append(matrixBody);matrixScroll.append(matrix);content.append(matrixScroll);
-    content.append(node('p','กดแต่ละประเภทเพื่อดูฟิลด์ที่เปิดใช้ การกำหนดชุดไม่ได้รับรองความแม่นยำของโมเดล','catalog-note'));
+    content.append(node('p','การกำหนดฟิลด์ไม่ได้รับรองความแม่นยำของโมเดล กดแต่ละประเภทด้านล่างเพื่อดูก้อนคำถาม','catalog-note'));
     const cards=node('div',undefined,'catalog-cards');
     for(const type of data.types){
       const card=node('details',undefined,'catalog-type user-type-detail');
@@ -436,61 +458,95 @@
     catch(err){message('userTypesError',err.message,true);$('userTypesNotice').textContent='โหลดไม่สำเร็จ กดรีเฟรชเพื่อลองอีกครั้ง';}
     finally{userTypesLoading=false;$('userTypesRefresh').disabled=false;}
   }
-  function editUserFields(type){
-    const enabled=new Set(type.groups.flatMap(g=>g.fields.map(f=>f.key)));
-    const choices=type.choices||type.groups.flatMap(g=>g.fields.map(f=>({...f,linked_keys:[f.key],source:''})));
-    fieldEdit={type,revision:userTypesData.revision,choices,enabled,original:new Set(enabled),inputs:new Map()};
-    $('userFieldsTitle').textContent='เลือกฟิลด์ · '+type.user_code+' · '+type.name;
-    const shared=type.sets.some(s=>s.shared_types.length>1);
-    $('userFieldsImpact').textContent=shared?'บันทึกแล้วแยกเป็นชุดเฉพาะของ '+type.user_code+' · มีผลกับงานใหม่ของประเภทนี้':
-      'บันทึกสำหรับงานใหม่ของ '+type.user_code+' · เก็บเวอร์ชันและประวัติการเปลี่ยนแปลง';
-    message('userFieldsMessage','');
-    const table=node('table',undefined,'user-fields-edit-table'),head=node('thead'),header=node('tr');
-    for(const label of ['ฟิลด์','เลือกใช้','ข้อกำหนดเมื่อเลือก','ต้นแบบ / ปลายทาง User JSON'])header.append(node('th',label));
-    head.append(header);table.append(head);const body=node('tbody');
-    for(const field of choices){
-      const row=node('tr'),label=node('th');label.setAttribute('scope','row');label.append(node('span',fieldName(field.key)),node('code',field.key));row.append(label);
-      const cell=node('td'),input=node('input');input.type='checkbox';input.checked=enabled.has(field.key);
-      input.setAttribute('aria-label','ใช้ฟิลด์ '+field.key+' สำหรับ '+type.user_code);
-      input.addEventListener('change',()=>{
-        for(const key of field.linked_keys){
-          if(input.checked)fieldEdit.enabled.add(key);else fieldEdit.enabled.delete(key);
-          if(fieldEdit.inputs.has(key))fieldEdit.inputs.get(key).checked=input.checked;
-        }
-        updateFieldCount();
-      });
-      fieldEdit.inputs.set(field.key,input);cell.append(input);row.append(cell);
-      row.append(node('td',(type.mandatory||[]).includes(field.key)?'Required':'Optional'));
-      const source=node('td',field.source||'ชุดปัจจุบัน');
-      if(field.target)source.append(node('code','→ '+field.target,'catalog-target'));
-      if(field.linked_keys.length>1)source.append(node('span','เปิด–ปิดร่วมกับ '+field.linked_keys.filter(k=>k!==field.key).join(', '),'muted small'));
-      row.append(source);body.append(row);
-    }
-    table.append(body);$('userFieldsTable').replaceChildren(table);updateFieldCount();
-    if(document.documentElement){fieldEdit.pageOverflow=document.documentElement.style.overflow;document.documentElement.style.overflow='hidden';}
-    $('userFieldsEditor').showModal();
+  // Matrix editing (2026-11-03, at the user's request): click any cell of any type,
+  // review every type's additions/removals in one dialog, save them all at once.
+  const FIELD_NEXT={R:'O',O:'N',N:'R'},FIELD_LABEL={R:'Required',O:'Optional',N:'—'};
+  function fieldChoice(type,key){return (type.choices||[]).find(f=>f.key===key);}
+  function fieldState(code,key){const id=code+'|'+key;return fieldDraft.edits.has(id)?fieldDraft.edits.get(id):fieldDraft.original.get(id);}
+  function paintFieldCell(code,key){
+    const id=code+'|'+key,cell=fieldDraft.cells.get(id);if(!cell)return;
+    const state=fieldState(code,key),type=fieldDraft.types.get(code);
+    cell.textContent=FIELD_LABEL[state];
+    cell.className='matrix-cell '+(state==='R'?'catalog-required':state==='O'?'catalog-optional':'muted')+(fieldDraft.edits.has(id)?' changed':'');
+    cell.setAttribute('aria-label',type.user_code+' · '+key+': '+(state==='N'?'ไม่ถาม':FIELD_LABEL[state])+(fieldDraft.edits.has(id)?' (แก้แล้ว)':''));
   }
-  function updateFieldCount(){
-    const {enabled,original}=fieldEdit;
-    const added=[...enabled].filter(k=>!original.has(k)).length,removed=[...original].filter(k=>!enabled.has(k)).length;
-    $('userFieldsCount').textContent=enabled.size+' ฟิลด์ · เพิ่ม '+added+' · ปิด '+removed;
-    $('userFieldsSave').disabled=fieldsSaving||!enabled.size||!added&&!removed;
+  function paintFieldBar(){
+    const count=fieldDraft.edits.size,types=new Set([...fieldDraft.edits.keys()].map(id=>id.split('|')[0]));
+    fieldDraft.bar.hidden=!count;fieldDraft.barText.textContent='แก้ '+count+' ช่อง ใน '+types.size+' ประเภท · ยังไม่บันทึก';
+  }
+  function paintAllFieldCells(){for(const id of fieldDraft.cells.keys()){const [code,key]=id.split('|');paintFieldCell(code,key);}paintFieldBar();}
+  function cycleField(code,key){
+    if(fieldsSaving)return;
+    const type=fieldDraft.types.get(code),requirable=new Set(userTypesData.requirable||[]);
+    const next=FIELD_NEXT[fieldState(code,key)]==='R'&&!requirable.has(key)?'O':FIELD_NEXT[fieldState(code,key)];
+    // Fields sharing one rule are asked together, so they move together.
+    for(const linked of fieldChoice(type,key)?.linked_keys||[key]){
+      const id=code+'|'+linked;if(!fieldDraft.original.has(id))continue;
+      const state=next==='R'&&!requirable.has(linked)?'O':next;
+      if(state===fieldDraft.original.get(id))fieldDraft.edits.delete(id);else fieldDraft.edits.set(id,state);
+      paintFieldCell(code,linked);
+    }
+    paintFieldBar();
+  }
+  function fieldChanges(){
+    const result=[];
+    for(const [code,type] of fieldDraft.types){
+      const prefix=code+'|',ids=[...fieldDraft.edits.keys()].filter(id=>id.startsWith(prefix));if(!ids.length)continue;
+      const rows={added:[],removed:[],required:[],optional:[]};
+      for(const id of ids){
+        const key=id.slice(prefix.length),before=fieldDraft.original.get(id),after=fieldDraft.edits.get(id);
+        rows[before==='N'?'added':after==='N'?'removed':after==='R'?'required':'optional'].push([key,after]);
+      }
+      const keys=[...fieldDraft.original.keys()].filter(id=>id.startsWith(prefix)).map(id=>id.slice(prefix.length));
+      result.push({code,type,rows,enabled:keys.filter(k=>fieldState(code,k)!=='N'),required:keys.filter(k=>fieldState(code,k)==='R')});
+    }
+    return result;
+  }
+  function reviewFieldChanges(){
+    const changes=fieldChanges();if(!changes.length||fieldsSaving)return;
+    const list=node('div',undefined,'user-fields-review');let blocked=false,cells=0;
+    for(const change of changes){
+      const section=node('section');section.append(node('h3',change.type.user_code+' · '+change.type.name));
+      const shared=[...new Set(change.type.sets.flatMap(s=>s.shared_types))].filter(code=>code!==change.type.user_code);
+      if(shared.length)section.append(node('p','ตอนนี้ใช้ชุดร่วมกับ '+shared.join(', ')+' · บันทึกแล้ว '+change.type.user_code+' ได้ชุดของตัวเอง ประเภทอื่นไม่เปลี่ยน','muted small'));
+      for(const [name,label] of [['added','เพิ่ม'],['removed','เอาออก · ไม่ถาม'],['required','เปลี่ยนเป็น Required'],['optional','เปลี่ยนเป็น Optional']]){
+        const rows=change.rows[name];if(!rows.length)continue;cells+=rows.length;
+        const block=node('div',undefined,'review-'+name),items=node('ul');block.append(node('strong',label+' · '+rows.length));
+        for(const [key,state] of rows){
+          const item=node('li');item.append(node('span',fieldName(key)),node('code',key));
+          if(name==='added')item.append(node('span',FIELD_LABEL[state],state==='R'?'catalog-required':'catalog-optional'));
+          items.append(item);
+        }
+        block.append(items);section.append(block);
+      }
+      if(!change.enabled.length){blocked=true;section.append(node('p','ต้องเหลือฟิลด์ที่ถามอย่างน้อยหนึ่งฟิลด์','message error'));}
+      list.append(section);
+    }
+    fieldDraft.pending=changes;fieldDraft.blocked=blocked;
+    $('userFieldsTitle').textContent='ยืนยันการเปลี่ยนฟิลด์';
+    $('userFieldsImpact').textContent='มีผลกับงานใหม่เท่านั้น งานเก่ายังใช้ชุดที่บันทึกไว้กับงานนั้น';
+    $('userFieldsCount').textContent=changes.length+' ประเภท · '+cells+' ช่อง';
+    message('userFieldsMessage','');$('userFieldsTable').replaceChildren(list);$('userFieldsSave').disabled=blocked;
+    if(document.documentElement){fieldDraft.pageOverflow=document.documentElement.style.overflow;document.documentElement.style.overflow='hidden';}
+    $('userFieldsEditor').showModal();
   }
   $('userFieldsCancel').addEventListener('click',()=>{if(!fieldsSaving)$('userFieldsEditor').close();});
   $('userFieldsEditor').addEventListener('cancel',event=>{if(fieldsSaving)event.preventDefault();});
   $('userFieldsEditor').addEventListener('close',()=>{
-    if(document.documentElement)document.documentElement.style.overflow=fieldEdit?.pageOverflow||'';
-    fieldEdit=null;
+    if(document.documentElement)document.documentElement.style.overflow=fieldDraft?.pageOverflow||'';
+    if(fieldDraft)fieldDraft.pending=null;
   });
   $('userFieldsSave').addEventListener('click',async()=>{
-    if(!fieldEdit||fieldsSaving||$('userFieldsSave').disabled)return;
-    fieldsSaving=true;$('userFieldsCancel').disabled=true;updateFieldCount();message('userFieldsMessage','กำลังบันทึก…');
+    if(!fieldDraft?.pending||fieldsSaving||fieldDraft.blocked)return;
+    fieldsSaving=true;$('userFieldsCancel').disabled=true;$('userFieldsSave').disabled=true;message('userFieldsMessage','กำลังบันทึก…');
     try{
-      await api('/doc-types/fields',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({
-        doc_type:fieldEdit.type.code,revision:fieldEdit.revision,enabled_keys:[...fieldEdit.enabled]})});
-      $('userFieldsEditor').close();await loadUserTypes();
+      const changes={};
+      for(const change of fieldDraft.pending)changes[change.code]={enabled_keys:change.enabled,required_keys:change.required};
+      await api('/doc-types/fields',{method:'PUT',headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({revision:fieldDraft.revision,changes})});
+      fieldDraft.edits.clear();$('userFieldsEditor').close();await loadUserTypes();
     }catch(err){message('userFieldsMessage',err.message,true);}
-    finally{fieldsSaving=false;$('userFieldsCancel').disabled=false;if(fieldEdit)updateFieldCount();}
+    finally{fieldsSaving=false;$('userFieldsCancel').disabled=false;$('userFieldsSave').disabled=!!fieldDraft?.blocked;}
   });
   function valueText(value){return typeof value==='object'&&value!==null?JSON.stringify(value,null,2):String(value??'');}
   function docCodes(doc){return Array.isArray(doc.doc_types)&&doc.doc_types.length?doc.doc_types:doc.doc_type?[doc.doc_type]:[];}
