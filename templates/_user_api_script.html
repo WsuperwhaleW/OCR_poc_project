@@ -1,0 +1,193 @@
+/* API tab: every endpoint with example requests and responses (apireference.py).
+   Built 2026-11-04 (worker-service plan, step 2b). Read-only: nothing here sends
+   the requests it shows; copy buttons only. */
+(() => {
+  const $ = id => document.getElementById(id);
+  const URL_REFERENCE = window.USER_BASE + '/api/user/api-reference';
+  const BASE = (window.location?.origin || '') + window.USER_BASE;
+  let data = null, loading = null, picked = null, language = 'curl';
+
+  function el(tag, text, className) {
+    const node = document.createElement(tag);
+    if (text !== undefined && text !== null) node.textContent = text;
+    if (className) node.className = className;
+    return node;
+  }
+  const fill = text => String(text).split('{BASE}').join(BASE).split('{USER_TOKEN}').join(window.USER_API_TOKEN || '');
+  const pretty = body => JSON.stringify(body, null, 2);
+  function method(name) { return el('span', name, 'api-method ' + name.toLowerCase()); }
+  function statusBadge(status) {
+    return el('span', status === 'live' ? 'ใช้งานได้' : 'แผน · ยังไม่เปิดใช้', 'badge api-status ' + status);
+  }
+  function code(text, label) {
+    const wrap = el('div', undefined, 'api-code-wrap'), pre = el('pre', fill(text), 'api-code');
+    const copy = el('button', 'คัดลอก', 'subtle api-copy');
+    copy.type = 'button';
+    copy.setAttribute('aria-label', 'คัดลอก' + (label ? ' ' + label : ''));
+    copy.addEventListener('click', async () => {
+      try { await navigator.clipboard.writeText(pre.textContent); copy.textContent = 'คัดลอกแล้ว'; }
+      catch (_) { copy.textContent = 'คัดลอกไม่ได้'; }
+      setTimeout(() => { copy.textContent = 'คัดลอก'; }, 1500);
+    });
+    wrap.append(pre, copy);
+    return wrap;
+  }
+  function section(title) {
+    const box = el('section', undefined, 'api-section');
+    box.append(el('h3', title));
+    return box;
+  }
+  function paramTable(params) {
+    const table = el('table', undefined, 'svc-table api-params'), head = el('tr');
+    for (const label of ['ชื่อ', 'ที่อยู่', 'ชนิด', 'ต้องส่ง', 'คำอธิบาย']) head.append(el('th', label));
+    const thead = el('thead'); thead.append(head); table.append(thead);
+    const body = el('tbody');
+    for (const p of params) {
+      const row = el('tr'), name = el('td'); name.append(el('code', p.name));
+      row.append(name, el('td', p.in), el('td', p.type), el('td', p.required ? 'ใช่' : '–'), el('td', p.desc));
+      body.append(row);
+    }
+    table.append(body);
+    const wrap = el('div', undefined, 'table-scroll'); wrap.append(table);
+    return wrap;
+  }
+  function snippetTabs(snippets, labels) {
+    const box = el('div', undefined, 'api-snippets'), tabs = el('div', undefined, 'tabs'), body = el('div');
+    tabs.setAttribute('role', 'tablist');
+    const keys = Object.keys(labels).filter(key => snippets[key]);
+    const show = key => {
+      language = key;
+      for (const button of tabs.children) {
+        const on = button.dataset.key === key;
+        button.classList.toggle('selected', on); button.setAttribute('aria-selected', String(on));
+      }
+      body.replaceChildren(code(snippets[key], labels[key]));
+    };
+    for (const key of keys) {
+      const button = el('button', labels[key]); button.type = 'button'; button.dataset.key = key;
+      button.setAttribute('role', 'tab');
+      button.addEventListener('click', () => show(key));
+      tabs.append(button);
+    }
+    box.append(tabs, body);
+    show(keys.includes(language) ? language : keys[0]);
+    return box;
+  }
+  function responses(list) {
+    const box = section('คำตอบ');
+    for (const r of list) {
+      const item = el('div', undefined, 'api-response'), head = el('div', undefined, 'api-response-head');
+      head.append(el('span', String(r.code), 'api-code-badge c' + String(r.code)[0]), el('span', r.note || '', 'small'));
+      item.append(head);
+      if (r.kind === 'json' && r.body !== null) item.append(code(pretty(r.body), 'คำตอบ ' + r.code));
+      else item.append(el('p', r.kind === 'file' ? 'ไฟล์ (ไม่ใช่ JSON)' : 'ไม่มี body', 'muted small'));
+      box.append(item);
+    }
+    return box;
+  }
+  function headerList(headers) {
+    const list = el('ul', undefined, 'api-headers');
+    for (const h of headers) {
+      const item = el('li'); item.append(el('code', h.name + ': ' + h.value));
+      if (h.desc) item.append(el('span', ' — ' + h.desc, 'muted small'));
+      if (h.required === false) item.append(el('span', ' (ไม่บังคับ)', 'muted small'));
+      list.append(item);
+    }
+    return list;
+  }
+  function showEndpoint(entry) {
+    const detail = $('apiDetail'); detail.replaceChildren();
+    const head = el('div', undefined, 'api-head');
+    head.append(method(entry.method), el('code', entry.path, 'api-path'), statusBadge(entry.status));
+    detail.append(head, el('h2', entry.title), el('p', entry.summary, 'muted'));
+    const auth = section('การยืนยันตัวตน'); auth.append(el('p', entry.auth, 'small')); detail.append(auth);
+    if (entry.headers?.length) { const box = section('Header'); box.append(headerList(entry.headers)); detail.append(box); }
+    if (entry.params?.length) { const box = section(entry.multipart ? 'พารามิเตอร์ (multipart/form-data)' : 'พารามิเตอร์'); box.append(paramTable(entry.params)); detail.append(box); }
+    if (entry.body !== undefined && entry.body !== null) { const box = section('Body (JSON)'); box.append(code(pretty(entry.body), 'body')); detail.append(box); }
+    const request = section('ตัวอย่างคำขอ');
+    request.append(snippetTabs(entry.snippets, {curl: 'curl', python: 'Python', javascript: 'JavaScript'}));
+    detail.append(request, responses(entry.responses));
+  }
+  function showCallback(callback) {
+    const detail = $('apiDetail'); detail.replaceChildren();
+    const head = el('div', undefined, 'api-head');
+    head.append(method('POST'), el('code', '<callback_url ของคุณ>', 'api-path'), statusBadge(callback.status));
+    detail.append(head, el('h2', callback.title), el('p', callback.summary, 'muted'));
+    const headers = section('Header ที่ส่งไป'); headers.append(headerList(callback.headers)); detail.append(headers);
+    const retries = section('ส่งซ้ำเมื่อไม่ได้ 2xx'); const list = el('ol', undefined, 'small');
+    for (const step of callback.retries) list.append(el('li', step));
+    retries.append(list); detail.append(retries);
+    const body = section('Body'); body.append(code(pretty(callback.body), 'body')); detail.append(body);
+    const verify = section('ตรวจลายเซ็นฝั่งผู้รับ');
+    verify.append(snippetTabs(callback.verify, {python: 'Python', javascript: 'JavaScript'}));
+    detail.append(verify);
+  }
+  function select(id, clicked = false) {
+    picked = id;
+    for (const button of $('apiList').querySelectorAll('button[data-id]')) {
+      const on = button.dataset.id === id;
+      button.classList.toggle('selected', on); button.setAttribute('aria-current', on ? 'true' : 'false');
+    }
+    if (id === 'callback') showCallback(data.callback);
+    else showEndpoint(data.endpoints.find(entry => entry.id === id));
+    try { localStorage.setItem('ocr.user.api', id); } catch (_) { /* per-viewer convenience only */ }
+    // Stacked layout on a phone: the detail is below the list, so bring it into view.
+    if (clicked && window.matchMedia?.('(max-width: 900px)').matches) $('apiDetail').scrollIntoView?.({block: 'start'});
+  }
+  function item(id, verb, path, title) {
+    const button = el('button', undefined, 'api-item'); button.type = 'button'; button.dataset.id = id;
+    button.append(method(verb), el('span', path, 'api-item-path'), el('span', title, 'api-item-title muted small'));
+    button.addEventListener('click', () => select(id, true));
+    return button;
+  }
+  function paintList() {
+    const query = ($('apiFilter').value || '').trim().toLowerCase(), list = $('apiList');
+    list.replaceChildren();
+    let shown = 0;
+    for (const info of data.groups) {
+      const group = info.id;
+      const entries = data.endpoints.filter(entry => entry.group === group && (!query ||
+        (entry.method + ' ' + entry.path + ' ' + entry.title + ' ' + entry.summary).toLowerCase().includes(query)));
+      const callback = group === 'v1' && (!query || ('callback webhook ' + data.callback.title).toLowerCase().includes(query));
+      if (!entries.length && !callback) continue;
+      const block = el('div', undefined, 'api-group');
+      block.append(el('h3', info.title), el('p', info.note, 'muted small'));
+      for (const entry of entries) block.append(item(entry.id, entry.method, entry.path, entry.title));
+      if (callback) block.append(item('callback', 'POST', 'callback_url', data.callback.title));
+      shown += entries.length + (callback ? 1 : 0);
+      list.append(block);
+    }
+    if (!shown) list.append(el('p', 'ไม่พบ endpoint ที่ตรงกับคำค้น', 'muted small'));
+    for (const button of list.querySelectorAll('button[data-id]')) {
+      const on = button.dataset.id === picked;
+      button.classList.toggle('selected', on); button.setAttribute('aria-current', on ? 'true' : 'false');
+    }
+  }
+  async function load() {
+    if (data) return data;
+    if (loading) return loading;
+    loading = (async () => {
+      try {
+        const response = await fetch(URL_REFERENCE), body = await response.json();
+        if (!response.ok) throw new Error(body?.error || 'โหลดไม่สำเร็จ (' + response.status + ')');
+        data = body;
+        $('apiError').hidden = true;
+        $('apiBase').textContent = BASE || '/';
+        paintList();
+        let remembered = null;
+        try { remembered = localStorage.getItem('ocr.user.api'); } catch (_) { /* ignore */ }
+        const known = id => id === 'callback' || data.endpoints.some(entry => entry.id === id);
+        select(known(remembered) ? remembered : data.endpoints[0].id);
+      } catch (err) {
+        $('apiError').textContent = err.message || 'โหลดไม่สำเร็จ';
+        $('apiError').hidden = false;
+      } finally {
+        loading = null;
+      }
+      return data;
+    })();
+    return loading;
+  }
+  $('apiFilter').addEventListener('input', () => { if (data) paintList(); });
+  window.loadUserApi = load;
+})();

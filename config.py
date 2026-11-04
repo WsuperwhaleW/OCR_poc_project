@@ -155,6 +155,40 @@ REAL_DIR = env_path("OCR_REAL_DIR", BASE_DIR / "realData")
 # application directory can be mounted read-only.
 LOG_DIR = env_path("OCR_LOG_DIR", BASE_DIR / "logs")
 
+
+def git_commit(base=None) -> str:
+    """The checked-out commit, read from .git without running git; '' if none."""
+    git = Path(base or BASE_DIR) / ".git"
+    try:
+        head = (git / "HEAD").read_text(encoding="utf-8").strip()
+        if not head.startswith("ref: "):
+            return head
+        ref = head[5:]
+        if (git / ref).is_file():
+            return (git / ref).read_text(encoding="utf-8").strip()
+        for line in (git / "packed-refs").read_text(encoding="utf-8").splitlines():
+            if line.endswith(" " + ref):
+                return line.split()[0]
+    except OSError:
+        pass
+    return ""
+
+
+def app_version() -> str:
+    """What the Service dashboard calls this build (2026-11-04).
+
+    A deployed zip carries a VERSION file written by package.py (its date and
+    commit); a checkout says dev-<commit>.
+    """
+    try:
+        stamped = (BASE_DIR / "VERSION").read_text(encoding="utf-8").strip()
+        if stamped:
+            return stamped
+    except OSError:
+        pass
+    commit = git_commit()
+    return "dev-" + commit[:7] if commit else "dev"
+
 # --------------------------------------------------------------------------
 # network
 # --------------------------------------------------------------------------

@@ -1,0 +1,268 @@
+/* Service tab: the worker's health, queue, speed and quality (servicestats.py).
+   Built 2026-11-04 (worker-service plan, step 2b). Polls every 10 s, and only while
+   the tab is showing and the browser tab is visible; the app script stops it otherwise. */
+(() => {
+  const $ = id => document.getElementById(id);
+  const URL_OVERVIEW = window.USER_BASE + '/api/user/service/overview';
+  const POLL_MS = 10000;
+  let timer = 0, loading = false, last = null;
+  const showing = () => !$('serviceView').hidden && !document.hidden;
+
+  function el(tag, text, className) {
+    const node = document.createElement(tag);
+    if (text !== undefined && text !== null) node.textContent = text;
+    if (className) node.className = className;
+    return node;
+  }
+  const number = value => value === null || value === undefined ? '–' : Number(value).toLocaleString('th-TH');
+  const percent = value => value === null || value === undefined ? '–' : (value * 100).toFixed(value >= .1 || value === 0 ? 0 : 1) + '%';
+  function duration(seconds) {
+    if (seconds === null || seconds === undefined) return '–';
+    const s = Math.round(seconds);
+    if (s < 60) return (seconds < 10 ? Number(seconds).toFixed(1) : s) + ' วิ';
+    if (s < 3600) return Math.floor(s / 60) + ' นาที ' + (s % 60 ? s % 60 + ' วิ' : '');
+    if (s < 86400) return Math.floor(s / 3600) + ' ชม. ' + Math.floor(s % 3600 / 60) + ' นาที';
+    return Math.floor(s / 86400) + ' วัน ' + Math.floor(s % 86400 / 3600) + ' ชม.';
+  }
+  function bytes(value) {
+    if (value === null || value === undefined) return '–';
+    const units = ['B', 'KB', 'MB', 'GB', 'TB']; let n = value, i = 0;
+    while (n >= 1024 && i < units.length - 1) { n /= 1024; i++; }
+    return (n >= 100 || i === 0 ? Math.round(n) : n.toFixed(1)) + ' ' + units[i];
+  }
+  function card(title, className) {
+    const box = el('section', undefined, 'card svc-card' + (className ? ' ' + className : ''));
+    box.append(el('h2', title));
+    return box;
+  }
+  function kv(rows) {
+    const list = el('dl', undefined, 'svc-kv');
+    for (const [label, value, note] of rows) {
+      const term = el('dt', label), detail = el('dd');
+      if (value instanceof Node) detail.append(value); else detail.textContent = value;
+      if (note) detail.append(el('span', note, 'muted small svc-note'));
+      list.append(term, detail);
+    }
+    return list;
+  }
+  function meter(used, limit, warnWhenFull = true) {
+    const wrap = el('div', undefined, 'svc-meter');
+    const bar = el('span');
+    const ratio = limit ? Math.min(1, used / limit) : 0;
+    bar.style.width = (ratio * 100).toFixed(1) + '%';
+    if (ratio >= 1 && warnWhenFull) wrap.classList.add('full');
+    wrap.append(bar);
+    wrap.setAttribute('role', 'img');
+    wrap.setAttribute('aria-label', used + ' จาก ' + (limit || '∞'));
+    return wrap;
+  }
+  function modelLine(model) {
+    const line = el('span', undefined, 'svc-model');
+    const state = model.available === null ? 'unknown' : model.available ? 'online' : 'offline';
+    line.append(el('span', undefined, 'svc-dot ' + state),
+      el('span', model.model || (model.available === null ? 'ยังไม่ได้ตรวจ' : 'ไม่พบโมเดล')));
+    return line;
+  }
+
+  function health(data) {
+    const box = card('สุขภาพระบบ'), h = data.health;
+    const probe = model => model.probe_age_seconds === null ? model.url : model.url + ' · ตรวจล่าสุด ' + duration(model.probe_age_seconds) + ' ก่อน' +
+      (model.reason && !model.available ? ' · ' + model.reason : '');
+    box.append(kv([
+      ['OCR', modelLine(h.models.ocr), probe(h.models.ocr)],
+      ['Extraction', modelLine(h.models.extraction), probe(h.models.extraction)],
+      ['เวอร์ชัน', h.app_version],
+      ['เปิดมาแล้ว', duration(h.uptime_seconds), 'ตั้งแต่ ' + new Date(h.started_at).toLocaleString('th-TH')],
+      ['ข้อมูลของ service', bytes(h.data_bytes), h.data_dir],
+      ['ดิสก์ว่าง', h.total_bytes ? bytes(h.free_bytes) + ' จาก ' + bytes(h.total_bytes) : '–'],
+    ]));
+    return box;
+  }
+  function queue(data) {
+    const box = card('คิวตอนนี้'), q = data.queue;
+    box.append(el('p', 'งานที่ยังไม่เสร็จ ' + number(q.open_jobs) + ' งาน', 'svc-big'));
+    for (const [stage, label] of [['ocr', 'OCR'], ['extraction', 'Extraction']]) {
+      const s = q.stages[stage], row = el('div', undefined, 'svc-stage');
+      row.append(el('div', label, 'svc-stage-name'),
+        el('div', 'กำลังทำ ' + s.running + ' / ' + s.concurrency + ' ไฟล์พร้อมกัน · รอ ' + number(s.waiting) +
+          (s.waiting ? ' · รอนานสุด ' + duration(s.oldest_wait_seconds) : ''), 'small'),
+        meter(s.running, s.concurrency));
+      box.append(row);
+    }
+    return box;
+  }
+  function requests(data) {
+    const box = card('คำขอที่ส่งถึง model'), r = data.requests;
+    if (!r.extraction.length) box.append(el('p', 'ยังไม่มีคำขอ extraction ตั้งแต่เปิด service', 'muted small'));
+    for (const gate of r.extraction) {
+      const row = el('div', undefined, 'svc-stage');
+      row.append(el('div', 'Extraction · ' + gate.url, 'svc-stage-name'),
+        el('div', 'กำลังส่ง ' + gate.active + ' / ' + gate.limit + ' · รอช่อง ' + (gate.waiting_user + gate.waiting_background) +
+          (gate.waiting_background ? ' (งานเบื้องหลัง ' + gate.waiting_background + ')' : '') + ' · สูงสุด ' + gate.peak, 'small'),
+        meter(gate.active, gate.limit));
+      box.append(row);
+    }
+    const ocr = el('div', undefined, 'svc-stage');
+    ocr.append(el('div', 'OCR · ' + r.ocr_url, 'svc-stage-name'),
+      el('div', 'ยังไม่มีเพดานคำขอ (เพิ่มในขั้นที่ 5)', 'small muted'));
+    box.append(ocr);
+    return box;
+  }
+  function chart(hours) {
+    const ns = 'http://www.w3.org/2000/svg', width = 720, height = 170, top = 10, bottom = 24, gap = 4;
+    const max = Math.max(1, ...hours.map(h => h.completed + h.partial + h.failed));
+    const svg = document.createElementNS(ns, 'svg');
+    svg.setAttribute('viewBox', '0 0 ' + width + ' ' + height);
+    svg.setAttribute('class', 'svc-chart');
+    svg.setAttribute('role', 'img');
+    svg.setAttribute('aria-label', 'งานที่เสร็จต่อชั่วโมง 24 ชั่วโมงล่าสุด สูงสุด ' + max + ' งานต่อชั่วโมง');
+    const slot = width / hours.length, plot = height - top - bottom;
+    const line = document.createElementNS(ns, 'line');
+    for (const [k, v] of Object.entries({x1: 0, x2: width, y1: height - bottom, y2: height - bottom, class: 'svc-axis'})) line.setAttribute(k, v);
+    svg.append(line);
+    hours.forEach((hour, index) => {
+      const group = document.createElementNS(ns, 'g');
+      const title = document.createElementNS(ns, 'title');
+      const at = new Date(hour.hour);
+      title.textContent = at.toLocaleString('th-TH', {day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit'}) +
+        ' · เสร็จ ' + hour.completed + ' · บางส่วน ' + hour.partial + ' · ล้มเหลว ' + hour.failed;
+      group.append(title);
+      let y = height - bottom;
+      for (const kind of ['completed', 'partial', 'failed']) {
+        if (!hour[kind]) continue;
+        const h = Math.max(1.5, hour[kind] / max * plot);
+        const rect = document.createElementNS(ns, 'rect');
+        for (const [k, v] of Object.entries({x: index * slot + gap / 2, y: y - h, width: slot - gap, height: h, rx: 2, class: 'svc-bar ' + kind})) rect.setAttribute(k, v);
+        group.append(rect); y -= h;
+      }
+      // A transparent column so the whole hour answers hover, empty or not.
+      const hit = document.createElementNS(ns, 'rect');
+      for (const [k, v] of Object.entries({x: index * slot, y: top, width: slot, height: plot, class: 'svc-hit'})) hit.setAttribute(k, v);
+      group.append(hit);
+      if (index % 3 === 0) {
+        const label = document.createElementNS(ns, 'text');
+        for (const [k, v] of Object.entries({x: index * slot + slot / 2, y: height - 6, 'text-anchor': 'middle', class: 'svc-label'})) label.setAttribute(k, v);
+        label.textContent = at.toLocaleTimeString('th-TH', {hour: '2-digit', minute: '2-digit'});
+        group.append(label);
+      }
+      svg.append(group);
+    });
+    const peak = document.createElementNS(ns, 'text');
+    for (const [k, v] of Object.entries({x: 4, y: top + 10, class: 'svc-label'})) peak.setAttribute(k, v);
+    peak.textContent = 'สูงสุด ' + max + ' งาน/ชม.';
+    svg.append(peak);
+    return svg;
+  }
+  function throughput(data) {
+    const box = card('ปริมาณงาน', 'wide'), t = data.throughput;
+    const tiles = el('div', undefined, 'svc-tiles');
+    for (const [label, value] of [['1 ชั่วโมง', t.last_hour], ['24 ชั่วโมง', t.last_24h], ['7 วัน', t.last_7d]]) {
+      const tile = el('div', undefined, 'svc-tile');
+      tile.append(el('span', label, 'muted small'), el('strong', number(value.total)),
+        el('span', 'เสร็จ ' + number(value.completed) + ' · บางส่วน ' + number(value.partial) + ' · ล้มเหลว ' + number(value.failed), 'small'));
+      tiles.append(tile);
+    }
+    box.append(tiles, chart(t.hours));
+    const legend = el('div', undefined, 'svc-legend small');
+    for (const [kind, label] of [['completed', 'เสร็จ'], ['partial', 'เสร็จบางส่วน'], ['failed', 'ล้มเหลว / ถูกขัดจังหวะ']]) {
+      const item = el('span'); item.append(el('i', undefined, 'svc-swatch ' + kind), label); legend.append(item);
+    }
+    if (t.retries_24h) legend.append(el('span', 'รวม Retry ' + t.retries_24h + ' งาน', 'muted'));
+    box.append(legend);
+    return box;
+  }
+  function speed(data) {
+    const box = card('ความเร็ว (24 ชั่วโมง)'), table = el('table', undefined, 'svc-table');
+    const head = el('tr');
+    for (const label of ['ช่วง', 'p50', 'p95', 'สูงสุด', 'งาน']) head.append(el('th', label));
+    table.append(el('thead')); table.firstChild.append(head);
+    const body = el('tbody');
+    for (const [key, label] of [['queue', 'รอคิว OCR'], ['ocr', 'OCR'], ['extraction', 'Extraction'], ['total', 'ทั้งงาน']]) {
+      const row = el('tr'), value = data.speed[key];
+      row.append(el('td', label));
+      for (const part of ['p50', 'p95', 'max']) row.append(el('td', value ? duration(value[part]) : '–'));
+      row.append(el('td', value ? number(value.count) : '0'));
+      body.append(row);
+    }
+    table.append(body);
+    const wrap = el('div', undefined, 'table-scroll'); wrap.append(table);
+    box.append(wrap);
+    return box;
+  }
+  function quality(data) {
+    const box = card('คุณภาพ (24 ชั่วโมง)'), q = data.quality, u = q.user_json;
+    box.append(kv([
+      ['งานที่จบ', number(q.finished)],
+      ['เสร็จครบ', percent(q.completed_rate), 'บางส่วน ' + percent(q.partial_rate) + ' · ล้มเหลว ' + percent(q.failed_rate)],
+      ['ไม่รู้ประเภท', percent(q.unknown_type_rate)],
+      ['User JSON ผ่าน schema', percent(u.schema_valid_rate), 'ตรวจ ' + number(u.checked) + ' งานล่าสุด'],
+      ['เฉลี่ยต่องาน', u.avg_warnings === null ? '–' : 'คำเตือน ' + u.avg_warnings + ' · field ที่ขาด ' + u.avg_missing_fields],
+    ]));
+    if (q.top_doc_types.length) {
+      const top = Math.max(...q.top_doc_types.map(t => t.count)), list = el('div', undefined, 'svc-types');
+      for (const type of q.top_doc_types) {
+        const row = el('div', undefined, 'svc-type');
+        row.append(el('span', type.code, 'small'), meter(type.count, top, false), el('span', number(type.count), 'small muted'));
+        list.append(row);
+      }
+      box.append(el('h3', 'ประเภทที่พบบ่อย', 'svc-sub'), list);
+    }
+    return box;
+  }
+  function failures(data) {
+    const box = card('งานที่ล้มเหลวล่าสุด', 'wide');
+    if (!data.failures.length) { box.append(el('p', 'ไม่มีงานที่ล้มเหลว', 'muted small')); return box; }
+    const list = el('ul', undefined, 'svc-failures');
+    for (const job of data.failures) {
+      const item = el('li'), open = el('button', 'เปิด →', 'subtle');
+      open.type = 'button';
+      open.addEventListener('click', () => window.openUserJob?.(job.id));
+      const text = el('div');
+      text.append(el('strong', job.filename), el('div', new Date(job.finished_at).toLocaleString('th-TH') +
+        (job.stage ? ' · ขั้น ' + job.stage : '') + ' · ' + (job.status === 'interrupted' ? 'ถูกขัดจังหวะ' : 'ล้มเหลว'), 'muted small'),
+        el('div', job.error || '(ไม่มีข้อความ error)', 'small svc-error'));
+      item.append(text, open);
+      list.append(item);
+    }
+    box.append(list);
+    return box;
+  }
+  function planned(data) {
+    return data.planned.map(item => {
+      const box = card(item.title, 'svc-planned');
+      box.querySelector('h2').append(el('span', 'ยังไม่เปิดใช้ · ขั้นที่ ' + item.step, 'badge'));
+      box.append(el('p', item.shows, 'muted small'));
+      return box;
+    });
+  }
+  function paint(data) {
+    last = data;
+    const alerts = $('serviceAlerts'); alerts.replaceChildren();
+    for (const alert of data.alerts) alerts.append(el('p', alert.text, 'message svc-alert ' + alert.level));
+    $('serviceGrid').replaceChildren(health(data), queue(data), requests(data), throughput(data), speed(data),
+      quality(data), failures(data), ...planned(data));
+    $('serviceUpdated').textContent = 'อัปเดต ' + new Date(data.generated_at).toLocaleTimeString('th-TH') + ' · ทุก 10 วินาที';
+  }
+  async function load() {
+    clearTimeout(timer);
+    if (loading || !showing()) return;
+    loading = true;
+    try {
+      const response = await fetch(URL_OVERVIEW);
+      const body = await response.json();
+      if (!response.ok) throw new Error(body?.error || 'โหลดไม่สำเร็จ (' + response.status + ')');
+      $('serviceError').hidden = true;
+      paint(body);
+    } catch (err) {
+      $('serviceError').textContent = err.message || 'โหลดไม่สำเร็จ';
+      $('serviceError').hidden = false;
+    } finally {
+      loading = false;
+      if (showing()) timer = setTimeout(load, POLL_MS);
+    }
+  }
+  $('serviceRefresh').addEventListener('click', () => load());
+  window.loadUserService = load;
+  window.stopUserService = () => clearTimeout(timer);
+  window.userServiceData = () => last;
+})();

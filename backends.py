@@ -592,6 +592,16 @@ def known(url: str = None) -> dict:
     return hit[1] if hit else None
 
 
+def last_probe(url: str):
+    """`known(url)` with how old it is: (seconds since the probe, info), or None.
+
+    Added 2026-11-04 for the Service dashboard, which says "as last seen N s ago"
+    and, like `known`, must never ask the server itself.
+    """
+    hit = _cache.get(clean_url(url))
+    return (max(0.0, time.time() - hit[0]), hit[1]) if hit else None
+
+
 # --------------------------------------------------------------------------
 # what a run was made ON: quantisation and engine version, for the run log
 # --------------------------------------------------------------------------

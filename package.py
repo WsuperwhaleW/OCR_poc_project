@@ -51,6 +51,8 @@ FILES = [
     "runlog.py",
     "runhistory.py",
     "userweb.py",
+    "apireference.py",
+    "servicestats.py",
     "userjson.py",
     "userpipeline.py",
     "userstore.py",
@@ -172,6 +174,9 @@ def main():
         # write before it has written anything -- so the placeholder ships and
         # the run log lands in the right place on first run.
         zf.writestr(f"{root}/logs/.gitkeep", "")
+        # What the Service dashboard shows as this build (config.app_version).
+        commit = config.git_commit()[:7]
+        zf.writestr(f"{root}/VERSION", stamp + ("+" + commit if commit else "") + "\n")
 
     size_mb = out.stat().st_size / 1024 ** 2
     say(f"{out}")

@@ -12,10 +12,12 @@ from urllib.parse import urlsplit
 from flask import abort, jsonify, render_template, request, send_file
 from PIL import Image, ImageOps
 
+import apireference
 import config
 import doctype_mapping
 import normalise
 import prompts
+import servicestats
 import validate
 import userjson
 import userprompts
@@ -29,6 +31,8 @@ def register(application, engine):
     # Page-issued proof survives proxy Host rewriting without trusting arbitrary
     # forwarded hosts. Shared across tabs, not a session/ownership identifier.
     page_token = secrets.token_urlsafe(32)
+    # For the Service dashboard's uptime.
+    started = time.time()
 
     @application.context_processor
     def user_page_context():
@@ -43,6 +47,14 @@ def register(application, engine):
             return application.extensions['user_service']
 
     application.extensions['user_service_factory'] = service
+
+    def overview():
+        current = application.extensions.get('user_service_overview')
+        if current is None:
+            fresh = servicestats.Overview(service(), engine, started)  # service() takes the lock
+            with lock:
+                current = application.extensions.setdefault('user_service_overview', fresh)
+        return current
 
     @application.before_request
     def user_request():
@@ -134,6 +146,18 @@ def register(application, engine):
             item_keys=list(prompts.INCOME_ITEM_KEYS),
             items_key=engine.INCOME_ITEMS_KEY,
             user_mapping=doctype_mapping.comparison())
+
+    @application.get('/api/user/api-reference')
+    def user_api_reference():
+        # The API tab's content; see apireference.py. Not jsonify: it sorts keys,
+        # and an example body reads best in the order it was written.
+        return application.response_class(json.dumps(apireference.reference(), ensure_ascii=False),
+                                          mimetype='application/json')
+
+    @application.get('/api/user/service/overview')
+    def user_service_overview():
+        # The Service tab: local data only, never a model server request.
+        return jsonify(overview().get())
 
     @application.get('/api/user/settings')
     def user_settings():

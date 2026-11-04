@@ -84,3 +84,21 @@ class ServerLimits:
     def request(self, url, limit, priority=10, cancel=None, on_wait=None):
         with self.gate(url, limit).request(limit, priority, cancel, on_wait):
             yield
+
+    def snapshot(self):
+        """Each endpoint's gate as it stands, for the Service dashboard (2026-11-04).
+
+        Read-only: in flight, waiting by priority (User = 0, background = 10, see
+        priority.py) and the highest in-flight count since the process started.
+        """
+        with self.lock:
+            gates = list(self.servers.items())
+        out = []
+        for (scheme, host, port, path), gate in gates:
+            with gate.condition:
+                waiting = [ticket[0] for ticket in gate.waiters]
+                out.append({'url': f'{scheme}://{host}:{port}{path}', 'limit': gate.limit,
+                            'active': gate.active, 'peak': gate.peak,
+                            'waiting_user': sum(1 for p in waiting if p <= 0),
+                            'waiting_background': sum(1 for p in waiting if p > 0)})
+        return out

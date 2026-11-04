@@ -297,17 +297,22 @@
   }
   function view(page){
     const name=typeof page==='boolean'?(page?'history':'upload'):page;
-    for(const [key,id] of [['upload','navUpload'],['history','navHistory'],['types','navTypes'],['prompts','navPrompts']]){
+    for(const [key,id] of [['upload','navUpload'],['history','navHistory'],['types','navTypes'],['prompts','navPrompts'],['service','navService'],['api','navApi']]){
       $(key+'View').hidden=name!==key;$(id).classList.toggle('selected',name===key);$(id).setAttribute('aria-pressed',String(name===key));
     }
     if(name!=='history')clearTimeout(historyTimer);
     if(name==='types')showTypes(typesMode);
     if(name==='prompts')window.loadUserPrompts?.(fieldLabels);
+    // The Service tab polls only while it is showing.
+    if(name==='service')window.loadUserService?.();else window.stopUserService?.();
+    if(name==='api')window.loadUserApi?.();
   }
   $('navUpload').addEventListener('click',()=>view(false));
   $('navHistory').addEventListener('click',()=>{view(true);loadHistory();});
   $('navTypes').addEventListener('click',()=>view('types'));
   $('navPrompts').addEventListener('click',()=>view('prompts'));
+  $('navService').addEventListener('click',()=>view('service'));
+  $('navApi').addEventListener('click',()=>view('api'));
   $('typesRetry').addEventListener('click',()=>loadTypes());
   $('systemTypesTab').addEventListener('click',()=>showTypes('system'));
   $('userTypesTab').addEventListener('click',()=>showTypes('user'));
@@ -808,6 +813,8 @@
     }
   }
   $('jobLoadRetry').addEventListener('click',()=>{if(selected)openJob(selected);});
+  // The Service tab's failure list opens a job here.
+  window.openUserJob=id=>openJob(id);
   $('jobPromptOpen').addEventListener('click',async()=>{
     if(!userJsonJob||active(userJsonJob.status))return;
     $('jobPromptWorkbench').hidden=false;message('jobPromptMessage','');
@@ -890,9 +897,10 @@
   $('fieldsTab').addEventListener('click',()=>pickTab('fields'));$('textTab').addEventListener('click',()=>pickTab('text'));$('jsonTab').addEventListener('click',()=>pickTab('json'));
   $('userJsonTab').addEventListener('click',()=>pickTab('userJson'));
   window.addEventListener('beforeunload',event=>{if(sending){event.preventDefault();event.returnValue='';}});
-  function stopPolling(){clearTimeout(historyTimer);clearTimeout(detailTimer);clearTimeout(batchTimer);clearTimeout(modelsTimer);clearTimeout(stressTimer);syncStageTicker();}
+  function stopPolling(){clearTimeout(historyTimer);clearTimeout(detailTimer);clearTimeout(batchTimer);clearTimeout(modelsTimer);clearTimeout(stressTimer);window.stopUserService?.();syncStageTicker();}
   function resumePolling(){
     syncStageTicker();refreshModels();refreshStress();loadHistory();pollBatch();
+    if(!$('serviceView').hidden)window.loadUserService?.();
     if(selected)openJob(selected,false);
   }
   window.addEventListener('pagehide',event=>{pageClosed=true;stopPolling();if(!event?.persisted)clearPreview();});

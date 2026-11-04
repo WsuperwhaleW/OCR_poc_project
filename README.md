@@ -948,6 +948,41 @@ upload does not create another processing job. Actual model accuracy/load at
 50/64 concurrent files must be evaluated on the model server; local tests use
 mock replies and exercise queueing, engine integration, persistence and UI.
 
+The **API** tab of `/user` is the full, current list of these endpoints, each with its
+parameters, a curl / Python / JavaScript request and example responses. It is drawn from
+`apireference.py` (`GET /api/user/api-reference`), and `tests/test_api_reference.py` fails
+when a route has no entry there, so trust the tab over this paragraph. The tab also shows
+the planned Worker API (`/api/v1/jobs`, status, result, ack, health and the callback),
+marked "แผน · ยังไม่เปิดใช้" with mock examples, so the contract can be reviewed before it
+is built.
+
+### Service tab (dashboard)
+
+The **Service** tab of `/user` shows how the worker is doing, from local data only. It
+never asks a model server anything; model state is the last probe and how old it is
+(`backends.last_probe`). `GET /api/user/service/overview` (`servicestats.py`) answers in
+one JSON, cached for 2 seconds. The page refreshes it every 10 seconds, and only while the
+tab is open and the browser tab is visible.
+
+- **Health**: OCR and extraction model as last seen, app version (`VERSION` in a packaged
+  build, else `dev-<commit>`), uptime, size of the User data folder and free disk.
+- **Queue now**: files waiting and running per stage against `ocr_concurrency` /
+  `extraction_concurrency`, and how long the oldest has waited.
+- **Model requests**: per extraction endpoint, requests in flight against the cap, waiting
+  User and background requests, and the peak since start. OCR has no request cap yet.
+- **Throughput**: finished jobs in the last hour, 24 hours and 7 days, and a per-hour chart
+  for 24 hours (a Retry counts as its own job).
+- **Speed** (24 h): p50 / p95 / max of the OCR queue wait, OCR, extraction and the whole job.
+- **Quality** (24 h): completed / partial / failed rates, Unknown-type rate, top doc types,
+  and User JSON schema-valid rate with average warnings and missing fields over the newest
+  200 finished jobs (each converted once per version).
+- **Recent failures**: the newest 10, with the first line of the error; **เปิด →** opens one.
+- **Alerts**: a model offline or never probed, a job waiting over 10 minutes, more than 5%
+  failures in the last hour, or under 10% free disk.
+
+Three greyed cards (Capacity & admission, Callbacks, Retention & storage) mark what later
+steps of the worker-service plan add.
+
 ### Field extraction: Single, Agentic or Hybrid
 
 Pass 2 offers three modes in the **Field extraction** pickers and beside Re-extract.
@@ -4208,6 +4243,8 @@ still never parses `.env` itself.
 | `engine.py` | Image preparation, both passes, streaming, grouping, extraction, checks: everything the User pipeline runs, with no Flask app |
 | `app.py` | The benchmark app: its routes, scoring, stress test and sweeps, on `engine.py`; also serves `/user` |
 | `service_app.py` | The User service alone: `/user` and its API on `engine.py`, no benchmark module |
+| `apireference.py` | Every endpoint with examples: the `/user` API tab, checked against the real routes |
+| `servicestats.py` | The `/user` Service tab's numbers, from local data only |
 | `webcommon.py` | Web plumbing both apps share: sub-path mount, per-tab workspace, gzip, JSON-body check |
 | `settings.py` | Every tunable the app runs with — limits, timeouts, detail presets, sampling, loop thresholds |
 | `prompts.py` | The prompts, and nothing else — the ones the passes send, plus the step table agentic extraction walks |

@@ -21,7 +21,7 @@
     </div>
   </header>
   <main>
-    <nav aria-label="หน้าหลัก"><button id="navUpload" class="selected">ทดสอบเอกสาร</button><button id="navHistory">ประวัติของทีม</button><button id="navTypes">Doc types</button><button id="navPrompts">Hybrid prompts</button></nav>
+    <nav aria-label="หน้าหลัก"><button id="navUpload" class="selected">ทดสอบเอกสาร</button><button id="navHistory">ประวัติของทีม</button><button id="navTypes">Doc types</button><button id="navPrompts">Hybrid prompts</button><button id="navService">Service</button><button id="navApi">API</button></nav>
     <section id="uploadView">
       <div class="intro"><span class="eyebrow">DOCUMENT WORKSPACE</span><h1>จากเอกสาร สู่ข้อมูล</h1><p class="muted">เลือกไฟล์ แล้วรัน OCR และดึงข้อมูลในครั้งเดียว ผลลัพธ์จะบันทึกให้ทีมดูย้อนหลังโดยอัตโนมัติ</p></div>
       <div class="workspace">
@@ -132,6 +132,21 @@
       <p id="promptBoardEditing" class="message prompt-board-editing" role="status" hidden></p>
       <div class="card prompt-board-editor">{% with prompt_id_prefix='' %}{% include '_user_prompt_workbench.html' %}{% endwith %}</div>
     </section>
+    <section id="serviceView" hidden aria-labelledby="serviceTitle">
+      <div class="intro"><span class="eyebrow">SERVICE</span><h1 id="serviceTitle">สถานะ service</h1><p class="muted">คิว ความเร็ว และคุณภาพของงาน คำนวณจากข้อมูลในเครื่องนี้ ไม่เรียก model server</p></div>
+      <div class="toolbar svc-toolbar"><span id="serviceUpdated" class="muted small" role="status"></span><button id="serviceRefresh" type="button" class="subtle">รีเฟรช</button></div>
+      <p id="serviceError" class="message error" role="alert" hidden></p>
+      <div id="serviceAlerts" class="svc-alerts"></div>
+      <div id="serviceGrid" class="svc-grid"></div>
+    </section>
+    <section id="apiView" hidden aria-labelledby="apiTitle">
+      <div class="intro"><span class="eyebrow">API REFERENCE</span><h1 id="apiTitle">API</h1><p class="muted">ทุก endpoint พร้อมตัวอย่างคำขอและคำตอบ · Worker API v1 สำหรับ Service หลักยังเป็นแผน (ตัวอย่างเป็น mock) · User portal API คือที่หน้านี้ใช้อยู่จริง · Base URL <code id="apiBase"></code></p></div>
+      <p id="apiError" class="message error" role="alert" hidden></p>
+      <div class="api-layout">
+        <aside class="card api-nav" aria-label="รายการ endpoint"><input id="apiFilter" type="search" placeholder="ค้นหา endpoint…" aria-label="ค้นหา endpoint"><div id="apiList"></div></aside>
+        <div id="apiDetail" class="card api-detail" aria-live="polite"></div>
+      </div>
+    </section>
   </main>
   <dialog id="userFieldsEditor" class="user-fields-editor" aria-labelledby="userFieldsTitle">
     <div class="user-fields-toolbar">
@@ -156,6 +171,8 @@
     {% include '_doctype_mapping_script.html' %}
     {% include '_user_render_script.html' %}
     {% include '_user_prompts_script.html' %}
+    {% include '_user_service_script.html' %}
+    {% include '_user_api_script.html' %}
     {% include '_user_app_script.html' %}
   </script>
 </body>

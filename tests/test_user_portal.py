@@ -502,6 +502,10 @@ class UserWebTests(unittest.TestCase):
             self.assertIn('id="extractionModelStatus"', page.text)
             self.assertIn('id="navTypes"', page.text)
             self.assertIn('id="typesView"', page.text)
+            # Service dashboard and API reference tabs (2026-11-04).
+            for marker in ('id="navService"', 'id="serviceView"', 'id="navApi"', 'id="apiView"',
+                           'window.loadUserService', 'window.loadUserApi'):
+                self.assertIn(marker, page.text)
             type_names = json.loads(re.search(r'window.USER_DOC_TYPES = (.+);', page.text)[1])
             self.assertEqual(type_names['INVOICE'], 'invoice')
             self.assertEqual(type_names['WHT_CERTIFICATE'], 'withholding tax certificate (50 ทวิ)')
