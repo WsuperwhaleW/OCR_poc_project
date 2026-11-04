@@ -39,7 +39,7 @@ class BillingPromptTests(unittest.TestCase):
             for extras in (False, True):
                 table = hybrid_steps(codes, extras)
                 actual = [k for s in table for k in s['keys']]
-                expected = set(prompts.fields_for_types(codes))
+                expected = set(prompts.hybrid_fields_for_types(codes))
                 if extras:
                     expected.add('other_fields')
                 if prompts.items_for_types(codes):

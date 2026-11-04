@@ -32,10 +32,18 @@ class HybridWhtTests(unittest.TestCase):
                              Counter(k for s in new for k in s['keys']))
             for step in new:
                 self.assertEqual(set(json.loads(step['skeleton'])), set(step['keys']) or {'other_fields'})
-        for codes in ([], ['PAYMENT_SCHEDULE'], ['BILLING_NOTE'], ['CHEQUE_DELIVERY']):
-            table = prompts.steps_for_types(codes, False, mode='hybrid')
-            self.assertIn('wht_payer_branch', {s['id'] for s in table})
-            self.assertNotIn('wht_payer_party', {s['id'] for s in table})
+        # An unclassified page keeps the base form's WHT groups (it may be a missed
+        # certificate); a page classified as another table-less kind is not asked them.
+        table = prompts.steps_for_types([], False, mode='hybrid')
+        self.assertIn('wht_payer_branch', {s['id'] for s in table})
+        self.assertNotIn('wht_payer_party', {s['id'] for s in table})
+        for codes in (['PAYMENT_SCHEDULE'], ['BILLING_NOTE'], ['CHEQUE_DELIVERY'], ['TAX_INVOICE']):
+            hybrid = prompts.steps_for_types(codes, False, mode='hybrid')
+            self.assertFalse([s['id'] for s in hybrid if s['id'].startswith('wht')], codes)
+            self.assertEqual([s['id'] for s in hybrid],
+                             ['document', 'po_gr_rtv', 'parties', 'totals', 'payment', 'remaining'], codes)
+            agentic = prompts.steps_for_types(codes, False, mode='agentic')
+            self.assertTrue(any(s['id'].startswith('wht') for s in agentic), codes)
         mixed = prompts.steps_for_types(['WHT_CERTIFICATE', 'INVOICE'], False, mode='hybrid')
         keys = [k for s in mixed for k in s['keys']]
         self.assertEqual(len(keys), len(set(keys)))

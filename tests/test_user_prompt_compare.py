@@ -46,9 +46,12 @@ class UserPromptCompareTests(unittest.TestCase):
                     self.assertIs(app.log_extract,original_log)
                     self.assertEqual(args.app,'http://127.0.0.1:5000')
                     self.assertIsNone(args.mode)
-            self.assertEqual(len(counts['before']['fields_asked']),len(prompts.DEFAULT_FIELDS))
+            # Before migration 2 the type used the base form, which Hybrid no longer
+            # widens with the WHT certificate's keys on a classified page.
+            self.assertEqual(len(counts['before']['fields_asked']),
+                             len(set(prompts.DEFAULT_FIELDS)-set(prompts.DOC_TYPE_FIELDS['WHT_CERTIFICATE'])))
             self.assertEqual(len(counts['after']['fields_asked']),13)
-            self.assertTrue(any(g.startswith('wht') for g in counts['before']['groups']))
+            self.assertFalse(any(g.startswith('wht') for g in counts['before']['groups']))
             self.assertFalse(any(g.startswith('wht') for g in counts['after']['groups']))
 
     def test_failed_comparison_also_restores_the_transport_and_logging(self):

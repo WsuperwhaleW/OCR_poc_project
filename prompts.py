@@ -1951,6 +1951,27 @@ def fields_for_types(codes):
     return _ordered(keys) if keys else DEFAULT_FIELDS
 
 
+def hybrid_fields_for_types(codes):
+    """The Hybrid form: `fields_for_types`, less the WHT certificate's own keys on a
+    page classified as a kind with no table of its own.
+
+    Such a page (tax invoice, billing note, payment schedule, cheque delivery...)
+    is known not to be a withholding-tax certificate. Measured 2026-11-03 (Extract
+    only, Hybrid, vLLM): asked the certificate's keys, those pages answered with the
+    wrong document's facts -- sol013's tax-invoice number as certificate_no, its
+    buyer as payer_name -- on sol012/013/015/021/022, every run, while none of the
+    34 non-certificate documents in solution/ has a value for any of these keys.
+    They are 9 of the base form's 15 Hybrid requests. An unclassified page still
+    gets everything: it may be a certificate the heading match missed.
+    Hybrid only: Agentic stays frozen (tests/fixtures/agentic_baseline_sha256.json).
+    Built 2026-11-04 at the user's request: "ถ้าไม่ใช่ WHT ก็ไม่ต้องถามบาง field".
+    """
+    keys = fields_for_types(codes)
+    if keys == DEFAULT_FIELDS and any(code in TYPE_NAMES for code in (codes or ())):
+        return _ordered(set(keys) - set(DOC_TYPE_FIELDS["WHT_CERTIFICATE"]))
+    return keys
+
+
 def mandatory_for_types(codes):
     """The keys the requirement demands, for every type a document names.
 
@@ -2788,7 +2809,7 @@ def steps_for_types(codes, extras=True, mode="agentic"):
     """
     if mode not in ("agentic", "hybrid"):
         raise ValueError("step mode must be 'agentic' or 'hybrid'")
-    wanted = set(fields_for_types(codes))
+    wanted = set(hybrid_fields_for_types(codes) if mode == "hybrid" else fields_for_types(codes))
     # The table step owns a key that is not a scalar and so is not in the form.
     # It is admitted by the same test as every other step -- every key it owns is
     # asked for -- once the key it owns is in `wanted`.

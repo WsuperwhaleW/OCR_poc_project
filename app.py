@@ -4835,6 +4835,11 @@ def _extract_document(text: str, mode: str, case_id: str, steps, doc_type,
     # one dict, so the two modes cannot disagree about which document this is.
     form = _field_set(text, case_id, doc_type, status,
                       (record or {}).get("pages"), extras)
+    if mode == "hybrid":
+        # Hybrid does not ask a classified non-certificate page the WHT certificate's
+        # keys (prompts.hybrid_fields_for_types), so they are not "asked" either:
+        # not scored as absent, not left for grounding or validation to look for.
+        form["keys"] = list(prompts.hybrid_fields_for_types(form["doc_types"]))
     form["schema_first"] = bool(schema_first and mode in ("agentic", "hybrid"))
     if mode == 'hybrid' and workspace.get('user_pipeline', False):
         selected = userpromptsets.select(workspace.get('user_prompt_sets', {}), form['doc_types'])

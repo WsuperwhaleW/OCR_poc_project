@@ -66,9 +66,13 @@ class LiteralDocumentTypesTests(unittest.TestCase):
             self.assertEqual(prompts.type_phrase(codes), prompts.TYPE_NAMES[kind])
             self.assertEqual(prompts.fields_for_types(codes), prompts.fields_for_types(legacy))
             self.assertEqual(prompts.mandatory_for_types(codes), prompts.mandatory_for_types(legacy))
-            for mode in ('agentic', 'hybrid'):
-                self.assertEqual([(s['id'], s['keys']) for s in prompts.steps_for_types(codes, mode=mode)],
-                                 [(s['id'], s['keys']) for s in prompts.steps_for_types(legacy, mode=mode)])
+            self.assertEqual([(s['id'], s['keys']) for s in prompts.steps_for_types(codes, mode='agentic')],
+                             [(s['id'], s['keys']) for s in prompts.steps_for_types(legacy, mode='agentic')])
+            # Hybrid: a kind without components (T07) is classified, unlike its empty
+            # legacy list, so it is not asked the WHT certificate's groups.
+            self.assertEqual([(s['id'], s['keys']) for s in prompts.steps_for_types(codes, mode='hybrid')],
+                             [(s['id'], s['keys']) for s in prompts.steps_for_types(legacy, mode='hybrid')
+                              if legacy or not s['id'].startswith('wht')])
 
     def test_model_specific_kind_requires_matching_printed_title(self):
         def classify(codes, heading, text=None):

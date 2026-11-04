@@ -56,7 +56,9 @@ class UserPromptSetTests(unittest.TestCase):
         data = self.reference('DEBIT_NOTE')
         self.assertIsNone(data['editor'])
         self.assertIsNone(data['library']['record'])
-        self.assertTrue(any(g['id'].startswith('wht') for g in data['groups']))
+        # The base form, less the WHT certificate's groups for a classified debit note.
+        self.assertFalse(any(g['id'].startswith('wht') for g in data['groups']))
+        self.assertEqual([g['id'] for g in data['groups']][:6], ['document','po_gr_rtv','parties','totals','payment','remaining'])
 
     def test_migration_keeps_existing_edits_and_exact_constituent_sharing(self):
         directory = Path(self.temp.name) / 'legacy'; directory.mkdir()

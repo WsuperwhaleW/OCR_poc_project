@@ -37,7 +37,7 @@ class GroupSelectionTests(unittest.TestCase):
             for extras in (False, True):
                 table = hybrid_steps(combo, extras)
                 keys = [k for s in table for k in s['keys']]
-                expected = set(prompts.fields_for_types(combo))
+                expected = set(prompts.hybrid_fields_for_types(combo))
                 if prompts.items_for_types(combo):
                     expected.add(prompts.INCOME_ITEMS_KEY)
                 if extras:

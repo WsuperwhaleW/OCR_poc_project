@@ -968,8 +968,15 @@ name, branch code, branch location and address into one five-field request, capp
 at 600 reply tokens. Payer and payee remain separate requests. Certificate identity,
 income table, totals and dividend option remain separate, giving six requests
 without extras. Existing per-field copy rules are retained for this grouping
-benchmark; the income-table prompt is unchanged. Unknown and non-WHT forms keep
-their current field coverage. Name instructions exclude explicitly designated
+benchmark; the income-table prompt is unchanged. An unclassified (Unknown) page keeps
+the full base form, WHT groups included, since it may be a certificate the heading
+match missed. A page classified as a kind with no form of its own (tax invoice,
+billing note, payment schedule, cheque delivery and so on) is not asked the
+certificate's 16 keys in Hybrid (`prompts.hybrid_fields_for_types`): 6 requests and
+18 fields instead of 15 and 34. Asked them, such pages answered with the wrong
+document's facts (a tax-invoice number as `certificate_no`, the buyer as
+`payer_name`), and no non-certificate document in `solution/` has a value for them.
+Agentic stays frozen and still asks them. Name instructions exclude explicitly designated
 branch/head-office suffixes while preserving qualifiers in legal names.
 
 The RTV joint party question ends with an ownership check: the tax branch must
