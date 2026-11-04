@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlsplit
 
+import servicestore
 import userprompts
 import userpromptsets
 
@@ -89,6 +90,8 @@ class UserStore:
             if 'prompt_changes' not in columns:
                 db.execute("ALTER TABLE jobs ADD COLUMN prompt_changes TEXT NOT NULL DEFAULT '{}'")
             db.execute("CREATE UNIQUE INDEX IF NOT EXISTS jobs_extraction_retry ON jobs(retry_of,upload_id) WHERE retry_of<>''")
+            # Worker API: API keys, Idempotency-Key, and which client sent a job.
+            servicestore.initialize(db)
             db.commit()
             userpromptsets.initialize(db)
 
@@ -258,7 +261,7 @@ class UserStore:
             row = db.execute('SELECT * FROM batches WHERE id=?', (batch_id,)).fetchone()
         return {**dict(row), 'configuration': json.loads(row['configuration'])} if row else None
 
-    def add_job(self, batch_id, upload_id, filename, content):
+    def add_job(self, batch_id, upload_id, filename, content, client_id='', client_ref=''):
         if not re.fullmatch(r'[a-zA-Z0-9_-]{8,64}', upload_id or ''):
             raise ValueError('Invalid upload ID.')
         job_id, at = uuid.uuid4().hex, now()
@@ -279,11 +282,11 @@ class UserStore:
                 received = db.execute('SELECT COUNT(*) FROM jobs WHERE batch_id=?', (batch_id,)).fetchone()[0]
                 if received >= batch['file_count']:
                     raise ValueError('All files in this batch have already been received.')
-                db.execute('INSERT INTO jobs(id,batch_id,upload_id,filename,created_at,updated_at,status,progress,configuration,timeline) '
-                           'VALUES (?,?,?,?,?,?,?,?,?,?)',
+                db.execute('INSERT INTO jobs(id,batch_id,upload_id,filename,created_at,updated_at,status,progress,configuration,timeline,'
+                           'client_id,client_ref) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)',
                            (job_id, batch_id, upload_id, filename, at, at, 'queued_ocr',
                             'กำลังรอคิว OCR', batch['configuration'], json.dumps({
-                                'queued_ocr': {'started_at': at, 'progress': 'กำลังรอคิว OCR'}})))
+                                'queued_ocr': {'started_at': at, 'progress': 'กำลังรอคิว OCR'}}), client_id, client_ref))
         except Exception:
             path.unlink(missing_ok=True)
             raise
@@ -335,8 +338,10 @@ class UserStore:
     def list(self, offset=0, limit=50):
         offset = max(0, int(offset))
         with self.connect() as db:
-            rows = db.execute('SELECT id,batch_id,filename,created_at,updated_at,status,progress,error,retry_of '
-                              'FROM jobs ORDER BY created_at DESC,id DESC LIMIT ? OFFSET ?',
+            rows = db.execute('SELECT j.id,j.batch_id,j.filename,j.created_at,j.updated_at,j.status,j.progress,j.error,j.retry_of,'
+                              "j.client_ref,COALESCE(k.name,'') AS client_name "
+                              'FROM jobs j LEFT JOIN api_keys k ON k.id=j.client_id '
+                              'ORDER BY j.created_at DESC,j.id DESC LIMIT ? OFFSET ?',
                               (limit + 1, offset)).fetchall()
             counts = {r['status']: r['n'] for r in db.execute(
                 'SELECT status,COUNT(*) AS n FROM jobs GROUP BY status')}

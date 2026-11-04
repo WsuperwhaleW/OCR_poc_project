@@ -5791,6 +5791,8 @@ def choose_port() -> int:
 # app again here would create a second engine and a second set of globals.
 import userweb
 get_user_service = userweb.register(app, engine)
+import serviceapi
+serviceapi.register(app, engine, get_user_service)
 # Preserve the User API's origin check before parsing or validating its body.
 app.before_request(webcommon.validate_api_json_object)
 

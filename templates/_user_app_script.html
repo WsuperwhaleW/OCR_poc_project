@@ -297,7 +297,7 @@
   }
   function view(page){
     const name=typeof page==='boolean'?(page?'history':'upload'):page;
-    for(const [key,id] of [['upload','navUpload'],['history','navHistory'],['types','navTypes'],['prompts','navPrompts'],['service','navService'],['api','navApi']]){
+    for(const [key,id] of [['upload','navUpload'],['history','navHistory'],['types','navTypes'],['prompts','navPrompts'],['service','navService'],['api','navApi'],['keys','navKeys']]){
       $(key+'View').hidden=name!==key;$(id).classList.toggle('selected',name===key);$(id).setAttribute('aria-pressed',String(name===key));
     }
     if(name!=='history')clearTimeout(historyTimer);
@@ -306,6 +306,7 @@
     // The Service tab polls only while it is showing.
     if(name==='service')window.loadUserService?.();else window.stopUserService?.();
     if(name==='api')window.loadUserApi?.();
+    if(name==='keys')window.loadUserKeys?.();
   }
   $('navUpload').addEventListener('click',()=>view(false));
   $('navHistory').addEventListener('click',()=>{view(true);loadHistory();});
@@ -313,6 +314,7 @@
   $('navPrompts').addEventListener('click',()=>view('prompts'));
   $('navService').addEventListener('click',()=>view('service'));
   $('navApi').addEventListener('click',()=>view('api'));
+  $('navKeys').addEventListener('click',()=>view('keys'));
   $('typesRetry').addEventListener('click',()=>loadTypes());
   $('systemTypesTab').addEventListener('click',()=>showTypes('system'));
   $('userTypesTab').addEventListener('click',()=>showTypes('user'));
@@ -883,6 +885,7 @@
         const button=node('button','เปิดผลลัพธ์ →','subtle');button.addEventListener('click',()=>openJob(job.id));action.append(button);
         const filename=node('td',job.filename);
         if(job.retry_of)filename.append(node('div','Extraction ใหม่ · ใช้ OCR เดิม','muted small'));
+        if(job.client_name)filename.append(node('div','ผ่าน API · '+job.client_name+(job.client_ref?' · '+job.client_ref:''),'muted small'));
         row.append(filename,node('td',dates(job.created_at)),status,action);return row;}));
       $('emptyHistory').hidden=!!jobs.length;$('moreHistory').hidden=!more;
       const counts=body.counts||{};$('queueSummary').textContent='OCR '+(counts.ocr||0)+' ไฟล์ · Extraction '+(counts.extraction||0)+' ไฟล์ · รอ '+((counts.queued_ocr||0)+(counts.queued_extraction||0))+' ไฟล์';

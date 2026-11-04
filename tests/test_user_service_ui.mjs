@@ -9,6 +9,7 @@ const read = name => readFileSync(new URL('templates/' + name, root), 'utf8');
 const appSource = read('_user_app_script.html');
 const serviceSource = read('_user_service_script.html');
 const apiSource = read('_user_api_script.html');
+const keysSource = read('_user_keys_script.html');
 const config = {ocr_concurrency:50,extraction_concurrency:64,detail:'medium',shape:'hybrid',extras:false,schema_first:false,
   fill_missing:true,validation_retry:false,loop_guard:true,no_cache:false,user_file_max:0,max_upload_mb:32,
   ocr_url:'http://127.0.0.1:8000',extraction_url:'http://127.0.0.1:8001'};
@@ -75,13 +76,20 @@ const reference = {
 };
 
 function page({hiddenDocument=false}={}){
-  const items={},listeners={},timers=new Map(),calls=[];let serial=0;
+  const items={},listeners={},timers=new Map(),calls=[],sent=[];let serial=0;
   const el=id=>items[id] ||= new Element();
-  for(const view of ['history','types','prompts','service','api'])el(view+'View').hidden=true;
+  for(const view of ['history','types','prompts','service','api','keys'])el(view+'View').hidden=true;
+  el('keyNew').hidden=true;
   const document={hidden:hiddenDocument,listeners,addEventListener(name,fn){listeners[name]=fn;},getElementById:el,
     createElement:tag=>new Element(tag),createElementNS:(_,tag)=>new Element(tag),createTextNode:text=>({textContent:text}),querySelectorAll:()=>[]};
-  const fetch=async url=>{
-    calls.push(url);
+  const keys=[{id:'k1',name:'ERP หลัก',hint:'ocr_AbCd…9xYz',created_at:'2026-11-04T08:00:00Z',last_used_at:'',revoked_at:'',jobs:3}];
+  const fetch=async(url,options={})=>{
+    calls.push(url);sent.push({url,options});
+    if(url.endsWith('/api-keys')&&options.method==='POST'){
+      keys.unshift({id:'k2',name:JSON.parse(options.body).name,hint:'ocr_New…',created_at:'2026-11-04T09:00:00Z',last_used_at:'',revoked_at:'',jobs:0});
+      return json({key:'ocr_SECRET',record:keys[0]});}
+    if(url.endsWith('/revoke')){keys.find(k=>url.includes(k.id)).revoked_at='2026-11-04T10:00:00Z';return json({record:{}});}
+    if(url.endsWith('/api-keys'))return json({keys});
     if(url.endsWith('/service/overview'))return json(overview);
     if(url.endsWith('/api-reference'))return json(reference);
     if(url.endsWith('/settings'))return json({settings:config});
@@ -90,13 +98,13 @@ function page({hiddenDocument=false}={}){
     if(url.includes('/jobs?'))return json({jobs:[],counts:{},more:false});
     return json({});
   };
-  const window={USER_BASE:'/ocr',USER_API_TOKEN:'page-token',location:{origin:'https://ocr.example'},
+  const window={USER_BASE:'/ocr',USER_API_TOKEN:'page-token',location:{origin:'https://ocr.example'},confirm:()=>true,
     addEventListener:(name,fn)=>listeners['window:'+name]=fn,renderUserOcr(){}};
   const ctx=vm.createContext({document,fetch,window,Date,console,Node:Element,
     setTimeout:(fn,ms)=>{timers.set(++serial,{fn,ms});return serial;},clearTimeout:id=>timers.delete(id)});
-  for(const source of [serviceSource,apiSource,appSource])vm.runInContext(source,ctx);
+  for(const source of [serviceSource,apiSource,keysSource,appSource])vm.runInContext(source,ctx);
   const polls=()=>[...timers.values()].filter(t=>t.ms===10000&&String(t.fn).includes('load')).length;
-  return {el,document,listeners,timers,calls,window,polls};
+  return {el,document,listeners,timers,calls,sent,window,polls};
 }
 
 test('the Service tab polls every 10 s only while it is showing',async()=>{
@@ -179,8 +187,27 @@ test('the API filter narrows the list and a write example carries the page token
   assert.match(el('apiList').text(),/ไม่พบ endpoint/);
 });
 
+test('the API keys tab shows a new key once and revokes with the page token',async()=>{
+  const {el,sent}=page();await settle();
+  el('navKeys').listeners.click();await settle();
+  assert.equal(el('keysRows').children.length,1);
+  assert.match(el('keysRows').text(),/ERP หลัก/);
+  el('keyName').value='ทดสอบ';await el('keyForm').listeners.submit({preventDefault(){}});await settle();
+  assert.equal(el('keyNew').hidden,false);
+  assert.equal(el('keyNewValue').textContent,'ocr_SECRET');
+  assert.equal(el('keysRows').children.length,2);
+  const create=sent.find(s=>s.options.method==='POST');
+  assert.equal(create.options.headers['X-OCR-User-Token'],'page-token');
+  el('keyDone').listeners.click();
+  assert.equal(el('keyNew').hidden,true);assert.equal(el('keyNewValue').textContent,'');
+  const revoke=el('keysRows').children[0].all().find(child=>child.tag==='button');
+  await revoke.listeners.click();await settle();
+  assert.ok(sent.some(s=>s.url.endsWith('/api-keys/k2/revoke')&&s.options.headers['X-OCR-User-Token']==='page-token'));
+  assert.match(el('keysRows').children[0].text(),/ยกเลิกแล้ว/);
+});
+
 test('neither new tab hard-codes an /api/ path',()=>{
-  for(const source of [serviceSource,apiSource]){
+  for(const source of [serviceSource,apiSource,keysSource]){
     assert.ok(!source.includes("fetch('/api/"));
     for(const match of source.matchAll(/['"]\/api\//g))
       assert.ok(source.slice(Math.max(0,match.index-20),match.index).endsWith('window.USER_BASE + '),'paths go through window.USER_BASE');

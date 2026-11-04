@@ -26,7 +26,7 @@ def flask_path(rule):
 def routes():
     out = set()
     for rule in service_app.app.url_map.iter_rules():
-        if rule.rule.startswith(('/api/user/', '/api/schema')):
+        if rule.rule.startswith(('/api/user/', '/api/schema', '/api/v1/')):
             for method in rule.methods - {'HEAD', 'OPTIONS'}:
                 out.add((method, flask_path(rule.rule)))
     return out
@@ -38,13 +38,10 @@ class ApiReferenceTests(unittest.TestCase):
         self.assertEqual(routes() - documented, set(), 'routes without an API tab entry')
         self.assertEqual(documented - routes(), set(), 'entries marked live with no route')
 
-    def test_planned_entries_have_no_route_yet(self):
-        # Step 4 builds /api/v1 and flips these to live; until then none may exist.
-        planned = {(e['method'], e['path']) for e in apireference.ENDPOINTS if e['status'] == 'planned'}
-        self.assertTrue(planned)
-        rules = {flask_path(rule.rule) for rule in service_app.app.url_map.iter_rules()}
-        self.assertFalse({path for _, path in planned} & rules)
-        self.assertTrue(all(path.startswith('/api/v1/') for _, path in planned))
+    def test_only_the_callback_is_still_planned(self):
+        # /api/v1 is built (2026-11-04); the callback comes with step 6.
+        self.assertEqual([e['id'] for e in apireference.ENDPOINTS if e['status'] != 'live'], [])
+        self.assertEqual(apireference.CALLBACK['status'], 'planned')
 
     def test_entries_are_complete_and_ids_unique(self):
         ids = [e['id'] for e in apireference.ENDPOINTS]

@@ -21,7 +21,7 @@
     </div>
   </header>
   <main>
-    <nav aria-label="หน้าหลัก"><button id="navUpload" class="selected">ทดสอบเอกสาร</button><button id="navHistory">ประวัติของทีม</button><button id="navTypes">Doc types</button><button id="navPrompts">Hybrid prompts</button><button id="navService">Service</button><button id="navApi">API</button></nav>
+    <nav aria-label="หน้าหลัก"><button id="navUpload" class="selected">ทดสอบเอกสาร</button><button id="navHistory">ประวัติของทีม</button><button id="navTypes">Doc types</button><button id="navPrompts">Hybrid prompts</button><button id="navService">Service</button><button id="navApi">API</button><button id="navKeys">API keys</button></nav>
     <section id="uploadView">
       <div class="intro"><span class="eyebrow">DOCUMENT WORKSPACE</span><h1>จากเอกสาร สู่ข้อมูล</h1><p class="muted">เลือกไฟล์ แล้วรัน OCR และดึงข้อมูลในครั้งเดียว ผลลัพธ์จะบันทึกให้ทีมดูย้อนหลังโดยอัตโนมัติ</p></div>
       <div class="workspace">
@@ -140,11 +140,22 @@
       <div id="serviceGrid" class="svc-grid"></div>
     </section>
     <section id="apiView" hidden aria-labelledby="apiTitle">
-      <div class="intro"><span class="eyebrow">API REFERENCE</span><h1 id="apiTitle">API</h1><p class="muted">ทุก endpoint พร้อมตัวอย่างคำขอและคำตอบ · Worker API v1 สำหรับ Service หลักยังเป็นแผน (ตัวอย่างเป็น mock) · User portal API คือที่หน้านี้ใช้อยู่จริง · Base URL <code id="apiBase"></code></p></div>
+      <div class="intro"><span class="eyebrow">API REFERENCE</span><h1 id="apiTitle">API</h1><p class="muted">ทุก endpoint พร้อมตัวอย่างคำขอและคำตอบ · Worker API v1 คือที่ Service หลักเรียกด้วย API key (สร้างในแท็บ API keys) · User portal API คือที่หน้านี้ใช้ · Base URL <code id="apiBase"></code></p></div>
       <p id="apiError" class="message error" role="alert" hidden></p>
       <div class="api-layout">
         <aside class="card api-nav" aria-label="รายการ endpoint"><input id="apiFilter" type="search" placeholder="ค้นหา endpoint…" aria-label="ค้นหา endpoint"><div id="apiList"></div></aside>
         <div id="apiDetail" class="card api-detail" aria-live="polite"></div>
+      </div>
+    </section>
+    <section id="keysView" hidden aria-labelledby="keysTitle">
+      <div class="intro"><span class="eyebrow">API KEYS</span><h1 id="keysTitle">API keys</h1><p class="muted">Key ที่ Service หลักใช้เรียก Worker API (<code>Authorization: Bearer &lt;key&gt;</code>) · 1 key = 1 client และเห็นเฉพาะงานที่ตัวเองส่ง · ระบบเก็บแค่ค่า hash จึงแสดง key ได้ครั้งเดียวตอนสร้าง</p></div>
+      <div class="card">
+        <form id="keyForm" class="keys-form"><label for="keyName">ชื่อ key</label><input id="keyName" maxlength="80" placeholder="เช่น ERP หลัก" autocomplete="off"><button id="keyCreate" class="primary" type="submit">สร้าง key</button></form>
+        <div id="keyNew" class="message keys-new" role="status" hidden><strong>คัดลอก key นี้เก็บไว้ตอนนี้ ปิดแล้วจะดูอีกไม่ได้</strong><code id="keyNewValue"></code><div class="toolbar"><button id="keyCopy" type="button" class="subtle">คัดลอก</button><button id="keyDone" type="button" class="subtle">เก็บแล้ว ปิด</button></div></div>
+        <p id="keysMessage" class="message" role="status" hidden></p>
+        <div class="toolbar keys-toolbar"><h2>Key ทั้งหมด</h2><button id="keysRefresh" type="button" class="subtle">รีเฟรช</button></div>
+        <div class="table-scroll"><table class="svc-table keys-table"><thead><tr><th>ชื่อ</th><th>สร้างเมื่อ</th><th>ใช้ล่าสุด</th><th>งานที่ส่ง</th><th>สถานะ</th><th></th></tr></thead><tbody id="keysRows"></tbody></table></div>
+        <p id="keysEmpty" class="empty muted" hidden>ยังไม่มี key</p>
       </div>
     </section>
   </main>
@@ -173,6 +184,7 @@
     {% include '_user_prompts_script.html' %}
     {% include '_user_service_script.html' %}
     {% include '_user_api_script.html' %}
+    {% include '_user_keys_script.html' %}
     {% include '_user_app_script.html' %}
   </script>
 </body>

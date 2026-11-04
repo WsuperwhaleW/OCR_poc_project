@@ -956,6 +956,36 @@ the planned Worker API (`/api/v1/jobs`, status, result, ack, health and the call
 marked "แผน · ยังไม่เปิดใช้" with mock examples, so the contract can be reviewed before it
 is built.
 
+### Worker API (`/api/v1`) and API keys
+
+The main service talks to the worker over `/api/v1` (`serviceapi.py`), with an **API key**
+and nothing else (2026-11-04: `/user` sits behind the firewall, so there is no sign-in or
+role). Make a key in the **API keys** tab of `/user`. It is shown once; the server keeps
+only its SHA-256. Revoking works from the next request.
+
+```bash
+curl -X POST "$BASE/api/v1/jobs" -H "Authorization: Bearer $KEY"      -H "Idempotency-Key: 7f9c…" -F file=@invoice.pdf -F client_ref=ERP-000123
+# 202 {"job_id": "…", "status": "queued", "status_url": "/api/v1/jobs/…"}
+curl "$BASE/api/v1/jobs/$JOB" -H "Authorization: Bearer $KEY"          # poll: queued → processing → succeeded / partial / failed
+curl "$BASE/api/v1/jobs/$JOB/result" -H "Authorization: Bearer $KEY"   # User JSON v7 (?report=1 adds the checks)
+curl -X POST "$BASE/api/v1/jobs/$JOB/ack" -H "Authorization: Bearer $KEY"   # 204; records the time, deletes nothing
+curl "$BASE/api/v1/health"                                              # no key
+```
+
+- One key is one client: a job another key sent answers 404.
+- An API job is an ordinary User job: same queue, User priority, engine and prompt sets.
+  History in `/user` labels it "ผ่าน API · <key name> · <client_ref>".
+- **Idempotency-Key** (optional, kept 7 days per key): the same key with the same file and
+  `client_ref` returns the first job again (`Idempotent-Replayed: true`). The same key with a
+  different request is `409 idempotency_conflict`. A refused submit (for example `503
+  model_unavailable`) frees the key for a retry.
+- A `/user` Retry of an API job: `…/result` returns the newest successful attempt, and
+  `result_version` counts successful attempts. `event_id` is fixed per version.
+- Not yet: `callback_url` is refused with `400 callback_not_available` until step 6. The
+  open-job limit (`429`) and spool cap (`507`) come with step 5, `410 expired` with step 7.
+
+The API tab lists every request and response in full.
+
 ### Service tab (dashboard)
 
 The **Service** tab of `/user` shows how the worker is doing, from local data only. It
@@ -4244,6 +4274,7 @@ still never parses `.env` itself.
 | `app.py` | The benchmark app: its routes, scoring, stress test and sweeps, on `engine.py`; also serves `/user` |
 | `service_app.py` | The User service alone: `/user` and its API on `engine.py`, no benchmark module |
 | `apireference.py` | Every endpoint with examples: the `/user` API tab, checked against the real routes |
+| `serviceapi.py`, `servicestore.py` | Worker API `/api/v1` for the main service; API keys and Idempotency-Key records |
 | `servicestats.py` | The `/user` Service tab's numbers, from local data only |
 | `webcommon.py` | Web plumbing both apps share: sub-path mount, per-tab workspace, gzip, JSON-body check |
 | `settings.py` | Every tunable the app runs with — limits, timeouts, detail presets, sampling, loop thresholds |

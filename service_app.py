@@ -20,6 +20,7 @@ from flask import Flask, redirect, url_for
 
 import config
 import engine
+import serviceapi
 import userweb
 import webcommon
 import workspace
@@ -29,6 +30,8 @@ app = Flask(__name__, static_folder=None)
 # Upload cap, sub-path mount, per-tab workspace and gzip, in the benchmark's order.
 webcommon.install(app, engine.MAX_UPLOAD_MB)
 get_user_service = userweb.register(app, engine)
+# The Worker API for the main service (API keys) and the /user API keys tab.
+serviceapi.register(app, engine, get_user_service)
 # After the User routes' origin check, as in the benchmark app.
 app.before_request(webcommon.validate_api_json_object)
 

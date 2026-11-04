@@ -53,6 +53,8 @@ FILES = [
     "userweb.py",
     "apireference.py",
     "servicestats.py",
+    "servicestore.py",
+    "serviceapi.py",
     "userjson.py",
     "userpipeline.py",
     "userstore.py",

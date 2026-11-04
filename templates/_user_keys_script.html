@@ -1,0 +1,87 @@
+/* API keys tab: make and revoke the keys the main service uses for /api/v1.
+   Built 2026-11-04 ("ทำแต่ api key พอ"): a key is shown once, when it is made;
+   the server keeps only its hash. */
+(() => {
+  const $ = id => document.getElementById(id);
+  const URL_KEYS = window.USER_BASE + '/api/user/api-keys';
+  let loading = false;
+
+  function el(tag, text, className) {
+    const node = document.createElement(tag);
+    if (text !== undefined && text !== null) node.textContent = text;
+    if (className) node.className = className;
+    return node;
+  }
+  const when = value => value ? new Date(value).toLocaleString('th-TH') : '–';
+  function note(text, isError) {
+    $('keysMessage').textContent = text || '';
+    $('keysMessage').hidden = !text;
+    $('keysMessage').className = 'message' + (isError ? ' error' : '');
+  }
+  async function call(url, options = {}) {
+    const write = options.method && options.method !== 'GET';
+    const response = await fetch(url, write ? {...options, headers: {'Content-Type': 'application/json',
+      'X-OCR-User-Token': window.USER_API_TOKEN, ...options.headers}} : options);
+    let body = null;
+    try { body = await response.json(); } catch (_) { /* no body */ }
+    if (!response.ok) throw new Error(body?.error || 'ดำเนินการไม่สำเร็จ (' + response.status + ')');
+    return body;
+  }
+  function paint(keys) {
+    const rows = $('keysRows');
+    rows.replaceChildren();
+    for (const key of keys) {
+      const row = el('tr'), state = el('td'), action = el('td');
+      state.append(el('span', key.revoked_at ? 'ยกเลิกแล้ว' : 'ใช้งานได้', 'badge ' + (key.revoked_at ? 'failed' : 'completed')));
+      if (!key.revoked_at) {
+        const revoke = el('button', 'ยกเลิก key', 'subtle');
+        revoke.type = 'button';
+        revoke.addEventListener('click', () => revokeKey(key));
+        action.append(revoke);
+      }
+      const name = el('td'); name.append(el('strong', key.name), el('div', key.hint, 'muted small keys-hint'));
+      row.append(name, el('td', when(key.created_at)), el('td', when(key.last_used_at)),
+        el('td', String(key.jobs ?? 0)), state, action);
+      rows.append(row);
+    }
+    $('keysEmpty').hidden = keys.length > 0;
+  }
+  async function load() {
+    if (loading) return;
+    loading = true;
+    try { paint((await call(URL_KEYS)).keys); }
+    catch (err) { note(err.message, true); }
+    finally { loading = false; }
+  }
+  async function createKey(event) {
+    event?.preventDefault?.();
+    const name = ($('keyName').value || '').trim();
+    if (!name) { note('ตั้งชื่อ key ก่อน เช่น "ERP หลัก"', true); return; }
+    $('keyCreate').disabled = true;
+    try {
+      const body = await call(URL_KEYS, {method: 'POST', body: JSON.stringify({name})});
+      $('keyName').value = '';
+      $('keyNewValue').textContent = body.key;
+      $('keyNew').hidden = false;
+      note('');
+      await load();
+    } catch (err) { note(err.message, true); }
+    finally { $('keyCreate').disabled = false; }
+  }
+  async function revokeKey(key) {
+    if (!window.confirm?.('ยกเลิก key "' + key.name + '"? Service ที่ใช้ key นี้จะเรียก API ไม่ได้ทันที และกู้คืนไม่ได้')) return;
+    try {
+      await call(URL_KEYS + '/' + encodeURIComponent(key.id) + '/revoke', {method: 'POST', body: '{}'});
+      note('ยกเลิก key "' + key.name + '" แล้ว');
+      await load();
+    } catch (err) { note(err.message, true); }
+  }
+  $('keyForm').addEventListener('submit', createKey);
+  $('keyCopy').addEventListener('click', async () => {
+    try { await navigator.clipboard.writeText($('keyNewValue').textContent); $('keyCopy').textContent = 'คัดลอกแล้ว'; }
+    catch (_) { $('keyCopy').textContent = 'คัดลอกไม่ได้ ให้เลือกข้อความเอง'; }
+  });
+  $('keyDone').addEventListener('click', () => { $('keyNew').hidden = true; $('keyNewValue').textContent = ''; $('keyCopy').textContent = 'คัดลอก'; });
+  $('keysRefresh').addEventListener('click', () => load());
+  window.loadUserKeys = load;
+})();

@@ -76,9 +76,9 @@ class ServiceAppTests(unittest.TestCase):
             self.assertTrue(lines, done.stdout[-2000:] + done.stderr[-4000:])
             out = json.loads(lines[-1][len('RESULT '):])
 
-        # Only the User pages, their API and the shared schema: no benchmark route, no /static.
+        # Only the User pages, their API, the Worker API and the shared schema: no benchmark route, no /static.
         for rule in out['rules']:
-            self.assertTrue(rule == '/' or rule == '/api/schema' or rule.startswith(('/user', '/api/user/')), rule)
+            self.assertTrue(rule == '/' or rule == '/api/schema' or rule.startswith(('/user', '/api/user/', '/api/v1/')), rule)
         self.assertEqual(out['root'], [302, '/user/'])
         self.assertEqual(out['pages'], {'/user': 200, '/OCR/user': 200, '/api/schema': 200,
                                         '/api/user/settings': 200})

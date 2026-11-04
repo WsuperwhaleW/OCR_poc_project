@@ -8,12 +8,14 @@ or an entry says `live` for a route that does not exist.
 
 Two groups:
 
-* `v1` -- the Worker API the main service will call (submit a file, read the
-  status and result, acknowledge). **Planned**: it is the contract agreed in the
-  plan, shown so it can be reviewed before it is built; step 4 builds it and
-  flips each entry to `live`. Its examples are mock-ups.
-* `user` -- what the `/user` page itself calls today. Live. Examples follow the
-  real response shapes (`userstore`, `userjson.convert`), shortened with "…".
+* `v1` -- the Worker API the main service calls (serviceapi.py): submit a file,
+  read the status and result, acknowledge. Live since 2026-11-04 with API keys
+  only ("ระบบมี firewall อยู่แล้ว ทำแต่ api key พอ"). Responses that later steps
+  add (429 queue_full, 507 spool_full, 410 expired, the callback) are listed
+  with the step that brings them.
+* `user` -- what the `/user` page itself calls, behind the firewall. Examples
+  follow the real response shapes (`userstore`, `userjson.convert`), shortened
+  with "…".
 
 Data only, plus `snippets()`, which writes the curl / Python / JavaScript for an
 entry. `{BASE}` in a snippet stands for the service's address; the page fills in
@@ -24,10 +26,11 @@ import json
 EXAMPLE_JOB = '3f2a9c1e5b7d4e6f8a0b1c2d3e4f5a6b'
 EXAMPLE_BATCH = '9b8c7d6e5f4a3b2c1d0e9f8a7b6c5d4e'
 EXAMPLE_SET = 'invoice-a1b2c3'
+EXAMPLE_KEY_ID = '5d4c3b2a19087f6e5d4c3b2a19087f6e'
 
-# What a v1 request must carry. Kept as text: nothing checks it before step 3.
-V1_AUTH = 'Authorization: Bearer <API token> (role api) — ออก token ได้ในขั้นที่ 3'
-USER_AUTH = ('ยังไม่มี login (ขั้นที่ 3 จะเพิ่ม) · คำขอที่แก้ข้อมูลจากต่างโดเมนต้องส่ง '
+V1_AUTH = ('Authorization: Bearer <API key> — สร้างและยกเลิก key ได้ในแท็บ API keys ของ /user · '
+           'key ที่ไม่ถูกต้องหรือถูกยกเลิกได้ 401 · เห็นเฉพาะงานที่ key นี้ส่ง')
+USER_AUTH = ('ไม่มี login (หน้า /user อยู่หลัง firewall) · คำขอที่แก้ข้อมูลจากต่างโดเมนต้องส่ง '
              'X-OCR-User-Token ที่หน้า /user ออกให้')
 
 _ERROR = {'error': 'ข้อความอธิบายสาเหตุ (ภาษาไทย)'}
@@ -81,89 +84,118 @@ def _err(code, note):
 JOB_ID = _param('job_id', 'path', 'string (32 hex)', 'รหัสงาน')
 
 ENDPOINTS = [
-    # ------------------------------------------------------------------ v1 (planned)
-    {'id': 'v1-submit', 'group': 'v1', 'status': 'planned', 'method': 'POST', 'path': '/api/v1/jobs',
+    # ------------------------------------------------------------------ v1 (live)
+    {'id': 'v1-submit', 'group': 'v1', 'status': 'live', 'method': 'POST', 'path': '/api/v1/jobs',
      'title': 'ส่งไฟล์เข้าคิว',
-     'summary': 'รับไฟล์ 1 ไฟล์ (PDF หรือรูป) แล้วตอบทันทีด้วย job_id งานจะประมวลผลในคิว '
-                'ผลลัพธ์ดึงได้จาก /result หรือรับทาง callback',
+     'summary': 'รับไฟล์ 1 ไฟล์ (PDF หรือรูป) แล้วตอบทันทีด้วย job_id งานเข้าคิวเดียวกับหน้า /user '
+                '(User priority) · poll สถานะที่ status_url แล้วดึงผลจาก /result',
      'auth': V1_AUTH,
-     'headers': [{'name': 'Authorization', 'value': 'Bearer <API token>', 'required': True},
-                 {'name': 'Idempotency-Key', 'value': '<uuid ของคำขอนี้>', 'required': False,
-                  'desc': 'ส่งซ้ำด้วย key และไฟล์เดิม = ได้ job เดิมคืน (เก็บ 7 วัน) · key เดิมแต่ไฟล์ต่าง = 409'}],
+     'headers': [{'name': 'Authorization', 'value': 'Bearer <API key>', 'required': True},
+                 {'name': 'Idempotency-Key', 'value': '<รหัสไม่ซ้ำของคำขอนี้ เช่น uuid>', 'required': False,
+                  'desc': 'ส่งซ้ำด้วย key + ไฟล์ + client_ref เดิม = ได้ job เดิมคืน (header Idempotent-Replayed: true, '
+                          'เก็บ 7 วัน) · key เดิมแต่คำขอต่าง = 409'}],
      'params': [_param('file', 'form', 'file', 'ไฟล์ PDF / JPG / PNG / HEIC'),
-                _param('client_ref', 'form', 'string', 'รหัสอ้างอิงของ Service หลัก ส่งกลับมาในทุกคำตอบ', False),
-                _param('callback_url', 'form', 'URL', 'ที่อยู่รับผลเมื่องานเสร็จ ต้องอยู่ในรายชื่อ host ที่อนุญาต', False)],
+                _param('client_ref', 'form', 'string ≤ 200', 'รหัสอ้างอิงของ Service หลัก ส่งกลับมาในทุกคำตอบ', False),
+                _param('callback_url', 'form', 'URL', 'ยังไม่รองรับ (ขั้นที่ 6) ส่งมาจะได้ 400 callback_not_available',
+                       False)],
      'multipart': True,
      'responses': [
          _ok(202, {'job_id': EXAMPLE_JOB, 'status': 'queued', 'status_url': '/api/v1/jobs/' + EXAMPLE_JOB},
-             'รับงานแล้ว'),
-         _ok(400, {'error': 'invalid_file', 'message': 'รองรับ PDF และรูปภาพเท่านั้น'}, 'ไฟล์ว่าง เสีย หรือชนิดไม่รองรับ'),
-         _ok(401, {'error': 'unauthorized'}, 'ไม่มี token หรือ token ถูกยกเลิก'),
-         _ok(403, {'error': 'callback_not_allowed'}, 'callback_url ไม่อยู่ในรายชื่อที่อนุญาต'),
-         _ok(409, {'error': 'idempotency_conflict'}, 'Idempotency-Key เดิมแต่เนื้อหาคำขอต่างกัน'),
-         _ok(413, {'error': 'file_too_large', 'max_mb': 50}, 'ไฟล์ใหญ่เกินกำหนด'),
+             'รับงานแล้ว · header Location = status_url'),
+         _ok(400, {'error': 'invalid_file', 'message': 'รองรับ PDF และรูปภาพเท่านั้น'},
+             'invalid_file · invalid_client_ref · invalid_idempotency_key · callback_not_available'),
+         _ok(401, {'error': 'unauthorized', 'message': 'ต้องส่ง Authorization: Bearer <API key> ที่ยังไม่ถูกยกเลิก'},
+             'ไม่มี key หรือ key ถูกยกเลิก'),
+         _ok(409, {'error': 'idempotency_conflict', 'message': 'Idempotency-Key นี้ใช้กับคำขออื่นแล้ว'},
+             'Idempotency-Key เดิมแต่คำขอต่างกัน · idempotency_in_progress = คำขอเดียวกันกำลังถูกรับ'),
+         _ok(413, {'error': 'file_too_large', 'message': 'ไฟล์ใหญ่เกิน 50 MB', 'max_mb': 50}, 'ไฟล์ใหญ่เกินกำหนด'),
          _ok(429, {'error': 'queue_full', 'open_jobs': 500, 'limit': 500},
-             'งานค้างครบเพดาน (ค่าเริ่ม 500) · มี header Retry-After (วินาที) ให้ส่งใหม่ภายหลัง'),
+             'ขั้นที่ 5 (ยังไม่ส่ง): งานค้างครบเพดาน ค่าเริ่ม 500 · มี header Retry-After'),
          _ok(503, {'error': 'model_unavailable', 'message': 'ocr: connection refused'}, 'model server ไม่พร้อม'),
-         _ok(507, {'error': 'spool_full'}, 'พื้นที่เก็บไฟล์ชั่วคราวเต็ม รอให้ระบบล้างประวัติเก่าก่อน'),
+         _ok(507, {'error': 'spool_full'}, 'ขั้นที่ 5 (ยังไม่ส่ง): พื้นที่เก็บไฟล์ชั่วคราวเต็ม'),
      ]},
-    {'id': 'v1-status', 'group': 'v1', 'status': 'planned', 'method': 'GET', 'path': '/api/v1/jobs/{job_id}',
+    {'id': 'v1-status', 'group': 'v1', 'status': 'live', 'method': 'GET', 'path': '/api/v1/jobs/{job_id}',
      'title': 'สถานะงาน',
-     'summary': 'สถานะและเวลาของงาน ไม่มีผลลัพธ์เต็ม (เบา เหมาะกับการ poll) · '
-                'เห็นได้เฉพาะงานของ client ตัวเอง งานของคนอื่นตอบ 404',
+     'summary': 'สถานะและเวลาของงาน ไม่มีผลลัพธ์เต็ม (เบา เหมาะกับการ poll ทุก 2–5 วินาที) · '
+                'งานของ client อื่นตอบ 404',
      'auth': V1_AUTH,
-     'headers': [{'name': 'Authorization', 'value': 'Bearer <API token>', 'required': True}],
+     'headers': [{'name': 'Authorization', 'value': 'Bearer <API key>', 'required': True}],
      'params': [JOB_ID],
      'responses': [
          _ok(200, {'job_id': EXAMPLE_JOB, 'client_ref': 'ERP-000123',
                    'status': 'succeeded', 'stage': 'done',
-                   'created_at': '2026-11-04T08:20:11Z', 'finished_at': '2026-11-04T08:21:03Z',
+                   'created_at': '2026-11-04T08:20:11.402+00:00', 'finished_at': '2026-11-04T08:21:03.118+00:00',
                    'acknowledged_at': None,
                    'timing': {'queue_seconds': 0.8, 'ocr_seconds': 21.4, 'extraction_seconds': 30.2},
-                   'result_version': 1,
+                   'result_version': 1, 'retry_in_progress': False,
                    'summary': {'documents': 1, 'schema_valid': True, 'warnings': 0, 'missing_fields': 2}},
-             'status: queued | processing | succeeded | partial | failed | expired'),
-         _err(404, 'ไม่พบงาน หรือเป็นงานของ client อื่น'),
+             'status: queued | processing | succeeded | partial | failed · stage = ขั้นที่กำลังทำ หรือ done · '
+             'งานที่ล้มเหลวมี error แทน summary'),
+         _ok(401, {'error': 'unauthorized', 'message': '…'}, 'ไม่มี key หรือ key ถูกยกเลิก'),
+         _ok(404, {'error': 'not_found', 'message': 'ไม่พบงานนี้'}, 'ไม่พบงาน หรือเป็นงานของ client อื่น'),
      ]},
-    {'id': 'v1-result', 'group': 'v1', 'status': 'planned', 'method': 'GET',
+    {'id': 'v1-result', 'group': 'v1', 'status': 'live', 'method': 'GET',
      'path': '/api/v1/jobs/{job_id}/result',
      'title': 'ผลลัพธ์ (User JSON v7)',
-     'summary': 'ผลที่บันทึกเป็น snapshot ครั้งเดียวตอนงานเสร็จ ตัวเดียวกับที่ส่งทาง callback · '
-                'ถ้ามีการ Retry ในหน้า /user จะได้ผลล่าสุดและ result_version เพิ่มขึ้น',
+     'summary': 'User JSON v7 ของไฟล์นี้ (1 bundle ต่อ 1 ไฟล์) · ถ้ามีการ Retry ในหน้า /user จะได้ผลรอบล่าสุดที่สำเร็จ '
+                'และ result_version เพิ่มขึ้น · event_id คงที่ต่อ 1 version',
      'auth': V1_AUTH,
-     'headers': [{'name': 'Authorization', 'value': 'Bearer <API token>', 'required': True}],
-     'params': [JOB_ID, _param('report', 'query', '0 | 1', 'ใส่ 1 เพื่อแนบ warnings, missing_fields, unmapped', False)],
+     'headers': [{'name': 'Authorization', 'value': 'Bearer <API key>', 'required': True}],
+     'params': [JOB_ID, _param('report', 'query', '0 | 1',
+                               'ใส่ 1 เพื่อแนบ report: schema_valid, schema_errors, warnings, missing_fields, unmapped', False)],
      'responses': [
          _ok(200, {'job_id': EXAMPLE_JOB, 'client_ref': 'ERP-000123',
-                   'event_id': '7c1e2d3f-4a5b-4c6d-8e7f-9a0b1c2d3e4f', 'result_version': 1,
+                   'event_id': '7c1e2d3f-4a5b-5c6d-8e7f-9a0b1c2d3e4f', 'result_version': 1,
                    'processing': {'app_version': '2026-11-04+038fe4b', 'ocr_model': 'typhoon-ocr',
                                   'extraction_model': 'qwen3',
                                   'prompt_sets': [{'doc_type': 'INVOICE', 'set_id': EXAMPLE_SET, 'revision': 4}],
-                                  'started_at': '2026-11-04T08:20:12Z', 'finished_at': '2026-11-04T08:21:03Z'},
+                                  'started_at': '2026-11-04T08:20:12.010+00:00',
+                                  'finished_at': '2026-11-04T08:21:03.118+00:00'},
                    'user_json': USER_JSON_EXAMPLE}),
-         _ok(409, {'error': 'not_finished', 'status': 'processing'}, 'งานยังไม่เสร็จ'),
-         _ok(410, {'error': 'expired'}, 'ผลถูกล้างตามระยะเก็บประวัติแล้ว (ค่าเริ่ม 300 งานล่าสุด / 7 วัน)'),
-         _err(404, 'ไม่พบงาน'),
+         _ok(409, {'error': 'not_finished', 'message': 'งานยังไม่เสร็จ', 'status': 'processing'}, 'งานยังไม่เสร็จ'),
+         _ok(410, {'error': 'expired'}, 'ขั้นที่ 7 (ยังไม่ส่ง): ผลถูกล้างตามระยะเก็บประวัติ'),
+         _ok(422, {'error': 'job_failed', 'message': 'Unsupported or corrupt file format.', 'status': 'failed'},
+             'ประมวลผลไม่สำเร็จ ไม่มีผล'),
+         _ok(404, {'error': 'not_found', 'message': 'ไม่พบงานนี้'}, 'ไม่พบงาน'),
      ]},
-    {'id': 'v1-ack', 'group': 'v1', 'status': 'planned', 'method': 'POST', 'path': '/api/v1/jobs/{job_id}/ack',
+    {'id': 'v1-ack', 'group': 'v1', 'status': 'live', 'method': 'POST', 'path': '/api/v1/jobs/{job_id}/ack',
      'title': 'ยืนยันว่ารับผลแล้ว',
-     'summary': 'บันทึกเวลาที่ Service หลักเก็บผลเรียบร้อย ไม่ลบอะไร (ประวัติยังอยู่ตามระยะเก็บ) · '
-                'dashboard ใช้นับงานที่ยังไม่ถูกรับ',
+     'summary': 'บันทึกเวลาที่ Service หลักเก็บผลเรียบร้อย (ครั้งแรกเท่านั้น) ไม่ลบอะไร ผลยังดึงซ้ำได้ตามระยะเก็บประวัติ',
      'auth': V1_AUTH,
-     'headers': [{'name': 'Authorization', 'value': 'Bearer <API token>', 'required': True}],
+     'headers': [{'name': 'Authorization', 'value': 'Bearer <API key>', 'required': True}],
      'params': [JOB_ID],
-     'responses': [_ok(204, None, 'บันทึกแล้ว (ส่งซ้ำได้)', 'empty'), _err(404, 'ไม่พบงาน')]},
-    {'id': 'v1-health', 'group': 'v1', 'status': 'planned', 'method': 'GET', 'path': '/api/v1/health',
+     'responses': [_ok(204, None, 'บันทึกแล้ว (ส่งซ้ำได้)', 'empty'),
+                   _ok(404, {'error': 'not_found', 'message': 'ไม่พบงานนี้'}, 'ไม่พบงาน')]},
+    {'id': 'v1-health', 'group': 'v1', 'status': 'live', 'method': 'GET', 'path': '/api/v1/health',
      'title': 'สถานะ service',
-     'summary': 'ไม่ต้องใช้ token · ใช้กับ load balancer หรือดูว่ารับงานได้ไหมก่อนส่ง',
+     'summary': 'ไม่ต้องใช้ key · ใช้กับ load balancer หรือดูว่ารับงานได้ไหมก่อนส่ง · ผลตรวจ model ถูก cache ไม่กี่วินาที',
      'auth': 'ไม่ต้องใช้',
      'headers': [], 'params': [],
      'responses': [_ok(200, {'status': 'ok', 'models': {'ocr': 'online', 'extraction': 'online'},
-                             'queue': {'open_jobs': 412, 'limit': 500, 'accepting': True}}),
+                             'queue': {'open_jobs': 12, 'limit': None, 'accepting': True}},
+                       'limit เป็น null จนกว่าขั้นที่ 5 จะเพิ่มเพดาน'),
                    _ok(503, {'status': 'degraded', 'models': {'ocr': 'offline', 'extraction': 'online'},
-                             'queue': {'open_jobs': 0, 'limit': 500, 'accepting': False}}, 'model server ไม่พร้อม')]},
+                             'queue': {'open_jobs': 0, 'limit': None, 'accepting': False}}, 'model server ไม่พร้อม')]},
 
     # ------------------------------------------------------------------ user (live)
+    {'id': 'api-keys', 'group': 'user', 'status': 'live', 'method': 'GET', 'path': '/api/user/api-keys',
+     'title': 'รายการ API key', 'summary': 'ไม่มีตัว key (เก็บแค่ hash) มีแค่ชื่อ ตัวย่อ เวลาใช้ล่าสุด และจำนวนงานที่ส่ง',
+     'auth': USER_AUTH, 'headers': [], 'params': [],
+     'responses': [_ok(200, {'keys': [{'id': EXAMPLE_KEY_ID, 'name': 'ERP หลัก', 'hint': 'ocr_AbCd…9xYz',
+                                       'created_at': '…', 'last_used_at': '…', 'revoked_at': '', 'jobs': 412}]})]},
+    {'id': 'api-keys-create', 'group': 'user', 'status': 'live', 'method': 'POST', 'path': '/api/user/api-keys',
+     'title': 'สร้าง API key', 'summary': 'ตอบตัว key ครั้งเดียวเท่านั้น เก็บไว้ทันที',
+     'auth': USER_AUTH, 'headers': [], 'params': [], 'body': {'name': 'ERP หลัก'},
+     'responses': [_ok(201, {'key': 'ocr_…(43 ตัว)', 'record': {'id': EXAMPLE_KEY_ID, 'name': 'ERP หลัก',
+                                                                 'hint': 'ocr_AbCd…9xYz', 'created_at': '…',
+                                                                 'last_used_at': '', 'revoked_at': ''}}),
+                   _err(400, 'ชื่อว่างหรือยาวเกิน 80 ตัว')]},
+    {'id': 'api-keys-revoke', 'group': 'user', 'status': 'live', 'method': 'POST',
+     'path': '/api/user/api-keys/{key_id}/revoke',
+     'title': 'ยกเลิก API key', 'summary': 'มีผลกับคำขอถัดไปทันที กู้คืนไม่ได้ (สร้างใหม่แทน)',
+     'auth': USER_AUTH, 'headers': [], 'params': [_param('key_id', 'path', 'string (32 hex)', 'รหัส key')],
+     'responses': [_ok(200, {'record': {'id': EXAMPLE_KEY_ID, 'name': 'ERP หลัก', 'revoked_at': '…', '…': '…'}}),
+                   _err(404, 'ไม่พบ key')]},
     {'id': 'schema', 'group': 'user', 'status': 'live', 'method': 'GET', 'path': '/api/schema',
      'title': 'ประเภทเอกสารและ field ของระบบ',
      'summary': 'ข้อมูลอ้างอิง ไม่เรียก model server · หน้า Doc types ใช้วาดตาราง',
@@ -439,12 +471,12 @@ CALLBACK['body'] = next(r['body'] for e in ENDPOINTS if e['id'] == 'v1-result' f
 
 # A list, not a dict: jsonify sorts keys, and v1 must come first.
 GROUPS = [
-    {'id': 'v1', 'title': 'Worker API v1', 'note': 'แผน · ยังไม่เปิดใช้ (ขั้นที่ 4) — สำหรับ Service หลัก'},
-    {'id': 'user', 'title': 'User portal API', 'note': 'ใช้งานได้ตอนนี้ — หน้า /user เรียกใช้'},
+    {'id': 'v1', 'title': 'Worker API v1', 'note': 'ใช้งานได้ — สำหรับ Service หลัก ใช้ API key'},
+    {'id': 'user', 'title': 'User portal API', 'note': 'หน้า /user เรียกใช้ (หลัง firewall)'},
 ]
 
 # Values a snippet puts in place of a path parameter.
-_PATH_EXAMPLES = {'job_id': EXAMPLE_JOB, 'batch_id': EXAMPLE_BATCH, 'set_id': EXAMPLE_SET,
+_PATH_EXAMPLES = {'key_id': EXAMPLE_KEY_ID, 'job_id': EXAMPLE_JOB, 'batch_id': EXAMPLE_BATCH, 'set_id': EXAMPLE_SET,
                   'preview_id': '0f1e2d3c4b5a69788796a5b4c3d2e1f0', 'page': '1'}
 
 
