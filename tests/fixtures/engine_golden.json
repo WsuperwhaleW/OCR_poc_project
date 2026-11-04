@@ -1,0 +1,4416 @@
+{
+ "files": {
+  "invoice_sol002.pdf": {
+   "error": "",
+   "result": {
+    "classifications": [
+     {
+      "doc_type": "WHT_CERTIFICATE",
+      "doc_type_confidence": 0.914,
+      "doc_type_from": "transcript",
+      "doc_type_heading": "หนังสือรับรองการหักภาษี ณ ที่จ่าย ตามมาตรา 50 ทวิ",
+      "doc_types": [
+       "WHT_CERTIFICATE"
+      ],
+      "document": 1,
+      "pages": [
+       1
+      ]
+     }
+    ],
+    "extracted": {
+     "backend": "vllm",
+     "classified": {
+      "doc_type": "WHT_CERTIFICATE",
+      "doc_type_confidence": 0.914,
+      "doc_type_escalated": "",
+      "doc_type_expected": [],
+      "doc_type_from": "transcript",
+      "doc_type_heading": "หนังสือรับรองการหักภาษี ณ ที่จ่าย ตามมาตรา 50 ทวิ",
+      "doc_types": [
+       "WHT_CERTIFICATE"
+      ],
+      "extras": false,
+      "fields": [
+       "book_no",
+       "certificate_no",
+       "sequence_no",
+       "payer_tax_id",
+       "payer_name",
+       "payer_branch",
+       "payer_branch_location",
+       "payer_address",
+       "payee_tax_id",
+       "payee_name",
+       "payee_branch",
+       "payee_branch_location",
+       "payee_address",
+       "dividend_rate_option",
+       "total_amount_paid",
+       "total_wht_amount"
+      ],
+      "framed": true,
+      "items": [
+       "income_type",
+       "payment_date",
+       "amount_paid",
+       "wht_amount"
+      ],
+      "mandatory": [
+       "payer_tax_id",
+       "payer_name",
+       "payee_tax_id",
+       "payee_name",
+       "total_amount_paid",
+       "total_wht_amount"
+      ],
+      "mandatory_items": [
+       "income_type",
+       "payment_date",
+       "amount_paid",
+       "wht_amount"
+      ],
+      "rules": [
+       "company_master",
+       "sum_reconciliation",
+       "dividend_option"
+      ],
+      "steps": [
+       "wht_certificate",
+       "wht_payer_party",
+       "wht_payee_party",
+       "wht_income",
+       "wht_totals",
+       "wht_dividend"
+      ],
+      "type_phrase": "a withholding tax certificate (50 ทวิ)",
+      "unknown_type": false
+     },
+     "doc_type": "WHT_CERTIFICATE",
+     "doc_type_confidence": 0.914,
+     "doc_type_from": "transcript",
+     "doc_type_heading": "หนังสือรับรองการหักภาษี ณ ที่จ่าย ตามมาตรา 50 ทวิ",
+     "doc_types": [
+      "WHT_CERTIFICATE"
+     ],
+     "documents_found": 1,
+     "extraction_request_limit": 128,
+     "extraction_request_scope": "server",
+     "extras": false,
+     "fields": {
+      "book_no": "NO-318556",
+      "certificate_no": "NO-3246AB",
+      "dividend_rate_option": "dividend_rate_option 446838",
+      "income_items": [],
+      "line_items": [],
+      "other_fields": [],
+      "payee_address": "1 ถนนสีลม กรุงเทพมหานคร 10500",
+      "payee_branch": "00000",
+      "payee_branch_location": "สำนักงานใหญ่",
+      "payee_name": "บริษัท ตัวอย่าง จำกัด",
+      "payee_tax_id": "0105573467524",
+      "payer_address": "1 ถนนสีลม กรุงเทพมหานคร 10500",
+      "payer_branch": "00000",
+      "payer_branch_location": "สำนักงานใหญ่",
+      "payer_name": "บริษัท ตัวอย่าง จำกัด",
+      "payer_tax_id": "0105567537652",
+      "sequence_no": "NO-165EBB",
+      "total_amount_paid": "1,030.00",
+      "total_wht_amount": "1,030.00"
+     },
+     "fields_asked": [
+      "book_no",
+      "certificate_no",
+      "sequence_no",
+      "payer_tax_id",
+      "payer_name",
+      "payer_branch",
+      "payer_branch_location",
+      "payer_address",
+      "payee_tax_id",
+      "payee_name",
+      "payee_branch",
+      "payee_branch_location",
+      "payee_address",
+      "dividend_rate_option",
+      "total_amount_paid",
+      "total_wht_amount"
+     ],
+     "image_fills": [
+      {
+       "accepted": false,
+       "added": {},
+       "after": {
+        "income_items": []
+       },
+       "candidate": {
+        "income_items": []
+       },
+       "edited": {},
+       "fields": [
+        "income_items"
+       ],
+       "filled": [],
+       "pages": [
+        1
+       ],
+       "steps": [
+        "wht_income"
+       ],
+       "still_empty": [
+        "income_items"
+       ],
+       "tokens": 30,
+       "validated": [
+        {
+         "field": "income_items",
+         "rule": "table extraction",
+         "state": "absent",
+         "why": "no income rows came back"
+        }
+       ]
+      }
+     ],
+     "image_rechecks": {
+      "fill_missing": true,
+      "flags": [
+       {
+        "id": 0,
+        "kind": "missing",
+        "message": "1 required field(s) came back empty: income_items; asked the page images, none filled, still empty: income_items",
+        "state": "retry failed"
+       }
+      ],
+      "metrics": {
+       "fill_asked": 1,
+       "fill_checks": 0,
+       "fill_checks_bad": 0,
+       "fill_checks_ok": 0,
+       "fill_filled": 0,
+       "fill_jobs": 1
+      },
+      "validation_retry": false
+     },
+     "items_asked": [
+      "income_type",
+      "payment_date",
+      "amount_paid",
+      "wht_amount"
+     ],
+     "mode": "hybrid",
+     "model": "qwen3-fake",
+     "normalization_version": 1,
+     "normalized": {
+      "book_no": "NO-318556",
+      "certificate_no": "NO-3246AB",
+      "dividend_rate_option": "dividend_rate_option 446838",
+      "income_items": [],
+      "line_items": [],
+      "other_fields": [],
+      "payee_address": "1 ถนนสีลม กรุงเทพมหานคร 10500",
+      "payee_branch": "00000",
+      "payee_branch_location": "สำนักงานใหญ่",
+      "payee_name": "บริษัท ตัวอย่าง จำกัด",
+      "payee_tax_id": "0105573467524",
+      "payer_address": "1 ถนนสีลม กรุงเทพมหานคร 10500",
+      "payer_branch": "00000",
+      "payer_branch_location": "สำนักงานใหญ่",
+      "payer_name": "บริษัท ตัวอย่าง จำกัด",
+      "payer_tax_id": "0105567537652",
+      "sequence_no": "NO-165EBB",
+      "total_amount_paid": "1,030.00",
+      "total_wht_amount": "1,030.00"
+     },
+     "schema_first": false,
+     "segments": [
+      {
+       "certain": true,
+       "doc_types": [
+        "WHT_CERTIFICATE"
+       ],
+       "document": 1,
+       "documents": 1,
+       "heading": "หนังสือรับรองการหักภาษี ณ ที่จ่าย ตามมาตรา 50 ทวิ",
+       "joins": [],
+       "page_range": "1",
+       "pages": [
+        1
+       ],
+       "start_reason": "the file is one page"
+      }
+     ],
+     "split_from": "whole",
+     "steps_failed": [],
+     "tokens": 346,
+     "user_disabled_fields": [],
+     "user_prompt_sets": [
+      {
+       "doc_type": "WHT_CERTIFICATE",
+       "keys": [
+        "book_no",
+        "certificate_no",
+        "sequence_no",
+        "payer_tax_id",
+        "payer_name",
+        "payer_branch",
+        "payer_branch_location",
+        "payer_address",
+        "payee_tax_id",
+        "payee_name",
+        "payee_branch",
+        "payee_branch_location",
+        "payee_address",
+        "income_items",
+        "total_amount_paid",
+        "total_wht_amount",
+        "dividend_rate_option"
+       ],
+       "name": "WHT 50 ทวิ (PCP)",
+       "revision": 0,
+       "set_id": "builtin_wht_certificate",
+       "skipped_keys": []
+      }
+     ],
+     "validation": {
+      "checks": [
+       {
+        "detail": "0105567537652",
+        "field": "payer_tax_id",
+        "rule": "13-digit format",
+        "state": "ok"
+       },
+       {
+        "detail": "0105567537652",
+        "field": "payer_tax_id",
+        "rule": "checksum",
+        "state": "failed",
+        "why": "the 13th digit is not the mod-11 check digit of the first twelve"
+       },
+       {
+        "detail": "บริษัท ตัวอย่าง จำกัด",
+        "field": "payer_name",
+        "rule": "company master match",
+        "state": "unchecked",
+        "why": "there is no Company Master to match against here -- the rule needs the list of companies already on file"
+       },
+       {
+        "detail": "00000",
+        "field": "payer_branch",
+        "rule": "5-digit code",
+        "state": "ok"
+       },
+       {
+        "detail": "0105573467524",
+        "field": "payee_tax_id",
+        "rule": "13-digit format",
+        "state": "ok"
+       },
+       {
+        "detail": "0105573467524",
+        "field": "payee_tax_id",
+        "rule": "checksum",
+        "state": "failed",
+        "why": "the 13th digit is not the mod-11 check digit of the first twelve"
+       },
+       {
+        "detail": "บริษัท ตัวอย่าง จำกัด",
+        "field": "payee_name",
+        "rule": "company master match",
+        "state": "unchecked",
+        "why": "there is no Company Master to match against here -- the rule needs the list of companies already on file"
+       },
+       {
+        "detail": "00000",
+        "field": "payee_branch",
+        "rule": "5-digit code",
+        "state": "ok"
+       },
+       {
+        "detail": "dividend_rate_option 446838",
+        "field": "dividend_rate_option",
+        "rule": "checkbox detection",
+        "state": "ok"
+       },
+       {
+        "detail": "1,030.00",
+        "field": "total_amount_paid",
+        "rule": "numeric",
+        "state": "ok"
+       },
+       {
+        "field": "total_amount_paid",
+        "rule": "sum reconciliation",
+        "state": "unchecked",
+        "why": "no income rows came back to add up"
+       },
+       {
+        "detail": "1,030.00",
+        "field": "total_wht_amount",
+        "rule": "numeric",
+        "state": "ok"
+       },
+       {
+        "field": "total_wht_amount",
+        "rule": "sum reconciliation",
+        "state": "unchecked",
+        "why": "no income rows came back to add up"
+       },
+       {
+        "field": "income_items",
+        "mandatory": true,
+        "rule": "table extraction",
+        "state": "absent",
+        "why": "no income rows came back"
+       }
+      ],
+      "counts": {
+       "absent": 1,
+       "failed": 2,
+       "mandatory_absent": 1,
+       "ok": 7,
+       "pass_rate": 0.7777777777777778,
+       "scored": 9,
+       "unchecked": 4,
+       "warning": 0
+      },
+      "doc_types": [
+       "WHT_CERTIFICATE"
+      ],
+      "failed": [
+       {
+        "detail": "0105567537652",
+        "field": "payer_tax_id",
+        "rule": "checksum",
+        "state": "failed",
+        "why": "the 13th digit is not the mod-11 check digit of the first twelve"
+       },
+       {
+        "detail": "0105573467524",
+        "field": "payee_tax_id",
+        "rule": "checksum",
+        "state": "failed",
+        "why": "the 13th digit is not the mod-11 check digit of the first twelve"
+       }
+      ],
+      "rules": [
+       "company_master",
+       "dividend_option",
+       "sum_reconciliation"
+      ],
+      "warnings": []
+     }
+    },
+    "ocr_warnings": [],
+    "page_count": 1,
+    "page_stats": [
+     {
+      "backend": "vllm",
+      "dry": {
+       "checked": false
+      },
+      "image_bytes": 1406666,
+      "in_tokens": 350,
+      "loop_guard": true,
+      "looped": false,
+      "megapixels": 4.0,
+      "model": "typhoon-ocr-fake",
+      "new_tokens": 116,
+      "ocr_profile": "typhoon",
+      "out_tokens": 116,
+      "raw": "# หนังสือรับรองการหักภาษี ณ ที่จ่าย ตามมาตรา 50 ทวิ\n\nเล่มที่ 12 เลขที่ WT-6B7C4E\n\nผู้มีหน้าที่หักภาษี ณ ที่จ่าย บริษัท ผู้จ่าย จำกัด เลขประจำตัวผู้เสียภาษี 0105555555555\nที่อยู่ 1 ถนนสีลม กรุงเทพมหานคร 10500\nผู้ถูกหักภาษี ณ ที่จ่าย บริษัท ผู้รับ จำกัด เลขประจำตัวผู้เสียภาษี 0105556090377\n\n| ประเภทเงินได้ | วันที่จ่าย | จำนวนเงินที่จ่าย | ภาษีที่หัก |\n|---|---|---|---|\n| ค่าบริการ | 01/12/2568 | 10,000.00 | 300.00 |\n\nรวมเงินที่จ่าย 10,000.00 ภาษีที่หักนำส่ง 300.00",
+      "resolution": "1661x2407",
+      "server_cached_tokens": null,
+      "server_decode_tokens": null,
+      "server_generated_tokens": null,
+      "server_prefill_tokens": null,
+      "server_prompt_tokens": null,
+      "truncated": false
+     }
+    ],
+    "pages": [
+     "หนังสือรับรองการหักภาษี ณ ที่จ่าย ตามมาตรา 50 ทวิ\n\nเล่มที่ 12 เลขที่ WT-6B7C4E\n\nผู้มีหน้าที่หักภาษี ณ ที่จ่าย บริษัท ผู้จ่าย จำกัด เลขประจำตัวผู้เสียภาษี 0105555555555\nที่อยู่ 1 ถนนสีลม กรุงเทพมหานคร 10500\nผู้ถูกหักภาษี ณ ที่จ่าย บริษัท ผู้รับ จำกัด เลขประจำตัวผู้เสียภาษี 0105556090377\n\n| ประเภทเงินได้ | วันที่จ่าย | จำนวนเงินที่จ่าย | ภาษีที่หัก |\n|---|---|---|---|\n| ค่าบริการ | 01/12/2568 | 10,000.00 | 300.00 |\n\nรวมเงินที่จ่าย 10,000.00 ภาษีที่หักนำส่ง 300.00"
+    ],
+    "pages_total": 1,
+    "text": "หนังสือรับรองการหักภาษี ณ ที่จ่าย ตามมาตรา 50 ทวิ\n\nเล่มที่ 12 เลขที่ WT-6B7C4E\n\nผู้มีหน้าที่หักภาษี ณ ที่จ่าย บริษัท ผู้จ่าย จำกัด เลขประจำตัวผู้เสียภาษี 0105555555555\nที่อยู่ 1 ถนนสีลม กรุงเทพมหานคร 10500\nผู้ถูกหักภาษี ณ ที่จ่าย บริษัท ผู้รับ จำกัด เลขประจำตัวผู้เสียภาษี 0105556090377\n\n| ประเภทเงินได้ | วันที่จ่าย | จำนวนเงินที่จ่าย | ภาษีที่หัก |\n|---|---|---|---|\n| ค่าบริการ | 01/12/2568 | 10,000.00 | 300.00 |\n\nรวมเงินที่จ่าย 10,000.00 ภาษีที่หักนำส่ง 300.00",
+    "warnings": [
+     "อ่านภาพซ้ำแล้วยังมีฟิลด์ที่ต้องตรวจสอบ กรุณาดูผล validation"
+    ]
+   },
+   "status": "partial",
+   "user_json": {
+    "documents": [
+     {
+      "documentNo": "",
+      "documentType": {
+       "code": "",
+       "name": "WHT_CERTIFICATE"
+      },
+      "itemType": "",
+      "items": []
+     }
+    ],
+    "file": {
+     "fileName": "invoice_sol002.pdf",
+     "fileType": "PDF",
+     "pageCount": 1
+    },
+    "schemaVersion": "7.0"
+   }
+  },
+  "multiple_sol015.pdf": {
+   "error": "",
+   "result": {
+    "classifications": [
+     {
+      "doc_type": "CREDIT_NOTE",
+      "doc_type_confidence": 1.0,
+      "doc_type_from": "transcript",
+      "doc_type_heading": "ใบลดหนี้ / CREDIT NOTE",
+      "doc_types": [
+       "CREDIT_NOTE"
+      ],
+      "document": 1,
+      "pages": [
+       1
+      ]
+     },
+     {
+      "doc_type": "TAX_INVOICE",
+      "doc_type_confidence": 1.0,
+      "doc_type_from": "transcript",
+      "doc_type_heading": "ใบกำกับภาษี / TAX INVOICE",
+      "doc_types": [
+       "TAX_INVOICE"
+      ],
+      "document": 2,
+      "pages": [
+       2
+      ]
+     },
+     {
+      "doc_type": "RECEIPT_TAX_INVOICE",
+      "doc_type_confidence": 1.0,
+      "doc_type_from": "transcript",
+      "doc_type_heading": "ใบเสร็จรับเงิน/ใบกำกับภาษี",
+      "doc_types": [
+       "RECEIPT_TAX_INVOICE",
+       "RECEIPT",
+       "TAX_INVOICE"
+      ],
+      "document": 3,
+      "pages": [
+       3
+      ]
+     },
+     {
+      "doc_type": "TAX_INVOICE",
+      "doc_type_confidence": 1.0,
+      "doc_type_from": "transcript",
+      "doc_type_heading": "ใบกำกับภาษี / TAX INVOICE",
+      "doc_types": [
+       "TAX_INVOICE"
+      ],
+      "document": 4,
+      "pages": [
+       4
+      ]
+     },
+     {
+      "doc_type": "INVOICE",
+      "doc_type_confidence": 1.0,
+      "doc_type_from": "transcript",
+      "doc_type_heading": "ใบแจ้งหนี้ / INVOICE",
+      "doc_types": [
+       "INVOICE"
+      ],
+      "document": 5,
+      "pages": [
+       5
+      ]
+     },
+     {
+      "doc_type": "WHT_CERTIFICATE",
+      "doc_type_confidence": 0.914,
+      "doc_type_from": "transcript",
+      "doc_type_heading": "หนังสือรับรองการหักภาษี ณ ที่จ่าย ตามมาตรา 50 ทวิ",
+      "doc_types": [
+       "WHT_CERTIFICATE"
+      ],
+      "document": 6,
+      "pages": [
+       6
+      ]
+     },
+     {
+      "doc_type": "CREDIT_NOTE",
+      "doc_type_confidence": 1.0,
+      "doc_type_from": "transcript",
+      "doc_type_heading": "ใบลดหนี้ / CREDIT NOTE",
+      "doc_types": [
+       "CREDIT_NOTE"
+      ],
+      "document": 7,
+      "pages": [
+       7
+      ]
+     }
+    ],
+    "extracted": {
+     "classified": {
+      "doc_type": "CREDIT_NOTE",
+      "doc_type_confidence": 1.0,
+      "doc_type_escalated": "",
+      "doc_type_expected": [],
+      "doc_type_from": "transcript",
+      "doc_type_heading": "ใบลดหนี้ / CREDIT NOTE",
+      "doc_types": [
+       "CREDIT_NOTE"
+      ],
+      "extras": false,
+      "fields": [
+       "document_type",
+       "document_number",
+       "issue_date",
+       "po_gr_rtv_number",
+       "seller_tax_id",
+       "seller_branch",
+       "seller_branch_location",
+       "buyer_tax_id",
+       "buyer_branch",
+       "buyer_branch_location",
+       "subtotal",
+       "vat_total",
+       "amount_incl_vat"
+      ],
+      "framed": true,
+      "items": [],
+      "mandatory": [
+       "document_type",
+       "document_number",
+       "issue_date",
+       "seller_tax_id",
+       "seller_branch",
+       "buyer_tax_id",
+       "buyer_branch",
+       "subtotal",
+       "vat_total",
+       "amount_incl_vat"
+      ],
+      "mandatory_items": [],
+      "rules": [
+       "original_document"
+      ],
+      "steps": [
+       "document",
+       "po_gr_rtv",
+       "parties",
+       "totals"
+      ],
+      "type_phrase": "a credit note",
+      "unknown_type": false
+     },
+     "doc_type": "WHT_CERTIFICATE",
+     "doc_type_from": "transcript",
+     "doc_types": [
+      "CREDIT_NOTE",
+      "TAX_INVOICE",
+      "RECEIPT_TAX_INVOICE",
+      "RECEIPT",
+      "INVOICE",
+      "WHT_CERTIFICATE"
+     ],
+     "document_parallel": 4,
+     "documents": [
+      {
+       "backend": "vllm",
+       "classified": {
+        "doc_type": "CREDIT_NOTE",
+        "doc_type_confidence": 1.0,
+        "doc_type_escalated": "",
+        "doc_type_expected": [],
+        "doc_type_from": "transcript",
+        "doc_type_heading": "ใบลดหนี้ / CREDIT NOTE",
+        "doc_types": [
+         "CREDIT_NOTE"
+        ],
+        "extras": false,
+        "fields": [
+         "document_type",
+         "document_number",
+         "issue_date",
+         "po_gr_rtv_number",
+         "seller_tax_id",
+         "seller_branch",
+         "seller_branch_location",
+         "buyer_tax_id",
+         "buyer_branch",
+         "buyer_branch_location",
+         "subtotal",
+         "vat_total",
+         "amount_incl_vat"
+        ],
+        "framed": true,
+        "items": [],
+        "mandatory": [
+         "document_type",
+         "document_number",
+         "issue_date",
+         "seller_tax_id",
+         "seller_branch",
+         "buyer_tax_id",
+         "buyer_branch",
+         "subtotal",
+         "vat_total",
+         "amount_incl_vat"
+        ],
+        "mandatory_items": [],
+        "rules": [
+         "original_document"
+        ],
+        "steps": [
+         "document",
+         "po_gr_rtv",
+         "parties",
+         "totals"
+        ],
+        "type_phrase": "a credit note",
+        "unknown_type": false
+       },
+       "doc_type": "CREDIT_NOTE",
+       "doc_type_confidence": 1.0,
+       "doc_type_from": "transcript",
+       "doc_type_heading": "ใบลดหนี้ / CREDIT NOTE",
+       "doc_types": [
+        "CREDIT_NOTE"
+       ],
+       "document": 1,
+       "fields": {
+        "amount_incl_vat": "1,070.00",
+        "buyer_branch": "00000",
+        "buyer_branch_location": "สำนักงานใหญ่",
+        "buyer_tax_id": "0105531434585",
+        "document_number": "NO-2B3E88",
+        "document_type": "ใบแจ้งหนี้",
+        "issue_date": "01/10/2569",
+        "line_items": [],
+        "other_fields": [],
+        "po_gr_rtv_number": "NO-7CE173",
+        "seller_branch": "00000",
+        "seller_branch_location": "สำนักงานใหญ่",
+        "seller_tax_id": "0105558831419",
+        "subtotal": "1,070.00",
+        "vat_total": "1,010.00"
+       },
+       "fields_asked": [
+        "document_type",
+        "document_number",
+        "issue_date",
+        "po_gr_rtv_number",
+        "seller_tax_id",
+        "seller_branch",
+        "seller_branch_location",
+        "buyer_tax_id",
+        "buyer_branch",
+        "buyer_branch_location",
+        "subtotal",
+        "vat_total",
+        "amount_incl_vat"
+       ],
+       "item_table": null,
+       "items_asked": [],
+       "mode": "hybrid",
+       "model": "qwen3-fake",
+       "normalization_version": 1,
+       "normalized": {
+        "amount_incl_vat": "1,070.00",
+        "buyer_branch": "00000",
+        "buyer_branch_location": "สำนักงานใหญ่",
+        "buyer_tax_id": "0105531434585",
+        "document_number": "NO-2B3E88",
+        "document_type": "ใบแจ้งหนี้",
+        "issue_date": "01/10/2569",
+        "line_items": [],
+        "other_fields": [],
+        "po_gr_rtv_number": "NO-7CE173",
+        "seller_branch": "00000",
+        "seller_branch_location": "สำนักงานใหญ่",
+        "seller_tax_id": "0105558831419",
+        "subtotal": "1,070.00",
+        "vat_total": "1,010.00"
+       },
+       "pages": [
+        1
+       ],
+       "schema_first": false,
+       "steps_failed": [],
+       "tokens": 200,
+       "user_disabled_fields": [],
+       "user_prompt_sets": [
+        {
+         "doc_type": "CREDIT_NOTE",
+         "keys": [
+          "document_type",
+          "document_number",
+          "issue_date",
+          "po_gr_rtv_number",
+          "seller_tax_id",
+          "seller_branch",
+          "seller_branch_location",
+          "buyer_tax_id",
+          "buyer_branch",
+          "buyer_branch_location",
+          "subtotal",
+          "vat_total",
+          "amount_incl_vat"
+         ],
+         "name": "Credit Note (Sup&Pay)",
+         "revision": 0,
+         "set_id": "builtin_credit_note",
+         "skipped_keys": []
+        }
+       ],
+       "validation": {
+        "checks": [
+         {
+          "detail": "INVOICE",
+          "field": "document_type",
+          "rule": "pattern",
+          "state": "failed",
+          "why": "reads as INVOICE where CREDIT_NOTE was expected"
+         },
+         {
+          "detail": "NO-2B3E88",
+          "field": "document_number",
+          "rule": "pattern",
+          "state": "ok"
+         },
+         {
+          "field": "document_number",
+          "rule": "original document matching",
+          "state": "unchecked",
+          "why": "needs the document this one credits, in the system that holds it; this process has no access to one"
+         },
+         {
+          "detail": "2026-10-01",
+          "field": "issue_date",
+          "rule": "date format",
+          "state": "ok"
+         },
+         {
+          "detail": "NO-7CE173",
+          "field": "po_gr_rtv_number",
+          "rule": "pattern",
+          "state": "ok"
+         },
+         {
+          "field": "po_gr_rtv_number",
+          "rule": "reference matching",
+          "state": "unchecked",
+          "why": "needs the PO/GR/RTV system to match against; this process has no access to one"
+         },
+         {
+          "detail": "0105558831419",
+          "field": "seller_tax_id",
+          "rule": "13-digit format",
+          "state": "ok"
+         },
+         {
+          "detail": "0105558831419",
+          "field": "seller_tax_id",
+          "rule": "checksum",
+          "state": "failed",
+          "why": "the 13th digit is not the mod-11 check digit of the first twelve"
+         },
+         {
+          "detail": "00000",
+          "field": "seller_branch",
+          "rule": "5-digit code",
+          "state": "ok"
+         },
+         {
+          "detail": "0105531434585",
+          "field": "buyer_tax_id",
+          "rule": "13-digit format",
+          "state": "ok"
+         },
+         {
+          "detail": "0105531434585",
+          "field": "buyer_tax_id",
+          "rule": "checksum",
+          "state": "failed",
+          "why": "the 13th digit is not the mod-11 check digit of the first twelve"
+         },
+         {
+          "detail": "00000",
+          "field": "buyer_branch",
+          "rule": "5-digit code",
+          "state": "ok"
+         },
+         {
+          "detail": "1,070.00",
+          "field": "subtotal",
+          "rule": "numeric",
+          "state": "ok"
+         },
+         {
+          "detail": "1,010.00",
+          "field": "vat_total",
+          "rule": "numeric",
+          "state": "ok"
+         },
+         {
+          "detail": "1,070.00",
+          "field": "amount_incl_vat",
+          "rule": "numeric",
+          "state": "ok"
+         },
+         {
+          "detail": "out by 1,010.00",
+          "field": "amount_incl_vat",
+          "rule": "total = subtotal + VAT",
+          "state": "failed",
+          "why": "1,070.00 + 1,010.00 = 2,080.00, but the page prints 1,070.00"
+         },
+         {
+          "detail": "94.39%",
+          "field": "vat_total",
+          "rule": "VAT rate",
+          "state": "warning",
+          "why": "94.39% of 1,070.00, not 7% -- legitimate on a page that mixes taxed and untaxed lines, and otherwise a sign that a figure is in the wrong key"
+         }
+        ],
+        "counts": {
+         "absent": 0,
+         "failed": 4,
+         "mandatory_absent": 0,
+         "ok": 10,
+         "pass_rate": 0.7142857142857143,
+         "scored": 14,
+         "unchecked": 2,
+         "warning": 1
+        },
+        "doc_types": [
+         "CREDIT_NOTE"
+        ],
+        "failed": [
+         {
+          "detail": "INVOICE",
+          "field": "document_type",
+          "rule": "pattern",
+          "state": "failed",
+          "why": "reads as INVOICE where CREDIT_NOTE was expected"
+         },
+         {
+          "detail": "0105558831419",
+          "field": "seller_tax_id",
+          "rule": "checksum",
+          "state": "failed",
+          "why": "the 13th digit is not the mod-11 check digit of the first twelve"
+         },
+         {
+          "detail": "0105531434585",
+          "field": "buyer_tax_id",
+          "rule": "checksum",
+          "state": "failed",
+          "why": "the 13th digit is not the mod-11 check digit of the first twelve"
+         },
+         {
+          "detail": "out by 1,010.00",
+          "field": "amount_incl_vat",
+          "rule": "total = subtotal + VAT",
+          "state": "failed",
+          "why": "1,070.00 + 1,010.00 = 2,080.00, but the page prints 1,070.00"
+         }
+        ],
+        "rules": [
+         "original_document"
+        ],
+        "warnings": [
+         {
+          "detail": "94.39%",
+          "field": "vat_total",
+          "rule": "VAT rate",
+          "state": "warning",
+          "why": "94.39% of 1,070.00, not 7% -- legitimate on a page that mixes taxed and untaxed lines, and otherwise a sign that a figure is in the wrong key"
+         }
+        ]
+       }
+      },
+      {
+       "backend": "vllm",
+       "classified": {
+        "doc_type": "TAX_INVOICE",
+        "doc_type_confidence": 1.0,
+        "doc_type_escalated": "",
+        "doc_type_expected": [],
+        "doc_type_from": "transcript",
+        "doc_type_heading": "ใบกำกับภาษี / TAX INVOICE",
+        "doc_types": [
+         "TAX_INVOICE"
+        ],
+        "extras": false,
+        "fields": [
+         "document_type",
+         "document_number",
+         "issue_date",
+         "po_gr_rtv_number",
+         "seller_tax_id",
+         "seller_branch",
+         "seller_branch_location",
+         "buyer_tax_id",
+         "buyer_branch",
+         "buyer_branch_location",
+         "subtotal",
+         "vat_total",
+         "amount_incl_vat"
+        ],
+        "framed": true,
+        "items": [],
+        "mandatory": [],
+        "mandatory_items": [],
+        "rules": [],
+        "steps": [
+         "document",
+         "po_gr_rtv",
+         "parties",
+         "totals"
+        ],
+        "type_phrase": "a tax invoice",
+        "unknown_type": true
+       },
+       "doc_type": "TAX_INVOICE",
+       "doc_type_confidence": 1.0,
+       "doc_type_from": "transcript",
+       "doc_type_heading": "ใบกำกับภาษี / TAX INVOICE",
+       "doc_types": [
+        "TAX_INVOICE"
+       ],
+       "document": 2,
+       "fields": {
+        "amount_incl_vat": "1,070.00",
+        "buyer_branch": "00000",
+        "buyer_branch_location": "สำนักงานใหญ่",
+        "buyer_tax_id": "0105594272876",
+        "document_number": "NO-F20393",
+        "document_type": "ใบแจ้งหนี้",
+        "issue_date": "01/10/2569",
+        "line_items": [],
+        "other_fields": [],
+        "po_gr_rtv_number": "NO-B5E540",
+        "seller_branch": "00000",
+        "seller_branch_location": "สำนักงานใหญ่",
+        "seller_tax_id": "0105517104484",
+        "subtotal": "1,030.00",
+        "vat_total": "1,040.00"
+       },
+       "fields_asked": [
+        "document_type",
+        "document_number",
+        "issue_date",
+        "po_gr_rtv_number",
+        "seller_tax_id",
+        "seller_branch",
+        "seller_branch_location",
+        "buyer_tax_id",
+        "buyer_branch",
+        "buyer_branch_location",
+        "subtotal",
+        "vat_total",
+        "amount_incl_vat"
+       ],
+       "item_table": null,
+       "items_asked": [],
+       "mode": "hybrid",
+       "model": "qwen3-fake",
+       "normalization_version": 1,
+       "normalized": {
+        "amount_incl_vat": "1,070.00",
+        "buyer_branch": "00000",
+        "buyer_branch_location": "สำนักงานใหญ่",
+        "buyer_tax_id": "0105594272876",
+        "document_number": "NO-F20393",
+        "document_type": "ใบแจ้งหนี้",
+        "issue_date": "01/10/2569",
+        "line_items": [],
+        "other_fields": [],
+        "po_gr_rtv_number": "NO-B5E540",
+        "seller_branch": "00000",
+        "seller_branch_location": "สำนักงานใหญ่",
+        "seller_tax_id": "0105517104484",
+        "subtotal": "1,030.00",
+        "vat_total": "1,040.00"
+       },
+       "pages": [
+        2
+       ],
+       "schema_first": false,
+       "steps_failed": [],
+       "tokens": 200,
+       "user_disabled_fields": [],
+       "user_prompt_sets": [
+        {
+         "doc_type": "TAX_INVOICE",
+         "keys": [
+          "document_type",
+          "document_number",
+          "issue_date",
+          "po_gr_rtv_number",
+          "seller_tax_id",
+          "seller_branch",
+          "seller_branch_location",
+          "buyer_tax_id",
+          "buyer_branch",
+          "buyer_branch_location",
+          "subtotal",
+          "vat_total",
+          "amount_incl_vat"
+         ],
+         "name": "Invoice (Sup&Pay)",
+         "revision": 0,
+         "set_id": "builtin_invoice",
+         "skipped_keys": []
+        }
+       ],
+       "validation": {
+        "checks": [
+         {
+          "detail": "INVOICE",
+          "field": "document_type",
+          "rule": "pattern",
+          "state": "failed",
+          "why": "reads as INVOICE where TAX_INVOICE was expected"
+         },
+         {
+          "detail": "NO-F20393",
+          "field": "document_number",
+          "rule": "pattern",
+          "state": "ok"
+         },
+         {
+          "detail": "2026-10-01",
+          "field": "issue_date",
+          "rule": "date format",
+          "state": "ok"
+         },
+         {
+          "detail": "NO-B5E540",
+          "field": "po_gr_rtv_number",
+          "rule": "pattern",
+          "state": "ok"
+         },
+         {
+          "field": "po_gr_rtv_number",
+          "rule": "reference matching",
+          "state": "unchecked",
+          "why": "needs the PO/GR/RTV system to match against; this process has no access to one"
+         },
+         {
+          "detail": "0105517104484",
+          "field": "seller_tax_id",
+          "rule": "13-digit format",
+          "state": "ok"
+         },
+         {
+          "detail": "0105517104484",
+          "field": "seller_tax_id",
+          "rule": "checksum",
+          "state": "failed",
+          "why": "the 13th digit is not the mod-11 check digit of the first twelve"
+         },
+         {
+          "detail": "00000",
+          "field": "seller_branch",
+          "rule": "5-digit code",
+          "state": "ok"
+         },
+         {
+          "detail": "0105594272876",
+          "field": "buyer_tax_id",
+          "rule": "13-digit format",
+          "state": "ok"
+         },
+         {
+          "detail": "0105594272876",
+          "field": "buyer_tax_id",
+          "rule": "checksum",
+          "state": "failed",
+          "why": "the 13th digit is not the mod-11 check digit of the first twelve"
+         },
+         {
+          "detail": "00000",
+          "field": "buyer_branch",
+          "rule": "5-digit code",
+          "state": "ok"
+         },
+         {
+          "detail": "1,030.00",
+          "field": "subtotal",
+          "rule": "numeric",
+          "state": "ok"
+         },
+         {
+          "detail": "1,040.00",
+          "field": "vat_total",
+          "rule": "numeric",
+          "state": "ok"
+         },
+         {
+          "detail": "1,070.00",
+          "field": "amount_incl_vat",
+          "rule": "numeric",
+          "state": "ok"
+         },
+         {
+          "detail": "out by 1,000.00",
+          "field": "amount_incl_vat",
+          "rule": "total = subtotal + VAT",
+          "state": "failed",
+          "why": "1,030.00 + 1,040.00 = 2,070.00, but the page prints 1,070.00"
+         },
+         {
+          "detail": "100.97%",
+          "field": "vat_total",
+          "rule": "VAT rate",
+          "state": "warning",
+          "why": "100.97% of 1,030.00, not 7% -- legitimate on a page that mixes taxed and untaxed lines, and otherwise a sign that a figure is in the wrong key"
+         }
+        ],
+        "counts": {
+         "absent": 0,
+         "failed": 4,
+         "mandatory_absent": 0,
+         "ok": 10,
+         "pass_rate": 0.7142857142857143,
+         "scored": 14,
+         "unchecked": 1,
+         "warning": 1
+        },
+        "doc_types": [
+         "TAX_INVOICE"
+        ],
+        "failed": [
+         {
+          "detail": "INVOICE",
+          "field": "document_type",
+          "rule": "pattern",
+          "state": "failed",
+          "why": "reads as INVOICE where TAX_INVOICE was expected"
+         },
+         {
+          "detail": "0105517104484",
+          "field": "seller_tax_id",
+          "rule": "checksum",
+          "state": "failed",
+          "why": "the 13th digit is not the mod-11 check digit of the first twelve"
+         },
+         {
+          "detail": "0105594272876",
+          "field": "buyer_tax_id",
+          "rule": "checksum",
+          "state": "failed",
+          "why": "the 13th digit is not the mod-11 check digit of the first twelve"
+         },
+         {
+          "detail": "out by 1,000.00",
+          "field": "amount_incl_vat",
+          "rule": "total = subtotal + VAT",
+          "state": "failed",
+          "why": "1,030.00 + 1,040.00 = 2,070.00, but the page prints 1,070.00"
+         }
+        ],
+        "rules": [],
+        "warnings": [
+         {
+          "detail": "100.97%",
+          "field": "vat_total",
+          "rule": "VAT rate",
+          "state": "warning",
+          "why": "100.97% of 1,030.00, not 7% -- legitimate on a page that mixes taxed and untaxed lines, and otherwise a sign that a figure is in the wrong key"
+         }
+        ]
+       }
+      },
+      {
+       "backend": "vllm",
+       "classified": {
+        "doc_type": "RECEIPT_TAX_INVOICE",
+        "doc_type_confidence": 1.0,
+        "doc_type_escalated": "the heading names more than one type, and one of them may be a reference to another document",
+        "doc_type_expected": [],
+        "doc_type_from": "transcript",
+        "doc_type_heading": "ใบเสร็จรับเงิน/ใบกำกับภาษี",
+        "doc_types": [
+         "RECEIPT_TAX_INVOICE",
+         "RECEIPT",
+         "TAX_INVOICE"
+        ],
+        "extras": false,
+        "fields": [
+         "inv_rtv_cnr_number",
+         "seller_tax_id",
+         "seller_branch",
+         "seller_branch_location",
+         "buyer_tax_id",
+         "buyer_branch",
+         "buyer_branch_location",
+         "subtotal",
+         "vat_total",
+         "remaining_amount",
+         "remaining_vat_amount",
+         "payment_date",
+         "cheque_number"
+        ],
+        "framed": true,
+        "items": [],
+        "mandatory": [
+         "inv_rtv_cnr_number",
+         "seller_tax_id",
+         "seller_branch",
+         "buyer_tax_id",
+         "buyer_branch",
+         "subtotal",
+         "vat_total"
+        ],
+        "mandatory_items": [],
+        "rules": [
+         "reference_matching",
+         "outstanding_balance",
+         "vat_balance"
+        ],
+        "steps": [
+         "parties",
+         "totals",
+         "payment",
+         "remaining"
+        ],
+        "type_phrase": "a receipt/tax invoice",
+        "unknown_type": false
+       },
+       "doc_type": "RECEIPT_TAX_INVOICE",
+       "doc_type_confidence": 1.0,
+       "doc_type_from": "transcript",
+       "doc_type_heading": "ใบเสร็จรับเงิน/ใบกำกับภาษี",
+       "doc_types": [
+        "RECEIPT_TAX_INVOICE",
+        "RECEIPT",
+        "TAX_INVOICE"
+       ],
+       "document": 3,
+       "fields": {
+        "buyer_branch": "00000",
+        "buyer_branch_location": "สำนักงานใหญ่",
+        "buyer_tax_id": "0105539912936",
+        "cheque_number": "NO-8341A3",
+        "inv_rtv_cnr_number": "NO-94C0DF",
+        "line_items": [],
+        "other_fields": [],
+        "payment_date": "01/10/2569",
+        "remaining_amount": "1,090.00",
+        "remaining_vat_amount": "1,090.00",
+        "seller_branch": "00000",
+        "seller_branch_location": "สำนักงานใหญ่",
+        "seller_tax_id": "0105545885685",
+        "subtotal": "1,030.00",
+        "vat_total": "1,050.00"
+       },
+       "fields_asked": [
+        "inv_rtv_cnr_number",
+        "seller_tax_id",
+        "seller_branch",
+        "seller_branch_location",
+        "buyer_tax_id",
+        "buyer_branch",
+        "buyer_branch_location",
+        "subtotal",
+        "vat_total",
+        "remaining_amount",
+        "remaining_vat_amount",
+        "payment_date",
+        "cheque_number"
+       ],
+       "item_table": null,
+       "items_asked": [],
+       "mode": "hybrid",
+       "model": "qwen3-fake",
+       "normalization_version": 1,
+       "normalized": {
+        "buyer_branch": "00000",
+        "buyer_branch_location": "สำนักงานใหญ่",
+        "buyer_tax_id": "0105539912936",
+        "cheque_number": "NO-8341A3",
+        "inv_rtv_cnr_number": "NO-94C0DF",
+        "line_items": [],
+        "other_fields": [],
+        "payment_date": "01/10/2569",
+        "remaining_amount": "1,090.00",
+        "remaining_vat_amount": "1,090.00",
+        "seller_branch": "00000",
+        "seller_branch_location": "สำนักงานใหญ่",
+        "seller_tax_id": "0105545885685",
+        "subtotal": "1,030.00",
+        "vat_total": "1,050.00"
+       },
+       "pages": [
+        3
+       ],
+       "schema_first": false,
+       "steps_failed": [],
+       "tokens": 204,
+       "user_disabled_fields": [],
+       "user_prompt_sets": [
+        {
+         "doc_type": "RECEIPT_TAX_INVOICE",
+         "keys": [
+          "seller_tax_id",
+          "seller_branch",
+          "seller_branch_location",
+          "buyer_tax_id",
+          "buyer_branch",
+          "buyer_branch_location",
+          "subtotal",
+          "vat_total",
+          "inv_rtv_cnr_number",
+          "payment_date",
+          "cheque_number",
+          "remaining_amount",
+          "remaining_vat_amount"
+         ],
+         "name": "Receipt (Sup&Pay)",
+         "revision": 0,
+         "set_id": "builtin_receipt",
+         "skipped_keys": []
+        }
+       ],
+       "validation": {
+        "checks": [
+         {
+          "detail": "NO-94C0DF",
+          "field": "inv_rtv_cnr_number",
+          "rule": "pattern",
+          "state": "ok"
+         },
+         {
+          "field": "inv_rtv_cnr_number",
+          "rule": "reference matching",
+          "state": "unchecked",
+          "why": "needs the document this payment settles, in the system that holds it; this process has no access to one"
+         },
+         {
+          "detail": "0105545885685",
+          "field": "seller_tax_id",
+          "rule": "13-digit format",
+          "state": "ok"
+         },
+         {
+          "detail": "0105545885685",
+          "field": "seller_tax_id",
+          "rule": "checksum",
+          "state": "failed",
+          "why": "the 13th digit is not the mod-11 check digit of the first twelve"
+         },
+         {
+          "detail": "00000",
+          "field": "seller_branch",
+          "rule": "5-digit code",
+          "state": "ok"
+         },
+         {
+          "detail": "0105539912936",
+          "field": "buyer_tax_id",
+          "rule": "13-digit format",
+          "state": "ok"
+         },
+         {
+          "detail": "0105539912936",
+          "field": "buyer_tax_id",
+          "rule": "checksum",
+          "state": "failed",
+          "why": "the 13th digit is not the mod-11 check digit of the first twelve"
+         },
+         {
+          "detail": "00000",
+          "field": "buyer_branch",
+          "rule": "5-digit code",
+          "state": "ok"
+         },
+         {
+          "detail": "1,030.00",
+          "field": "subtotal",
+          "rule": "numeric",
+          "state": "ok"
+         },
+         {
+          "detail": "1,050.00",
+          "field": "vat_total",
+          "rule": "numeric",
+          "state": "ok"
+         },
+         {
+          "detail": "101.94%",
+          "field": "vat_total",
+          "rule": "VAT rate",
+          "state": "warning",
+          "why": "101.94% of 1,030.00, not 7% -- legitimate on a page that mixes taxed and untaxed lines, and otherwise a sign that a figure is in the wrong key"
+         },
+         {
+          "detail": "1,090.00",
+          "field": "remaining_amount",
+          "rule": "numeric",
+          "state": "ok"
+         },
+         {
+          "detail": "1,090.00",
+          "field": "remaining_vat_amount",
+          "rule": "numeric",
+          "state": "ok"
+         },
+         {
+          "field": "remaining_amount",
+          "rule": "outstanding balance",
+          "state": "unchecked",
+          "why": "needs what was owed before this payment, which is a fact about another document"
+         },
+         {
+          "detail": "100.00%",
+          "field": "remaining_vat_amount",
+          "rule": "VAT balance",
+          "state": "warning",
+          "why": "100.00% of the outstanding 1,090.00, not 7%"
+         },
+         {
+          "detail": "2026-10-01",
+          "field": "payment_date",
+          "rule": "date format",
+          "state": "ok"
+         }
+        ],
+        "counts": {
+         "absent": 0,
+         "failed": 2,
+         "mandatory_absent": 0,
+         "ok": 10,
+         "pass_rate": 0.8333333333333334,
+         "scored": 12,
+         "unchecked": 2,
+         "warning": 2
+        },
+        "doc_types": [
+         "RECEIPT_TAX_INVOICE",
+         "RECEIPT",
+         "TAX_INVOICE"
+        ],
+        "failed": [
+         {
+          "detail": "0105545885685",
+          "field": "seller_tax_id",
+          "rule": "checksum",
+          "state": "failed",
+          "why": "the 13th digit is not the mod-11 check digit of the first twelve"
+         },
+         {
+          "detail": "0105539912936",
+          "field": "buyer_tax_id",
+          "rule": "checksum",
+          "state": "failed",
+          "why": "the 13th digit is not the mod-11 check digit of the first twelve"
+         }
+        ],
+        "rules": [
+         "outstanding_balance",
+         "reference_matching",
+         "vat_balance"
+        ],
+        "warnings": [
+         {
+          "detail": "101.94%",
+          "field": "vat_total",
+          "rule": "VAT rate",
+          "state": "warning",
+          "why": "101.94% of 1,030.00, not 7% -- legitimate on a page that mixes taxed and untaxed lines, and otherwise a sign that a figure is in the wrong key"
+         },
+         {
+          "detail": "100.00%",
+          "field": "remaining_vat_amount",
+          "rule": "VAT balance",
+          "state": "warning",
+          "why": "100.00% of the outstanding 1,090.00, not 7%"
+         }
+        ]
+       }
+      },
+      {
+       "backend": "vllm",
+       "classified": {
+        "doc_type": "TAX_INVOICE",
+        "doc_type_confidence": 1.0,
+        "doc_type_escalated": "",
+        "doc_type_expected": [],
+        "doc_type_from": "transcript",
+        "doc_type_heading": "ใบกำกับภาษี / TAX INVOICE",
+        "doc_types": [
+         "TAX_INVOICE"
+        ],
+        "extras": false,
+        "fields": [
+         "document_type",
+         "document_number",
+         "issue_date",
+         "po_gr_rtv_number",
+         "seller_tax_id",
+         "seller_branch",
+         "seller_branch_location",
+         "buyer_tax_id",
+         "buyer_branch",
+         "buyer_branch_location",
+         "subtotal",
+         "vat_total",
+         "amount_incl_vat"
+        ],
+        "framed": true,
+        "items": [],
+        "mandatory": [],
+        "mandatory_items": [],
+        "rules": [],
+        "steps": [
+         "document",
+         "po_gr_rtv",
+         "parties",
+         "totals"
+        ],
+        "type_phrase": "a tax invoice",
+        "unknown_type": true
+       },
+       "doc_type": "TAX_INVOICE",
+       "doc_type_confidence": 1.0,
+       "doc_type_from": "transcript",
+       "doc_type_heading": "ใบกำกับภาษี / TAX INVOICE",
+       "doc_types": [
+        "TAX_INVOICE"
+       ],
+       "document": 4,
+       "fields": {
+        "amount_incl_vat": "1,070.00",
+        "buyer_branch": "00000",
+        "buyer_branch_location": "สำนักงานใหญ่",
+        "buyer_tax_id": "0105568212405",
+        "document_number": "NO-7BD1FF",
+        "document_type": "ใบแจ้งหนี้",
+        "issue_date": "01/10/2569",
+        "line_items": [],
+        "other_fields": [],
+        "po_gr_rtv_number": "NO-F1435F",
+        "seller_branch": "00000",
+        "seller_branch_location": "สำนักงานใหญ่",
+        "seller_tax_id": "0105533592767",
+        "subtotal": "1,030.00",
+        "vat_total": "1,010.00"
+       },
+       "fields_asked": [
+        "document_type",
+        "document_number",
+        "issue_date",
+        "po_gr_rtv_number",
+        "seller_tax_id",
+        "seller_branch",
+        "seller_branch_location",
+        "buyer_tax_id",
+        "buyer_branch",
+        "buyer_branch_location",
+        "subtotal",
+        "vat_total",
+        "amount_incl_vat"
+       ],
+       "item_table": null,
+       "items_asked": [],
+       "mode": "hybrid",
+       "model": "qwen3-fake",
+       "normalization_version": 1,
+       "normalized": {
+        "amount_incl_vat": "1,070.00",
+        "buyer_branch": "00000",
+        "buyer_branch_location": "สำนักงานใหญ่",
+        "buyer_tax_id": "0105568212405",
+        "document_number": "NO-7BD1FF",
+        "document_type": "ใบแจ้งหนี้",
+        "issue_date": "01/10/2569",
+        "line_items": [],
+        "other_fields": [],
+        "po_gr_rtv_number": "NO-F1435F",
+        "seller_branch": "00000",
+        "seller_branch_location": "สำนักงานใหญ่",
+        "seller_tax_id": "0105533592767",
+        "subtotal": "1,030.00",
+        "vat_total": "1,010.00"
+       },
+       "pages": [
+        4
+       ],
+       "schema_first": false,
+       "steps_failed": [],
+       "tokens": 200,
+       "user_disabled_fields": [],
+       "user_prompt_sets": [
+        {
+         "doc_type": "TAX_INVOICE",
+         "keys": [
+          "document_type",
+          "document_number",
+          "issue_date",
+          "po_gr_rtv_number",
+          "seller_tax_id",
+          "seller_branch",
+          "seller_branch_location",
+          "buyer_tax_id",
+          "buyer_branch",
+          "buyer_branch_location",
+          "subtotal",
+          "vat_total",
+          "amount_incl_vat"
+         ],
+         "name": "Invoice (Sup&Pay)",
+         "revision": 0,
+         "set_id": "builtin_invoice",
+         "skipped_keys": []
+        }
+       ],
+       "validation": {
+        "checks": [
+         {
+          "detail": "INVOICE",
+          "field": "document_type",
+          "rule": "pattern",
+          "state": "failed",
+          "why": "reads as INVOICE where TAX_INVOICE was expected"
+         },
+         {
+          "detail": "NO-7BD1FF",
+          "field": "document_number",
+          "rule": "pattern",
+          "state": "ok"
+         },
+         {
+          "detail": "2026-10-01",
+          "field": "issue_date",
+          "rule": "date format",
+          "state": "ok"
+         },
+         {
+          "detail": "NO-F1435F",
+          "field": "po_gr_rtv_number",
+          "rule": "pattern",
+          "state": "ok"
+         },
+         {
+          "field": "po_gr_rtv_number",
+          "rule": "reference matching",
+          "state": "unchecked",
+          "why": "needs the PO/GR/RTV system to match against; this process has no access to one"
+         },
+         {
+          "detail": "0105533592767",
+          "field": "seller_tax_id",
+          "rule": "13-digit format",
+          "state": "ok"
+         },
+         {
+          "detail": "0105533592767",
+          "field": "seller_tax_id",
+          "rule": "checksum",
+          "state": "ok"
+         },
+         {
+          "detail": "00000",
+          "field": "seller_branch",
+          "rule": "5-digit code",
+          "state": "ok"
+         },
+         {
+          "detail": "0105568212405",
+          "field": "buyer_tax_id",
+          "rule": "13-digit format",
+          "state": "ok"
+         },
+         {
+          "detail": "0105568212405",
+          "field": "buyer_tax_id",
+          "rule": "checksum",
+          "state": "ok"
+         },
+         {
+          "detail": "00000",
+          "field": "buyer_branch",
+          "rule": "5-digit code",
+          "state": "ok"
+         },
+         {
+          "detail": "1,030.00",
+          "field": "subtotal",
+          "rule": "numeric",
+          "state": "ok"
+         },
+         {
+          "detail": "1,010.00",
+          "field": "vat_total",
+          "rule": "numeric",
+          "state": "ok"
+         },
+         {
+          "detail": "1,070.00",
+          "field": "amount_incl_vat",
+          "rule": "numeric",
+          "state": "ok"
+         },
+         {
+          "detail": "out by 970.00",
+          "field": "amount_incl_vat",
+          "rule": "total = subtotal + VAT",
+          "state": "failed",
+          "why": "1,030.00 + 1,010.00 = 2,040.00, but the page prints 1,070.00"
+         },
+         {
+          "detail": "98.06%",
+          "field": "vat_total",
+          "rule": "VAT rate",
+          "state": "warning",
+          "why": "98.06% of 1,030.00, not 7% -- legitimate on a page that mixes taxed and untaxed lines, and otherwise a sign that a figure is in the wrong key"
+         }
+        ],
+        "counts": {
+         "absent": 0,
+         "failed": 2,
+         "mandatory_absent": 0,
+         "ok": 12,
+         "pass_rate": 0.8571428571428571,
+         "scored": 14,
+         "unchecked": 1,
+         "warning": 1
+        },
+        "doc_types": [
+         "TAX_INVOICE"
+        ],
+        "failed": [
+         {
+          "detail": "INVOICE",
+          "field": "document_type",
+          "rule": "pattern",
+          "state": "failed",
+          "why": "reads as INVOICE where TAX_INVOICE was expected"
+         },
+         {
+          "detail": "out by 970.00",
+          "field": "amount_incl_vat",
+          "rule": "total = subtotal + VAT",
+          "state": "failed",
+          "why": "1,030.00 + 1,010.00 = 2,040.00, but the page prints 1,070.00"
+         }
+        ],
+        "rules": [],
+        "warnings": [
+         {
+          "detail": "98.06%",
+          "field": "vat_total",
+          "rule": "VAT rate",
+          "state": "warning",
+          "why": "98.06% of 1,030.00, not 7% -- legitimate on a page that mixes taxed and untaxed lines, and otherwise a sign that a figure is in the wrong key"
+         }
+        ]
+       }
+      },
+      {
+       "backend": "vllm",
+       "classified": {
+        "doc_type": "INVOICE",
+        "doc_type_confidence": 1.0,
+        "doc_type_escalated": "",
+        "doc_type_expected": [],
+        "doc_type_from": "transcript",
+        "doc_type_heading": "ใบแจ้งหนี้ / INVOICE",
+        "doc_types": [
+         "INVOICE"
+        ],
+        "extras": false,
+        "fields": [
+         "document_type",
+         "document_number",
+         "issue_date",
+         "po_gr_rtv_number",
+         "seller_tax_id",
+         "seller_branch",
+         "seller_branch_location",
+         "buyer_tax_id",
+         "buyer_branch",
+         "buyer_branch_location",
+         "subtotal",
+         "vat_total",
+         "amount_incl_vat"
+        ],
+        "framed": true,
+        "items": [],
+        "mandatory": [
+         "document_type",
+         "document_number",
+         "issue_date",
+         "po_gr_rtv_number",
+         "seller_tax_id",
+         "seller_branch",
+         "buyer_tax_id",
+         "buyer_branch",
+         "subtotal",
+         "vat_total",
+         "amount_incl_vat"
+        ],
+        "mandatory_items": [],
+        "rules": [
+         "duplicate",
+         "future_date"
+        ],
+        "steps": [
+         "document",
+         "po_gr_rtv",
+         "parties",
+         "totals"
+        ],
+        "type_phrase": "an invoice",
+        "unknown_type": false
+       },
+       "doc_type": "INVOICE",
+       "doc_type_confidence": 1.0,
+       "doc_type_from": "transcript",
+       "doc_type_heading": "ใบแจ้งหนี้ / INVOICE",
+       "doc_types": [
+        "INVOICE"
+       ],
+       "document": 5,
+       "fields": {
+        "amount_incl_vat": "1,000.00",
+        "buyer_branch": "00000",
+        "buyer_branch_location": "สำนักงานใหญ่",
+        "buyer_tax_id": "0105526033709",
+        "document_number": "NO-ECF9A9",
+        "document_type": "ใบแจ้งหนี้",
+        "issue_date": "01/10/2569",
+        "line_items": [],
+        "other_fields": [],
+        "po_gr_rtv_number": "NO-AE3318",
+        "seller_branch": "00000",
+        "seller_branch_location": "สำนักงานใหญ่",
+        "seller_tax_id": "0105541984386",
+        "subtotal": "1,050.00",
+        "vat_total": "1,090.00"
+       },
+       "fields_asked": [
+        "document_type",
+        "document_number",
+        "issue_date",
+        "po_gr_rtv_number",
+        "seller_tax_id",
+        "seller_branch",
+        "seller_branch_location",
+        "buyer_tax_id",
+        "buyer_branch",
+        "buyer_branch_location",
+        "subtotal",
+        "vat_total",
+        "amount_incl_vat"
+       ],
+       "item_table": {
+        "columns": [
+         "ลำดับ",
+         "รายการ",
+         "จำนวน",
+         "จำนวนเงิน"
+        ],
+        "is_master_table": false,
+        "item_columns": [],
+        "master_why": "no column of this table names another document",
+        "pages": [
+         5
+        ],
+        "reference_columns": [],
+        "row_pages": [
+         5
+        ],
+        "rows": [
+         [
+          "1",
+          "สินค้า A",
+          "2",
+          "1,000.00"
+         ]
+        ]
+       },
+       "items_asked": [],
+       "mode": "hybrid",
+       "model": "qwen3-fake",
+       "normalization_version": 1,
+       "normalized": {
+        "amount_incl_vat": "1,000.00",
+        "buyer_branch": "00000",
+        "buyer_branch_location": "สำนักงานใหญ่",
+        "buyer_tax_id": "0105526033709",
+        "document_number": "NO-ECF9A9",
+        "document_type": "ใบแจ้งหนี้",
+        "issue_date": "01/10/2569",
+        "line_items": [],
+        "other_fields": [],
+        "po_gr_rtv_number": "NO-AE3318",
+        "seller_branch": "00000",
+        "seller_branch_location": "สำนักงานใหญ่",
+        "seller_tax_id": "0105541984386",
+        "subtotal": "1,050.00",
+        "vat_total": "1,090.00"
+       },
+       "pages": [
+        5
+       ],
+       "schema_first": false,
+       "steps_failed": [],
+       "tokens": 200,
+       "user_disabled_fields": [],
+       "user_prompt_sets": [
+        {
+         "doc_type": "INVOICE",
+         "keys": [
+          "document_type",
+          "document_number",
+          "issue_date",
+          "po_gr_rtv_number",
+          "seller_tax_id",
+          "seller_branch",
+          "seller_branch_location",
+          "buyer_tax_id",
+          "buyer_branch",
+          "buyer_branch_location",
+          "subtotal",
+          "vat_total",
+          "amount_incl_vat"
+         ],
+         "name": "Invoice (Sup&Pay)",
+         "revision": 0,
+         "set_id": "builtin_invoice",
+         "skipped_keys": []
+        }
+       ],
+       "validation": {
+        "checks": [
+         {
+          "detail": "INVOICE",
+          "field": "document_type",
+          "rule": "pattern",
+          "state": "ok"
+         },
+         {
+          "detail": "NO-ECF9A9",
+          "field": "document_number",
+          "rule": "pattern",
+          "state": "ok"
+         },
+         {
+          "field": "document_number",
+          "rule": "duplicate",
+          "state": "unchecked",
+          "why": "needs the set of numbers already filed; none was supplied to this run"
+         },
+         {
+          "detail": "2026-10-01",
+          "field": "issue_date",
+          "rule": "date format",
+          "state": "ok"
+         },
+         {
+          "detail": "2026-10-01",
+          "field": "issue_date",
+          "rule": "not in the future",
+          "state": "ok"
+         },
+         {
+          "detail": "NO-AE3318",
+          "field": "po_gr_rtv_number",
+          "rule": "pattern",
+          "state": "ok"
+         },
+         {
+          "field": "po_gr_rtv_number",
+          "rule": "reference matching",
+          "state": "unchecked",
+          "why": "needs the PO/GR/RTV system to match against; this process has no access to one"
+         },
+         {
+          "detail": "0105541984386",
+          "field": "seller_tax_id",
+          "rule": "13-digit format",
+          "state": "ok"
+         },
+         {
+          "detail": "0105541984386",
+          "field": "seller_tax_id",
+          "rule": "checksum",
+          "state": "failed",
+          "why": "the 13th digit is not the mod-11 check digit of the first twelve"
+         },
+         {
+          "detail": "00000",
+          "field": "seller_branch",
+          "rule": "5-digit code",
+          "state": "ok"
+         },
+         {
+          "detail": "0105526033709",
+          "field": "buyer_tax_id",
+          "rule": "13-digit format",
+          "state": "ok"
+         },
+         {
+          "detail": "0105526033709",
+          "field": "buyer_tax_id",
+          "rule": "checksum",
+          "state": "failed",
+          "why": "the 13th digit is not the mod-11 check digit of the first twelve"
+         },
+         {
+          "detail": "00000",
+          "field": "buyer_branch",
+          "rule": "5-digit code",
+          "state": "ok"
+         },
+         {
+          "detail": "1,050.00",
+          "field": "subtotal",
+          "rule": "numeric",
+          "state": "ok"
+         },
+         {
+          "detail": "1,090.00",
+          "field": "vat_total",
+          "rule": "numeric",
+          "state": "ok"
+         },
+         {
+          "detail": "1,000.00",
+          "field": "amount_incl_vat",
+          "rule": "numeric",
+          "state": "ok"
+         },
+         {
+          "detail": "out by 1,140.00",
+          "field": "amount_incl_vat",
+          "rule": "total = subtotal + VAT",
+          "state": "failed",
+          "why": "1,050.00 + 1,090.00 = 2,140.00, but the page prints 1,000.00"
+         },
+         {
+          "detail": "103.81%",
+          "field": "vat_total",
+          "rule": "VAT rate",
+          "state": "warning",
+          "why": "103.81% of 1,050.00, not 7% -- legitimate on a page that mixes taxed and untaxed lines, and otherwise a sign that a figure is in the wrong key"
+         }
+        ],
+        "counts": {
+         "absent": 0,
+         "failed": 3,
+         "mandatory_absent": 0,
+         "ok": 12,
+         "pass_rate": 0.8,
+         "scored": 15,
+         "unchecked": 2,
+         "warning": 1
+        },
+        "doc_types": [
+         "INVOICE"
+        ],
+        "failed": [
+         {
+          "detail": "0105541984386",
+          "field": "seller_tax_id",
+          "rule": "checksum",
+          "state": "failed",
+          "why": "the 13th digit is not the mod-11 check digit of the first twelve"
+         },
+         {
+          "detail": "0105526033709",
+          "field": "buyer_tax_id",
+          "rule": "checksum",
+          "state": "failed",
+          "why": "the 13th digit is not the mod-11 check digit of the first twelve"
+         },
+         {
+          "detail": "out by 1,140.00",
+          "field": "amount_incl_vat",
+          "rule": "total = subtotal + VAT",
+          "state": "failed",
+          "why": "1,050.00 + 1,090.00 = 2,140.00, but the page prints 1,000.00"
+         }
+        ],
+        "rules": [
+         "duplicate",
+         "future_date"
+        ],
+        "warnings": [
+         {
+          "detail": "103.81%",
+          "field": "vat_total",
+          "rule": "VAT rate",
+          "state": "warning",
+          "why": "103.81% of 1,050.00, not 7% -- legitimate on a page that mixes taxed and untaxed lines, and otherwise a sign that a figure is in the wrong key"
+         }
+        ]
+       }
+      },
+      {
+       "backend": "vllm",
+       "classified": {
+        "doc_type": "WHT_CERTIFICATE",
+        "doc_type_confidence": 0.914,
+        "doc_type_escalated": "",
+        "doc_type_expected": [],
+        "doc_type_from": "transcript",
+        "doc_type_heading": "หนังสือรับรองการหักภาษี ณ ที่จ่าย ตามมาตรา 50 ทวิ",
+        "doc_types": [
+         "WHT_CERTIFICATE"
+        ],
+        "extras": false,
+        "fields": [
+         "book_no",
+         "certificate_no",
+         "sequence_no",
+         "payer_tax_id",
+         "payer_name",
+         "payer_branch",
+         "payer_branch_location",
+         "payer_address",
+         "payee_tax_id",
+         "payee_name",
+         "payee_branch",
+         "payee_branch_location",
+         "payee_address",
+         "dividend_rate_option",
+         "total_amount_paid",
+         "total_wht_amount"
+        ],
+        "framed": true,
+        "items": [
+         "income_type",
+         "payment_date",
+         "amount_paid",
+         "wht_amount"
+        ],
+        "mandatory": [
+         "payer_tax_id",
+         "payer_name",
+         "payee_tax_id",
+         "payee_name",
+         "total_amount_paid",
+         "total_wht_amount"
+        ],
+        "mandatory_items": [
+         "income_type",
+         "payment_date",
+         "amount_paid",
+         "wht_amount"
+        ],
+        "rules": [
+         "company_master",
+         "sum_reconciliation",
+         "dividend_option"
+        ],
+        "steps": [
+         "wht_certificate",
+         "wht_payer_party",
+         "wht_payee_party",
+         "wht_income",
+         "wht_totals",
+         "wht_dividend"
+        ],
+        "type_phrase": "a withholding tax certificate (50 ทวิ)",
+        "unknown_type": false
+       },
+       "doc_type": "WHT_CERTIFICATE",
+       "doc_type_confidence": 0.914,
+       "doc_type_from": "transcript",
+       "doc_type_heading": "หนังสือรับรองการหักภาษี ณ ที่จ่าย ตามมาตรา 50 ทวิ",
+       "doc_types": [
+        "WHT_CERTIFICATE"
+       ],
+       "document": 6,
+       "fields": {
+        "book_no": "NO-83F73A",
+        "certificate_no": "NO-AFBBF5",
+        "dividend_rate_option": "dividend_rate_option f171ba",
+        "income_items": [],
+        "line_items": [],
+        "other_fields": [],
+        "payee_address": "1 ถนนสีลม กรุงเทพมหานคร 10500",
+        "payee_branch": "00000",
+        "payee_branch_location": "สำนักงานใหญ่",
+        "payee_name": "บริษัท ตัวอย่าง จำกัด",
+        "payee_tax_id": "0105556614337",
+        "payer_address": "1 ถนนสีลม กรุงเทพมหานคร 10500",
+        "payer_branch": "00000",
+        "payer_branch_location": "สำนักงานใหญ่",
+        "payer_name": "บริษัท ตัวอย่าง จำกัด",
+        "payer_tax_id": "0105593275342",
+        "sequence_no": "NO-E3E144",
+        "total_amount_paid": "1,000.00",
+        "total_wht_amount": "1,090.00"
+       },
+       "fields_asked": [
+        "book_no",
+        "certificate_no",
+        "sequence_no",
+        "payer_tax_id",
+        "payer_name",
+        "payer_branch",
+        "payer_branch_location",
+        "payer_address",
+        "payee_tax_id",
+        "payee_name",
+        "payee_branch",
+        "payee_branch_location",
+        "payee_address",
+        "dividend_rate_option",
+        "total_amount_paid",
+        "total_wht_amount"
+       ],
+       "image_fills": [
+        {
+         "accepted": false,
+         "added": {},
+         "after": {
+          "income_items": []
+         },
+         "candidate": {
+          "income_items": []
+         },
+         "edited": {},
+         "fields": [
+          "income_items"
+         ],
+         "filled": [],
+         "pages": [
+          6
+         ],
+         "steps": [
+          "wht_income"
+         ],
+         "still_empty": [
+          "income_items"
+         ],
+         "tokens": 30,
+         "validated": [
+          {
+           "field": "income_items",
+           "rule": "table extraction",
+           "state": "absent",
+           "why": "no income rows came back"
+          }
+         ]
+        }
+       ],
+       "items_asked": [
+        "income_type",
+        "payment_date",
+        "amount_paid",
+        "wht_amount"
+       ],
+       "mode": "hybrid",
+       "model": "qwen3-fake",
+       "normalization_version": 1,
+       "normalized": {
+        "book_no": "NO-83F73A",
+        "certificate_no": "NO-AFBBF5",
+        "dividend_rate_option": "dividend_rate_option f171ba",
+        "income_items": [],
+        "line_items": [],
+        "other_fields": [],
+        "payee_address": "1 ถนนสีลม กรุงเทพมหานคร 10500",
+        "payee_branch": "00000",
+        "payee_branch_location": "สำนักงานใหญ่",
+        "payee_name": "บริษัท ตัวอย่าง จำกัด",
+        "payee_tax_id": "0105556614337",
+        "payer_address": "1 ถนนสีลม กรุงเทพมหานคร 10500",
+        "payer_branch": "00000",
+        "payer_branch_location": "สำนักงานใหญ่",
+        "payer_name": "บริษัท ตัวอย่าง จำกัด",
+        "payer_tax_id": "0105593275342",
+        "sequence_no": "NO-E3E144",
+        "total_amount_paid": "1,000.00",
+        "total_wht_amount": "1,090.00"
+       },
+       "pages": [
+        6
+       ],
+       "schema_first": false,
+       "steps_failed": [],
+       "tokens": 316,
+       "user_disabled_fields": [],
+       "user_prompt_sets": [
+        {
+         "doc_type": "WHT_CERTIFICATE",
+         "keys": [
+          "book_no",
+          "certificate_no",
+          "sequence_no",
+          "payer_tax_id",
+          "payer_name",
+          "payer_branch",
+          "payer_branch_location",
+          "payer_address",
+          "payee_tax_id",
+          "payee_name",
+          "payee_branch",
+          "payee_branch_location",
+          "payee_address",
+          "income_items",
+          "total_amount_paid",
+          "total_wht_amount",
+          "dividend_rate_option"
+         ],
+         "name": "WHT 50 ทวิ (PCP)",
+         "revision": 0,
+         "set_id": "builtin_wht_certificate",
+         "skipped_keys": []
+        }
+       ],
+       "validation": {
+        "checks": [
+         {
+          "detail": "0105593275342",
+          "field": "payer_tax_id",
+          "rule": "13-digit format",
+          "state": "ok"
+         },
+         {
+          "detail": "0105593275342",
+          "field": "payer_tax_id",
+          "rule": "checksum",
+          "state": "ok"
+         },
+         {
+          "detail": "บริษัท ตัวอย่าง จำกัด",
+          "field": "payer_name",
+          "rule": "company master match",
+          "state": "unchecked",
+          "why": "there is no Company Master to match against here -- the rule needs the list of companies already on file"
+         },
+         {
+          "detail": "00000",
+          "field": "payer_branch",
+          "rule": "5-digit code",
+          "state": "ok"
+         },
+         {
+          "detail": "0105556614337",
+          "field": "payee_tax_id",
+          "rule": "13-digit format",
+          "state": "ok"
+         },
+         {
+          "detail": "0105556614337",
+          "field": "payee_tax_id",
+          "rule": "checksum",
+          "state": "failed",
+          "why": "the 13th digit is not the mod-11 check digit of the first twelve"
+         },
+         {
+          "detail": "บริษัท ตัวอย่าง จำกัด",
+          "field": "payee_name",
+          "rule": "company master match",
+          "state": "unchecked",
+          "why": "there is no Company Master to match against here -- the rule needs the list of companies already on file"
+         },
+         {
+          "detail": "00000",
+          "field": "payee_branch",
+          "rule": "5-digit code",
+          "state": "ok"
+         },
+         {
+          "detail": "dividend_rate_option f171ba",
+          "field": "dividend_rate_option",
+          "rule": "checkbox detection",
+          "state": "ok"
+         },
+         {
+          "detail": "1,000.00",
+          "field": "total_amount_paid",
+          "rule": "numeric",
+          "state": "ok"
+         },
+         {
+          "field": "total_amount_paid",
+          "rule": "sum reconciliation",
+          "state": "unchecked",
+          "why": "no income rows came back to add up"
+         },
+         {
+          "detail": "1,090.00",
+          "field": "total_wht_amount",
+          "rule": "numeric",
+          "state": "ok"
+         },
+         {
+          "field": "total_wht_amount",
+          "rule": "sum reconciliation",
+          "state": "unchecked",
+          "why": "no income rows came back to add up"
+         },
+         {
+          "field": "income_items",
+          "mandatory": true,
+          "rule": "table extraction",
+          "state": "absent",
+          "why": "no income rows came back"
+         }
+        ],
+        "counts": {
+         "absent": 1,
+         "failed": 1,
+         "mandatory_absent": 1,
+         "ok": 8,
+         "pass_rate": 0.8888888888888888,
+         "scored": 9,
+         "unchecked": 4,
+         "warning": 0
+        },
+        "doc_types": [
+         "WHT_CERTIFICATE"
+        ],
+        "failed": [
+         {
+          "detail": "0105556614337",
+          "field": "payee_tax_id",
+          "rule": "checksum",
+          "state": "failed",
+          "why": "the 13th digit is not the mod-11 check digit of the first twelve"
+         }
+        ],
+        "rules": [
+         "company_master",
+         "dividend_option",
+         "sum_reconciliation"
+        ],
+        "warnings": []
+       }
+      },
+      {
+       "backend": "vllm",
+       "classified": {
+        "doc_type": "CREDIT_NOTE",
+        "doc_type_confidence": 1.0,
+        "doc_type_escalated": "",
+        "doc_type_expected": [],
+        "doc_type_from": "transcript",
+        "doc_type_heading": "ใบลดหนี้ / CREDIT NOTE",
+        "doc_types": [
+         "CREDIT_NOTE"
+        ],
+        "extras": false,
+        "fields": [
+         "document_type",
+         "document_number",
+         "issue_date",
+         "po_gr_rtv_number",
+         "seller_tax_id",
+         "seller_branch",
+         "seller_branch_location",
+         "buyer_tax_id",
+         "buyer_branch",
+         "buyer_branch_location",
+         "subtotal",
+         "vat_total",
+         "amount_incl_vat"
+        ],
+        "framed": true,
+        "items": [],
+        "mandatory": [
+         "document_type",
+         "document_number",
+         "issue_date",
+         "seller_tax_id",
+         "seller_branch",
+         "buyer_tax_id",
+         "buyer_branch",
+         "subtotal",
+         "vat_total",
+         "amount_incl_vat"
+        ],
+        "mandatory_items": [],
+        "rules": [
+         "original_document"
+        ],
+        "steps": [
+         "document",
+         "po_gr_rtv",
+         "parties",
+         "totals"
+        ],
+        "type_phrase": "a credit note",
+        "unknown_type": false
+       },
+       "doc_type": "CREDIT_NOTE",
+       "doc_type_confidence": 1.0,
+       "doc_type_from": "transcript",
+       "doc_type_heading": "ใบลดหนี้ / CREDIT NOTE",
+       "doc_types": [
+        "CREDIT_NOTE"
+       ],
+       "document": 7,
+       "fields": {
+        "amount_incl_vat": "1,060.00",
+        "buyer_branch": "00000",
+        "buyer_branch_location": "สำนักงานใหญ่",
+        "buyer_tax_id": "0105596945864",
+        "document_number": "NO-C73A27",
+        "document_type": "ใบแจ้งหนี้",
+        "issue_date": "01/10/2569",
+        "line_items": [],
+        "other_fields": [],
+        "po_gr_rtv_number": "NO-C7BB8B",
+        "seller_branch": "00000",
+        "seller_branch_location": "สำนักงานใหญ่",
+        "seller_tax_id": "0105530546486",
+        "subtotal": "1,080.00",
+        "vat_total": "1,090.00"
+       },
+       "fields_asked": [
+        "document_type",
+        "document_number",
+        "issue_date",
+        "po_gr_rtv_number",
+        "seller_tax_id",
+        "seller_branch",
+        "seller_branch_location",
+        "buyer_tax_id",
+        "buyer_branch",
+        "buyer_branch_location",
+        "subtotal",
+        "vat_total",
+        "amount_incl_vat"
+       ],
+       "item_table": null,
+       "items_asked": [],
+       "mode": "hybrid",
+       "model": "qwen3-fake",
+       "normalization_version": 1,
+       "normalized": {
+        "amount_incl_vat": "1,060.00",
+        "buyer_branch": "00000",
+        "buyer_branch_location": "สำนักงานใหญ่",
+        "buyer_tax_id": "0105596945864",
+        "document_number": "NO-C73A27",
+        "document_type": "ใบแจ้งหนี้",
+        "issue_date": "01/10/2569",
+        "line_items": [],
+        "other_fields": [],
+        "po_gr_rtv_number": "NO-C7BB8B",
+        "seller_branch": "00000",
+        "seller_branch_location": "สำนักงานใหญ่",
+        "seller_tax_id": "0105530546486",
+        "subtotal": "1,080.00",
+        "vat_total": "1,090.00"
+       },
+       "pages": [
+        7
+       ],
+       "schema_first": false,
+       "steps_failed": [],
+       "tokens": 200,
+       "user_disabled_fields": [],
+       "user_prompt_sets": [
+        {
+         "doc_type": "CREDIT_NOTE",
+         "keys": [
+          "document_type",
+          "document_number",
+          "issue_date",
+          "po_gr_rtv_number",
+          "seller_tax_id",
+          "seller_branch",
+          "seller_branch_location",
+          "buyer_tax_id",
+          "buyer_branch",
+          "buyer_branch_location",
+          "subtotal",
+          "vat_total",
+          "amount_incl_vat"
+         ],
+         "name": "Credit Note (Sup&Pay)",
+         "revision": 0,
+         "set_id": "builtin_credit_note",
+         "skipped_keys": []
+        }
+       ],
+       "validation": {
+        "checks": [
+         {
+          "detail": "INVOICE",
+          "field": "document_type",
+          "rule": "pattern",
+          "state": "failed",
+          "why": "reads as INVOICE where CREDIT_NOTE was expected"
+         },
+         {
+          "detail": "NO-C73A27",
+          "field": "document_number",
+          "rule": "pattern",
+          "state": "ok"
+         },
+         {
+          "field": "document_number",
+          "rule": "original document matching",
+          "state": "unchecked",
+          "why": "needs the document this one credits, in the system that holds it; this process has no access to one"
+         },
+         {
+          "detail": "2026-10-01",
+          "field": "issue_date",
+          "rule": "date format",
+          "state": "ok"
+         },
+         {
+          "detail": "NO-C7BB8B",
+          "field": "po_gr_rtv_number",
+          "rule": "pattern",
+          "state": "ok"
+         },
+         {
+          "field": "po_gr_rtv_number",
+          "rule": "reference matching",
+          "state": "unchecked",
+          "why": "needs the PO/GR/RTV system to match against; this process has no access to one"
+         },
+         {
+          "detail": "0105530546486",
+          "field": "seller_tax_id",
+          "rule": "13-digit format",
+          "state": "ok"
+         },
+         {
+          "detail": "0105530546486",
+          "field": "seller_tax_id",
+          "rule": "checksum",
+          "state": "failed",
+          "why": "the 13th digit is not the mod-11 check digit of the first twelve"
+         },
+         {
+          "detail": "00000",
+          "field": "seller_branch",
+          "rule": "5-digit code",
+          "state": "ok"
+         },
+         {
+          "detail": "0105596945864",
+          "field": "buyer_tax_id",
+          "rule": "13-digit format",
+          "state": "ok"
+         },
+         {
+          "detail": "0105596945864",
+          "field": "buyer_tax_id",
+          "rule": "checksum",
+          "state": "failed",
+          "why": "the 13th digit is not the mod-11 check digit of the first twelve"
+         },
+         {
+          "detail": "00000",
+          "field": "buyer_branch",
+          "rule": "5-digit code",
+          "state": "ok"
+         },
+         {
+          "detail": "1,080.00",
+          "field": "subtotal",
+          "rule": "numeric",
+          "state": "ok"
+         },
+         {
+          "detail": "1,090.00",
+          "field": "vat_total",
+          "rule": "numeric",
+          "state": "ok"
+         },
+         {
+          "detail": "1,060.00",
+          "field": "amount_incl_vat",
+          "rule": "numeric",
+          "state": "ok"
+         },
+         {
+          "detail": "out by 1,110.00",
+          "field": "amount_incl_vat",
+          "rule": "total = subtotal + VAT",
+          "state": "failed",
+          "why": "1,080.00 + 1,090.00 = 2,170.00, but the page prints 1,060.00"
+         },
+         {
+          "detail": "100.93%",
+          "field": "vat_total",
+          "rule": "VAT rate",
+          "state": "warning",
+          "why": "100.93% of 1,080.00, not 7% -- legitimate on a page that mixes taxed and untaxed lines, and otherwise a sign that a figure is in the wrong key"
+         }
+        ],
+        "counts": {
+         "absent": 0,
+         "failed": 4,
+         "mandatory_absent": 0,
+         "ok": 10,
+         "pass_rate": 0.7142857142857143,
+         "scored": 14,
+         "unchecked": 2,
+         "warning": 1
+        },
+        "doc_types": [
+         "CREDIT_NOTE"
+        ],
+        "failed": [
+         {
+          "detail": "INVOICE",
+          "field": "document_type",
+          "rule": "pattern",
+          "state": "failed",
+          "why": "reads as INVOICE where CREDIT_NOTE was expected"
+         },
+         {
+          "detail": "0105530546486",
+          "field": "seller_tax_id",
+          "rule": "checksum",
+          "state": "failed",
+          "why": "the 13th digit is not the mod-11 check digit of the first twelve"
+         },
+         {
+          "detail": "0105596945864",
+          "field": "buyer_tax_id",
+          "rule": "checksum",
+          "state": "failed",
+          "why": "the 13th digit is not the mod-11 check digit of the first twelve"
+         },
+         {
+          "detail": "out by 1,110.00",
+          "field": "amount_incl_vat",
+          "rule": "total = subtotal + VAT",
+          "state": "failed",
+          "why": "1,080.00 + 1,090.00 = 2,170.00, but the page prints 1,060.00"
+         }
+        ],
+        "rules": [
+         "original_document"
+        ],
+        "warnings": [
+         {
+          "detail": "100.93%",
+          "field": "vat_total",
+          "rule": "VAT rate",
+          "state": "warning",
+          "why": "100.93% of 1,080.00, not 7% -- legitimate on a page that mixes taxed and untaxed lines, and otherwise a sign that a figure is in the wrong key"
+         }
+        ]
+       }
+      }
+     ],
+     "documents_failed": 0,
+     "documents_found": 7,
+     "extraction_request_limit": 128,
+     "extraction_request_scope": "server",
+     "extras": false,
+     "fields_asked": [
+      "document_type",
+      "document_number",
+      "issue_date",
+      "po_gr_rtv_number",
+      "seller_tax_id",
+      "seller_branch",
+      "seller_branch_location",
+      "buyer_tax_id",
+      "buyer_branch",
+      "buyer_branch_location",
+      "subtotal",
+      "vat_total",
+      "amount_incl_vat",
+      "inv_rtv_cnr_number",
+      "remaining_amount",
+      "remaining_vat_amount",
+      "payment_date",
+      "cheque_number",
+      "book_no",
+      "certificate_no",
+      "sequence_no",
+      "payer_tax_id",
+      "payer_name",
+      "payer_branch",
+      "payer_branch_location",
+      "payer_address",
+      "payee_tax_id",
+      "payee_name",
+      "payee_branch",
+      "payee_branch_location",
+      "payee_address",
+      "dividend_rate_option",
+      "total_amount_paid",
+      "total_wht_amount"
+     ],
+     "image_rechecks": {
+      "fill_missing": true,
+      "flags": [
+       {
+        "id": 0,
+        "kind": "missing",
+        "message": "1 required field(s) came back empty: doc 6: income_items; asked the page images, none filled, still empty: doc 6: income_items",
+        "state": "retry failed"
+       }
+      ],
+      "metrics": {
+       "fill_asked": 1,
+       "fill_checks": 0,
+       "fill_checks_bad": 0,
+       "fill_checks_ok": 0,
+       "fill_filled": 0,
+       "fill_jobs": 1
+      },
+      "validation_retry": false
+     },
+     "items_asked": [
+      "income_type",
+      "payment_date",
+      "amount_paid",
+      "wht_amount"
+     ],
+     "mode": "hybrid",
+     "model": "qwen3-fake",
+     "partial": false,
+     "schema_first": false,
+     "segments": [
+      {
+       "certain": true,
+       "doc_types": [
+        "CREDIT_NOTE"
+       ],
+       "document": 1,
+       "documents": 7,
+       "heading": "ใบลดหนี้ / CREDIT NOTE",
+       "joins": [],
+       "page_range": "1",
+       "pages": [
+        1
+       ],
+       "start_reason": "the first page of the file"
+      },
+      {
+       "certain": true,
+       "doc_types": [
+        "TAX_INVOICE"
+       ],
+       "document": 2,
+       "documents": 7,
+       "heading": "ใบกำกับภาษี / TAX INVOICE",
+       "joins": [],
+       "page_range": "2",
+       "pages": [
+        2
+       ],
+       "start_reason": "it heads itself TAX_INVOICE, and the document so far is CREDIT_NOTE"
+      },
+      {
+       "certain": true,
+       "doc_types": [
+        "RECEIPT_TAX_INVOICE",
+        "RECEIPT",
+        "TAX_INVOICE"
+       ],
+       "document": 3,
+       "documents": 7,
+       "heading": "ใบเสร็จรับเงิน/ใบกำกับภาษี",
+       "joins": [],
+       "page_range": "3",
+       "pages": [
+        3
+       ],
+       "start_reason": "it heads itself RECEIPT_TAX_INVOICE + RECEIPT + TAX_INVOICE, and the document so far is TAX_INVOICE"
+      },
+      {
+       "certain": true,
+       "doc_types": [
+        "TAX_INVOICE"
+       ],
+       "document": 4,
+       "documents": 7,
+       "heading": "ใบกำกับภาษี / TAX INVOICE",
+       "joins": [],
+       "page_range": "4",
+       "pages": [
+        4
+       ],
+       "start_reason": "it heads itself TAX_INVOICE, and the document so far is RECEIPT_TAX_INVOICE + RECEIPT + TAX_INVOICE"
+      },
+      {
+       "certain": true,
+       "doc_types": [
+        "INVOICE"
+       ],
+       "document": 5,
+       "documents": 7,
+       "heading": "ใบแจ้งหนี้ / INVOICE",
+       "joins": [],
+       "page_range": "5",
+       "pages": [
+        5
+       ],
+       "start_reason": "it heads itself INVOICE, and the document so far is TAX_INVOICE"
+      },
+      {
+       "certain": true,
+       "doc_types": [
+        "WHT_CERTIFICATE"
+       ],
+       "document": 6,
+       "documents": 7,
+       "heading": "หนังสือรับรองการหักภาษี ณ ที่จ่าย ตามมาตรา 50 ทวิ",
+       "joins": [],
+       "page_range": "6",
+       "pages": [
+        6
+       ],
+       "start_reason": "it heads itself WHT_CERTIFICATE, and the document so far is INVOICE"
+      },
+      {
+       "certain": true,
+       "doc_types": [
+        "CREDIT_NOTE"
+       ],
+       "document": 7,
+       "documents": 7,
+       "heading": "ใบลดหนี้ / CREDIT NOTE",
+       "joins": [],
+       "page_range": "7",
+       "pages": [
+        7
+       ],
+       "start_reason": "it heads itself CREDIT_NOTE, and the document so far is WHT_CERTIFICATE"
+      }
+     ],
+     "split_from": "guess",
+     "tokens": 1550
+    },
+    "ocr_warnings": [],
+    "page_count": 7,
+    "page_stats": [
+     {
+      "backend": "vllm",
+      "dry": {
+       "checked": false
+      },
+      "image_bytes": 905334,
+      "in_tokens": 350,
+      "loop_guard": true,
+      "looped": false,
+      "megapixels": 4.0,
+      "model": "typhoon-ocr-fake",
+      "new_tokens": 75,
+      "ocr_profile": "typhoon",
+      "out_tokens": 75,
+      "raw": "# ใบลดหนี้ / CREDIT NOTE\n\nเลขที่ CN-9B2F62\nวันที่ 03/10/2569\nอ้างอิงใบกำกับภาษี IV-9B2F62\n\nผู้ขาย บริษัท ตัวอย่าง จำกัด เลขประจำตัวผู้เสียภาษี 0105548000011 สำนักงานใหญ่\nผู้ซื้อ บริษัท ลูกค้า จำกัด เลขประจำตัวผู้เสียภาษี 0105559000001 สำนักงานใหญ่\n\nมูลค่าที่ลด 500.00\nภาษีมูลค่าเพิ่ม 35.00\nรวม 535.00",
+      "resolution": "1664x2403",
+      "server_cached_tokens": null,
+      "server_decode_tokens": null,
+      "server_generated_tokens": null,
+      "server_prefill_tokens": null,
+      "server_prompt_tokens": null,
+      "truncated": false
+     },
+     {
+      "backend": "vllm",
+      "dry": {
+       "checked": false
+      },
+      "image_bytes": 1389762,
+      "in_tokens": 350,
+      "loop_guard": true,
+      "looped": false,
+      "megapixels": 4.0,
+      "model": "typhoon-ocr-fake",
+      "new_tokens": 71,
+      "ocr_profile": "typhoon",
+      "out_tokens": 71,
+      "raw": "# ใบกำกับภาษี / TAX INVOICE\n\nเลขที่ TX-C166C1\nวันที่ 05/10/2569\n\nผู้ขาย บริษัท ภาษี จำกัด เลขประจำตัวผู้เสียภาษี 0107536110412 สำนักงานใหญ่\nผู้ซื้อ บริษัท ซื้อของ จำกัด เลขประจำตัวผู้เสียภาษี 0105559000044 สาขาที่ 00002\n\nมูลค่าสินค้า 3,000.00\nภาษีมูลค่าเพิ่ม 210.00\nรวมทั้งสิ้น 3,210.00",
+      "resolution": "1664x2403",
+      "server_cached_tokens": null,
+      "server_decode_tokens": null,
+      "server_generated_tokens": null,
+      "server_prefill_tokens": null,
+      "server_prompt_tokens": null,
+      "truncated": false
+     },
+     {
+      "backend": "vllm",
+      "dry": {
+       "checked": false
+      },
+      "image_bytes": 484330,
+      "in_tokens": 350,
+      "loop_guard": true,
+      "looped": false,
+      "megapixels": 4.0,
+      "model": "typhoon-ocr-fake",
+      "new_tokens": 91,
+      "ocr_profile": "typhoon",
+      "out_tokens": 91,
+      "raw": "# ใบเสร็จรับเงิน/ใบกำกับภาษี\n\nเลขที่ RC-E0DE0A\nวันที่ 02/10/2569\n\nผู้ขาย บริษัท รับเงิน จำกัด เลขประจำตัวผู้เสียภาษี 0105556000022 สำนักงานใหญ่\nผู้ซื้อ บริษัท จ่ายเงิน จำกัด เลขประจำตัวผู้เสียภาษี 0105557000033 สำนักงานใหญ่\n\nอ้างอิงใบแจ้งหนี้ INV-E0DE0A\nชำระโดยเช็คเลขที่ 18631287 วันที่ 02/10/2569\n\nมูลค่าสินค้า 2,000.00\nภาษีมูลค่าเพิ่ม 140.00\nจำนวนเงินรวม 2,140.00",
+      "resolution": "1664x2403",
+      "server_cached_tokens": null,
+      "server_decode_tokens": null,
+      "server_generated_tokens": null,
+      "server_prefill_tokens": null,
+      "server_prompt_tokens": null,
+      "truncated": false
+     },
+     {
+      "backend": "vllm",
+      "dry": {
+       "checked": false
+      },
+      "image_bytes": 852014,
+      "in_tokens": 350,
+      "loop_guard": true,
+      "looped": false,
+      "megapixels": 4.0,
+      "model": "typhoon-ocr-fake",
+      "new_tokens": 71,
+      "ocr_profile": "typhoon",
+      "out_tokens": 71,
+      "raw": "# ใบกำกับภาษี / TAX INVOICE\n\nเลขที่ TX-04615B\nวันที่ 05/10/2569\n\nผู้ขาย บริษัท ภาษี จำกัด เลขประจำตัวผู้เสียภาษี 0107536110412 สำนักงานใหญ่\nผู้ซื้อ บริษัท ซื้อของ จำกัด เลขประจำตัวผู้เสียภาษี 0105559000044 สาขาที่ 00002\n\nมูลค่าสินค้า 3,000.00\nภาษีมูลค่าเพิ่ม 210.00\nรวมทั้งสิ้น 3,210.00",
+      "resolution": "1664x2403",
+      "server_cached_tokens": null,
+      "server_decode_tokens": null,
+      "server_generated_tokens": null,
+      "server_prefill_tokens": null,
+      "server_prompt_tokens": null,
+      "truncated": false
+     },
+     {
+      "backend": "vllm",
+      "dry": {
+       "checked": false
+      },
+      "image_bytes": 813906,
+      "in_tokens": 350,
+      "loop_guard": true,
+      "looped": false,
+      "megapixels": 4.0,
+      "model": "typhoon-ocr-fake",
+      "new_tokens": 93,
+      "ocr_profile": "typhoon",
+      "out_tokens": 93,
+      "raw": "# ใบแจ้งหนี้ / INVOICE\n\nเลขที่ INV-9FAB39\nวันที่ 01/10/2569\n\nผู้ขาย บริษัท ตัวอย่าง จำกัด เลขประจำตัวผู้เสียภาษี 0105548000011 สำนักงานใหญ่\nผู้ซื้อ บริษัท ลูกค้า จำกัด เลขประจำตัวผู้เสียภาษี 0105559000001 สาขาที่ 00001\n\n| ลำดับ | รายการ | จำนวน | จำนวนเงิน |\n|---|---|---|---|\n| 1 | สินค้า A | 2 | 1,000.00 |\n\nรวมเงิน 1,000.00\nภาษีมูลค่าเพิ่ม 7% 70.00\nรวมทั้งสิ้น 1,070.00",
+      "resolution": "1664x2403",
+      "server_cached_tokens": null,
+      "server_decode_tokens": null,
+      "server_generated_tokens": null,
+      "server_prefill_tokens": null,
+      "server_prompt_tokens": null,
+      "truncated": false
+     },
+     {
+      "backend": "vllm",
+      "dry": {
+       "checked": false
+      },
+      "image_bytes": 454458,
+      "in_tokens": 350,
+      "loop_guard": true,
+      "looped": false,
+      "megapixels": 4.0,
+      "model": "typhoon-ocr-fake",
+      "new_tokens": 116,
+      "ocr_profile": "typhoon",
+      "out_tokens": 116,
+      "raw": "# หนังสือรับรองการหักภาษี ณ ที่จ่าย ตามมาตรา 50 ทวิ\n\nเล่มที่ 12 เลขที่ WT-698E95\n\nผู้มีหน้าที่หักภาษี ณ ที่จ่าย บริษัท ผู้จ่าย จำกัด เลขประจำตัวผู้เสียภาษี 0105555555555\nที่อยู่ 1 ถนนสีลม กรุงเทพมหานคร 10500\nผู้ถูกหักภาษี ณ ที่จ่าย บริษัท ผู้รับ จำกัด เลขประจำตัวผู้เสียภาษี 0105556090377\n\n| ประเภทเงินได้ | วันที่จ่าย | จำนวนเงินที่จ่าย | ภาษีที่หัก |\n|---|---|---|---|\n| ค่าบริการ | 01/12/2568 | 10,000.00 | 300.00 |\n\nรวมเงินที่จ่าย 10,000.00 ภาษีที่หักนำส่ง 300.00",
+      "resolution": "1664x2403",
+      "server_cached_tokens": null,
+      "server_decode_tokens": null,
+      "server_generated_tokens": null,
+      "server_prefill_tokens": null,
+      "server_prompt_tokens": null,
+      "truncated": false
+     },
+     {
+      "backend": "vllm",
+      "dry": {
+       "checked": false
+      },
+      "image_bytes": 1254914,
+      "in_tokens": 350,
+      "loop_guard": true,
+      "looped": false,
+      "megapixels": 4.0,
+      "model": "typhoon-ocr-fake",
+      "new_tokens": 75,
+      "ocr_profile": "typhoon",
+      "out_tokens": 75,
+      "raw": "# ใบลดหนี้ / CREDIT NOTE\n\nเลขที่ CN-B94531\nวันที่ 03/10/2569\nอ้างอิงใบกำกับภาษี IV-B94531\n\nผู้ขาย บริษัท ตัวอย่าง จำกัด เลขประจำตัวผู้เสียภาษี 0105548000011 สำนักงานใหญ่\nผู้ซื้อ บริษัท ลูกค้า จำกัด เลขประจำตัวผู้เสียภาษี 0105559000001 สำนักงานใหญ่\n\nมูลค่าที่ลด 500.00\nภาษีมูลค่าเพิ่ม 35.00\nรวม 535.00",
+      "resolution": "1664x2403",
+      "server_cached_tokens": null,
+      "server_decode_tokens": null,
+      "server_generated_tokens": null,
+      "server_prefill_tokens": null,
+      "server_prompt_tokens": null,
+      "truncated": false
+     }
+    ],
+    "pages": [
+     "ใบลดหนี้ / CREDIT NOTE\n\nเลขที่ CN-9B2F62\nวันที่ 03/10/2569\nอ้างอิงใบกำกับภาษี IV-9B2F62\n\nผู้ขาย บริษัท ตัวอย่าง จำกัด เลขประจำตัวผู้เสียภาษี 0105548000011 สำนักงานใหญ่\nผู้ซื้อ บริษัท ลูกค้า จำกัด เลขประจำตัวผู้เสียภาษี 0105559000001 สำนักงานใหญ่\n\nมูลค่าที่ลด 500.00\nภาษีมูลค่าเพิ่ม 35.00\nรวม 535.00",
+     "ใบกำกับภาษี / TAX INVOICE\n\nเลขที่ TX-C166C1\nวันที่ 05/10/2569\n\nผู้ขาย บริษัท ภาษี จำกัด เลขประจำตัวผู้เสียภาษี 0107536110412 สำนักงานใหญ่\nผู้ซื้อ บริษัท ซื้อของ จำกัด เลขประจำตัวผู้เสียภาษี 0105559000044 สาขาที่ 00002\n\nมูลค่าสินค้า 3,000.00\nภาษีมูลค่าเพิ่ม 210.00\nรวมทั้งสิ้น 3,210.00",
+     "ใบเสร็จรับเงิน/ใบกำกับภาษี\n\nเลขที่ RC-E0DE0A\nวันที่ 02/10/2569\n\nผู้ขาย บริษัท รับเงิน จำกัด เลขประจำตัวผู้เสียภาษี 0105556000022 สำนักงานใหญ่\nผู้ซื้อ บริษัท จ่ายเงิน จำกัด เลขประจำตัวผู้เสียภาษี 0105557000033 สำนักงานใหญ่\n\nอ้างอิงใบแจ้งหนี้ INV-E0DE0A\nชำระโดยเช็คเลขที่ 18631287 วันที่ 02/10/2569\n\nมูลค่าสินค้า 2,000.00\nภาษีมูลค่าเพิ่ม 140.00\nจำนวนเงินรวม 2,140.00",
+     "ใบกำกับภาษี / TAX INVOICE\n\nเลขที่ TX-04615B\nวันที่ 05/10/2569\n\nผู้ขาย บริษัท ภาษี จำกัด เลขประจำตัวผู้เสียภาษี 0107536110412 สำนักงานใหญ่\nผู้ซื้อ บริษัท ซื้อของ จำกัด เลขประจำตัวผู้เสียภาษี 0105559000044 สาขาที่ 00002\n\nมูลค่าสินค้า 3,000.00\nภาษีมูลค่าเพิ่ม 210.00\nรวมทั้งสิ้น 3,210.00",
+     "ใบแจ้งหนี้ / INVOICE\n\nเลขที่ INV-9FAB39\nวันที่ 01/10/2569\n\nผู้ขาย บริษัท ตัวอย่าง จำกัด เลขประจำตัวผู้เสียภาษี 0105548000011 สำนักงานใหญ่\nผู้ซื้อ บริษัท ลูกค้า จำกัด เลขประจำตัวผู้เสียภาษี 0105559000001 สาขาที่ 00001\n\n| ลำดับ | รายการ | จำนวน | จำนวนเงิน |\n|---|---|---|---|\n| 1 | สินค้า A | 2 | 1,000.00 |\n\nรวมเงิน 1,000.00\nภาษีมูลค่าเพิ่ม 7% 70.00\nรวมทั้งสิ้น 1,070.00",
+     "หนังสือรับรองการหักภาษี ณ ที่จ่าย ตามมาตรา 50 ทวิ\n\nเล่มที่ 12 เลขที่ WT-698E95\n\nผู้มีหน้าที่หักภาษี ณ ที่จ่าย บริษัท ผู้จ่าย จำกัด เลขประจำตัวผู้เสียภาษี 0105555555555\nที่อยู่ 1 ถนนสีลม กรุงเทพมหานคร 10500\nผู้ถูกหักภาษี ณ ที่จ่าย บริษัท ผู้รับ จำกัด เลขประจำตัวผู้เสียภาษี 0105556090377\n\n| ประเภทเงินได้ | วันที่จ่าย | จำนวนเงินที่จ่าย | ภาษีที่หัก |\n|---|---|---|---|\n| ค่าบริการ | 01/12/2568 | 10,000.00 | 300.00 |\n\nรวมเงินที่จ่าย 10,000.00 ภาษีที่หักนำส่ง 300.00",
+     "ใบลดหนี้ / CREDIT NOTE\n\nเลขที่ CN-B94531\nวันที่ 03/10/2569\nอ้างอิงใบกำกับภาษี IV-B94531\n\nผู้ขาย บริษัท ตัวอย่าง จำกัด เลขประจำตัวผู้เสียภาษี 0105548000011 สำนักงานใหญ่\nผู้ซื้อ บริษัท ลูกค้า จำกัด เลขประจำตัวผู้เสียภาษี 0105559000001 สำนักงานใหญ่\n\nมูลค่าที่ลด 500.00\nภาษีมูลค่าเพิ่ม 35.00\nรวม 535.00"
+    ],
+    "pages_total": 7,
+    "text": "--- page 1 ---\nใบลดหนี้ / CREDIT NOTE\n\nเลขที่ CN-9B2F62\nวันที่ 03/10/2569\nอ้างอิงใบกำกับภาษี IV-9B2F62\n\nผู้ขาย บริษัท ตัวอย่าง จำกัด เลขประจำตัวผู้เสียภาษี 0105548000011 สำนักงานใหญ่\nผู้ซื้อ บริษัท ลูกค้า จำกัด เลขประจำตัวผู้เสียภาษี 0105559000001 สำนักงานใหญ่\n\nมูลค่าที่ลด 500.00\nภาษีมูลค่าเพิ่ม 35.00\nรวม 535.00\n\n--- page 2 ---\nใบกำกับภาษี / TAX INVOICE\n\nเลขที่ TX-C166C1\nวันที่ 05/10/2569\n\nผู้ขาย บริษัท ภาษี จำกัด เลขประจำตัวผู้เสียภาษี 0107536110412 สำนักงานใหญ่\nผู้ซื้อ บริษัท ซื้อของ จำกัด เลขประจำตัวผู้เสียภาษี 0105559000044 สาขาที่ 00002\n\nมูลค่าสินค้า 3,000.00\nภาษีมูลค่าเพิ่ม 210.00\nรวมทั้งสิ้น 3,210.00\n\n--- page 3 ---\nใบเสร็จรับเงิน/ใบกำกับภาษี\n\nเลขที่ RC-E0DE0A\nวันที่ 02/10/2569\n\nผู้ขาย บริษัท รับเงิน จำกัด เลขประจำตัวผู้เสียภาษี 0105556000022 สำนักงานใหญ่\nผู้ซื้อ บริษัท จ่ายเงิน จำกัด เลขประจำตัวผู้เสียภาษี 0105557000033 สำนักงานใหญ่\n\nอ้างอิงใบแจ้งหนี้ INV-E0DE0A\nชำระโดยเช็คเลขที่ 18631287 วันที่ 02/10/2569\n\nมูลค่าสินค้า 2,000.00\nภาษีมูลค่าเพิ่ม 140.00\nจำนวนเงินรวม 2,140.00\n\n--- page 4 ---\nใบกำกับภาษี / TAX INVOICE\n\nเลขที่ TX-04615B\nวันที่ 05/10/2569\n\nผู้ขาย บริษัท ภาษี จำกัด เลขประจำตัวผู้เสียภาษี 0107536110412 สำนักงานใหญ่\nผู้ซื้อ บริษัท ซื้อของ จำกัด เลขประจำตัวผู้เสียภาษี 0105559000044 สาขาที่ 00002\n\nมูลค่าสินค้า 3,000.00\nภาษีมูลค่าเพิ่ม 210.00\nรวมทั้งสิ้น 3,210.00\n\n--- page 5 ---\nใบแจ้งหนี้ / INVOICE\n\nเลขที่ INV-9FAB39\nวันที่ 01/10/2569\n\nผู้ขาย บริษัท ตัวอย่าง จำกัด เลขประจำตัวผู้เสียภาษี 0105548000011 สำนักงานใหญ่\nผู้ซื้อ บริษัท ลูกค้า จำกัด เลขประจำตัวผู้เสียภาษี 0105559000001 สาขาที่ 00001\n\n| ลำดับ | รายการ | จำนวน | จำนวนเงิน |\n|---|---|---|---|\n| 1 | สินค้า A | 2 | 1,000.00 |\n\nรวมเงิน 1,000.00\nภาษีมูลค่าเพิ่ม 7% 70.00\nรวมทั้งสิ้น 1,070.00\n\n--- page 6 ---\nหนังสือรับรองการหักภาษี ณ ที่จ่าย ตามมาตรา 50 ทวิ\n\nเล่มที่ 12 เลขที่ WT-698E95\n\nผู้มีหน้าที่หักภาษี ณ ที่จ่าย บริษัท ผู้จ่าย จำกัด เลขประจำตัวผู้เสียภาษี 0105555555555\nที่อยู่ 1 ถนนสีลม กรุงเทพมหานคร 10500\nผู้ถูกหักภาษี ณ ที่จ่าย บริษัท ผู้รับ จำกัด เลขประจำตัวผู้เสียภาษี 0105556090377\n\n| ประเภทเงินได้ | วันที่จ่าย | จำนวนเงินที่จ่าย | ภาษีที่หัก |\n|---|---|---|---|\n| ค่าบริการ | 01/12/2568 | 10,000.00 | 300.00 |\n\nรวมเงินที่จ่าย 10,000.00 ภาษีที่หักนำส่ง 300.00\n\n--- page 7 ---\nใบลดหนี้ / CREDIT NOTE\n\nเลขที่ CN-B94531\nวันที่ 03/10/2569\nอ้างอิงใบกำกับภาษี IV-B94531\n\nผู้ขาย บริษัท ตัวอย่าง จำกัด เลขประจำตัวผู้เสียภาษี 0105548000011 สำนักงานใหญ่\nผู้ซื้อ บริษัท ลูกค้า จำกัด เลขประจำตัวผู้เสียภาษี 0105559000001 สำนักงานใหญ่\n\nมูลค่าที่ลด 500.00\nภาษีมูลค่าเพิ่ม 35.00\nรวม 535.00",
+    "warnings": [
+     "อ่านภาพซ้ำแล้วยังมีฟิลด์ที่ต้องตรวจสอบ กรุณาดูผล validation"
+    ]
+   },
+   "status": "partial",
+   "user_json": {
+    "documents": [
+     {
+      "amountExcludeVat": 1070.0,
+      "amountIncludeVat": 1070.0,
+      "buyer": {
+       "branchCode": "00000",
+       "taxId": "0105531434585"
+      },
+      "documentDate": "2026-10-01",
+      "documentNo": "NO-2B3E88",
+      "documentType": {
+       "code": "81",
+       "name": "CREDIT_NOTE"
+      },
+      "itemType": "",
+      "items": [],
+      "pageFrom": 1,
+      "pageTo": 1,
+      "references": [
+       {
+        "code": "NO-7CE173",
+        "type": "OTHER"
+       }
+      ],
+      "seller": {
+       "branchCode": "00000",
+       "taxId": "0105558831419"
+      },
+      "vatAmount": 1010.0
+     },
+     {
+      "amountExcludeVat": 1030.0,
+      "amountIncludeVat": 1070.0,
+      "buyer": {
+       "branchCode": "00000",
+       "taxId": "0105594272876"
+      },
+      "documentDate": "2026-10-01",
+      "documentNo": "NO-F20393",
+      "documentType": {
+       "code": "388",
+       "name": "TAX_INVOICE"
+      },
+      "itemType": "",
+      "items": [],
+      "pageFrom": 2,
+      "pageTo": 2,
+      "references": [
+       {
+        "code": "NO-B5E540",
+        "type": "OTHER"
+       }
+      ],
+      "seller": {
+       "branchCode": "00000",
+       "taxId": "0105517104484"
+      },
+      "vatAmount": 1040.0
+     },
+     {
+      "amountExcludeVat": 1030.0,
+      "buyer": {
+       "branchCode": "00000",
+       "taxId": "0105539912936"
+      },
+      "documentNo": "",
+      "documentType": {
+       "code": "T03",
+       "name": "RECEIPT_TAX_INVOICE"
+      },
+      "itemType": "",
+      "items": [],
+      "pageFrom": 3,
+      "pageTo": 3,
+      "references": [
+       {
+        "code": "NO-94C0DF",
+        "type": "OTHER"
+       }
+      ],
+      "seller": {
+       "branchCode": "00000",
+       "taxId": "0105545885685"
+      },
+      "vatAmount": 1050.0
+     },
+     {
+      "amountExcludeVat": 1030.0,
+      "amountIncludeVat": 1070.0,
+      "buyer": {
+       "branchCode": "00000",
+       "taxId": "0105568212405"
+      },
+      "documentDate": "2026-10-01",
+      "documentNo": "NO-7BD1FF",
+      "documentType": {
+       "code": "388",
+       "name": "TAX_INVOICE"
+      },
+      "itemType": "",
+      "items": [],
+      "pageFrom": 4,
+      "pageTo": 4,
+      "references": [
+       {
+        "code": "NO-F1435F",
+        "type": "OTHER"
+       }
+      ],
+      "seller": {
+       "branchCode": "00000",
+       "taxId": "0105533592767"
+      },
+      "vatAmount": 1010.0
+     },
+     {
+      "amountExcludeVat": 1050.0,
+      "amountIncludeVat": 1000.0,
+      "buyer": {
+       "branchCode": "00000",
+       "taxId": "0105526033709"
+      },
+      "documentDate": "2026-10-01",
+      "documentNo": "NO-ECF9A9",
+      "documentType": {
+       "code": "380",
+       "name": "INVOICE"
+      },
+      "itemType": "ITEM",
+      "items": [
+       {
+        "amount": 1000.0,
+        "itemCode": "",
+        "itemName": "สินค้า A",
+        "itemNo": "1",
+        "qty": 2.0
+       }
+      ],
+      "pageFrom": 5,
+      "pageTo": 5,
+      "references": [
+       {
+        "code": "NO-AE3318",
+        "type": "OTHER"
+       }
+      ],
+      "seller": {
+       "branchCode": "00000",
+       "taxId": "0105541984386"
+      },
+      "vatAmount": 1090.0
+     },
+     {
+      "documentNo": "",
+      "documentType": {
+       "code": "",
+       "name": "WHT_CERTIFICATE"
+      },
+      "itemType": "",
+      "items": [],
+      "pageFrom": 6,
+      "pageTo": 6
+     },
+     {
+      "amountExcludeVat": 1080.0,
+      "amountIncludeVat": 1060.0,
+      "buyer": {
+       "branchCode": "00000",
+       "taxId": "0105596945864"
+      },
+      "documentDate": "2026-10-01",
+      "documentNo": "NO-C73A27",
+      "documentType": {
+       "code": "81",
+       "name": "CREDIT_NOTE"
+      },
+      "itemType": "",
+      "items": [],
+      "pageFrom": 7,
+      "pageTo": 7,
+      "references": [
+       {
+        "code": "NO-C7BB8B",
+        "type": "OTHER"
+       }
+      ],
+      "seller": {
+       "branchCode": "00000",
+       "taxId": "0105530546486"
+      },
+      "vatAmount": 1090.0
+     }
+    ],
+    "file": {
+     "fileName": "multiple_sol015.pdf",
+     "fileType": "PDF",
+     "pageCount": 7
+    },
+    "schemaVersion": "7.0"
+   }
+  },
+  "receipt_tax_invoice_sol003.pdf": {
+   "error": "",
+   "result": {
+    "classifications": [
+     {
+      "doc_type": "WHT_CERTIFICATE",
+      "doc_type_confidence": 0.914,
+      "doc_type_from": "transcript",
+      "doc_type_heading": "หนังสือรับรองการหักภาษี ณ ที่จ่าย ตามมาตรา 50 ทวิ",
+      "doc_types": [
+       "WHT_CERTIFICATE"
+      ],
+      "document": 1,
+      "pages": [
+       1
+      ]
+     }
+    ],
+    "extracted": {
+     "backend": "vllm",
+     "classified": {
+      "doc_type": "WHT_CERTIFICATE",
+      "doc_type_confidence": 0.914,
+      "doc_type_escalated": "",
+      "doc_type_expected": [],
+      "doc_type_from": "transcript",
+      "doc_type_heading": "หนังสือรับรองการหักภาษี ณ ที่จ่าย ตามมาตรา 50 ทวิ",
+      "doc_types": [
+       "WHT_CERTIFICATE"
+      ],
+      "extras": false,
+      "fields": [
+       "book_no",
+       "certificate_no",
+       "sequence_no",
+       "payer_tax_id",
+       "payer_name",
+       "payer_branch",
+       "payer_branch_location",
+       "payer_address",
+       "payee_tax_id",
+       "payee_name",
+       "payee_branch",
+       "payee_branch_location",
+       "payee_address",
+       "dividend_rate_option",
+       "total_amount_paid",
+       "total_wht_amount"
+      ],
+      "framed": true,
+      "items": [
+       "income_type",
+       "payment_date",
+       "amount_paid",
+       "wht_amount"
+      ],
+      "mandatory": [
+       "payer_tax_id",
+       "payer_name",
+       "payee_tax_id",
+       "payee_name",
+       "total_amount_paid",
+       "total_wht_amount"
+      ],
+      "mandatory_items": [
+       "income_type",
+       "payment_date",
+       "amount_paid",
+       "wht_amount"
+      ],
+      "rules": [
+       "company_master",
+       "sum_reconciliation",
+       "dividend_option"
+      ],
+      "steps": [
+       "wht_certificate",
+       "wht_payer_party",
+       "wht_payee_party",
+       "wht_income",
+       "wht_totals",
+       "wht_dividend"
+      ],
+      "type_phrase": "a withholding tax certificate (50 ทวิ)",
+      "unknown_type": false
+     },
+     "doc_type": "WHT_CERTIFICATE",
+     "doc_type_confidence": 0.914,
+     "doc_type_from": "transcript",
+     "doc_type_heading": "หนังสือรับรองการหักภาษี ณ ที่จ่าย ตามมาตรา 50 ทวิ",
+     "doc_types": [
+      "WHT_CERTIFICATE"
+     ],
+     "documents_found": 1,
+     "extraction_request_limit": 128,
+     "extraction_request_scope": "server",
+     "extras": false,
+     "fields": {
+      "book_no": "NO-C2ED01",
+      "certificate_no": "NO-2E7514",
+      "dividend_rate_option": "dividend_rate_option 30af96",
+      "income_items": [],
+      "line_items": [],
+      "other_fields": [],
+      "payee_address": "1 ถนนสีลม กรุงเทพมหานคร 10500",
+      "payee_branch": "00000",
+      "payee_branch_location": "สำนักงานใหญ่",
+      "payee_name": "บริษัท ตัวอย่าง จำกัด",
+      "payee_tax_id": "0105582341293",
+      "payer_address": "1 ถนนสีลม กรุงเทพมหานคร 10500",
+      "payer_branch": "00000",
+      "payer_branch_location": "สำนักงานใหญ่",
+      "payer_name": "บริษัท ตัวอย่าง จำกัด",
+      "payer_tax_id": "0105546669902",
+      "sequence_no": "NO-8D0189",
+      "total_amount_paid": "1,090.00",
+      "total_wht_amount": "1,080.00"
+     },
+     "fields_asked": [
+      "book_no",
+      "certificate_no",
+      "sequence_no",
+      "payer_tax_id",
+      "payer_name",
+      "payer_branch",
+      "payer_branch_location",
+      "payer_address",
+      "payee_tax_id",
+      "payee_name",
+      "payee_branch",
+      "payee_branch_location",
+      "payee_address",
+      "dividend_rate_option",
+      "total_amount_paid",
+      "total_wht_amount"
+     ],
+     "image_fills": [
+      {
+       "accepted": false,
+       "added": {},
+       "after": {
+        "income_items": []
+       },
+       "candidate": {
+        "income_items": []
+       },
+       "edited": {},
+       "fields": [
+        "income_items"
+       ],
+       "filled": [],
+       "pages": [
+        1
+       ],
+       "steps": [
+        "wht_income"
+       ],
+       "still_empty": [
+        "income_items"
+       ],
+       "tokens": 30,
+       "validated": [
+        {
+         "field": "income_items",
+         "rule": "table extraction",
+         "state": "absent",
+         "why": "no income rows came back"
+        }
+       ]
+      }
+     ],
+     "image_rechecks": {
+      "fill_missing": true,
+      "flags": [
+       {
+        "id": 0,
+        "kind": "missing",
+        "message": "1 required field(s) came back empty: income_items; asked the page images, none filled, still empty: income_items",
+        "state": "retry failed"
+       }
+      ],
+      "metrics": {
+       "fill_asked": 1,
+       "fill_checks": 0,
+       "fill_checks_bad": 0,
+       "fill_checks_ok": 0,
+       "fill_filled": 0,
+       "fill_jobs": 1
+      },
+      "validation_retry": false
+     },
+     "items_asked": [
+      "income_type",
+      "payment_date",
+      "amount_paid",
+      "wht_amount"
+     ],
+     "mode": "hybrid",
+     "model": "qwen3-fake",
+     "normalization_version": 1,
+     "normalized": {
+      "book_no": "NO-C2ED01",
+      "certificate_no": "NO-2E7514",
+      "dividend_rate_option": "dividend_rate_option 30af96",
+      "income_items": [],
+      "line_items": [],
+      "other_fields": [],
+      "payee_address": "1 ถนนสีลม กรุงเทพมหานคร 10500",
+      "payee_branch": "00000",
+      "payee_branch_location": "สำนักงานใหญ่",
+      "payee_name": "บริษัท ตัวอย่าง จำกัด",
+      "payee_tax_id": "0105582341293",
+      "payer_address": "1 ถนนสีลม กรุงเทพมหานคร 10500",
+      "payer_branch": "00000",
+      "payer_branch_location": "สำนักงานใหญ่",
+      "payer_name": "บริษัท ตัวอย่าง จำกัด",
+      "payer_tax_id": "0105546669902",
+      "sequence_no": "NO-8D0189",
+      "total_amount_paid": "1,090.00",
+      "total_wht_amount": "1,080.00"
+     },
+     "schema_first": false,
+     "segments": [
+      {
+       "certain": true,
+       "doc_types": [
+        "WHT_CERTIFICATE"
+       ],
+       "document": 1,
+       "documents": 1,
+       "heading": "หนังสือรับรองการหักภาษี ณ ที่จ่าย ตามมาตรา 50 ทวิ",
+       "joins": [],
+       "page_range": "1",
+       "pages": [
+        1
+       ],
+       "start_reason": "the file is one page"
+      }
+     ],
+     "split_from": "whole",
+     "steps_failed": [],
+     "tokens": 346,
+     "user_disabled_fields": [],
+     "user_prompt_sets": [
+      {
+       "doc_type": "WHT_CERTIFICATE",
+       "keys": [
+        "book_no",
+        "certificate_no",
+        "sequence_no",
+        "payer_tax_id",
+        "payer_name",
+        "payer_branch",
+        "payer_branch_location",
+        "payer_address",
+        "payee_tax_id",
+        "payee_name",
+        "payee_branch",
+        "payee_branch_location",
+        "payee_address",
+        "income_items",
+        "total_amount_paid",
+        "total_wht_amount",
+        "dividend_rate_option"
+       ],
+       "name": "WHT 50 ทวิ (PCP)",
+       "revision": 0,
+       "set_id": "builtin_wht_certificate",
+       "skipped_keys": []
+      }
+     ],
+     "validation": {
+      "checks": [
+       {
+        "detail": "0105546669902",
+        "field": "payer_tax_id",
+        "rule": "13-digit format",
+        "state": "ok"
+       },
+       {
+        "detail": "0105546669902",
+        "field": "payer_tax_id",
+        "rule": "checksum",
+        "state": "failed",
+        "why": "the 13th digit is not the mod-11 check digit of the first twelve"
+       },
+       {
+        "detail": "บริษัท ตัวอย่าง จำกัด",
+        "field": "payer_name",
+        "rule": "company master match",
+        "state": "unchecked",
+        "why": "there is no Company Master to match against here -- the rule needs the list of companies already on file"
+       },
+       {
+        "detail": "00000",
+        "field": "payer_branch",
+        "rule": "5-digit code",
+        "state": "ok"
+       },
+       {
+        "detail": "0105582341293",
+        "field": "payee_tax_id",
+        "rule": "13-digit format",
+        "state": "ok"
+       },
+       {
+        "detail": "0105582341293",
+        "field": "payee_tax_id",
+        "rule": "checksum",
+        "state": "failed",
+        "why": "the 13th digit is not the mod-11 check digit of the first twelve"
+       },
+       {
+        "detail": "บริษัท ตัวอย่าง จำกัด",
+        "field": "payee_name",
+        "rule": "company master match",
+        "state": "unchecked",
+        "why": "there is no Company Master to match against here -- the rule needs the list of companies already on file"
+       },
+       {
+        "detail": "00000",
+        "field": "payee_branch",
+        "rule": "5-digit code",
+        "state": "ok"
+       },
+       {
+        "detail": "dividend_rate_option 30af96",
+        "field": "dividend_rate_option",
+        "rule": "checkbox detection",
+        "state": "ok"
+       },
+       {
+        "detail": "1,090.00",
+        "field": "total_amount_paid",
+        "rule": "numeric",
+        "state": "ok"
+       },
+       {
+        "field": "total_amount_paid",
+        "rule": "sum reconciliation",
+        "state": "unchecked",
+        "why": "no income rows came back to add up"
+       },
+       {
+        "detail": "1,080.00",
+        "field": "total_wht_amount",
+        "rule": "numeric",
+        "state": "ok"
+       },
+       {
+        "field": "total_wht_amount",
+        "rule": "sum reconciliation",
+        "state": "unchecked",
+        "why": "no income rows came back to add up"
+       },
+       {
+        "field": "income_items",
+        "mandatory": true,
+        "rule": "table extraction",
+        "state": "absent",
+        "why": "no income rows came back"
+       }
+      ],
+      "counts": {
+       "absent": 1,
+       "failed": 2,
+       "mandatory_absent": 1,
+       "ok": 7,
+       "pass_rate": 0.7777777777777778,
+       "scored": 9,
+       "unchecked": 4,
+       "warning": 0
+      },
+      "doc_types": [
+       "WHT_CERTIFICATE"
+      ],
+      "failed": [
+       {
+        "detail": "0105546669902",
+        "field": "payer_tax_id",
+        "rule": "checksum",
+        "state": "failed",
+        "why": "the 13th digit is not the mod-11 check digit of the first twelve"
+       },
+       {
+        "detail": "0105582341293",
+        "field": "payee_tax_id",
+        "rule": "checksum",
+        "state": "failed",
+        "why": "the 13th digit is not the mod-11 check digit of the first twelve"
+       }
+      ],
+      "rules": [
+       "company_master",
+       "dividend_option",
+       "sum_reconciliation"
+      ],
+      "warnings": []
+     }
+    },
+    "ocr_warnings": [],
+    "page_count": 1,
+    "page_stats": [
+     {
+      "backend": "vllm",
+      "dry": {
+       "checked": false
+      },
+      "image_bytes": 1670646,
+      "in_tokens": 350,
+      "loop_guard": true,
+      "looped": false,
+      "megapixels": 4.0,
+      "model": "typhoon-ocr-fake",
+      "new_tokens": 116,
+      "ocr_profile": "typhoon",
+      "out_tokens": 116,
+      "raw": "# หนังสือรับรองการหักภาษี ณ ที่จ่าย ตามมาตรา 50 ทวิ\n\nเล่มที่ 12 เลขที่ WT-5F4124\n\nผู้มีหน้าที่หักภาษี ณ ที่จ่าย บริษัท ผู้จ่าย จำกัด เลขประจำตัวผู้เสียภาษี 0105555555555\nที่อยู่ 1 ถนนสีลม กรุงเทพมหานคร 10500\nผู้ถูกหักภาษี ณ ที่จ่าย บริษัท ผู้รับ จำกัด เลขประจำตัวผู้เสียภาษี 0105556090377\n\n| ประเภทเงินได้ | วันที่จ่าย | จำนวนเงินที่จ่าย | ภาษีที่หัก |\n|---|---|---|---|\n| ค่าบริการ | 01/12/2568 | 10,000.00 | 300.00 |\n\nรวมเงินที่จ่าย 10,000.00 ภาษีที่หักนำส่ง 300.00",
+      "resolution": "1758x2275",
+      "server_cached_tokens": null,
+      "server_decode_tokens": null,
+      "server_generated_tokens": null,
+      "server_prefill_tokens": null,
+      "server_prompt_tokens": null,
+      "truncated": false
+     }
+    ],
+    "pages": [
+     "หนังสือรับรองการหักภาษี ณ ที่จ่าย ตามมาตรา 50 ทวิ\n\nเล่มที่ 12 เลขที่ WT-5F4124\n\nผู้มีหน้าที่หักภาษี ณ ที่จ่าย บริษัท ผู้จ่าย จำกัด เลขประจำตัวผู้เสียภาษี 0105555555555\nที่อยู่ 1 ถนนสีลม กรุงเทพมหานคร 10500\nผู้ถูกหักภาษี ณ ที่จ่าย บริษัท ผู้รับ จำกัด เลขประจำตัวผู้เสียภาษี 0105556090377\n\n| ประเภทเงินได้ | วันที่จ่าย | จำนวนเงินที่จ่าย | ภาษีที่หัก |\n|---|---|---|---|\n| ค่าบริการ | 01/12/2568 | 10,000.00 | 300.00 |\n\nรวมเงินที่จ่าย 10,000.00 ภาษีที่หักนำส่ง 300.00"
+    ],
+    "pages_total": 1,
+    "text": "หนังสือรับรองการหักภาษี ณ ที่จ่าย ตามมาตรา 50 ทวิ\n\nเล่มที่ 12 เลขที่ WT-5F4124\n\nผู้มีหน้าที่หักภาษี ณ ที่จ่าย บริษัท ผู้จ่าย จำกัด เลขประจำตัวผู้เสียภาษี 0105555555555\nที่อยู่ 1 ถนนสีลม กรุงเทพมหานคร 10500\nผู้ถูกหักภาษี ณ ที่จ่าย บริษัท ผู้รับ จำกัด เลขประจำตัวผู้เสียภาษี 0105556090377\n\n| ประเภทเงินได้ | วันที่จ่าย | จำนวนเงินที่จ่าย | ภาษีที่หัก |\n|---|---|---|---|\n| ค่าบริการ | 01/12/2568 | 10,000.00 | 300.00 |\n\nรวมเงินที่จ่าย 10,000.00 ภาษีที่หักนำส่ง 300.00",
+    "warnings": [
+     "อ่านภาพซ้ำแล้วยังมีฟิลด์ที่ต้องตรวจสอบ กรุณาดูผล validation"
+    ]
+   },
+   "status": "partial",
+   "user_json": {
+    "documents": [
+     {
+      "documentNo": "",
+      "documentType": {
+       "code": "",
+       "name": "WHT_CERTIFICATE"
+      },
+      "itemType": "",
+      "items": []
+     }
+    ],
+    "file": {
+     "fileName": "receipt_tax_invoice_sol003.pdf",
+     "fileType": "PDF",
+     "pageCount": 1
+    },
+    "schemaVersion": "7.0"
+   }
+  },
+  "wht_certificate_sol017.png": {
+   "error": "",
+   "result": {
+    "classifications": [
+     {
+      "doc_type": "BILLING_NOTE",
+      "doc_type_confidence": 1.0,
+      "doc_type_from": "transcript",
+      "doc_type_heading": "ใบวางบิล / BILLING NOTE",
+      "doc_types": [
+       "BILLING_NOTE"
+      ],
+      "document": 1,
+      "pages": [
+       1
+      ]
+     }
+    ],
+    "extracted": {
+     "backend": "vllm",
+     "classified": {
+      "doc_type": "BILLING_NOTE",
+      "doc_type_confidence": 1.0,
+      "doc_type_escalated": "",
+      "doc_type_expected": [],
+      "doc_type_from": "transcript",
+      "doc_type_heading": "ใบวางบิล / BILLING NOTE",
+      "doc_types": [
+       "BILLING_NOTE"
+      ],
+      "extras": false,
+      "fields": [
+       "document_type",
+       "document_number",
+       "issue_date",
+       "po_gr_rtv_number",
+       "inv_rtv_cnr_number",
+       "seller_tax_id",
+       "seller_branch",
+       "seller_branch_location",
+       "buyer_tax_id",
+       "buyer_branch",
+       "buyer_branch_location",
+       "subtotal",
+       "vat_total",
+       "amount_incl_vat",
+       "remaining_amount",
+       "remaining_vat_amount",
+       "payment_date",
+       "cheque_number"
+      ],
+      "framed": true,
+      "items": [],
+      "mandatory": [],
+      "mandatory_items": [],
+      "rules": [],
+      "steps": [
+       "document",
+       "po_gr_rtv",
+       "parties",
+       "totals",
+       "payment",
+       "remaining"
+      ],
+      "type_phrase": "a billing note (a covering slip listing invoices)",
+      "unknown_type": true
+     },
+     "doc_type": "BILLING_NOTE",
+     "doc_type_confidence": 1.0,
+     "doc_type_from": "transcript",
+     "doc_type_heading": "ใบวางบิล / BILLING NOTE",
+     "doc_types": [
+      "BILLING_NOTE"
+     ],
+     "documents_found": 1,
+     "extraction_request_limit": 128,
+     "extraction_request_scope": "server",
+     "extras": false,
+     "fields": {
+      "amount_incl_vat": "1,050.00",
+      "buyer_branch": "00000",
+      "buyer_branch_location": "สำนักงานใหญ่",
+      "buyer_tax_id": "0105520841786",
+      "cheque_number": "NO-4359B4",
+      "document_number": "NO-2EAEA5",
+      "document_type": "ใบแจ้งหนี้",
+      "inv_rtv_cnr_number": "NO-55BDD5",
+      "issue_date": "01/10/2569",
+      "line_items": [],
+      "other_fields": [],
+      "payment_date": "01/10/2569",
+      "po_gr_rtv_number": "NO-84EF4C",
+      "remaining_amount": "1,020.00",
+      "remaining_vat_amount": "1,060.00",
+      "seller_branch": "00000",
+      "seller_branch_location": "สำนักงานใหญ่",
+      "seller_tax_id": "0105585891109",
+      "subtotal": "1,070.00",
+      "vat_total": "1,060.00"
+     },
+     "fields_asked": [
+      "document_type",
+      "document_number",
+      "issue_date",
+      "po_gr_rtv_number",
+      "inv_rtv_cnr_number",
+      "seller_tax_id",
+      "seller_branch",
+      "seller_branch_location",
+      "buyer_tax_id",
+      "buyer_branch",
+      "buyer_branch_location",
+      "subtotal",
+      "vat_total",
+      "amount_incl_vat",
+      "remaining_amount",
+      "remaining_vat_amount",
+      "payment_date",
+      "cheque_number"
+     ],
+     "item_table": {
+      "columns": [
+       "เลขที่ใบแจ้งหนี้",
+       "จำนวนเงิน"
+      ],
+      "is_master_table": true,
+      "item_columns": [],
+      "master_why": "each row is identified by another document (เลขที่ใบแจ้งหนี้) and the table rules no unit price and no product code -- a list of documents, not of items",
+      "pages": [
+       1
+      ],
+      "reference_columns": [
+       "เลขที่ใบแจ้งหนี้"
+      ],
+      "row_pages": [
+       1
+      ],
+      "rows": [
+       [
+        "INV-C2CE2C",
+        "1,070.00"
+       ]
+      ]
+     },
+     "items_asked": [],
+     "mode": "hybrid",
+     "model": "qwen3-fake",
+     "normalization_version": 1,
+     "normalized": {
+      "amount_incl_vat": "1,050.00",
+      "buyer_branch": "00000",
+      "buyer_branch_location": "สำนักงานใหญ่",
+      "buyer_tax_id": "0105520841786",
+      "cheque_number": "NO-4359B4",
+      "document_number": "NO-2EAEA5",
+      "document_type": "ใบแจ้งหนี้",
+      "inv_rtv_cnr_number": "NO-55BDD5",
+      "issue_date": "01/10/2569",
+      "line_items": [],
+      "other_fields": [],
+      "payment_date": "01/10/2569",
+      "po_gr_rtv_number": "NO-84EF4C",
+      "remaining_amount": "1,020.00",
+      "remaining_vat_amount": "1,060.00",
+      "seller_branch": "00000",
+      "seller_branch_location": "สำนักงานใหญ่",
+      "seller_tax_id": "0105585891109",
+      "subtotal": "1,070.00",
+      "vat_total": "1,060.00"
+     },
+     "schema_first": false,
+     "segments": [
+      {
+       "certain": true,
+       "doc_types": [
+        "BILLING_NOTE"
+       ],
+       "document": 1,
+       "documents": 1,
+       "heading": "ใบวางบิล / BILLING NOTE",
+       "joins": [],
+       "page_range": "1",
+       "pages": [
+        1
+       ],
+       "start_reason": "the file is one page"
+      }
+     ],
+     "split_from": "whole",
+     "steps_failed": [],
+     "tokens": 282,
+     "validation": {
+      "checks": [
+       {
+        "detail": "INVOICE",
+        "field": "document_type",
+        "rule": "pattern",
+        "state": "failed",
+        "why": "reads as INVOICE where BILLING_NOTE was expected"
+       },
+       {
+        "detail": "NO-2EAEA5",
+        "field": "document_number",
+        "rule": "pattern",
+        "state": "ok"
+       },
+       {
+        "detail": "2026-10-01",
+        "field": "issue_date",
+        "rule": "date format",
+        "state": "ok"
+       },
+       {
+        "detail": "NO-84EF4C",
+        "field": "po_gr_rtv_number",
+        "rule": "pattern",
+        "state": "ok"
+       },
+       {
+        "field": "po_gr_rtv_number",
+        "rule": "reference matching",
+        "state": "unchecked",
+        "why": "needs the PO/GR/RTV system to match against; this process has no access to one"
+       },
+       {
+        "detail": "NO-55BDD5",
+        "field": "inv_rtv_cnr_number",
+        "rule": "pattern",
+        "state": "ok"
+       },
+       {
+        "field": "inv_rtv_cnr_number",
+        "rule": "reference matching",
+        "state": "unchecked",
+        "why": "needs the document this payment settles, in the system that holds it; this process has no access to one"
+       },
+       {
+        "detail": "0105585891109",
+        "field": "seller_tax_id",
+        "rule": "13-digit format",
+        "state": "ok"
+       },
+       {
+        "detail": "0105585891109",
+        "field": "seller_tax_id",
+        "rule": "checksum",
+        "state": "failed",
+        "why": "the 13th digit is not the mod-11 check digit of the first twelve"
+       },
+       {
+        "detail": "00000",
+        "field": "seller_branch",
+        "rule": "5-digit code",
+        "state": "ok"
+       },
+       {
+        "detail": "0105520841786",
+        "field": "buyer_tax_id",
+        "rule": "13-digit format",
+        "state": "ok"
+       },
+       {
+        "detail": "0105520841786",
+        "field": "buyer_tax_id",
+        "rule": "checksum",
+        "state": "failed",
+        "why": "the 13th digit is not the mod-11 check digit of the first twelve"
+       },
+       {
+        "detail": "00000",
+        "field": "buyer_branch",
+        "rule": "5-digit code",
+        "state": "ok"
+       },
+       {
+        "detail": "1,070.00",
+        "field": "subtotal",
+        "rule": "numeric",
+        "state": "ok"
+       },
+       {
+        "detail": "1,060.00",
+        "field": "vat_total",
+        "rule": "numeric",
+        "state": "ok"
+       },
+       {
+        "detail": "1,050.00",
+        "field": "amount_incl_vat",
+        "rule": "numeric",
+        "state": "ok"
+       },
+       {
+        "detail": "out by 1,080.00",
+        "field": "amount_incl_vat",
+        "rule": "total = subtotal + VAT",
+        "state": "failed",
+        "why": "1,070.00 + 1,060.00 = 2,130.00, but the page prints 1,050.00"
+       },
+       {
+        "detail": "99.07%",
+        "field": "vat_total",
+        "rule": "VAT rate",
+        "state": "warning",
+        "why": "99.07% of 1,070.00, not 7% -- legitimate on a page that mixes taxed and untaxed lines, and otherwise a sign that a figure is in the wrong key"
+       },
+       {
+        "detail": "1,020.00",
+        "field": "remaining_amount",
+        "rule": "numeric",
+        "state": "ok"
+       },
+       {
+        "detail": "1,060.00",
+        "field": "remaining_vat_amount",
+        "rule": "numeric",
+        "state": "ok"
+       },
+       {
+        "detail": "2026-10-01",
+        "field": "payment_date",
+        "rule": "date format",
+        "state": "ok"
+       }
+      ],
+      "counts": {
+       "absent": 0,
+       "failed": 4,
+       "mandatory_absent": 0,
+       "ok": 14,
+       "pass_rate": 0.7777777777777778,
+       "scored": 18,
+       "unchecked": 2,
+       "warning": 1
+      },
+      "doc_types": [
+       "BILLING_NOTE"
+      ],
+      "failed": [
+       {
+        "detail": "INVOICE",
+        "field": "document_type",
+        "rule": "pattern",
+        "state": "failed",
+        "why": "reads as INVOICE where BILLING_NOTE was expected"
+       },
+       {
+        "detail": "0105585891109",
+        "field": "seller_tax_id",
+        "rule": "checksum",
+        "state": "failed",
+        "why": "the 13th digit is not the mod-11 check digit of the first twelve"
+       },
+       {
+        "detail": "0105520841786",
+        "field": "buyer_tax_id",
+        "rule": "checksum",
+        "state": "failed",
+        "why": "the 13th digit is not the mod-11 check digit of the first twelve"
+       },
+       {
+        "detail": "out by 1,080.00",
+        "field": "amount_incl_vat",
+        "rule": "total = subtotal + VAT",
+        "state": "failed",
+        "why": "1,070.00 + 1,060.00 = 2,130.00, but the page prints 1,050.00"
+       }
+      ],
+      "rules": [],
+      "warnings": [
+       {
+        "detail": "99.07%",
+        "field": "vat_total",
+        "rule": "VAT rate",
+        "state": "warning",
+        "why": "99.07% of 1,070.00, not 7% -- legitimate on a page that mixes taxed and untaxed lines, and otherwise a sign that a figure is in the wrong key"
+       }
+      ]
+     }
+    },
+    "ocr_warnings": [],
+    "page_count": 1,
+    "page_stats": [
+     {
+      "backend": "vllm",
+      "dry": {
+       "checked": false
+      },
+      "image_bytes": 2483806,
+      "in_tokens": 350,
+      "loop_guard": true,
+      "looped": false,
+      "megapixels": 2.0,
+      "model": "typhoon-ocr-fake",
+      "new_tokens": 63,
+      "ocr_profile": "typhoon",
+      "out_tokens": 63,
+      "raw": "# ใบวางบิล / BILLING NOTE\n\nเลขที่ BL-C2CE2C\nวันที่ 04/10/2569\n\nผู้วางบิล บริษัท ตัวอย่าง จำกัด เลขประจำตัวผู้เสียภาษี 0105548000011\nลูกค้า บริษัท ลูกค้า จำกัด\n\n| เลขที่ใบแจ้งหนี้ | จำนวนเงิน |\n|---|---|\n| INV-C2CE2C | 1,070.00 |\n\nรวมเงินทั้งสิ้น 1,070.00",
+      "resolution": "1154x1732",
+      "server_cached_tokens": null,
+      "server_decode_tokens": null,
+      "server_generated_tokens": null,
+      "server_prefill_tokens": null,
+      "server_prompt_tokens": null,
+      "truncated": false
+     }
+    ],
+    "pages": [
+     "ใบวางบิล / BILLING NOTE\n\nเลขที่ BL-C2CE2C\nวันที่ 04/10/2569\n\nผู้วางบิล บริษัท ตัวอย่าง จำกัด เลขประจำตัวผู้เสียภาษี 0105548000011\nลูกค้า บริษัท ลูกค้า จำกัด\n\n| เลขที่ใบแจ้งหนี้ | จำนวนเงิน |\n|---|---|\n| INV-C2CE2C | 1,070.00 |\n\nรวมเงินทั้งสิ้น 1,070.00"
+    ],
+    "pages_total": 1,
+    "text": "ใบวางบิล / BILLING NOTE\n\nเลขที่ BL-C2CE2C\nวันที่ 04/10/2569\n\nผู้วางบิล บริษัท ตัวอย่าง จำกัด เลขประจำตัวผู้เสียภาษี 0105548000011\nลูกค้า บริษัท ลูกค้า จำกัด\n\n| เลขที่ใบแจ้งหนี้ | จำนวนเงิน |\n|---|---|\n| INV-C2CE2C | 1,070.00 |\n\nรวมเงินทั้งสิ้น 1,070.00",
+    "warnings": []
+   },
+   "status": "completed",
+   "user_json": {
+    "documents": [
+     {
+      "amountExcludeVat": 1070.0,
+      "amountIncludeVat": 1050.0,
+      "buyer": {
+       "branchCode": "00000",
+       "taxId": "0105520841786"
+      },
+      "documentDate": "2026-10-01",
+      "documentNo": "NO-2EAEA5",
+      "documentType": {
+       "code": "",
+       "name": "BILLING_NOTE"
+      },
+      "itemType": "INVOICE",
+      "items": [
+       {
+        "amount": 1070.0,
+        "itemCode": "INV-C2CE2C",
+        "itemNo": ""
+       }
+      ],
+      "references": [
+       {
+        "code": "NO-84EF4C",
+        "type": "OTHER"
+       },
+       {
+        "code": "NO-55BDD5",
+        "type": "OTHER"
+       }
+      ],
+      "seller": {
+       "branchCode": "00000",
+       "taxId": "0105585891109"
+      },
+      "vatAmount": 1060.0
+     }
+    ],
+    "file": {
+     "fileName": "wht_certificate_sol017.png",
+     "fileType": "PNG",
+     "pageCount": 1
+    },
+    "schemaVersion": "7.0"
+   }
+  }
+ },
+ "requests": {
+  "extraction": [
+   "01bd4da3671dd4217c92113839d69bd2610f833fce9f82d7bccbf09df1315ac2",
+   "01f00ddba9fd79b46d4662ebb22b913c826e42bf6a8df5962a3de09d9dee602e",
+   "0338722bd7fd02ac3b2ab885b7bce910289d254ebdccebea966467233cd06ef2",
+   "051ed56c409a4dea2cce2a57023d665fafd02c0f11c19f9a1f851729dd59e7ba",
+   "08a41b6d73cb9d1be93c40360f8208e1dec4ad81f1426308b38a4c496d6e0e36",
+   "09804bddf56f956382377191a88c3dde521451b26da917f3f4d08b430d82760f",
+   "09e40c5761a162b5c70235aa2b8721492b85aa7e5b38ba8ee6e3edf8267bf0b5",
+   "0b0a0afea0959103d182c0a01efb7d2a01e169d1eb489b4d8b0f036caff61002",
+   "0c23ba91c9987c8d96edc732839762cf9005289a15e3d99c1c0732d8f5eaee42",
+   "0c2626277a96d8bdf8a4a451af7d0541d667be0d81eef4c0e9351e05010ff2a0",
+   "0c93cb553fc34f279a1d267a241ff99749eb4ce97da2ec7788b05f680210db98",
+   "10fdf83d51ea8a1eeb243965037d1e6c5138fc78e35db5bc2bac4c18d98a4bc9",
+   "13e48ffcff86ae824dcb2b3203f78179f2612c3aa89a774ae1f778a830bf4020",
+   "156b18920b1a28f008817f076b99467ba3a6ebbaf579c3f48b34d30e58bd6df8",
+   "161b8f59a9b9f0fef7e64c3f6be424ce3ee19cda78339abe9b9e48e5b50a5b53",
+   "16e070ebde564a92abc5091dfebd2be2000d07b9bb7d511bda04908bf03363a0",
+   "17e321b808fd756cbad7695de568b83f6fd014d3dbc67c9b470543a64ab1dc0c",
+   "1e3e24f52494d7041b5eb15b269a7759b8db65a449e625689bf44f17211a8307",
+   "20ba64400120f1d2db91225c5a3465e4295aafc66799dcb172cfcbc87a25220b",
+   "22d16dee9062968eeb8f7fb826ec112b4f6e3cdb58f02f99d320ee09ec53bbc4",
+   "23414bbd8c743cd75ddee1458d44e4b1a00a7b3a185f85a4e45d0371a2df0944",
+   "2752fdb067c8504589dbb20da3f3fba030855167de0e8838054715ecdb5648d2",
+   "295fbb36543a14307ad4e8757fc9d81ab4f68c13988cdd6ef63e92c1ab9d09e5",
+   "2a4d38d7bdf0ebb04fb19e836cd112ee807732454a300f3ba21244c173c8a425",
+   "2bddbfc0df588ec589a526dd02eb92265f1c3720b12a4613f30e8a07142967c1",
+   "2d07fec2a55c25953d24d5c53d1d9e6686ebe28bc3573eb8f5698de6170ebc49",
+   "3210aa88b6cb47cd8916d2be7ce8f830abeee97d61d1e63035a919da82ddd597",
+   "323a344c572d31f9ce3cb482acfb5598fd342585ad4318f375acf5f84b5643fe",
+   "3cda99b696586143cf297995e2a89788ba9c8f129c7db26e2511599985040942",
+   "4080ec36e57f9254e709a1179f451a62fdc23f9e809cfc9ebc57fee6f1c70a19",
+   "408aababec848191785729718c59cc595b8d4aeffc2a44ae04b7365929d21380",
+   "42076d70b39a87e7be413ac1684bb3b28b717394c034f27d63dae79dd8c8d881",
+   "4756c4f0af03189a434d756f3c031d3df7214f108db8dcfecd35b3f2b29382d9",
+   "4a67dd495603d6fec17c12f4b2c50f2a7e3a21571a479aac3783baef7f826c69",
+   "4bf2b96ada09ef5a8b1476f55b8cf82c245ddc411401bf6242549688be3518dd",
+   "4f0e5398b3fb2e571a1e3dafbdac93329d5826bf2b471017374e43dd1442d954",
+   "507405a174879c50b07770c367ef245c58acaaee6596c8323889dcd98549c4c6",
+   "516b6a1cf99a2d03d449c2cce07ebc2411bcffa88c6ab1a8188359d2002488a9",
+   "568748092d3487c97ce962416467d5f7c321bce34a5317b6b6f7a6576c99c708",
+   "60824bd12121bd7b165631c4577d7a1a860b896007b17759bc36dcdb971f3e2a",
+   "61635046df7be9f7f907655dad0efc037104e7085de8c8a86ab6976722af068a",
+   "64b03660fc8a5833672d8d424ca7ebb3b80483a7da907ff15f416a738d0c0ea8",
+   "67ece85b083d3166556b81ca772db3d52e790646c1315b08f562017d31bfb482",
+   "6c2f2d165f5c9cfa83088c9fd186abb6fb682b7c29f546523f275b2e101f66c8",
+   "6d4324e2a91f2cb52243705a8222e837def5952b707ced51191d0ae8af1b8fe7",
+   "6deca1e29ce8419f1497194cd9dd0bed78a8f5b3084f86aa3e4c72e9ae05fc2b",
+   "72e534d9d4804baeb0905d5cedcd1626328caa599788498a0f631d4f3c5f9a29",
+   "749d93e7a5576fe8054e676b3d36a234842fac73a96db53b07c8624be13b872c",
+   "7946ac4e6869c61c3566fcc718ab0c8336c3161f0e1649bb2c3b306f549811f5",
+   "7988d5b47d5a859a8d1f7986a51a5f432d50f1f50892680e1aa98a241d83fcdb",
+   "7d5c0b4c81112210be0d31d699dbbdc27342a40bbf1833a5a3c8a52976ba3b3a",
+   "800aaca44bce55b506d16407375644c25ba1972e10279df5893110af8e0a7a76",
+   "80cea180fa5aa8251a962c183be48df79ca1f552c814df0a0fac023bba0dbc98",
+   "8188e6da506234a3f973e78f32da07594362ea141e484b41dfa02a93de9d3c2a",
+   "81bb49a50e4014becebf62933800a76f39aba57929db89469f4c3cff9b4f871c",
+   "8d81499f5117d0204abba21be60ca1938a35b014f63301f6615e3b0495fd6a8c",
+   "8e002548746095fcba5cef140d543670d84665b03eefe58db7672765d5134579",
+   "8f946f7ddd93cd212d6093d0482baa2707095da5aba743bd823e743aca08c80e",
+   "9051445897199634a2086199e668d120fa2333bcb293996f963f10e42568181a",
+   "90fae492fb4bf9b7585f266fc5f9ff17c9f4292f4ba846e6f7d0249db765a7c7",
+   "92dd41537430753fe868a44bdbddaca355bb7a2a860ca2e41ea5afcb3f1860ad",
+   "96d23d9bac18b3b343a5f72c4a6d2603707b828ed73f58a2bbb9d250579b6bbc",
+   "987e01371932b8030879434ace73728310df29727f60037a7100d9b32497d61d",
+   "98e58720260141195a26705e47ab628901a6bff19aa1719990495b6ee5885d5d",
+   "9bc8343fed1e5952f69232104b1f1b985bce9588ae7d9f586c70603c72bfe0b1",
+   "9d1c321d739332e96927041752c86198bf5d606d9817d2d32fcc7462bbaeefc2",
+   "9df61f5d16f480e961353d7b4b106c0c5fd340bdae7599315135b8b053cab4ca",
+   "a024948782f81799977a150fcebf882c883deaf557f8c89044e2de41cf8acfb0",
+   "a03c611c88868cd71bb96c5ae215a4146944e570a0ae6c302aaf1651225d44a6",
+   "a0ac077a1e02a072972065e60ff17ed5367f81a46a41c3843b7c2e0e6bffc3c2",
+   "a311dc5e7977250e2056a170f214c5c2f2b81d2c2b5a2fa47785357204071145",
+   "a64e80eb4d1b900a02b2342b371e9291e0d2335a4657a4d4e09fff6a24b3800f",
+   "a7168a1fba90d613ab18f7d7763f9eaab96e821d12f942ae9d043eb02e94aefd",
+   "a9a5427e28b6d98dbde2efd4e510524aab9c6a29b117611c6ac01a88c0f834ed",
+   "a9c6348646557cecec38c3316eeefae90f7b6eef8133ba266a484a01d2124503",
+   "added9516b769cb9ab222225f16732191569b5bf24457f063f68c479345e4fe9",
+   "b146ec84e996c0da771e0f4b38c355f5fb3eca10b45086d218e5faf7851c2074",
+   "b531642c8fbcb81b83773ba365e1544bd56cf4f7b723ecef7bdef9cb70efd4ee",
+   "b788866e4044a5f9a11864f0d1d44e253fc7f43ed423ffbac453b2a88d949efe",
+   "c2e684afa7d7b01942b5f7f56e3f8b39af535b9c3d0b5ceae37da1a51ea38159",
+   "c3c5943af6082a5f9d256a935b8e9963ce227a51b09a130dd8aed4dc47da3d72",
+   "c4308f5e0bba593f376b75679eeb8eb7ea863d77b97618b217edc44e40c8f15a",
+   "c4c18310cef3ef0f9db17e89598af5f9e2103fb1d6ef9f76d911ce2526224424",
+   "c4da7a8d2c68025bfabac5f6ddec0a7942c51109d63645e8903c154c53fba4ff",
+   "c51f4ecc2fa136c09d1ba2cee80531ecf757bb1a8998143b9b2e4a60d164b290",
+   "c6610cb264ec3469be7c99a2508bec62678e291628ab8a51071b04fbae398d82",
+   "cd8e61e95fd7461533e160c967363031d038559ee20aaa30115dd7af8fa4bda0",
+   "d2a61cf930dd10187d0beb6ab57d2672711d55428bcef29d91a1634624b242cb",
+   "d5d46548ae1fa5e87fb8d198573e752a9fbc8bb2dee6cecb0f3479295f471b4d",
+   "daf3edf9250e64f11a0b36a2b4ee3e51ce1e330a2ef542c0858fab50eda128e2",
+   "dc4a1fd364bc8857d5781eceee2f54c6705a6a44b21080dd0fc22390855460cf",
+   "dd20a23e282be385bf1961fb79c5c25205f4cc7abbb2e1a72416017d20f75bbc",
+   "de106c83cd01d9f98da29b9bd4c463a5e4642c48808a01ffb8c3299c8352f0c3",
+   "e31941728f3b006d5b2db4bcec6ac28d322a84179aa8e86547b2b7f41da0bcd2",
+   "e5d9bd7ae896e74ca96af1a16086268efc47c9b93fe8d513fa91d2c52f1780db",
+   "e6e02b5c20fc60691567b824b7b52b4fb6c62bd456dcd48681c43bc4850dcdb8",
+   "e9eabc3dd9a732a1ac51f6ba188f1b2be575430d1d922d848f7c32b247d227d2",
+   "ea635067823a6f27cb8ec6211db638833edfce879433605a807029e0ad5f06cf",
+   "f37714f958f32591eb867c3f8314b77f93a3f41ef5a2cc0045a5b04556d5cd3e",
+   "f996b9d258b81650cca1faaa8123e89a78d8e0f6f9381dbcabe2d7a9d34f8418",
+   "ff35341012f57205e72e155b0d192f1ef358c29a7a04b32b4021371286305e9f"
+  ],
+  "ocr": [
+   "0993c88f34b0998fc82a719ad10a4bfe749f25e6ab2f2608bd82a7ce9c7d499b",
+   "2c044375de1ff22a978160e6dd21da52b52bc882cb098a65823bed7321f11fc8",
+   "35d134fbb991af4a707f49b6ce3d928d5bbcb476fae57d940651a3b417f25984",
+   "3f5543c0d482d5bf3db8a34d38ec14fa365cb30d5926c28c24c1efe2a8b8b909",
+   "61a691f10c53f1c77e57e45397410307c3e1fc16accc5148bad3effd5ccffb52",
+   "68739ccb91683022af457b258e4053e95722a98a05535388e7fe781a4999eb73",
+   "a070a8298921ff8a881cf520abff7dc1ad50a99b61b067f2fef6c820235a7a53",
+   "d2c0a73a14301ddbb3d831abc551dd9e7da248622a59098d7442d29e41e4adcc",
+   "f7af2bf7a23c7fd9ba686d47873e5086f3ae2036f1aaa46d3c6642471e79622a",
+   "fe79bc954aa1d7c8f411b67792b05359aedd52189aa1dee3e51e4df1a459e3f9"
+  ]
+ }
+}
