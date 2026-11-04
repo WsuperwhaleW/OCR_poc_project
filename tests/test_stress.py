@@ -10,6 +10,7 @@ import unittest
 from unittest.mock import MagicMock, patch
 
 import app
+import engine
 import backends
 import stress
 
@@ -164,7 +165,7 @@ class RunTests(unittest.TestCase):
              patch.object(app, "extract_fields", return_value=result), \
              patch.object(app.runlog, "record",
                           side_effect=AssertionError("the stress test logged a row")), \
-             patch.object(app, "log_run",
+             patch.object(engine, "log_run",
                           side_effect=AssertionError("the stress test logged a run")):
             cfg = app._stress_config({"mode": "extract", "concurrency": 3, "jobs": 5,
                                       "strategy": "uniform", "seed": 4})
@@ -223,7 +224,7 @@ class RunTests(unittest.TestCase):
             return "text"
         live = app._StressLive(1)
         rec = {}
-        with patch.object(app, "read_page", side_effect=read):
+        with patch.object(engine, "read_page", side_effect=read):
             app._stress_read(["p1", "p2", "p3"], app.MultiCancel(), rec, live,
                              job=7, case="sol019")
         flagged = [a for a in live.take_alerts() if a["kind"] == "looped"]

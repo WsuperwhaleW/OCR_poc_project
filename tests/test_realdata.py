@@ -11,6 +11,7 @@ from unittest.mock import patch
 from PIL import Image
 
 import app
+import engine
 import workspace
 
 
@@ -34,7 +35,7 @@ class RealDataTests(unittest.TestCase):
         (self.root / "notes.txt").write_text("not a document", encoding="utf-8")
         for target, name, kwargs in (
             (app, "REAL_DIR", {"new": self.root}),
-            (app, "llama_status", {"return_value": STATUS}),
+            (engine, "llama_status", {"return_value": STATUS}),
             (app.backends, "extract_status", {"return_value": STATUS}),
         ):
             patcher = patch.object(target, name, **kwargs)
@@ -64,7 +65,7 @@ class RealDataTests(unittest.TestCase):
         data = b'%PDF-1.4\n' + b'x' * (4 * 1024 * 1024)
         (self.root / 'batch1' / 'large.pdf').write_bytes(data)
         with patch.dict(app.app.config, MAX_CONTENT_LENGTH=1024), \
-                patch.object(app, 'load_pages', return_value=([Image.new('RGB', (8, 8))], 1)) as load, \
+                patch.object(engine, 'load_pages', return_value=([Image.new('RGB', (8, 8))], 1)) as load, \
                 patch.object(app.scoring, 'case_for_upload') as match:
             for prefix in ('', '/ocr'):
                 with self.subTest(prefix=prefix):
@@ -80,9 +81,9 @@ class RealDataTests(unittest.TestCase):
         data = b'%PDF-1.4\n' + b'x' * (4 * 1024 * 1024)
         (self.root / 'batch1' / 'large.pdf').write_bytes(data)
         with patch.dict(app.app.config, MAX_CONTENT_LENGTH=1024), \
-                patch.object(app, 'prepare_input', return_value=([], 'low', None, None)) as prepare, \
-                patch.object(app, '_page_parallelism', return_value=1), \
-                patch.object(app, 'log_run') as log, \
+                patch.object(engine, 'prepare_input', return_value=([], 'low', None, None)) as prepare, \
+                patch.object(engine, '_page_parallelism', return_value=1), \
+                patch.object(engine, 'log_run') as log, \
                 patch.object(app.scoring, 'case_for_upload') as match:
             with self.client.post('/api/ocr/stream', data={
                     'realdata':'batch1/large.pdf', 'detail':'low', 'extract':'0'}) as response:
@@ -247,10 +248,10 @@ class RealDataTests(unittest.TestCase):
 
     def test_pages_are_named_as_realdata(self):
         page = types.SimpleNamespace()
-        with patch.object(app, "load_pages", return_value=([page], None)), \
-                patch.object(app, "fit_pixels", side_effect=lambda p, b: p), \
-                patch.object(app, "trim_margins", side_effect=lambda p: p), \
-                patch.object(app, "image_data_uri", return_value="data:"):
+        with patch.object(engine, "load_pages", return_value=([page], None)), \
+                patch.object(engine, "fit_pixels", side_effect=lambda p, b: p), \
+                patch.object(engine, "trim_margins", side_effect=lambda p: p), \
+                patch.object(engine, "image_data_uri", return_value="data:"):
             pages, source = app._stress_pages("batch1/c.png", "medium", "realdata")
         self.assertEqual(source["origin"], "realdata")
         self.assertEqual(source["name"], "batch1/c.png")

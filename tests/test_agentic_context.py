@@ -8,6 +8,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import app
+import engine
 import config
 import prompts
 import runhistory
@@ -73,7 +74,7 @@ class CaptureTests(unittest.TestCase):
 
     def test_schema_retry_is_two_separate_requests(self):
         content = json.dumps({key: "" for key in self.step["keys"]})
-        with patch.object(app, "_post_dispatch", side_effect=[reply(text="invalid"),
+        with patch.object(engine, "_post_dispatch", side_effect=[reply(text="invalid"),
                                                              reply(sent=1100, text=content)]):
             outcome = self.run_step()
         chats = outcome[0]["chats"]
@@ -84,10 +85,10 @@ class CaptureTests(unittest.TestCase):
 
     def test_context_overflow_retry_records_the_actual_fitted_reply_cap(self):
         content = json.dumps({key: "" for key in self.step["keys"]})
-        with patch.object(app, "_post_dispatch", side_effect=[
+        with patch.object(engine, "_post_dispatch", side_effect=[
                 app._Reply(400, text="maximum context length"), reply(text=content)]), \
-             patch.object(app, "VLLM_FIT_MAX_TOKENS", True), \
-             patch.object(app, "_fit_max_tokens", side_effect=lambda payload, _: {
+             patch.object(engine, "VLLM_FIT_MAX_TOKENS", True), \
+             patch.object(engine, "_fit_max_tokens", side_effect=lambda payload, _: {
                  **payload, "max_tokens": 20}):
             outcome = self.run_step()
         chats = outcome[0]["chats"]
@@ -96,7 +97,7 @@ class CaptureTests(unittest.TestCase):
         self.assertIsNone(chats[0]["in_tokens"])
 
     def test_transport_failure_is_recorded_without_guessing_usage(self):
-        with patch.object(app, "_post_dispatch", side_effect=ValueError("offline")):
+        with patch.object(engine, "_post_dispatch", side_effect=ValueError("offline")):
             outcome = self.run_step()
         self.assertIn("error", outcome[0])
         self.assertEqual(outcome[0]["chats"][0]["error"], "offline")
@@ -110,8 +111,8 @@ class CaptureTests(unittest.TestCase):
         def asked(step, *args):
             app._post_once("http://test", {"sent": int(step["id"])}, VLLM)
             return ({"id": step["id"]}, {}, [], 0)
-        with patch.object(app, "_post_dispatch", side_effect=dispatch), \
-             patch.object(app, "_run_step_asked", side_effect=asked), \
+        with patch.object(engine, "_post_dispatch", side_effect=dispatch), \
+             patch.object(engine, "_run_step_asked", side_effect=asked), \
              ThreadPoolExecutor(max_workers=2) as pool:
             outcomes = list(pool.map(lambda n: app._run_step({"id": str(n)}, "", "", VLLM, ""),
                                      [111, 222]))

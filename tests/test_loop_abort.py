@@ -5,6 +5,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import app
+import engine
 import monitor
 
 VLLM = {"kind": "vllm", "url": "http://gpu-box:8000", "model": "m", "available": True}
@@ -47,18 +48,18 @@ def _loop_pieces():
 
 class GateTests(unittest.TestCase):
     def test_vllm_only_and_only_with_the_guard_on(self):
-        with patch.object(app, "EXTRACT_LOOP_ABORT", True), \
-             patch.object(app, "loop_guard", return_value=True):
+        with patch.object(engine, "EXTRACT_LOOP_ABORT", True), \
+             patch.object(engine, "loop_guard", return_value=True):
             self.assertTrue(app._guards_extraction(URL, {}, VLLM))
             self.assertFalse(app._guards_extraction(
                 "http://local:8080/v1/chat/completions", {}, LLAMA))
             self.assertFalse(app._guards_extraction(
                 "http://x:11434/api/chat", {}, dict(VLLM, kind="ollama")))
-        with patch.object(app, "EXTRACT_LOOP_ABORT", True), \
-             patch.object(app, "loop_guard", return_value=False):
+        with patch.object(engine, "EXTRACT_LOOP_ABORT", True), \
+             patch.object(engine, "loop_guard", return_value=False):
             self.assertFalse(app._guards_extraction(URL, {}, VLLM))
-        with patch.object(app, "EXTRACT_LOOP_ABORT", False), \
-             patch.object(app, "loop_guard", return_value=True):
+        with patch.object(engine, "EXTRACT_LOOP_ABORT", False), \
+             patch.object(engine, "loop_guard", return_value=True):
             self.assertFalse(app._guards_extraction(URL, {}, VLLM))
 
     def test_llama_cpp_is_still_sent_the_non_streaming_request(self):
@@ -78,8 +79,8 @@ class GateTests(unittest.TestCase):
 
 class StreamTests(unittest.TestCase):
     def setUp(self):
-        self.guard = [patch.object(app, "EXTRACT_LOOP_ABORT", True),
-                      patch.object(app, "loop_guard", return_value=True),
+        self.guard = [patch.object(engine, "EXTRACT_LOOP_ABORT", True),
+                      patch.object(engine, "loop_guard", return_value=True),
                       patch.object(app.servertime, "_fetch", return_value=None)]
         for g in self.guard:
             g.start()

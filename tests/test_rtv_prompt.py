@@ -7,6 +7,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import app
+import engine
 import prompts
 
 # These tests cover the tuned variant, now exposed explicitly as Hybrid.
@@ -113,8 +114,8 @@ class ReturnPromptTests(unittest.TestCase):
             requests.append((message, schema, values))
             return json.dumps(values, ensure_ascii=False), False, 10
 
-        with patch.object(app, "_chat", side_effect=chat), \
-             patch.object(app, "AGENTIC_PARALLEL", False):
+        with patch.object(engine, "_chat", side_effect=chat), \
+             patch.object(engine, "AGENTIC_PARALLEL", False):
             result = app._drain(app._extract_agentic(text, STATUS, form, mode="hybrid"))
         self.assertNotIn("error", result)
         self.assertEqual(len(requests), 3)

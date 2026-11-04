@@ -7,6 +7,7 @@ import unittest
 from unittest.mock import patch
 
 import app
+import engine
 import extractionlog
 import prompts
 
@@ -105,8 +106,8 @@ class RequestPipelineTests(unittest.TestCase):
                         requests.append((message, skeleton, schema, cap))
                         return json.dumps(keys), False, 20
 
-                    with patch.object(app, '_chat', side_effect=chat), \
-                         patch.object(app, 'AGENTIC_PARALLEL', False):
+                    with patch.object(engine, '_chat', side_effect=chat), \
+                         patch.object(engine, 'AGENTIC_PARALLEL', False):
                         result = app._drain(app._extract_agentic(TEXT, STATUS, form, only=[old_id], mode="hybrid"))
                     self.assertNotIn('error', result)
                     self.assertEqual(len(requests), 1)
@@ -129,7 +130,7 @@ class RequestPipelineTests(unittest.TestCase):
     def test_targeted_payment_with_missing_cheque_keeps_reference_and_date(self):
         values = {**PAYMENT, 'cheque_number': ''}
         form = app._field_set(TEXT, doc_type=['RECEIPT'], extras=False)
-        with patch.object(app, '_chat', return_value=(json.dumps(values), False, 20)):
+        with patch.object(engine, '_chat', return_value=(json.dumps(values), False, 20)):
             result = app._drain(app._extract_agentic(TEXT, STATUS, form, only=['payment'], mode='hybrid'))
         self.assertEqual(result['fields'], {**values, 'line_items': [], 'other_fields': []})
         self.assertEqual(len(result['steps']), 1)

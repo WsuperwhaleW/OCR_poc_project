@@ -9,6 +9,7 @@ import unittest
 from unittest import mock
 
 import app
+import engine
 import fixscore
 import tables
 from tests.test_table_agents import FORM, FIELDS, Stub, html
@@ -29,10 +30,10 @@ HEADER_BOX = (html(HEAD, ROW_1) + "\n--- page 2 ---\n"
 
 
 def run(text, stub):
-    with mock.patch.object(app, "_chat", stub), \
-            mock.patch.object(app, "TABLE_CONCAT_AGENT", True), \
-            mock.patch.object(app, "TABLE_FIX_AGENT", False), \
-            mock.patch.object(app, "TABLE_IDENTIFY_AGENT", False):
+    with mock.patch.object(engine, "_chat", stub), \
+            mock.patch.object(engine, "TABLE_CONCAT_AGENT", True), \
+            mock.patch.object(engine, "TABLE_FIX_AGENT", False), \
+            mock.patch.object(engine, "TABLE_IDENTIFY_AGENT", False):
         return app._item_table(text, FORM, {"model": "stub"}, None, FIELDS)
 
 
@@ -139,10 +140,10 @@ class ConcatAgentTests(unittest.TestCase):
 
     def test_switched_off_it_is_never_asked(self):
         stub = Stub()
-        with mock.patch.object(app, "_chat", stub), \
-                mock.patch.object(app, "TABLE_CONCAT_AGENT", False), \
-                mock.patch.object(app, "TABLE_FIX_AGENT", False), \
-                mock.patch.object(app, "TABLE_IDENTIFY_AGENT", False):
+        with mock.patch.object(engine, "_chat", stub), \
+                mock.patch.object(engine, "TABLE_CONCAT_AGENT", False), \
+                mock.patch.object(engine, "TABLE_FIX_AGENT", False), \
+                mock.patch.object(engine, "TABLE_IDENTIFY_AGENT", False):
             app._item_table(CUT, FORM, {"model": "stub"}, None, FIELDS)
         self.assertNotIn("concat", stub.kinds())
 

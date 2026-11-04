@@ -8,6 +8,7 @@ import unittest
 from unittest.mock import patch
 
 import app
+import engine
 import extractionlog
 import prompts
 import servertime
@@ -31,10 +32,10 @@ def records(parts):
 
 class DocumentParallelTests(unittest.TestCase):
     def setUp(self):
-        for target, name, value in [(app, 'EXTRACT_DOCUMENT_PARALLEL_MAX', 4),
-                (app, 'EXTRACT_REQUEST_CONCURRENCY', 8), (app, 'TABLE_EXTRACT', False),
-                (app, 'VLLM_PREFIX_WARMUP', False), (app, 'AGENTIC_PARALLEL', True),
-                (app, 'AGENTIC_PARALLEL_MAX', 0), (servertime.settings, 'SERVER_TIMING_METRICS', False)]:
+        for target, name, value in [(engine, 'EXTRACT_DOCUMENT_PARALLEL_MAX', 4),
+                (engine, 'EXTRACT_REQUEST_CONCURRENCY', 8), (engine, 'TABLE_EXTRACT', False),
+                (engine, 'VLLM_PREFIX_WARMUP', False), (engine, 'AGENTIC_PARALLEL', True),
+                (engine, 'AGENTIC_PARALLEL_MAX', 0), (servertime.settings, 'SERVER_TIMING_METRICS', False)]:
             guard = patch.object(target, name, value)
             guard.start(); self.addCleanup(guard.stop)
         guard = patch('requests.sessions.Session.request', side_effect=AssertionError('No real inference'))
@@ -63,7 +64,7 @@ class DocumentParallelTests(unittest.TestCase):
                 active -= 1
             return {'fields': {'document_number': re.search(r'DOC\d+', text)[0]}, 'seconds': .04}
         parts = segments(7)
-        with patch.object(app, '_extract_document', side_effect=extract):
+        with patch.object(engine, '_extract_document', side_effect=extract):
             result, events = self.run_documents(parts)
         self.assertEqual(peak, 4)
         self.assertEqual([d['fields']['document_number'] for d in result['documents']],
@@ -102,7 +103,7 @@ class DocumentParallelTests(unittest.TestCase):
             return values, [raw], False, 7, False
         prior = app._progress_swap(lambda event, request, what: labels.append(what) if event == 'begin' else None)
         self.addCleanup(app._progress_swap, prior)
-        with patch.object(app, '_ask_step', side_effect=ask), patch.object(app, '_post_once', side_effect=post):
+        with patch.object(engine, '_ask_step', side_effect=ask), patch.object(engine, '_post_once', side_effect=post):
             previous = servertime.open_tally()
             parallel, _ = self.run_documents(parts)
             tally = servertime.close_tally(previous)
@@ -110,7 +111,7 @@ class DocumentParallelTests(unittest.TestCase):
             self.assertEqual(peak, 8)
             self.assertEqual(tally['requests'], len(requests))
             self.assertEqual(tally['requests'], len(parts) * len(prompts.steps_for_types(['INVOICE'], False, 'hybrid')))
-            with patch.object(app, 'EXTRACT_DOCUMENT_PARALLEL_MAX', 1):
+            with patch.object(engine, 'EXTRACT_DOCUMENT_PARALLEL_MAX', 1):
                 serial, _ = self.run_documents(parts)
         for old, new in zip(serial['documents'], parallel['documents']):
             for key in ('fields', 'raw', 'tokens', 'pages', 'grounding', 'validation', 'classified'):
@@ -129,8 +130,8 @@ class DocumentParallelTests(unittest.TestCase):
         self.assertEqual(budget.active, 0)
         with budget.request():
             self.assertEqual(budget.active, 1)
-        with patch.object(app, 'EXTRACT_REQUEST_CONCURRENCY', 1), \
-                patch.object(app, '_extract_document', side_effect=self.fake_document):
+        with patch.object(engine, 'EXTRACT_REQUEST_CONCURRENCY', 1), \
+                patch.object(engine, '_extract_document', side_effect=self.fake_document):
             result, _ = self.run_documents(segments(3))
         self.assertEqual(result['document_parallel'], 1)
         self.assertEqual(len(result['documents']), 3)
@@ -146,7 +147,7 @@ class DocumentParallelTests(unittest.TestCase):
                 raise ValueError('document two failed')
             yield from ()
             return {'fields': {'document_number': re.search(r'DOC\d+', text)[0]}}
-        with patch.object(app, '_extract_document', side_effect=extract):
+        with patch.object(engine, '_extract_document', side_effect=extract):
             result, events = self.run_documents(segments(6))
         self.assertEqual(result['documents_failed'], 1)
         self.assertEqual(result['documents'][1]['error'], 'document two failed')
@@ -160,7 +161,7 @@ class DocumentParallelTests(unittest.TestCase):
             time.sleep(.02)
             yield {'event': 'classified'}
             return {'fields': {}}
-        with patch.object(app, '_extract_document', side_effect=extract):
+        with patch.object(engine, '_extract_document', side_effect=extract):
             gen = app._extract_documents(segments(150), records(segments(150)), 'hybrid', None,
                                          None, ['INVOICE'], VLLM)
             next(gen)  # Parallel configuration; no workers have started yet.
@@ -171,8 +172,8 @@ class DocumentParallelTests(unittest.TestCase):
     def test_non_vllm_and_disabled_paths_keep_sequential_events(self):
         for status, limit in [({**VLLM, 'kind': 'ollama'}, 4), (VLLM, 1)]:
             with self.subTest(status=status, limit=limit), \
-                    patch.object(app, 'EXTRACT_DOCUMENT_PARALLEL_MAX', limit), \
-                    patch.object(app, '_extract_document', side_effect=self.fake_document):
+                    patch.object(engine, 'EXTRACT_DOCUMENT_PARALLEL_MAX', limit), \
+                    patch.object(engine, '_extract_document', side_effect=self.fake_document):
                 result, events = self.run_documents(segments(3), status)
             self.assertNotIn('document_parallel', result)
             self.assertEqual([e['document'] for e in events if e['event'] == 'document_done'], [1, 2, 3])
@@ -186,12 +187,12 @@ class DocumentParallelTests(unittest.TestCase):
         with workspace.use(None):
             ws = workspace.enter('parallel_doc_user_snapshot')
             ws.put('user_prompt_profiles', {'INVOICE': {'revision': 7}})
-            with patch.object(app, '_extract_document', side_effect=extract):
+            with patch.object(engine, '_extract_document', side_effect=extract):
                 self.run_documents(segments(4))
         self.assertEqual(seen, [('parallel_doc_user_snapshot', {'INVOICE': {'revision': 7}})] * 4)
 
     def test_execution_metadata_survives_user_compaction_and_detail_download(self):
-        with patch.object(app, '_extract_document', side_effect=self.fake_document):
+        with patch.object(engine, '_extract_document', side_effect=self.fake_document):
             result, _ = self.run_documents(segments(3))
         compact = userpipeline.compact_extraction(result)
         self.assertEqual(compact['document_parallel'], 3)
@@ -207,8 +208,8 @@ class DocumentParallelTests(unittest.TestCase):
             parts = segments(count)
             with self.subTest(count=count), \
                     patch.object(app.backends, 'extract_status', return_value=VLLM), \
-                    patch.object(app, '_segment_stream', side_effect=split), \
-                    patch.object(app, '_extract_document', side_effect=self.fake_document) as extract:
+                    patch.object(engine, '_segment_stream', side_effect=split), \
+                    patch.object(engine, '_extract_document', side_effect=self.fake_document) as extract:
                 result = app.extract_fields('whole PDF', 'hybrid', pages=['page'] * count)
             self.assertEqual(result['documents_found'], count)
             if count == 1:

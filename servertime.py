@@ -68,12 +68,41 @@ Nothing here raises: a timing figure that breaks the read it is timing is
 worse than none.
 """
 
+import math
+import re
 import threading
 import time
 
 import backends
 import settings
-import stress
+
+
+_SAMPLE = re.compile(r'^([A-Za-z_:][A-Za-z0-9_:]*)(\{[^}]*\})?\s+(\S+)')
+
+
+def parse_prometheus(text: str) -> dict:
+    """Prometheus text exposition, summed over label sets: `{name: value}`.
+
+    Summed because a vLLM server reports one series per model and per engine,
+    and what a stress test wants is the server's total. Histogram buckets are
+    dropped -- the page shows means from `_sum`/`_count`, and the percentiles it
+    cares about it measures itself, client-side, where they include the network.
+    """
+    out = {}
+    for line in (text or "").splitlines():
+        if not line or line.startswith("#"):
+            continue
+        m = _SAMPLE.match(line)
+        if not m or m.group(1).endswith("_bucket"):
+            continue
+        try:
+            value = float(m.group(3))
+        except ValueError:
+            continue
+        if math.isnan(value):
+            continue
+        out[m.group(1)] = out.get(m.group(1), 0.0) + value
+    return out
 
 E2E = ("vllm:e2e_request_latency_seconds",)
 # Phase -> the vLLM histogram whose _sum it is, v1 names first.
@@ -142,7 +171,7 @@ def _fetch(url: str):
                                 timeout=METRICS_TIMEOUT)
         if res.status_code != 200:
             return None
-        return stress.parse_prometheus(res.text)
+        return parse_prometheus(res.text)
     except Exception:
         return None
 

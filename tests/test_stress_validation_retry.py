@@ -7,6 +7,7 @@ from unittest.mock import patch
 from PIL import Image
 
 import app
+import engine
 import extractionlog
 import stress
 
@@ -50,8 +51,8 @@ def run(result, answer, enabled=True, images=None):
     with patch.object(app, "_STRESS_EVIDENCE", app._StressEvidence(10)), \
             patch.object(app, "_stress_read", side_effect=read), \
             patch.object(app, "extract_fields", return_value=result), \
-            patch.object(app, "_fill_ask", side_effect=ask), \
-            patch.object(app, "_score_fields"):
+            patch.object(engine, "_fill_ask", side_effect=ask), \
+            patch.object(engine, "_score_fields"):
         rec = app._stress_job(spec, cfg, prepared, app.MultiCancel(), live)
         alerts = live.take_alerts()
         ids = {a['id'] for a in alerts if a['kind']=='validation'}
@@ -148,7 +149,7 @@ class ValidationRetryTests(unittest.TestCase):
             yield {'event':'done','fields':{}}
         form=app._fill_form(document());form['validation_recheck']=True
         with patch.object(app.backends,'extract_status',return_value={'text_available':True}), \
-                patch.object(app,'_extract_agentic',side_effect=agentic):
+                patch.object(engine,'_extract_agentic',side_effect=agentic):
             app._fill_ask([page()],form,['totals'])
         self.assertEqual(seen[0][1:],('hybrid',['totals'],True))
         self.assertIn('blank cell must stay blank',seen[0][0])
@@ -158,7 +159,7 @@ class ValidationRetryTests(unittest.TestCase):
 class ValidationToggleTests(unittest.TestCase):
     def config(self,**body):
         status={'available':True,'text_available':True,'model':'m','url':'http://x','kind':'ollama'}
-        with patch.object(app,'llama_status',return_value=status),patch.object(app.backends,'extract_status',return_value=status):
+        with patch.object(engine,'llama_status',return_value=status),patch.object(app.backends,'extract_status',return_value=status):
             return app._stress_config(body)
 
     def test_opt_in_and_full_pipeline_only(self):

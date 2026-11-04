@@ -18,6 +18,7 @@ import unittest
 from unittest.mock import patch
 
 import app
+import engine
 import segment
 from tests.test_segment_chat import STATUS, Server, answer
 
@@ -91,7 +92,7 @@ class StreamTests(unittest.TestCase):
     def stream(self, pages, server):
         text = "\n\n".join("--- page %d ---\n%s" % (n, p)
                            for n, p in enumerate(pages, 1))
-        with patch.object(app, "classify_transcript", classify), \
+        with patch.object(engine, "classify_transcript", classify), \
                 patch.object(app.requests, "post", server):
             return drain(app._segment_stream(text, pages, STATUS))
 
@@ -111,7 +112,7 @@ class StreamTests(unittest.TestCase):
                  + ["credit note"]
                  + ["credit note Page %d of 13" % n for n in range(2, 14)])
         server = Server(answer(False, "credit note"))
-        with patch.object(app, "SEGMENT_MAX_PAGES", 20):
+        with patch.object(engine, "SEGMENT_MAX_PAGES", 20):
             events, (segments, how) = self.stream(pages, server)
         self.assertEqual(len(server.sent), 1)
         self.assertEqual(how, "chat")

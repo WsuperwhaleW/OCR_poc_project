@@ -6,6 +6,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import app
+import engine
 import config
 import runhistory
 import workspace
@@ -33,7 +34,7 @@ class StressSelectionTests(unittest.TestCase):
         for target, name, kwargs in (
             (app.scoring, "cases_index", {"return_value": self.index}),
             (app.fieldscore, "has_truth", {"side_effect": lambda cid: cid in ("a", "b")}),
-            (app, "llama_status", {"return_value": STATUS}),
+            (engine, "llama_status", {"return_value": STATUS}),
             (app.backends, "extract_status", {"return_value": STATUS}),
             (config, "LOG_DIR", {"new": self.root / "logs"}),
         ):

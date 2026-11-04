@@ -11,6 +11,7 @@ from flask import Response, request
 from PIL import Image
 
 import app
+import webcommon
 from userstore import UserStore
 
 
@@ -53,7 +54,7 @@ class CompressionTests(unittest.TestCase):
     def test_images_are_left_alone(self):
         with app.app.test_request_context('/', headers=GZIP):
             image = Response(b'x' * 4096, mimetype='image/png')
-            self.assertNotIn('Content-Encoding', app._gzip_response(image).headers)
+            self.assertNotIn('Content-Encoding', webcommon.gzip_response(image).headers)
 
     def test_a_stream_is_decodable_after_every_chunk(self):
         closed = []
@@ -66,7 +67,7 @@ class CompressionTests(unittest.TestCase):
                 closed.append(True)
 
         with app.app.test_request_context('/', headers=GZIP):
-            response = app._gzip_response(Response(lines(), mimetype='application/x-ndjson'))
+            response = webcommon.gzip_response(Response(lines(), mimetype='application/x-ndjson'))
             self.assertEqual(response.headers['Content-Encoding'], 'gzip')
             reader = zlib.decompressobj(31)
             first = reader.decompress(next(response.response))
@@ -78,7 +79,7 @@ class CompressionTests(unittest.TestCase):
 
     def test_a_stream_is_untouched_for_a_client_without_gzip(self):
         with app.app.test_request_context('/'):
-            response = app._gzip_response(Response(iter(['a\n']), mimetype='application/x-ndjson'))
+            response = webcommon.gzip_response(Response(iter(['a\n']), mimetype='application/x-ndjson'))
             self.assertNotIn('Content-Encoding', response.headers)
             self.assertEqual(response.get_data(), b'a\n')
 

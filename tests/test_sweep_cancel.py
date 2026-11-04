@@ -11,8 +11,7 @@ import unittest
 from unittest.mock import patch
 
 import app
-
-
+import engine
 class CancelTests(unittest.TestCase):
     class Closeable:
         def __init__(self):
@@ -94,7 +93,7 @@ class ReadPageCancelTests(unittest.TestCase):
                 seen.append(piece)
                 yield piece
 
-        with patch.object(app, "stream_page",
+        with patch.object(engine, "stream_page",
                           lambda i, s=None, p=None, c=None: tokens(i, s, p, c)):
             text = app.read_page(None, {}, cancel=cancel)
         # The token the flag arrived during is kept and the generator is never
@@ -103,7 +102,7 @@ class ReadPageCancelTests(unittest.TestCase):
         self.assertEqual(text, "abc")
 
     def test_no_cancel_drains_to_the_end(self):
-        with patch.object(app, "stream_page",
+        with patch.object(engine, "stream_page",
                           lambda i, s=None, p=None, c=None: iter("abcdef")):
             self.assertEqual(app.read_page(None, {}), "abcdef")
 
@@ -115,8 +114,8 @@ class ReadCaseCancelTests(unittest.TestCase):
 
     def _read(self, cancel, page_reader):
         rows = []
-        with patch.object(app, "read_page", page_reader), \
-             patch.object(app, "log_run",
+        with patch.object(engine, "read_page", page_reader), \
+             patch.object(engine, "log_run",
                           lambda payload, source, **kw: rows.append((payload, kw))):
             try:
                 result = app._read_case(self.CASE, "low", extract=False,

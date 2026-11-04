@@ -7,6 +7,7 @@ import unittest
 from unittest.mock import patch
 
 import app
+import engine
 import workspace
 
 
@@ -48,7 +49,7 @@ def _live(concurrency, queued=0, held=1):
 class SplitPagesTests(unittest.TestCase):
     def read(self, pages, live, fake):
         rec = {}
-        with patch.object(app, "read_page", fake):
+        with patch.object(engine, "read_page", fake):
             out = app._stress_read(pages, app.MultiCancel(), rec, live, job=1, case="x")
         return out, rec
 
@@ -87,7 +88,7 @@ class SplitPagesTests(unittest.TestCase):
     def test_a_failed_page_fails_the_job_names_it_and_returns_the_slots(self):
         fake, live = _Pages(fail="p3"), _live(4)
         rec = {}
-        with patch.object(app, "read_page", fake):
+        with patch.object(engine, "read_page", fake):
             with self.assertRaisesRegex(RuntimeError, "p3"):
                 app._stress_read([f"p{i}" for i in range(1, 7)], app.MultiCancel(),
                                  rec, live, job=1, case="x")
@@ -97,7 +98,7 @@ class SplitPagesTests(unittest.TestCase):
     def test_a_stop_cancels_the_read(self):
         fake, live, cancel = _Pages(seconds=0.5), _live(4), app.MultiCancel()
         threading.Timer(0.1, cancel.set).start()
-        with patch.object(app, "read_page", fake):
+        with patch.object(engine, "read_page", fake):
             with self.assertRaises(app.SweepCancelled):
                 app._stress_read([f"p{i}" for i in range(1, 9)], cancel, {}, live)
         self.assertTrue(all(live.slots.lend() for _ in range(3)))
@@ -116,7 +117,7 @@ class RunTests(unittest.TestCase):
         context.__enter__()
         self.addCleanup(context.__exit__, None, None, None)
         for target, name, kwargs in (
-            (app, "llama_status", {"return_value": STATUS}),
+            (engine, "llama_status", {"return_value": STATUS}),
             (app.backends, "extract_status", {"return_value": STATUS}),
             (app.runlog, "case_counts", {"return_value": {}}),
         ):
@@ -133,7 +134,7 @@ class RunTests(unittest.TestCase):
         with patch.object(app, "_stress_pages",
                           side_effect=lambda case, detail, *a: (
                               [f"{case}-{i}" for i in range(sizes[case])], {})), \
-                patch.object(app, "read_page", fake):
+                patch.object(engine, "read_page", fake):
             events = [json.loads(line) for line in app._stress_run(cfg, app.MultiCancel())]
         return cfg, events[-1]["report"], fake, events[0]
 

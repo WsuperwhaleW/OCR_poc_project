@@ -11,6 +11,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import app
+import engine
 import runlog
 
 TEXT_STATUS = {"text_available": True, "text_reason": None, "kind": "ollama",
@@ -40,8 +41,8 @@ class SaveLogTests(unittest.TestCase):
 
     def test_extract_jobs_are_saved_and_warmup_is_not(self):
         with patch.object(app, "extract_fields", return_value=RESULT), \
-             patch.object(app, "log_extract") as logged, \
-             patch.object(app, "log_run",
+             patch.object(engine, "log_extract") as logged, \
+             patch.object(engine, "log_run",
                           side_effect=AssertionError("an extract job wrote a read row")):
             events = _run({"mode": "extract", "concurrency": 2, "jobs": 3, "warmup": 1,
                            "seed": 1, "save_log": True})
@@ -59,14 +60,14 @@ class SaveLogTests(unittest.TestCase):
 
     def test_a_failed_job_is_saved_as_a_failure(self):
         with patch.object(app, "extract_fields", side_effect=ValueError("boom")), \
-             patch.object(app, "log_extract") as logged:
+             patch.object(engine, "log_extract") as logged:
             _run({"mode": "extract", "concurrency": 1, "jobs": 2, "save_log": True})
         self.assertEqual(logged.call_count, 2)
         self.assertIn("boom", logged.call_args.args[0]["error"])
 
     def test_off_writes_nothing(self):
         with patch.object(app, "extract_fields", return_value=RESULT), \
-             patch.object(app, "log_extract",
+             patch.object(engine, "log_extract",
                           side_effect=AssertionError("logged with the switch off")):
             events = _run({"mode": "extract", "concurrency": 1, "jobs": 2})
         self.assertFalse(events[0]["save_log"])
@@ -80,7 +81,7 @@ class SaveLogReadTests(unittest.TestCase):
     """OCR and full: one `log_run` row per job, read and extraction on it."""
 
     def setUp(self):
-        for target, value in ((app, "llama_status"), (app.backends, "extract_status")):
+        for target, value in ((engine, "llama_status"), (app.backends, "extract_status")):
             p = patch.object(target, value,
                              return_value=READ_STATUS if value == "llama_status"
                              else TEXT_STATUS)
@@ -88,13 +89,13 @@ class SaveLogReadTests(unittest.TestCase):
             self.addCleanup(p.stop)
         src = {"name": "x.pdf", "size_bytes": 3, "origin": "case"}
         for target, attr, kw in ((app, "_stress_pages", {"return_value": (["page"], src)}),
-                                 (app, "read_page", {"side_effect": _read_page})):
+                                 (engine, "read_page", {"side_effect": _read_page})):
             p = patch.object(target, attr, **kw)
             p.start()
             self.addCleanup(p.stop)
 
     def test_ocr_jobs_write_a_read_row(self):
-        with patch.object(app, "log_run") as logged, \
+        with patch.object(engine, "log_run") as logged, \
              patch.object(app, "extract_fields",
                           side_effect=AssertionError("an ocr job extracted")):
             events = _run({"mode": "ocr", "concurrency": 2, "jobs": 2, "lock_case": "sol002",
@@ -109,9 +110,9 @@ class SaveLogReadTests(unittest.TestCase):
         self.assertNotIn("extracted", row)
 
     def test_full_jobs_write_one_row_with_both_passes(self):
-        with patch.object(app, "log_run") as logged, \
+        with patch.object(engine, "log_run") as logged, \
              patch.object(app, "extract_fields", return_value=dict(RESULT)), \
-             patch.object(app, "log_extract",
+             patch.object(engine, "log_extract",
                           side_effect=AssertionError("a full job wrote an extract row")):
             _run({"mode": "full", "concurrency": 1, "jobs": 2, "lock_case": "sol002",
                   "save_log": True})

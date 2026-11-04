@@ -18,7 +18,7 @@ from unittest.mock import patch
 import requests
 
 import app
-
+import engine
 LIMIT = 0.5             # the read timeout, in seconds, for these tests
 LLAMA = {"kind": "llama.cpp", "available": True, "model": "m", "url": "x"}
 
@@ -74,11 +74,11 @@ class StallTimeoutTests(unittest.TestCase):
     def read(self, path):
         url = f"http://127.0.0.1:{self.server.server_address[1]}{path}"
         page = app.Image.new("RGB", (64, 64), "white")
-        with patch.object(app, "GEN_TIMEOUT", (1.0, LIMIT)), \
-             patch.object(app, "llama_status", return_value=LLAMA), \
-             patch.object(app, "chat_url", return_value=url), \
-             patch.object(app, "loop_guard", return_value=False), \
-             patch.object(app, "_batcher_for", return_value=None), \
+        with patch.object(engine, "GEN_TIMEOUT", (1.0, LIMIT)), \
+             patch.object(engine, "llama_status", return_value=LLAMA), \
+             patch.object(engine, "chat_url", return_value=url), \
+             patch.object(engine, "loop_guard", return_value=False), \
+             patch.object(engine, "_batcher_for", return_value=None), \
              patch.object(app.servertime, "_fetch", return_value=None):
             began = time.perf_counter()
             try:

@@ -7,6 +7,7 @@ from unittest.mock import patch
 from PIL import Image
 
 import app
+import engine
 import prompts
 import stress
 
@@ -104,7 +105,7 @@ class FullPipelineLoopTests(unittest.TestCase):
         spec = {"index": 0, "case": "sol002", "submitted": time.perf_counter()}
         prepared = {"pages": {"sol002": ["page"]}, "sources": {"sol002": "x"}}
         with patch.object(app, "_stress_read", side_effect=read), extract as called, \
-                patch.object(app, "_fill_ask", return_value={"fields": {}}):
+                patch.object(engine, "_fill_ask", return_value={"fields": {}}):
             rec = app._stress_job(spec, cfg, prepared, app.MultiCancel(), live)
         called.assert_called_once()                  # the loop did not stop it
         self.assertEqual(rec["status"], "looped")
@@ -157,7 +158,7 @@ class OcrFlagToExtractionTests(unittest.TestCase):
         with patch.object(app, "_STRESS_EVIDENCE", app._StressEvidence(10)), \
                 patch.object(app, "_stress_read", side_effect=read), \
                 patch.object(app, "extract_fields", return_value=result), \
-                patch.object(app, "_fill_ask", return_value={"fields": {}}):
+                patch.object(engine, "_fill_ask", return_value={"fields": {}}):
             app._stress_job(spec, cfg, prepared, app.MultiCancel(), live)
             with app.app.test_client() as client:
                 res = client.get("/api/stress/evidence/measured-test01-job1")

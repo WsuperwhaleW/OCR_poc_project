@@ -195,7 +195,6 @@ def grouping_score(found_groups, expected) -> dict:
 # vLLM /metrics
 # --------------------------------------------------------------------------
 
-_SAMPLE = re.compile(r'^([A-Za-z_:][A-Za-z0-9_:]*)(\{[^}]*\})?\s+(\S+)')
 
 # What the page shows, and how. `gauge` is read as-is; `counter` as the change
 # since the test began; `hist` as mean = delta(_sum) / delta(_count).
@@ -222,29 +221,9 @@ METRICS = [
 ]
 
 
-def parse_prometheus(text: str) -> dict:
-    """Prometheus text exposition, summed over label sets: `{name: value}`.
-
-    Summed because a vLLM server reports one series per model and per engine,
-    and what a stress test wants is the server's total. Histogram buckets are
-    dropped -- the page shows means from `_sum`/`_count`, and the percentiles it
-    cares about it measures itself, client-side, where they include the network.
-    """
-    out = {}
-    for line in (text or "").splitlines():
-        if not line or line.startswith("#"):
-            continue
-        m = _SAMPLE.match(line)
-        if not m or m.group(1).endswith("_bucket"):
-            continue
-        try:
-            value = float(m.group(3))
-        except ValueError:
-            continue
-        if math.isnan(value):
-            continue
-        out[m.group(1)] = out.get(m.group(1), 0.0) + value
-    return out
+# Moved to servertime (2026-11-04) so the engine reads /metrics without loading
+# this benchmark module; re-exported here for the stress test and its callers.
+from servertime import parse_prometheus  # noqa: E402
 
 
 def _pick(values: dict, names, suffix=""):

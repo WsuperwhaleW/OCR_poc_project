@@ -11,6 +11,7 @@ import unittest
 from unittest import mock
 
 import app
+import engine
 import tables
 
 
@@ -68,9 +69,9 @@ class Stub:
 
 
 def run(text, stub, form=FORM, fields=FIELDS):
-    with mock.patch.object(app, "_chat", stub), \
-            mock.patch.object(app, "TABLE_FIX_AGENT", True), \
-            mock.patch.object(app, "TABLE_IDENTIFY_AGENT", True):
+    with mock.patch.object(engine, "_chat", stub), \
+            mock.patch.object(engine, "TABLE_FIX_AGENT", True), \
+            mock.patch.object(engine, "TABLE_IDENTIFY_AGENT", True):
         return app._item_table(text, form, {"model": "stub"}, None, fields)
 
 
@@ -241,7 +242,7 @@ class FixAgentTests(unittest.TestCase):
 
     def test_a_long_table_is_not_sent(self):
         stub = Stub(identify=MASTER_1)
-        with mock.patch.object(app, "TABLE_FIX_MAX_ROWS", 1):
+        with mock.patch.object(engine, "TABLE_FIX_MAX_ROWS", 1):
             table = run(STAMPED, stub)
         self.assertNotIn("clean", stub.kinds())
         self.assertIn("over the 1", table["fix_agent"]["skipped"])
@@ -276,7 +277,7 @@ class TailTests(unittest.TestCase):
     def test_a_wider_share_reaches_past_the_next_table(self):
         stub = Stub(clean={"stray_lines": [], "table_lines": [], "remove": []},
                     identify=MASTER_1)
-        with mock.patch.object(app, "TABLE_CONTEXT_SHARE", 0.5):
+        with mock.patch.object(engine, "TABLE_CONTEXT_SHARE", 0.5):
             run(FRAME, stub)
         message = dict(stub.asked)["clean"]
         self.assertIn("L4 สามแสน", message)
@@ -421,9 +422,9 @@ class IdentifyAgentTests(unittest.TestCase):
 
     def test_off_asks_nothing(self):
         stub = Stub(clean=self.sound)
-        with mock.patch.object(app, "_chat", stub), \
-                mock.patch.object(app, "TABLE_FIX_AGENT", True), \
-                mock.patch.object(app, "TABLE_IDENTIFY_AGENT", False):
+        with mock.patch.object(engine, "_chat", stub), \
+                mock.patch.object(engine, "TABLE_FIX_AGENT", True), \
+                mock.patch.object(engine, "TABLE_IDENTIFY_AGENT", False):
             table = app._item_table(GRID, FORM, {"model": "stub"}, None, FIELDS)
         self.assertEqual(stub.kinds(), ["clean"])
         self.assertEqual(table["master_from"], "rules")

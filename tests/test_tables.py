@@ -19,6 +19,7 @@ import unittest
 from unittest import mock
 
 import app
+import engine
 import fieldscore
 import prompts
 import runlog
@@ -286,7 +287,7 @@ class RecutTests(unittest.TestCase):
     """
     def setUp(self):
         for name in ("TABLE_FIX_AGENT", "TABLE_IDENTIFY_AGENT"):
-            patch = mock.patch.object(app, name, False)
+            patch = mock.patch.object(engine, name, False)
             patch.start()
             self.addCleanup(patch.stop)
         self.table = tables.item_table(md(
@@ -319,7 +320,7 @@ class RecutTests(unittest.TestCase):
             self.assertEqual(table["recut"]["taken"], 0)
 
     def test_the_request_is_made_only_for_a_row_that_does_not_fit(self):
-        with mock.patch.object(app, "_chat") as chat:
+        with mock.patch.object(engine, "_chat") as chat:
             table = app._item_table(MASTER, {"items": []}, {"model": "stub"})
         chat.assert_not_called()
         self.assertNotIn("recut", table)
@@ -328,7 +329,7 @@ class RecutTests(unittest.TestCase):
         ragged = self.copy()
         reply = json.dumps({"rows": [{"c1": 1, "c2": 2, "c3": 3, "c4": 5}]})
         with mock.patch.object(app.tables, "item_table", return_value=ragged), \
-                mock.patch.object(app, "_chat", return_value=(reply, False, 9)) as chat:
+                mock.patch.object(engine, "_chat", return_value=(reply, False, 9)) as chat:
             table = app._item_table("x", {"items": []}, {"model": "stub"})
         message = chat.call_args[0][0]
         # Every cell is named in the question, so the answer cannot be the right
@@ -342,7 +343,7 @@ class RecutTests(unittest.TestCase):
         ragged = self.copy()
         reply = json.dumps({"rows": [{"c1": 1, "c2": 2, "c3": 3}]})
         with mock.patch.object(app.tables, "item_table", return_value=ragged), \
-                mock.patch.object(app, "_chat", return_value=(reply, False, 9)):
+                mock.patch.object(engine, "_chat", return_value=(reply, False, 9)):
             table = app._item_table("x", {"items": []}, {"model": "stub"})
         self.assertEqual(table["misaligned"], [1])
         self.assertEqual(table["recut"]["refused"], 1)
@@ -350,7 +351,7 @@ class RecutTests(unittest.TestCase):
     def test_a_failed_request_costs_the_repair_and_nothing_else(self):
         ragged = self.copy()
         with mock.patch.object(app.tables, "item_table", return_value=ragged), \
-                mock.patch.object(app, "_chat", side_effect=ValueError("HTTP 500")):
+                mock.patch.object(engine, "_chat", side_effect=ValueError("HTTP 500")):
             table = app._item_table("x", {"items": []}, {"model": "stub"})
         self.assertEqual(table["misaligned"], [1])
         self.assertIn("HTTP 500", table["recut"]["error"])

@@ -12,6 +12,7 @@ import unittest
 from unittest import mock
 
 import app
+import engine
 import prompts
 import runlog
 import servertime
@@ -62,7 +63,7 @@ def _fake_ask(barrier=None, calls=None):
 
 
 def _run(status, ask):
-    with mock.patch.object(app, "_ask_step", ask):
+    with mock.patch.object(engine, "_ask_step", ask):
         events, gen = [], app._extract_agentic(TEXT, status, FORM)
         while True:
             try:
@@ -82,9 +83,9 @@ class GateTests(unittest.TestCase):
             {**VLLM, "kind": "openai"}, 7), 1)
 
     def test_switch_and_cap(self):
-        with mock.patch.object(app, "AGENTIC_PARALLEL", False):
+        with mock.patch.object(engine, "AGENTIC_PARALLEL", False):
             self.assertEqual(app._agentic_parallelism(VLLM, 7), 1)
-        with mock.patch.object(app, "AGENTIC_PARALLEL_MAX", 3):
+        with mock.patch.object(engine, "AGENTIC_PARALLEL_MAX", 3):
             self.assertEqual(app._agentic_parallelism(VLLM, 7), 3)
         self.assertEqual(app._agentic_parallelism(VLLM, 1), 1)
 
@@ -103,7 +104,7 @@ class ConcurrentRunTests(unittest.TestCase):
         # With the prefix warm-up off: it holds the other steps back until step
         # 1 is prefilled on purpose (tests/test_vllm_optimise.py pins that).
         barrier = threading.Barrier(len(self.table))
-        with mock.patch.object(app, "VLLM_PREFIX_WARMUP", False):
+        with mock.patch.object(engine, "VLLM_PREFIX_WARMUP", False):
             result, events = _run(VLLM, _fake_ask(barrier))
         self.assertNotIn("error", result)
         self.assertEqual(result["parallel"], len(self.table))

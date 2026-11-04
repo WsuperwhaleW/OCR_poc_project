@@ -6,6 +6,7 @@ from collections import Counter
 from unittest.mock import patch
 
 import app
+import engine
 import extractionlog
 import prompts
 
@@ -78,7 +79,7 @@ class HybridWhtTests(unittest.TestCase):
                     self.assertIsNone(schema)
                 calls.append(keys)
                 return json.dumps({k: VALUES[k] for k in keys}), False, 80
-            with patch.object(app, '_chat', side_effect=chat), patch.object(app, 'AGENTIC_PARALLEL', False):
+            with patch.object(engine, '_chat', side_effect=chat), patch.object(engine, 'AGENTIC_PARALLEL', False):
                 result = app._drain(app._extract_agentic(TEXT, STATUS, form,
                     only=['wht_payer', 'wht_payee_address'], mode='hybrid'))
             self.assertEqual(len(calls), 2)

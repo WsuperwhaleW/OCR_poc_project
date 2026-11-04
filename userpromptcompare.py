@@ -62,7 +62,10 @@ class LocalApp:
 
 
 def run(args, compare):
-    import app as engine
+    # The benchmark app serves the in-process requests; the pipeline and its run log
+    # live in engine (split out of app.py 2026-11-04), so the log is silenced there.
+    import app
+    import engine
     from userstore import UserStore
     variant = args.user_prompt_defaults
     output = config.BASE_DIR / '.work' / 'compare-user-prompts' / variant
@@ -78,7 +81,7 @@ def run(args, compare):
             ws.put('user_pipeline',True)
             ws.put('user_prompt_sets',snapshot)
             ws.put('user_prompt_profiles',{})
-            compare.requests = LocalApp(engine.app,ws)
+            compare.requests = LocalApp(app.app,ws)
             compare.scoring.OUT = output
             engine.log_extract = lambda *a,**kw: None  # compare saves the full result here instead of team history
             args.app, args.mode = 'http://local-user-compare', 'hybrid'

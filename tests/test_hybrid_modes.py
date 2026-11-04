@@ -8,6 +8,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import app
+import engine
 import config
 import prompts
 import runhistory
@@ -52,8 +53,8 @@ class VariantTests(unittest.TestCase):
                 return json.dumps({key: '' for key in schema['properties']}), False, 10
 
             events = []
-            with patch.object(app, '_chat', side_effect=chat), \
-                 patch.object(app, 'AGENTIC_PARALLEL', False), patch.object(app, 'TABLE_EXTRACT', False):
+            with patch.object(engine, '_chat', side_effect=chat), \
+                 patch.object(engine, 'AGENTIC_PARALLEL', False), patch.object(engine, 'TABLE_EXTRACT', False):
                 gen = app._extract_document('Invoice with no amounts', mode, None, None,
                                             ['INVOICE'], STATUS, extras=False, schema_first=True)
                 while True:
@@ -85,10 +86,10 @@ class VariantTests(unittest.TestCase):
             return app._drain(app._extract_agentic('Invoice', {**STATUS, 'reachable': True},
                                                   form, mode=mode))
 
-        with patch.object(app, '_ask_step', side_effect=ask), \
-             patch.object(app, 'AGENTIC_PARALLEL', True), \
-             patch.object(app, 'AGENTIC_PARALLEL_MAX', 0), \
-             patch.object(app, 'VLLM_PREFIX_WARMUP', False), ThreadPoolExecutor(max_workers=2) as pool:
+        with patch.object(engine, '_ask_step', side_effect=ask), \
+             patch.object(engine, 'AGENTIC_PARALLEL', True), \
+             patch.object(engine, 'AGENTIC_PARALLEL_MAX', 0), \
+             patch.object(engine, 'VLLM_PREFIX_WARMUP', False), ThreadPoolExecutor(max_workers=2) as pool:
             original, hybrid = list(pool.map(run, ['agentic', 'hybrid']))
         self.assertEqual((original['mode'], hybrid['mode']), ('agentic', 'hybrid'))
         self.assertEqual((original['parallel'], hybrid['parallel']), (6, 4))
@@ -119,9 +120,9 @@ class ApiAndLogTests(unittest.TestCase):
             return {'mode': 'hybrid', 'fields': {}}
 
         for url in ('/api/extract', '/api/extract/stream'):
-            with patch.object(app, 'log_extract'), \
+            with patch.object(engine, 'log_extract'), \
                  patch.object(app, 'extract_fields', return_value={'mode': 'hybrid', 'fields': {}}) as blocking, \
-                 patch.object(app, 'extract_fields_stream', side_effect=stream) as streaming:
+                 patch.object(engine, 'extract_fields_stream', side_effect=stream) as streaming:
                 response = self.client.post(url, json={'text': 'A', 'mode': 'hybrid', 'schema_first': True})
                 self.assertEqual(response.status_code, 200)
                 response.get_data()

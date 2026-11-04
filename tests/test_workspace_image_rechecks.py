@@ -8,6 +8,7 @@ from unittest.mock import patch
 from PIL import Image
 
 import app
+import engine
 from userpipeline import EngineAdapter
 from userstore import UserStore
 from tests.test_stress_validation_retry import GOOD, SHIFTED, document, page
@@ -23,7 +24,7 @@ class SharedRecheckTests(unittest.TestCase):
     def test_missing_then_validation_use_the_same_hybrid_steps_with_independent_switches(self):
         value = document({**SHIFTED, 'vat_total': ''})
         events = []
-        with patch.object(app, '_fill_ask', side_effect=[{'fields': GOOD}, {'fields': GOOD}]) as ask:
+        with patch.object(engine, '_fill_ask', side_effect=[{'fields': GOOD}, {'fields': GOOD}]) as ask:
             app.recheck_fields_from_images(value, [page()], ['OCR'], fill_missing=True,
                                            validation_retry=True, each=events.append)
         self.assertEqual(ask.call_count, 2)
@@ -36,14 +37,14 @@ class SharedRecheckTests(unittest.TestCase):
 
     def test_disabled_options_do_not_use_images_or_modify_the_result(self):
         value = document(); before = copy.deepcopy(value)
-        with patch.object(app, '_fill_ask') as ask:
+        with patch.object(engine, '_fill_ask') as ask:
             app.recheck_fields_from_images(value, [page()], ['OCR'])
         ask.assert_not_called()
         self.assertEqual(value, before)
 
     def test_fill_records_what_it_asked_what_the_images_said_and_what_it_took(self):
         value = document({**GOOD, 'vat_total': ''})
-        with patch.object(app, '_fill_ask', return_value={'fields': GOOD, 'tokens': 7}):
+        with patch.object(engine, '_fill_ask', return_value={'fields': GOOD, 'tokens': 7}):
             app.recheck_fields_from_images(value, [page()], ['OCR'], fill_missing=True)
         audit, = value['image_fills']
         self.assertEqual(audit['fields'], ['vat_total'])
@@ -54,7 +55,7 @@ class SharedRecheckTests(unittest.TestCase):
 
     def test_each_recheck_says_what_it_added_edited_and_validated(self):
         value = document({**SHIFTED, 'vat_total': ''})
-        with patch.object(app, '_fill_ask', side_effect=[{'fields': GOOD}, {'fields': GOOD}]):
+        with patch.object(engine, '_fill_ask', side_effect=[{'fields': GOOD}, {'fields': GOOD}]):
             app.recheck_fields_from_images(value, [page()], ['OCR'], fill_missing=True,
                                            validation_retry=True)
         fill, = value['image_fills']
@@ -79,7 +80,7 @@ class SharedRecheckTests(unittest.TestCase):
 
     def test_a_rejected_recheck_adds_and_edits_nothing(self):
         value = document()
-        with patch.object(app, '_fill_ask', return_value={'fields': {**SHIFTED, 'subtotal': ''}}):
+        with patch.object(engine, '_fill_ask', return_value={'fields': {**SHIFTED, 'subtotal': ''}}):
             app.recheck_fields_from_images(value, [page()], ['OCR'], validation_retry=True)
         check, = value['validation_image_rechecks']
         self.assertFalse(check['accepted'])
@@ -100,18 +101,18 @@ class SharedRecheckTests(unittest.TestCase):
 
     def test_a_fill_the_images_cannot_answer_is_recorded_as_still_empty(self):
         value = document({**GOOD, 'vat_total': ''})
-        with patch.object(app, '_fill_ask', return_value={'fields': {'vat_total': ''}}):
+        with patch.object(engine, '_fill_ask', return_value={'fields': {'vat_total': ''}}):
             app.recheck_fields_from_images(value, [page()], ['OCR'], fill_missing=True)
         audit, = value['image_fills']
         self.assertFalse(audit['accepted']); self.assertEqual(audit['still_empty'], ['vat_total'])
-        with patch.object(app, '_fill_ask', return_value={'error': 'server down'}):
+        with patch.object(engine, '_fill_ask', return_value={'error': 'server down'}):
             value = document({**GOOD, 'vat_total': ''})
             app.recheck_fields_from_images(value, [page()], ['OCR'], fill_missing=True)
         self.assertEqual(value['image_fills'][0]['error'], 'server down')
 
     def test_a_switch_that_found_nothing_to_do_says_so(self):
         value = document(GOOD)
-        with patch.object(app, '_fill_ask') as ask:
+        with patch.object(engine, '_fill_ask') as ask:
             app.recheck_fields_from_images(value, [page()], ['OCR'], fill_missing=True,
                                            validation_retry=True)
         ask.assert_not_called()
@@ -123,7 +124,7 @@ class SharedRecheckTests(unittest.TestCase):
     def test_missing_retry_does_not_send_other_documents_pages_when_boundaries_are_unknown(self):
         value = {'documents': [document(GOOD, document=1, pages=[1]),
                                document({**GOOD, 'vat_total': ''}, document=2)]}
-        with patch.object(app, '_fill_ask') as ask:
+        with patch.object(engine, '_fill_ask') as ask:
             app.recheck_fields_from_images(value, [page(), page()], ['one', 'two'], fill_missing=True)
         ask.assert_not_called()
         self.assertEqual(value['documents'][1]['fields']['vat_total'], '')
@@ -137,14 +138,14 @@ class WorkspaceRouteTests(unittest.TestCase):
             texts.append('OCR'); stats.append({})
         with patch.object(app, 'EXTRACT', True), \
                 patch.object(app, 'prepare', return_value=([page()], 'low', None, None, {})), \
-                patch.object(app, '_page_parallelism', return_value=1), \
-                patch.object(app, 'stream_page', return_value=iter(['OCR'])), \
-                patch.object(app, 'loop_retry_page', return_value=None), \
+                patch.object(engine, '_page_parallelism', return_value=1), \
+                patch.object(engine, 'stream_page', return_value=iter(['OCR'])), \
+                patch.object(engine, 'loop_retry_page', return_value=None), \
                 patch.object(app, 'read_all_pages', side_effect=read), \
                 patch.object(app, 'extract_fields', return_value=value), \
-                patch.object(app, 'extract_fields_stream', side_effect=lambda *a, **k: completed(value)), \
-                patch.object(app, '_fill_ask', return_value={'fields': GOOD}) as ask, \
-                patch.object(app, 'log_run'), patch.object(app, 'evaluate_if_known', return_value=None):
+                patch.object(engine, 'extract_fields_stream', side_effect=lambda *a, **k: completed(value)), \
+                patch.object(engine, '_fill_ask', return_value={'fields': GOOD}) as ask, \
+                patch.object(engine, 'log_run'), patch.object(app, 'evaluate_if_known', return_value=None):
             response = app.app.test_client().post('/ocr/api/ocr' + ('/stream' if stream else ''), data=options)
             if stream:
                 events = [json.loads(line) for line in response.text.splitlines()]
@@ -202,9 +203,9 @@ class UserImageRecheckTests(StoreCase):
         job = self.job(value, fill_missing=False, validation_retry=True, schema_first=True)
         cache = set(app._jobs)
         with patch.object(app.backends, 'extract_status', return_value={'text_available': True}), \
-                patch.object(app, 'extract_fields_stream', side_effect=lambda *a, **k: completed(value)) as extract, \
-                patch.object(app, 'prepare_input', wraps=app.prepare_input) as prepare, \
-                patch.object(app, '_fill_ask', return_value={'fields': GOOD}) as ask, \
+                patch.object(engine, 'extract_fields_stream', side_effect=lambda *a, **k: completed(value)) as extract, \
+                patch.object(engine, 'prepare_input', wraps=app.prepare_input) as prepare, \
+                patch.object(engine, '_fill_ask', return_value={'fields': GOOD}) as ask, \
                 patch.object(self.store, 'update', wraps=self.store.update) as update:
             result = EngineAdapter(app).extraction(job, self.store)
         self.assertEqual(prepare.call_count, 1); self.assertFalse(prepare.call_args.kwargs['cache'])
@@ -222,16 +223,16 @@ class UserImageRecheckTests(StoreCase):
                              (document(), {'fill_missing': False, 'validation_retry': False})):
             job = self.job(value, **flags)
             with patch.object(app.backends, 'extract_status', return_value={'text_available': True}), \
-                    patch.object(app, 'extract_fields_stream', side_effect=lambda *a, **k: completed(value)), \
-                    patch.object(app, 'prepare_input') as prepare:
+                    patch.object(engine, 'extract_fields_stream', side_effect=lambda *a, **k: completed(value)), \
+                    patch.object(engine, 'prepare_input') as prepare:
                 EngineAdapter(app).extraction(job, self.store)
             prepare.assert_not_called()
 
     def test_failed_image_preparation_keeps_ocr_and_original_fields(self):
         job = self.job(None, fill_missing=False, validation_retry=True)
         with patch.object(app.backends, 'extract_status', return_value={'text_available': True}), \
-                patch.object(app, 'extract_fields_stream', side_effect=lambda *a, **k: completed(document())), \
-                patch.object(app, 'prepare_input', side_effect=ValueError('image unavailable')):
+                patch.object(engine, 'extract_fields_stream', side_effect=lambda *a, **k: completed(document())), \
+                patch.object(engine, 'prepare_input', side_effect=ValueError('image unavailable')):
             result = EngineAdapter(app).extraction(job, self.store)
         self.assertEqual(result['text'], 'one\ntwo')
         self.assertEqual(result['extracted']['fields'], SHIFTED)

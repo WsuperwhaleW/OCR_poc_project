@@ -523,7 +523,7 @@ def main(argv=None):
                         help="run without the concat agent, to compare")
     args = parser.parse_args(argv)
 
-    import app
+    import engine  # the pipeline (and its table agents) moved out of app.py
     import backends
     import prompts
     import scoring
@@ -541,9 +541,9 @@ def main(argv=None):
     if not status.get("text_available", status.get("available")):
         parser.error("no extraction model available at %s" % status.get("url"))
     print("fix agent on %s at %s" % (status.get("model"), status.get("url")))
-    app.TABLE_FIX_AGENT = True
-    app.TABLE_CONCAT_AGENT = not args.no_concat
-    app.TABLE_IDENTIFY_AGENT = False
+    engine.TABLE_FIX_AGENT = True
+    engine.TABLE_CONCAT_AGENT = not args.no_concat
+    engine.TABLE_IDENTIFY_AGENT = False
 
     manifest = {c["id"]: c for c in scoring.load_manifest()}
     wanted = args.cases or sorted(p.stem for p in TABLES_DIR.glob("sol*.md"))
@@ -563,7 +563,7 @@ def main(argv=None):
             # The form the app would ask: a type that rules its own table (a
             # withholding certificate) is not looked at for an item table.
             form = {"doc_types": codes, "items": prompts.items_for_types(codes)}
-            table = app._item_table(doc_text, form, status, pages, {})
+            table = engine._item_table(doc_text, form, status, pages, {})
             if table is ...:
                 skipped += 1
             elif isinstance(table, dict) and "rows" in table:

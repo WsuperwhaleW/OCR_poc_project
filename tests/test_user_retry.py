@@ -6,6 +6,7 @@ from concurrent.futures import ThreadPoolExecutor
 from unittest.mock import patch
 
 import app
+import engine
 import userprompts
 from userpipeline import EngineAdapter, UserService
 from userstore import UserStore
@@ -100,9 +101,9 @@ class UserExtractionRetryTests(unittest.TestCase):
             return {'doc_types': ['INVOICE'], 'fields': {'document_number': 'NEW'}}
         with patch.object(app.backends, 'status', side_effect=AssertionError('No OCR probe')), \
              patch.object(app.backends, 'extract_status', return_value=status), \
-             patch.object(app, 'prepare_input', side_effect=AssertionError('No OCR or image re-read')), \
-             patch.object(app, 'extract_fields_stream', side_effect=extract), \
-             patch.object(app, 'image_rechecks_needed', return_value=False):
+             patch.object(engine, 'prepare_input', side_effect=AssertionError('No OCR or image re-read')), \
+             patch.object(engine, 'extract_fields_stream', side_effect=extract), \
+             patch.object(engine, 'image_rechecks_needed', return_value=False):
             response = self.retry()
             self.assertEqual(response.status_code, 202, response.data)
             child_id = response.json['job']['id']

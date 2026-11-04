@@ -18,6 +18,7 @@ import unittest
 from unittest.mock import patch
 
 import app
+import engine
 import prompts
 
 VLLM = {"kind": "vllm", "url": "http://gpu:8000", "reachable": True,
@@ -78,9 +79,9 @@ class StallAlertTests(unittest.TestCase):
         self.table = app.steps_for_types(CODES)
         self.assertGreater(len(self.table), 1)
         self.patches = [
-            patch.object(app, "EXTRACT_LOOP_ABORT", True),
-            patch.object(app, "loop_guard", return_value=True),
-            patch.object(app, "VLLM_PREFIX_WARMUP", False),
+            patch.object(engine, "EXTRACT_LOOP_ABORT", True),
+            patch.object(engine, "loop_guard", return_value=True),
+            patch.object(engine, "VLLM_PREFIX_WARMUP", False),
             patch.object(app.servertime, "_fetch", return_value=None),
             patch.object(app.backends, "extract_status", return_value=VLLM),
             patch.object(app.requests, "post", side_effect=_post),
@@ -126,7 +127,7 @@ class StallAlertTests(unittest.TestCase):
                 "submitted": time.perf_counter(), "deadline": None, "log": False}
         live = app._StressLive(1)
         out = {}
-        with patch.object(app, "_ask_step", ask), \
+        with patch.object(engine, "_ask_step", ask), \
              patch.object(app, "extract_fields", side_effect=extract):
             worker = threading.Thread(target=lambda: out.update(
                 rec=app._stress_job(spec, cfg, prepared, app.MultiCancel(), live)))

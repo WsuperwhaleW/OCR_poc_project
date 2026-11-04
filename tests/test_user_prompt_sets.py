@@ -9,6 +9,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import app
+import engine
 import prompts
 import userjson
 import userpromptsets
@@ -447,8 +448,8 @@ class UserPromptSetTests(unittest.TestCase):
             values = {key:'' for key in step['keys']}
             values.update({k:v for k,v in {'document_number':'IV-42','subtotal':'100','amount_incl_vat':'107'}.items() if k in values})
             return values,[json.dumps(values)],False,1,False
-        with EngineAdapter(app).context('execute_t04',cfg), patch.object(app,'_ask_step',side_effect=ask), \
-                patch.object(app,'AGENTIC_RETRIES',0),patch.object(app,'AGENTIC_PARALLEL',False):
+        with EngineAdapter(app).context('execute_t04',cfg), patch.object(engine,'_ask_step',side_effect=ask), \
+                patch.object(engine,'AGENTIC_RETRIES',0),patch.object(engine,'AGENTIC_PARALLEL',False):
             extracted = app._drain(app._extract_document('ใบส่งของ/ใบกำกับภาษี\nIV-42\n100\n107', 'hybrid', None, None,
                 ['DELIVERY_TAX_INVOICE','TAX_INVOICE'], {'kind':'ollama','url':'http://mock','model':'mock'}))
             self.assertNotIn('error',extracted,extracted)
@@ -559,8 +560,8 @@ class UserPromptSetTests(unittest.TestCase):
             values = {key:'' for key in step['keys']}
             return values,[json.dumps(values)],False,1,False
         with EngineAdapter(app).context('disabled_required',self.cfg()), \
-                patch.object(app,'_ask_step',side_effect=ask),patch.object(app,'AGENTIC_PARALLEL',False), \
-                patch.object(app,'AGENTIC_RETRIES',0):
+                patch.object(engine,'_ask_step',side_effect=ask),patch.object(engine,'AGENTIC_PARALLEL',False), \
+                patch.object(engine,'AGENTIC_RETRIES',0):
             result = app._drain(app._extract_document('INVOICE', 'hybrid',None,None,['INVOICE'],
                 {'kind':'ollama','model':'fake','url':'http://mock'}))
             self.assertNotIn('document_number',result['classified']['mandatory'])
@@ -618,8 +619,8 @@ class UserPromptSetTests(unittest.TestCase):
                  ['INVOICE_TAX_INVOICE','RECEIPT'],['RECEIPT_TAX_INVOICE','INVOICE'])
         def ask(content,step,status,collect=None):
             return {key:'' for key in step['keys']},[],False,0,False
-        with EngineAdapter(app).context('mixed_edits',cfg),patch.object(app,'_ask_step',side_effect=ask), \
-                patch.object(app,'AGENTIC_RETRIES',0),patch.object(app,'AGENTIC_PARALLEL',False):
+        with EngineAdapter(app).context('mixed_edits',cfg),patch.object(engine,'_ask_step',side_effect=ask), \
+                patch.object(engine,'AGENTIC_RETRIES',0),patch.object(engine,'AGENTIC_PARALLEL',False):
             for pair in pairs:
                 with self.subTest(pair=pair):
                     codes = list(dict.fromkeys(c for kind in pair for c in userpromptsets.codes_for(kind)))
@@ -638,8 +639,8 @@ class UserPromptSetTests(unittest.TestCase):
     def extract(self, codes, cfg=None):
         def ask(content,step,status,collect=None):
             return {key:'' for key in step['keys']},[],False,0,False
-        with EngineAdapter(app).context('extract',cfg or self.cfg()),patch.object(app,'_ask_step',side_effect=ask), \
-                patch.object(app,'AGENTIC_RETRIES',0),patch.object(app,'AGENTIC_PARALLEL',False):
+        with EngineAdapter(app).context('extract',cfg or self.cfg()),patch.object(engine,'_ask_step',side_effect=ask), \
+                patch.object(engine,'AGENTIC_RETRIES',0),patch.object(engine,'AGENTIC_PARALLEL',False):
             return app._drain(app._extract_document('printed evidence','hybrid',None,None,codes,
                 {'kind':'ollama','url':'http://mock','model':'fake'},extras=False))
 

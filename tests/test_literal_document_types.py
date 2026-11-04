@@ -5,6 +5,7 @@ import unittest
 from unittest.mock import Mock, patch
 
 import app
+import engine
 import normalise
 import prompts
 import userjson
@@ -78,10 +79,10 @@ class LiteralDocumentTypesTests(unittest.TestCase):
         def classify(codes, heading, text=None):
             answer = json.dumps({'types': codes, 'heading': heading})
             reply = Mock(status_code=200)
-            with patch.object(app, 'CLASSIFY_WITH_MODEL', True), \
+            with patch.object(engine, 'CLASSIFY_WITH_MODEL', True), \
                  patch.object(app.backends, 'structured_request', return_value=('local', {})), \
                  patch.object(app.backends, 'structured_reply', return_value=(answer, None, None)), \
-                 patch.object(app, '_timed_post', return_value=reply):
+                 patch.object(engine, '_timed_post', return_value=reply):
                 return app._classify_with_model(text or heading, {})[0]
         self.assertEqual(classify(['DELIVERY_TAX_INVOICE'], 'TAX INVOICE'), [])
         self.assertEqual(classify(['CANCELLATION_NOTE'], 'ใบแจ้งหนี้'), [])

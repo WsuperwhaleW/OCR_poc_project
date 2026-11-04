@@ -6,7 +6,7 @@ import unittest
 from unittest import mock
 
 import app
-
+import engine
 READ = {"kind": "vllm", "url": "http://read:8000", "model": "typhoon"}
 EXTRACT = {"kind": "vllm", "url": "http://extract:8000", "model": "qwen"}
 OLLAMA = {"kind": "ollama", "url": "http://local:11434", "model": "gemma"}
@@ -54,7 +54,7 @@ class RunWatchesBothTests(unittest.TestCase):
     def test_an_extract_run_samples_the_reader_too(self):
         result = {"tokens": 10, "field_score": {"overall": {
             "counts": {"correct": 1, "partial": 0}, "expected": 1}}}
-        with mock.patch.object(app, "llama_status", return_value=READ),              mock.patch.object(app.backends, "extract_status",
+        with mock.patch.object(engine, "llama_status", return_value=READ),              mock.patch.object(app.backends, "extract_status",
                                return_value=dict(EXTRACT, text_available=True,
                                                  text_reason=None)),              mock.patch.object(app, "extract_fields", return_value=result),              mock.patch.object(app, "_vllm_metrics",
                                return_value={"vllm:num_requests_running": 0.0}):

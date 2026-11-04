@@ -13,7 +13,7 @@ from unittest.mock import patch
 from PIL import Image, ImageDraw
 
 import app
-
+import engine
 A4 = (1240, 1754)                     # 150 DPI
 
 
@@ -101,14 +101,14 @@ class LoadPagesTests(unittest.TestCase):
 
     def test_the_cap_counts_pieces_and_the_total_says_what_was_dropped(self):
         data = tiff([stack([page(), page(), page()]), page()])
-        with patch.object(app, "MAX_PAGES", 2):
+        with patch.object(engine, "MAX_PAGES", 2):
             pages, total = app.load_pages(data)
         # Two frames decoded at a cap of 2: three pieces and one page -- of
         # which two are read.
         self.assertEqual((len(pages), total), (2, 4))
 
     def test_it_can_be_turned_off(self):
-        with patch.object(app, "SPLIT_STACKED_PAGES", False):
+        with patch.object(engine, "SPLIT_STACKED_PAGES", False):
             pages, total = app.load_pages(tiff([stack([page(), page()])]))
         self.assertEqual((len(pages), total), (1, 1))
 

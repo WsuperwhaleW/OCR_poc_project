@@ -1,7 +1,7 @@
 """The real engine, end to end, against a fake model server: the refactor guard.
 
-Built 2026-11-04 for the worker-service plan. `app.py` is about to be split into
-a shared engine plus `service_app.py` and the benchmark; nothing about what the
+Built 2026-11-04 for the worker-service plan, before `app.py` was split into a
+shared `engine.py`, `service_app.py` and the benchmark; nothing about what the
 User pipeline sends to the model or returns may change while that happens. Only
 the model HTTP is fake (`tests/fakemodel.py`); image preparation, OCR streaming,
 grouping, Hybrid extraction, image rechecks, validation and User JSON all run.
@@ -19,7 +19,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-import app
+import engine
 import runlog
 import userjson
 from tests.fakemodel import OCR_MODEL, TEXT_MODEL, FakeModelServer
@@ -60,7 +60,7 @@ def run_pipeline(files=FILES, timeout=240):
             FakeModelServer(OCR_MODEL) as ocr, FakeModelServer(TEXT_MODEL) as text:
         store = UserStore(Path(directory) / 'user', 32)
         store.save_settings({**store.settings(), 'ocr_url': ocr.url, 'extraction_url': text.url})
-        adapter = EngineAdapter(app)
+        adapter = EngineAdapter(engine)
         cfg = adapter.snapshot(store.settings())
         cfg['prompt_profiles'] = store.prompt_profiles()
         cfg['prompt_sets'] = store.prompt_set_snapshot()

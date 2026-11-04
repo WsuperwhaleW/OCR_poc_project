@@ -8,6 +8,7 @@ import unittest
 from unittest import mock
 
 import app
+import engine
 import concurrencysweep as cs
 
 VLLM = {"kind": "vllm", "url": "http://vllm:8000", "model": "qwen"}
@@ -143,7 +144,7 @@ class _FakeVllm:
 
 class SweepRunTests(unittest.TestCase):
     def _patches(self, fake, server=VLLM):
-        return [mock.patch.object(app, "llama_status", return_value=server),
+        return [mock.patch.object(engine, "llama_status", return_value=server),
                 mock.patch.object(app.backends, "extract_status",
                                   return_value=dict(server, text_available=True,
                                                     text_reason=None)),
@@ -289,7 +290,7 @@ class SweepRunTests(unittest.TestCase):
         for p in patches:
             p.start()
         try:
-            with mock.patch.object(app, "log_extract") as logged:
+            with mock.patch.object(engine, "log_extract") as logged:
                 cfg = app._stress_config({"mode": "extract", "sweep": "1,2,4", "sweep_jobs": 3,
                                           "warmup": 1, "seed": 1, "save_log": True})
                 events = [json.loads(x) for x in app._stress_run(cfg, app.MultiCancel())]

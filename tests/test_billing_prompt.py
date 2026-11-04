@@ -6,6 +6,7 @@ import unittest
 from unittest.mock import patch
 
 import app
+import engine
 import prompts
 import extractionlog
 
@@ -78,8 +79,8 @@ Total amount billed 240.00
                     requests.append((message, keys, schema))
                     return json.dumps({k: answers[k] for k in keys}), False, 30
 
-                with patch.object(app, '_chat', side_effect=chat), \
-                     patch.object(app, 'AGENTIC_PARALLEL', False):
+                with patch.object(engine, '_chat', side_effect=chat), \
+                     patch.object(engine, 'AGENTIC_PARALLEL', False):
                     result = app._drain(app._extract_agentic(text, status, form, only=['buyer', 'totals'], mode='hybrid'))
                 self.assertNotIn('error', result)
                 self.assertEqual(len(requests), 2)
@@ -108,7 +109,7 @@ Total amount billed 240.00
         step = next(s for s in hybrid_steps(['BILLING_NOTE'], extras=False) if s['id'] == 'totals')
         replies = [(' {"subtotal":"240.00","vat_total":"","amount_incl_vat":""}', False, 10),
                    (' {"billing_total":"240.00","vat_total":"","amount_incl_vat":""}', False, 10)]
-        with patch.object(app, '_chat', side_effect=replies) as chat:
+        with patch.object(engine, '_chat', side_effect=replies) as chat:
             values, raw, _, _, _ = app._ask_step('question', step, {'kind': 'vllm'})
         self.assertEqual(values['subtotal'], '240.00')
         self.assertEqual(len(raw), 2)
@@ -119,7 +120,7 @@ Total amount billed 240.00
         step = next(s for s in hybrid_steps(['BILLING_NOTE'], extras=False) if s['id'] == 'totals')
         replies = [(' {"billing_total":"invented","vat_total":"","amount_incl_vat":""}', False, 10),
                    (' {"billing_total":"240.00","vat_total":"","amount_incl_vat":""}', False, 10)]
-        with patch.object(app, '_chat', side_effect=replies) as chat:
+        with patch.object(engine, '_chat', side_effect=replies) as chat:
             record, values, _, _ = app._run_step(step, 'printed total 240.00',
                 hybrid_question(step, ['BILLING_NOTE']), {'kind': 'vllm'}, app.grounding.Source('240.00'))
         self.assertTrue(record['retried'])

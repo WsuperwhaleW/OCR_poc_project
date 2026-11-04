@@ -21,6 +21,7 @@ import unittest
 from unittest.mock import patch
 
 import app
+import engine
 import runlog
 
 MOCKS = pathlib.Path("mockOcr")
@@ -38,13 +39,13 @@ class LoadPagesTests(unittest.TestCase):
         self.assertEqual((len(pages), total), (1, 1))
 
     def test_a_long_file_reports_what_it_dropped(self):
-        with patch.object(app, "MAX_PAGES", 10):
+        with patch.object(engine, "MAX_PAGES", 10):
             pages, total = app.load_pages(pdf(LONG))
         self.assertEqual(len(pages), 10)
         self.assertEqual(total, 13)
 
     def test_raising_the_cap_reads_all_of_it(self):
-        with patch.object(app, "MAX_PAGES", 200):
+        with patch.object(engine, "MAX_PAGES", 200):
             pages, total = app.load_pages(pdf(LONG))
         self.assertEqual((len(pages), total), (13, 13))
 
@@ -53,7 +54,7 @@ class LoadPagesTests(unittest.TestCase):
         request: *no cap page*). The trap it replaced is why `_capped` exists:
         `min(total, 0)` and `zip(frames, range(0))` both read NOTHING rather
         than everything, and the first of those shipped for about a minute."""
-        with patch.object(app, "MAX_PAGES", 0):
+        with patch.object(engine, "MAX_PAGES", 0):
             pages, total = app.load_pages(pdf(LONG))
         self.assertEqual((len(pages), total), (13, 13))
 
@@ -79,7 +80,7 @@ class CoverageTests(unittest.TestCase):
     """What a summary carries, read back off the job the read registered."""
 
     def summary_for(self, path, cap):
-        with patch.object(app, "MAX_PAGES", cap):
+        with patch.object(engine, "MAX_PAGES", cap):
             prepared, detail, job, _case = app.prepare_input(
                 pdf(path), "low", source={"kind": "test"})
         stats = [{"new_tokens": 1, "decode_seconds": 0.1} for _ in prepared]
@@ -114,7 +115,7 @@ class PreviewTests(unittest.TestCase):
         self.client = app.app.test_client()
 
     def headers_for(self, form, cap=10):
-        with patch.object(app, "MAX_PAGES", cap):
+        with patch.object(engine, "MAX_PAGES", cap):
             res = self.client.post("/api/preview", data=form)
         if res.status_code != 200:
             # Only decode on failure: a success returns a PNG, and assertEqual
@@ -141,7 +142,7 @@ class PreviewTests(unittest.TestCase):
 
     def test_an_upload_is_measured_the_same_way(self):
         data = pdf(LONG)
-        with patch.object(app, "MAX_PAGES", 10):
+        with patch.object(engine, "MAX_PAGES", 10):
             res = self.client.post(
                 "/api/preview",
                 data={"detail": "low", "image": (io.BytesIO(data), "x.pdf")},

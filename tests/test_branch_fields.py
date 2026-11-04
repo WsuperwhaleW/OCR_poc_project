@@ -6,6 +6,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import app
+import engine
 import extractionlog
 import fieldscore
 import normalise
@@ -119,7 +120,7 @@ class BranchContractTests(unittest.TestCase):
             values = {k: expected.get(k, '') for k in keys}
             return json.dumps(values, ensure_ascii=False), False, 20
 
-        with patch.object(app, '_chat', side_effect=chat), patch.object(app, 'AGENTIC_PARALLEL', False):
+        with patch.object(engine, '_chat', side_effect=chat), patch.object(engine, 'AGENTIC_PARALLEL', False):
             result = app._drain(app._extract_agentic(text,
                 {'kind': 'vllm', 'url': 'http://mock:8001', 'model': 'mock'}, form))
         self.assertNotIn('error', result)

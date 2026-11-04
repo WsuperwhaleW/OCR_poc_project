@@ -9,6 +9,7 @@ from pathlib import Path
 from unittest.mock import Mock, patch
 
 import app
+import engine
 import config
 import grounding
 import prompts
@@ -25,7 +26,7 @@ FORM = {"doc_types": ["INVOICE"], "items": (),
 
 class StepTests(unittest.TestCase):
     def test_default_uses_json_then_schema_only_when_parse_fails(self):
-        with patch.object(app, "_chat", side_effect=[("bad JSON", False, 1),
+        with patch.object(engine, "_chat", side_effect=[("bad JSON", False, 1),
                                                     ('{"document_number":"A"}', False, 2)]) as chat:
             values, _, _, tokens, _ = app._ask_step("same prompt", STEP, STATUS)
         self.assertEqual(values["document_number"], "A")
@@ -34,7 +35,7 @@ class StepTests(unittest.TestCase):
         self.assertEqual(chat.call_args_list[1].args[3], app._step_schema(STEP))
 
     def test_enabled_uses_step_schema_on_first_request(self):
-        with patch.object(app, "_chat", return_value=('{"document_number":"A"}', False, 2)) as chat:
+        with patch.object(engine, "_chat", return_value=('{"document_number":"A"}', False, 2)) as chat:
             app._ask_step("same prompt", {**STEP, "schema_first": True}, STATUS)
         chat.assert_called_once_with("same prompt", STEP["max_tokens"], STATUS, app._step_schema(STEP))
 
@@ -45,7 +46,7 @@ class StepTests(unittest.TestCase):
                                       "usage": {"completion_tokens": 2}}
         sent = []
         for on in (False, True):
-            with patch.object(app, "_timed_post", return_value=response) as post:
+            with patch.object(engine, "_timed_post", return_value=response) as post:
                 app._ask_step("identical prompt", {**STEP, "schema_first": on}, STATUS)
             sent.append(post.call_args.args[1])
         self.assertEqual(sent[0]["messages"], sent[1]["messages"])
@@ -55,17 +56,17 @@ class StepTests(unittest.TestCase):
 
     def test_schema_failure_is_surfaced_without_silent_plain_fallback(self):
         for reply in ("invalid JSON",):
-            with patch.object(app, "_chat", return_value=(reply, False, 2)) as chat:
+            with patch.object(engine, "_chat", return_value=(reply, False, 2)) as chat:
                 with self.assertRaises(ValueError):
                     app._ask_step("x", {**STEP, "schema_first": True}, STATUS)
                 self.assertEqual(chat.call_count, 1)
-        with patch.object(app, "_chat", side_effect=ValueError("HTTP 400 schema unsupported")) as chat:
+        with patch.object(engine, "_chat", side_effect=ValueError("HTTP 400 schema unsupported")) as chat:
             with self.assertRaisesRegex(ValueError, "schema unsupported"):
                 app._ask_step("x", {**STEP, "schema_first": True}, STATUS)
             self.assertEqual(chat.call_count, 1)
 
     def test_grounding_reask_keeps_the_schema_and_corrects_the_value(self):
-        with patch.object(app, "AGENTIC_RETRIES", 1), patch.object(app, "_chat", side_effect=[
+        with patch.object(engine, "AGENTIC_RETRIES", 1), patch.object(engine, "_chat", side_effect=[
                 ('{"document_number":"invented"}', False, 2),
                 ('{"document_number":"INV-123"}', False, 2)]) as chat:
             record, values, _, _ = app._run_step(
@@ -88,9 +89,9 @@ class StepTests(unittest.TestCase):
         def run(on):
             return app._drain(app._extract_agentic("A", STATUS, {**FORM, "schema_first": on}))
 
-        with patch.object(app, "steps_for_types", return_value=(STEP,)), \
-             patch.object(app, "_steps_for", return_value=(STEP,)), \
-             patch.object(app, "_chat", side_effect=chat), ThreadPoolExecutor(max_workers=2) as pool:
+        with patch.object(engine, "steps_for_types", return_value=(STEP,)), \
+             patch.object(engine, "_steps_for", return_value=(STEP,)), \
+             patch.object(engine, "_chat", side_effect=chat), ThreadPoolExecutor(max_workers=2) as pool:
             results = list(pool.map(run, [False, True]))
         self.assertEqual(len(results), 2)
         self.assertEqual(set(seen.values()), {False, True})
@@ -113,9 +114,9 @@ class RequestTests(unittest.TestCase):
             return {"mode": "agentic", "fields": {}, "schema_first": kwargs["schema_first"]}
 
         for url in ("/api/extract", "/api/extract/stream"):
-            with self.subTest(url=url), patch.object(app, "log_extract"), \
+            with self.subTest(url=url), patch.object(engine, "log_extract"), \
                  patch.object(app, "extract_fields", return_value={"fields": {}}) as blocking, \
-                 patch.object(app, "extract_fields_stream", side_effect=stream) as streaming:
+                 patch.object(engine, "extract_fields_stream", side_effect=stream) as streaming:
                 response = self.client.post(url, json={"text": "A", "mode": "agentic", "schema_first": True})
                 self.assertEqual(response.status_code, 200)
                 response.get_data()
@@ -156,11 +157,11 @@ class RequestTests(unittest.TestCase):
             return ([{"text": "A", "pages": [i], "codes": ["INVOICE"]} for i in (1, 2)], "test")
 
         with patch.object(app.backends, "extract_status", return_value=STATUS), \
-             patch.object(app, "_segment_stream", side_effect=segment), \
-             patch.object(app, "steps_for_types", return_value=(STEP,)), \
-             patch.object(app, "_steps_for", return_value=(STEP,)), \
-             patch.object(app, "TABLE_EXTRACT", False), \
-             patch.object(app, "_chat", return_value=('{"document_number":"A"}', False, 2)) as chat:
+             patch.object(engine, "_segment_stream", side_effect=segment), \
+             patch.object(engine, "steps_for_types", return_value=(STEP,)), \
+             patch.object(engine, "_steps_for", return_value=(STEP,)), \
+             patch.object(engine, "TABLE_EXTRACT", False), \
+             patch.object(engine, "_chat", return_value=('{"document_number":"A"}', False, 2)) as chat:
             result = app.extract_fields("A", "agentic", doc_type=["INVOICE"], schema_first=True)
         self.assertTrue(result["schema_first"])
         self.assertTrue(all(d["schema_first"] for d in result["documents"]))

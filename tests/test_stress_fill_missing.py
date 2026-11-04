@@ -7,6 +7,7 @@ from unittest.mock import patch
 from PIL import Image
 
 import app
+import engine
 import prompts
 import stress
 
@@ -66,7 +67,7 @@ class FullFillTests(unittest.TestCase):
         with patch.object(app, "_STRESS_EVIDENCE", app._StressEvidence(10)), \
                 patch.object(app, "_stress_read", side_effect=read), \
                 patch.object(app, "extract_fields", return_value=result) as extract, \
-                patch.object(app, "_fill_ask", side_effect=fill):
+                patch.object(engine, "_fill_ask", side_effect=fill):
             rec = app._stress_job(spec, cfg, prepared, app.MultiCancel(), live)
             alerts = live.take_alerts()
             with app.app.test_client() as client:
@@ -156,7 +157,7 @@ class FullFillTests(unittest.TestCase):
 
         status = {"text_available": True}
         with patch.object(app.backends, "extract_status", return_value=status), \
-                patch.object(app, "_extract_agentic", side_effect=agentic):
+                patch.object(engine, "_extract_agentic", side_effect=agentic):
             app._fill_ask([_page()], {"doc_types": []}, ["totals"])
         text, only, mode, fed = seen[0]
         self.assertEqual((only, mode, fed), (["totals"], "hybrid", True))
@@ -168,7 +169,7 @@ class FillToggleConfigTests(unittest.TestCase):
     def _config(self, **body):
         status = {"available": True, "text_available": True, "model": "m",
                   "url": "http://x", "kind": "ollama"}
-        with patch.object(app, "llama_status", return_value=status), \
+        with patch.object(engine, "llama_status", return_value=status), \
                 patch.object(app.backends, "extract_status", return_value=status):
             return app._stress_config(body)
 

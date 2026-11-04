@@ -4,6 +4,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 import app
+import engine
 import stress
 
 
@@ -41,7 +42,7 @@ class StressDryRetryTests(unittest.TestCase):
             return "text " + page._stress_origin["detail"]
 
         live, rec = app._StressLive(1), {}
-        with patch.object(app, "read_page", side_effect=read), \
+        with patch.object(engine, "read_page", side_effect=read), \
                 patch.object(app, "_stress_retry_page", side_effect=retry):
             texts, looped, _ = app._stress_read([_page(start)], app.MultiCancel(),
                                                 rec, live, job=1, case="sol003")

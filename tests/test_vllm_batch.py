@@ -12,6 +12,7 @@ from unittest.mock import patch
 from PIL import Image
 
 import app
+import engine
 import servertime
 import vllmbatch
 
@@ -111,7 +112,7 @@ class AppPathTests(unittest.TestCase):
     def setUp(self):
         self.calls = []
         self.batcher = vllmbatch.Batcher(2, _echo(self.calls), wait=0.05)
-        patcher = patch.object(app, "_batcher", self.batcher)
+        patcher = patch.object(engine, "_batcher", self.batcher)
         patcher.start()
         self.addCleanup(patcher.stop)
         timing = patch.object(servertime.settings, "SERVER_TIMING_METRICS", False)
@@ -141,7 +142,7 @@ class AppPathTests(unittest.TestCase):
     def test_a_failed_batch_is_a_failed_reply_not_a_crash(self):
         def send(url, body):
             raise vllmbatch.BatchError("this vLLM build has no batch route", 404)
-        with patch.object(app, "_batcher", vllmbatch.Batcher(1, send)):
+        with patch.object(engine, "_batcher", vllmbatch.Batcher(1, send)):
             reply = app._post_once(CHAT, _payload("p", stream=False), VLLM)
         self.assertEqual(reply.status_code, 404)
         self.assertIn("no batch route", reply.text)
@@ -150,8 +151,8 @@ class AppPathTests(unittest.TestCase):
         page = Image.new("RGB", (64, 64), "white")
         app.tag_page(page, "sol003 p1/2", "low")
         stats = {}
-        with patch.object(app, "llama_status", return_value=VLLM), \
-             patch.object(app, "chat_url", return_value=CHAT), \
+        with patch.object(engine, "llama_status", return_value=VLLM), \
+             patch.object(engine, "chat_url", return_value=CHAT), \
              patch.object(app.backends, "model_window", return_value=None), \
              patch.object(app.backends.settings, "vllm_xargs",
                           return_value={"dry_multiplier": 0.8}):
@@ -171,10 +172,10 @@ class AppPathTests(unittest.TestCase):
         def post(url, status, json=None, **kwargs):
             sent.update(json)
             raise RuntimeError("sent")
-        with patch.object(app, "llama_status", return_value=VLLM), \
-             patch.object(app, "chat_url", return_value=CHAT), \
+        with patch.object(engine, "llama_status", return_value=VLLM), \
+             patch.object(engine, "chat_url", return_value=CHAT), \
              patch.object(app.backends, "model_window", return_value=None), \
-             patch.object(app, "_batcher_for", return_value=None), \
+             patch.object(engine, "_batcher_for", return_value=None), \
              patch.object(app.backends.settings, "vllm_xargs",
                           return_value={"dry_multiplier": 0.8}), \
              patch.object(app.backends, "http_post", post):

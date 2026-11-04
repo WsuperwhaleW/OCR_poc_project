@@ -7,6 +7,7 @@ from unittest.mock import patch
 from PIL import Image
 
 import app
+import engine
 import stress
 
 
@@ -99,7 +100,7 @@ class ImageJobTests(unittest.TestCase):
 
         with patch.object(app, "_STRESS_EVIDENCE", app._StressEvidence(10)), \
                 patch.object(app, "extract_fields", side_effect=extract), \
-                patch.object(app, "LOOP_RETRY", loop_retry), \
+                patch.object(engine, "LOOP_RETRY", loop_retry), \
                 patch.object(app, "_stress_retry_page",
                              side_effect=lambda p: retry_page):
             rec = app._stress_job(spec, cfg, prepared, app.MultiCancel(), live)

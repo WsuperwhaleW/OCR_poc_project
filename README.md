@@ -258,6 +258,21 @@ $env:LLAMA_URL="http://127.0.0.1:11434"; $env:EXTRACT_URL="http://127.0.0.1:1143
 LLAMA_URL=http://127.0.0.1:11434 EXTRACT_URL=http://127.0.0.1:11434 PORT=8000 python app.py
 ```
 
+### The User service alone: `service_app.py`
+
+```bash
+python service_app.py
+```
+
+This serves only the upload portal at `/user` (and `/` redirects there), its `/api/user/*`
+calls and `/api/schema`. It has no benchmark page, no `/static`, no stress test, sweep,
+random test or scoring. It runs on the same engine as `python app.py` (`engine.py`, split
+out of `app.py` on 2026-11-04), so a file gives the same result in both. The User queue
+starts at boot, not on the first request. It uses waitress when that is installed, and
+Flask's threaded server otherwise. Run **one** process per data directory.
+
+`app.py` stays the development and benchmark app. It serves `/user` as before.
+
 ### Two copies at once
 
 Run `python app.py` a second time, in another terminal, and the second copy takes the next
@@ -4190,7 +4205,10 @@ still never parses `.env` itself.
 
 | File | What it owns |
 |---|---|
-| `app.py` | Flask routes, image preparation, both passes, streaming |
+| `engine.py` | Image preparation, both passes, streaming, grouping, extraction, checks: everything the User pipeline runs, with no Flask app |
+| `app.py` | The benchmark app: its routes, scoring, stress test and sweeps, on `engine.py`; also serves `/user` |
+| `service_app.py` | The User service alone: `/user` and its API on `engine.py`, no benchmark module |
+| `webcommon.py` | Web plumbing both apps share: sub-path mount, per-tab workspace, gzip, JSON-body check |
 | `settings.py` | Every tunable the app runs with — limits, timeouts, detail presets, sampling, loop thresholds |
 | `prompts.py` | The prompts, and nothing else — the ones the passes send, plus the step table agentic extraction walks |
 | `config.py` | Every path and the typed environment readers. The only place that knows where anything lives |

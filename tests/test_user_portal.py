@@ -13,6 +13,7 @@ from unittest.mock import patch
 from PIL import Image
 
 import app
+import engine
 import userpipeline
 import workspace
 from userpipeline import EngineAdapter, UserService
@@ -376,7 +377,7 @@ class UserWebTests(unittest.TestCase):
             response = self.client.post('/ocr/api/user/previews', data={'file': (io.BytesIO(data), 'three.pdf')})
             response.request.environ['wsgi.input'].close()
             return response
-        with patch.object(app, 'read_page') as ocr:
+        with patch.object(engine, 'read_page') as ocr:
             response = prepare()
             self.assertEqual(response.status_code, 201)
             self.assertEqual(response.json['pages'], 3)
@@ -558,7 +559,7 @@ class EngineAdapterTests(StoreCase):
                 {'document':1,'pages':[1],'fields':{'document_number':'A'}},
                 {'document':2,'pages':[2],'fields':{'document_number':'B'}}]}
         with patch.object(app.backends, 'extract_status', return_value={'text_available': True}), \
-                patch.object(app, 'extract_fields_stream', side_effect=stream):
+                patch.object(engine, 'extract_fields_stream', side_effect=stream):
             result = EngineAdapter(app).extraction(job, self.store)
         self.assertIn('เสร็จ 1/2 เอกสาร', seen[-2]['progress'])
         self.assertIn('เสร็จ 2/2 เอกสาร', seen[-1]['progress'])
@@ -580,7 +581,7 @@ class EngineAdapterTests(StoreCase):
                 seen.append(self.store.get(job['id'])['result']['classifications'])
             raise ValueError('extraction failed')
         with patch.object(app.backends, 'extract_status', return_value={'text_available': True}), \
-             patch.object(app, 'extract_fields_stream', side_effect=stream), \
+             patch.object(engine, 'extract_fields_stream', side_effect=stream), \
              self.assertRaisesRegex(ValueError, 'extraction failed'):
             EngineAdapter(app).extraction(job, self.store)
         self.assertEqual(len(seen[0]), 1)
@@ -618,8 +619,8 @@ class EngineAdapterTests(StoreCase):
             progress.append(self.store.get(job['id'])['progress'])
             return 'first page' if len(progress) == 1 else 'second page'
         with patch.object(app.backends, 'status', return_value=info), \
-             patch.object(app, '_page_parallelism', return_value=1), \
-             patch.object(app, 'read_page', side_effect=read):
+             patch.object(engine, '_page_parallelism', return_value=1), \
+             patch.object(engine, 'read_page', side_effect=read):
             result = adapter.ocr(job, self.store)
         self.assertEqual(result['pages'], ['first page', 'second page'])
         self.assertEqual(set(app._jobs), before)
@@ -639,7 +640,7 @@ class EngineAdapterTests(StoreCase):
             return {'fields': {'buyer_tax_id': '1234'}, 'mode': 'hybrid',
                     'raw': 'large reply', 'steps': [{'prompt': 'large prompt'}], 'field_score': {'fake': 'truth'}}
         with patch.object(app.backends, 'extract_status', return_value={'text_available': True}), \
-             patch.object(app, 'extract_fields_stream', side_effect=stream) as extract:
+             patch.object(engine, 'extract_fields_stream', side_effect=stream) as extract:
             result = EngineAdapter(app).extraction(job, self.store)
         self.assertEqual(extract.call_args.args[0], 'page text')
         self.assertEqual(extract.call_args.kwargs, dict(pages=['page text'], mode='hybrid', extras=False, schema_first=False))
@@ -649,7 +650,7 @@ class EngineAdapterTests(StoreCase):
     def test_workspace_cache_and_batcher_are_isolated_from_benchmark(self):
         previous = (workspace.current_id(), app.loop_guard(), app.backends.active_url())
         cfg = {**self.store.settings(), 'loop_guard': False, 'no_cache': True}
-        with EngineAdapter(app).context('isolation', cfg), patch.object(app, '_batcher', object()):
+        with EngineAdapter(app).context('isolation', cfg), patch.object(engine, '_batcher', object()):
             self.assertFalse(app.loop_guard())
             self.assertTrue(app.backends.prefix_cache_bypassed())
             self.assertIsNone(app._batcher_for('http://x/v1/chat/completions', {'kind': 'vllm'}))
@@ -666,7 +667,7 @@ class EngineAdapterTests(StoreCase):
                     'item_table': {'columns': ['Amount'], 'rows': [['10.00']],
                                    'fix_agent': {'prompt': 'large prompt'}, 'stages': [{'raw': 'large raw'}]}}
         with patch.object(app.backends, 'extract_status', return_value={'text_available': True}), \
-             patch.object(app, 'extract_fields_stream', side_effect=stream):
+             patch.object(engine, 'extract_fields_stream', side_effect=stream):
             result = EngineAdapter(app).extraction(job, self.store)
         self.assertTrue(result['warnings'])
         self.assertEqual(result['extracted']['steps_failed'][0]['id'], 'parties')

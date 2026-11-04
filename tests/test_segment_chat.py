@@ -28,6 +28,7 @@ import unittest
 from unittest.mock import patch
 
 import app
+import engine
 import prompts
 import segment
 
@@ -218,7 +219,7 @@ class BudgetTests(unittest.TestCase):
         pages = ["receipt %d" % n for n in range(1, 6)]
         server = Server(*[answer(True, "receipt %d" % n) for n in range(2, 6)])
         chat = app._SegmentChat(STATUS)
-        with patch.object(app, "SEGMENT_CHAT_MAX_ASKS", 2), \
+        with patch.object(engine, "SEGMENT_CHAT_MAX_ASKS", 2), \
              patch.object(app.requests, "post", server):
             segment.segment(pages, classify, ask=chat)
         self.assertEqual(chat.asked, 2)
@@ -262,7 +263,7 @@ class ProvenanceTests(unittest.TestCase):
     def test_with_the_walk_off_a_long_file_is_one_document(self):
         pages = ["receipt %d" % n for n in range(1, 26)]
         text = "\n\n".join(pages)
-        with patch.object(app, "SEGMENT_CHAT", False):
+        with patch.object(engine, "SEGMENT_CHAT", False):
             segments, how = app.resolve_segments(text, pages, STATUS)
         self.assertEqual(how, "whole")
         self.assertEqual(len(segments), 1)

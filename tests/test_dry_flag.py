@@ -6,6 +6,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 import app
+import engine
 import dryreplay
 import stress
 
@@ -94,10 +95,10 @@ class StreamPageTests(unittest.TestCase):
             return _Stream(chunks)
         page = app.Image.new("RGB", (64, 64), "white")
         stats = {}
-        with patch.object(app, "llama_status", return_value=VLLM), \
-             patch.object(app, "chat_url", return_value=CHAT), \
-             patch.object(app, "_batcher_for", return_value=None), \
-             patch.object(app, "loop_guard", return_value=guard), \
+        with patch.object(engine, "llama_status", return_value=VLLM), \
+             patch.object(engine, "chat_url", return_value=CHAT), \
+             patch.object(engine, "_batcher_for", return_value=None), \
+             patch.object(engine, "loop_guard", return_value=guard), \
              patch.object(app.backends, "model_window", return_value=None), \
              patch.object(app.backends.settings, "vllm_xargs", return_value=xargs), \
              patch.object(app.servertime, "_fetch", return_value=None), \
@@ -185,7 +186,7 @@ class StressFlagTests(unittest.TestCase):
             nxt = app.next_detail(page._stress_origin["detail"])
             return _page(nxt) if nxt else None
         live, rec = app._StressLive(1), {}
-        with patch.object(app, "read_page", side_effect=read), \
+        with patch.object(engine, "read_page", side_effect=read), \
                 patch.object(app, "_stress_retry_page", side_effect=up):
             app._stress_read([_page("low")], app.MultiCancel(), rec, live,
                              job=1, case="sol003")
@@ -255,7 +256,7 @@ class EvidenceTests(unittest.TestCase):
             nxt = app.next_detail(page._stress_origin["detail"])
             return page_at(nxt) if nxt else None
         live = app._StressLive(1, prefix="run-test-")
-        with patch.object(app, "read_page", side_effect=read), \
+        with patch.object(engine, "read_page", side_effect=read), \
                 patch.object(app, "_stress_retry_page", side_effect=up):
             app._stress_read([page_at("low")], app.MultiCancel(), {}, live,
                              job=1, case="sol003")
@@ -290,7 +291,7 @@ class EvidenceTests(unittest.TestCase):
             stats.update(truncated=True, new_tokens=10)
             return "cut short"
         live = app._StressLive(1, prefix="run-cap-")
-        with patch.object(app, "read_page", side_effect=read):
+        with patch.object(engine, "read_page", side_effect=read):
             app._stress_read([_page("low")], app.MultiCancel(), {}, live,
                              job=1, case="sol003")
         cap = next(a for a in live.take_alerts() if a["kind"] == "truncated")
@@ -301,7 +302,7 @@ class EvidenceTests(unittest.TestCase):
 
     def test_a_failed_read_carries_the_page_it_failed_on(self):
         live = app._StressLive(1, prefix="run-err-")
-        with patch.object(app, "read_page", side_effect=RuntimeError("server gone")):
+        with patch.object(engine, "read_page", side_effect=RuntimeError("server gone")):
             with self.assertRaises(RuntimeError) as caught:
                 app._stress_read([_page("low")], app.MultiCancel(), {}, live,
                                  job=1, case="sol003")

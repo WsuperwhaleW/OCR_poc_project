@@ -4,6 +4,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 import app
+import engine
 import stress
 
 
@@ -31,7 +32,7 @@ class StressLoopRetryTests(unittest.TestCase):
             return "text " + page._stress_origin["detail"]
 
         live, rec = app._StressLive(1), {}
-        with patch.object(app, "read_page", side_effect=read), \
+        with patch.object(engine, "read_page", side_effect=read), \
                 patch.object(app, "_stress_retry_page", side_effect=retry):
             texts, looped, _ = app._stress_read(pages, app.MultiCancel(), rec, live,
                                                 job=1, case="sol003")
@@ -87,7 +88,7 @@ class StressLoopRetryTests(unittest.TestCase):
         self.assertGreater(bigger.size[0] * bigger.size[1],
                            pages[0].size[0] * pages[0].size[1])
         self.assertTrue(bigger._data_uri.startswith("data:image/png;base64,"))
-        with patch.object(app, "LOOP_RETRY", False):
+        with patch.object(engine, "LOOP_RETRY", False):
             self.assertIsNone(app._stress_retry_page(pages[0]))
 
     def test_the_report_counts_retries(self):

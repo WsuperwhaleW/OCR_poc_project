@@ -218,232 +218,15 @@ try:
 except ImportError:  # pragma: no cover - optional dependency
     PDF_OK = False
 
-# PyMuPDF is not thread-safe: two threads inside MuPDF at once can crash the
-# whole process, which the page sees as a stream cut off mid-run
-# (ERR_INCOMPLETE_CHUNKED_ENCODING). Every PDF open and render holds this.
-_PDF_LOCK = threading.Lock()
+# The engine (input, read, grouping, extraction, checks) lives in engine.py;
+# this module is the benchmark app around it. See engine.py.
+import engine
+import webcommon
 
 
 app = Flask(__name__)
-# The file cap excludes the multipart envelope. request_input checks the bytes
-# of the actual upload; a file exactly at the advertised limit must still fit.
-app.config["MAX_CONTENT_LENGTH"] = (MAX_UPLOAD_MB + 1) * 1024 * 1024
-
-
-class _ProxyPrefix:
-    """Answer a request made under any path prefix as if it were made at `/`.
-
-    **Worked out per request, never configured** (2026-10-20): the app sits
-    behind a reverse proxy at a sub-path -- nginx serving `host:3000/OCR/` --
-    and the page builds every request from its own address, so whatever path
-    the page was reached at is the prefix. A proxy that strips the prefix
-    (`proxy_pass http://host:port/;`) sends plain `/api/...` and nothing here
-    happens. One that passes it through sends `/OCR/api/...`, and:
-
-    * `X-Forwarded-Prefix`, where the proxy sends one, is taken first;
-    * otherwise everything before `/api/` is the prefix -- every route but the
-      page itself lives under `/api/`;
-    * otherwise a GET for a path that is no route of this app and ends in `/`
-      (or has no dot in its last part) is the page, served at that prefix.
-
-    The prefix moves to SCRIPT_NAME, where Flask expects a mount point.
-    """
-
-    def __init__(self, flask_app):
-        self.flask_app = flask_app
-        self.wsgi = flask_app.wsgi_app
-
-    def _is_route(self, path: str, method: str) -> bool:
-        try:
-            self.flask_app.url_map.bind("localhost").match(path, method=method)
-            return True
-        except Exception:                           # NotFound, MethodNotAllowed, redirects
-            return False
-
-    def _prefix(self, environ, path: str) -> str:
-        forwarded = (environ.get("HTTP_X_FORWARDED_PREFIX") or "").strip().rstrip("/")
-        if forwarded and (path == forwarded or path.startswith(forwarded + "/")):
-            return forwarded
-        method = environ.get("REQUEST_METHOD", "GET")
-        if self._is_route(path, method):
-            return ""
-        # Match an actual nested route before falling back to the legacy mount
-        # heuristic: /ocr/user and /ocr/static/user/app.js are not the main page.
-        for match in re.finditer('/', path[1:]):
-            at = match.start() + 1
-            if self._is_route(path[at:], method):
-                return path[:at]
-        at = path.find("/api/")
-        if at > 0:
-            return path[:at]
-        last = path.rstrip("/").rsplit("/", 1)[-1]
-        if (method in ("GET", "HEAD") and path != "/" and not self._is_route(path, method)
-                and (path.endswith("/") or "." not in last)):
-            return path.rstrip("/")
-        return ""
-
-    def __call__(self, environ, start_response):
-        path = environ.get("PATH_INFO", "") or "/"
-        prefix = self._prefix(environ, path)
-        if prefix:
-            environ["SCRIPT_NAME"] = environ.get("SCRIPT_NAME", "") + prefix
-            environ["PATH_INFO"] = path[len(prefix):] or "/"
-        return self.wsgi(environ, start_response)
-
-
-app.wsgi_app = _ProxyPrefix(app)
-
-
-def _validate_api_json_object():
-    """JSON API bodies are objects; reject malformed/scalar input before handlers.
-
-    Leave multipart uploads and bodyless requests alone. Some endpoints use an
-    omitted body to select their saved defaults.
-    """
-    if (request.path.startswith('/api/')
-            and request.method in ('POST', 'PUT', 'PATCH', 'DELETE')
-            and request.is_json
-            and not isinstance(request.get_json(silent=True), dict)):
-        return jsonify(error='Request body must be a valid JSON object.'), 400
-
-
-_COMPRESSIBLE = ("text/", "application/json", "application/javascript",
-                 "application/wasm", "application/x-ndjson", "image/svg+xml")
-
-
-@app.before_request
-def _enter_workspace():
-    """Put this request in its browser tab's workspace -- see `workspace`.
-
-    The page sends its id as a header on every fetch, and as `?ws=` on the page
-    load itself, which no script can add a header to. Neither: the default
-    workspace, which is how every caller other than the page has always run.
-    """
-    workspace.enter(request.headers.get(workspace.HEADER) or request.args.get("ws"))
-
-
-def _gzip_stream(chunks):
-    """Gzip a streamed reply, flushing per chunk so each still arrives at once."""
-    packer = zlib.compressobj(6, zlib.DEFLATED, 31)
-    try:
-        for chunk in chunks:
-            chunk = chunk.encode("utf-8") if isinstance(chunk, str) else chunk
-            if chunk:
-                yield packer.compress(chunk) + packer.flush(zlib.Z_SYNC_FLUSH)
-        yield packer.flush()
-    finally:
-        # The stream's own `finally` is what releases a sweep guard.
-        close = getattr(chunks, "close", None)
-        if close:
-            close()
-
-
-@app.after_request
-def _gzip_response(response):
-    """Compress a text reply for a client that accepts it.
-
-    Added 2026-10-21 for JSON, at the user's request: *save time and data
-    transfer of log retriving*. Widened on 2026-11-02 because outbound transfer
-    is what the server is billed for: the page's HTML, scripts and styles
-    compress 3-4x and the ndjson reads were not compressed at all. A stream is
-    flushed chunk by chunk, so it still reaches the page line by line. Images
-    and PDFs are not worth compressing, and anything already encoded is left
-    alone, so a proxy in front can still compress whatever this does not.
-    """
-    if (response.status_code not in (200, 201, 202)
-            or not (response.mimetype or "").startswith(_COMPRESSIBLE)
-            or "Content-Encoding" in response.headers):
-        return response
-    response.vary.add("Accept-Encoding")
-    if "gzip" not in request.headers.get("Accept-Encoding", "").lower():
-        return response
-    if response.is_streamed and not response.direct_passthrough:
-        response.response = _gzip_stream(response.response)
-        response.headers.pop("Content-Length", None)
-    else:
-        response.direct_passthrough = False
-        body = response.get_data()
-        if len(body) < 1024:
-            return response
-        response.set_data(gzip.compress(body, compresslevel=6))
-    response.headers["Content-Encoding"] = "gzip"
-    # A byte range of the file means nothing against the compressed body.
-    response.headers.pop("Accept-Ranges", None)
-    etag, weak = response.get_etag()
-    if etag and not weak:
-        response.set_etag(etag, weak=True)
-    return response
-
-# Prepared page images, kept so the browser can show the source beside the text.
-# In memory, so MAX_JOBS is a RAM ceiling rather than a history depth -- see
-# settings.py.
-_jobs = OrderedDict()
-_jobs_lock = threading.Lock()
-
-# What each of those jobs was: name, size, origin, detail, page count and case.
-# Kept beside the images, and evicted with them, so a re-extraction can be logged
-# against the document it belongs to instead of as an anonymous row. Text only --
-# a few hundred bytes per job, which is why it is not what MAX_JOBS is sized for.
-_job_meta = OrderedDict()
-# Which workspace each job belongs to. MAX_JOBS is per workspace, so one user
-# reading a stack of files does not push another user's pages out of the compare
-# view; JOBS_CEILING bounds the lot, oldest first, whoever they belong to.
-_job_owner = {}
-JOBS_CEILING = MAX_JOBS * 20
-
-
-def _evict_job(job_id):
-    _jobs.pop(job_id, None)
-    _job_meta.pop(job_id, None)
-    _job_owner.pop(job_id, None)
-
-
-def register_job(pages, context=None):
-    """Cache PNG-encoded page images and return a job id."""
-    job_id = uuid.uuid4().hex[:12]
-    encoded = []
-    for page in pages:
-        buf = io.BytesIO()
-        page.save(buf, format="PNG")
-        encoded.append(buf.getvalue())
-    owner = workspace.current_id()
-    with _jobs_lock:
-        _jobs[job_id] = encoded
-        _job_meta[job_id] = context or {}
-        _job_owner[job_id] = owner
-        mine = [j for j in _jobs if _job_owner.get(j) == owner]
-        for evicted in mine[:max(0, len(mine) - MAX_JOBS)]:
-            _evict_job(evicted)
-        while len(_jobs) > JOBS_CEILING:
-            _evict_job(next(iter(_jobs)))
-    return job_id
-
-
-def replace_job_page(job_id: str, index: int, page) -> None:
-    """Swap one cached page for the image actually read, while the job is held.
-
-    A loop retry reads a bigger image than the one `register_job` cached, and the
-    compare and layout views draw the model's output over the cached one.
-    """
-    if not job_id:
-        return
-    buf = io.BytesIO()
-    page.save(buf, format="PNG")
-    with _jobs_lock:
-        pages = _jobs.get(job_id)
-        if pages is not None and 0 <= index < len(pages):
-            pages[index] = buf.getvalue()
-
-
-def job_context(job_id: str) -> dict:
-    """What the prepared pages under this id were, or {} once they are gone.
-
-    An id whose images have been evicted answers empty rather than raising: a
-    re-extraction of a transcript still on screen is worth logging even when the
-    page images behind it have fallen out of the cache.
-    """
-    with _jobs_lock:
-        return dict(_job_meta.get(job_id or "", {}))
+# Upload cap, sub-path mount, per-tab workspace and gzip, shared with service_app.
+webcommon.install(app, MAX_UPLOAD_MB)
 
 
 # --------------------------------------------------------------------------
@@ -489,116 +272,6 @@ def _set_sweep(thread, cancel):
         _sweep_thread, _sweep_cancel = thread, cancel
 
 
-class SweepCancelled(Exception):
-    """Raised inside a round when the sweep has been asked to stop.
-
-    Caught by the round loop, which reports a STOP rather than a failure. A
-    round nobody let finish says nothing about the settings it ran, and the
-    failure count on that summary line is read as if it did.
-    """
-
-
-class Cancel:
-    """A stop flag that also hangs up whatever the round is blocked on.
-
-    Duck-types `threading.Event` for `is_set`/`set`, which is all the OCR
-    workers ask of the cancel they are handed.
-
-    **What the hang-up buys, and what it measurably does NOT.** Between tokens
-    the flag is enough -- `read_page` checks it every chunk. The close is for
-    the case the flag cannot reach: a thread blocked in `res.iter_lines()` with
-    no token coming, which is a stalled stream, and which the read timeout only
-    rescues after `GEN_READ_TIMEOUT` (deliberately long -- a slow first token is
-    normal, see `stream_page`).
-
-    **It cannot shorten an Ollama prefill, measured rather than assumed**: on a
-    2550x3300 page `requests.post()` itself returned after 221.76s and the first
-    SSE line arrived in the same instant, so Ollama withholds the response
-    headers until generation begins. During prefill there is no response object
-    in existence to hang up on -- the thread is inside `post()`. Two stops
-    measured through the app landed 178s and 134s after the button with ZERO
-    tokens decoded, which is that, not a flag anyone missed.
-
-    So the honest bound on a Stop is **one prefill** (at most `GEN_READ_TIMEOUT`,
-    where the server never answers), and the fix for a long one
-    is the standing fix for prefill: a lower Detail. What Stop removes is the
-    rest of the plan, which was the whole complaint.
-    """
-
-    def __init__(self):
-        self._event = threading.Event()
-        self._lock = threading.Lock()
-        self._current = None
-
-    def is_set(self) -> bool:
-        return self._event.is_set()
-
-    def attach(self, closeable):
-        """Hang the stop on this request instead of the one before it.
-
-        **One slot, because a sweep has one read in flight at a time** -- the
-        round loop is sequential and a page is read before the next is asked
-        for. A list would grow a stale entry per page across a 50-round run for
-        no gain, and there is no second live request for it to hold.
-
-        Closing at once when the flag is ALREADY set is the case worth having:
-        on a multi-page document the stop can land between the check at the top
-        of the page loop and this request going out, and a response attached
-        after the stop would otherwise be the one thing nobody hangs up on.
-        """
-        with self._lock:
-            if not self._event.is_set():
-                self._current = closeable
-                return
-        _close_quietly(closeable)
-
-    def set(self):
-        with self._lock:
-            self._event.set()
-            current, self._current = self._current, None
-        if current is not None:
-            _close_quietly(current)
-
-
-def _close_quietly(closeable):
-    """Hang up, and never let the hang-up itself be the error anyone sees."""
-    try:
-        closeable.close()
-    except Exception:                               # noqa: BLE001
-        pass
-
-
-class MultiCancel(Cancel):
-    """A `Cancel` for a run with MANY requests in flight -- the stress test.
-
-    `Cancel.attach` keeps one slot because a sweep has one read in flight at a
-    time; a stress run has as many as its concurrency. The live requests are
-    held weakly, so a response that has finished and been dropped does not stay
-    referenced for the rest of a thousand-job run.
-    """
-
-    def __init__(self):
-        super().__init__()
-        self._live = weakref.WeakSet()
-
-    def attach(self, closeable):
-        with self._lock:
-            if not self._event.is_set():
-                try:
-                    self._live.add(closeable)
-                except TypeError:                   # not weak-referenceable
-                    pass
-                return
-        _close_quietly(closeable)
-
-    def set(self):
-        with self._lock:
-            self._event.set()
-            live, self._live = list(self._live), weakref.WeakSet()
-        for closeable in live:
-            _close_quietly(closeable)
-
-
 def begin_sweep(cancel=None):
     """Mark this thread as running a sweep, and hand back its cancel flag.
 
@@ -609,7 +282,7 @@ def begin_sweep(cancel=None):
         thread, _ = _sweep_state()
         if thread is not threading.current_thread():
             workspace.hold()
-        cancel = cancel or Cancel()
+        cancel = cancel or engine.Cancel()
         _set_sweep(threading.current_thread(), cancel)
         return cancel
 
@@ -680,655 +353,10 @@ def sweeps_running() -> bool:
                 and thread is not threading.current_thread())
 
 
-# --------------------------------------------------------------------------
-# model server
-# --------------------------------------------------------------------------
-
-def llama_status(force: bool = False):
-    """Reachability, model and vision capability of the *active* server.
-
-    Which server that is can change at runtime, so this is asked for per request
-    rather than resolved once at import. `backends` caches the probe, so the extra
-    calls cost nothing.
-    """
-    return backends.status(force=force)
-
-
-def chat_url():
-    """Chat completions endpoint of the active server."""
-    return f"{backends.active_url()}/v1/chat/completions"
-
-
-_DIGITS = re.compile(r"\d+")
-
-
-def _counter_loop(text: str) -> bool:
-    """Detect an enumerating loop inside one long line, e.g. 'ปี 1 ปี 2 ปี 3 ...'.
-
-    Digits are collapsed so successive iterations compare equal. Restricted to a
-    single long line with a short repeating unit, so a table whose rows differ only
-    by their amounts -- newline separated, and longer -- is never flagged.
-
-    Only a *word*-bearing unit (`ปี #`) is the enumerating loop this is for. A
-    low-information unit -- an empty `<tr><td></td></tr>` row that typhoon emits as
-    one un-broken HTML line -- is deliberately NOT flagged here at any count: a
-    blank table is legitimate content, and the only thing that separates a bounded
-    one from a runaway is total volume, which is `_structural_runaway`'s job, not a
-    per-line repeat count. So a blank table of any number of rows passes here.
-    """
-    for line in text[-LOOP_TAIL_CHARS * 2 :].splitlines():
-        if len(line) < LOOP_COUNTER_MIN_LINE:
-            continue
-        norm = _DIGITS.sub("#", line)
-        for unit in range(4, LOOP_COUNTER_MAX_UNIT + 1):
-            block = norm[-unit:]
-            if not block.strip() or _low_information(block):
-                continue
-            if norm.endswith(block * LOOP_COUNTER_MIN_REPEATS):
-                return True
-    return False
-
-
-# Any Unicode letter, Thai included (\w minus digits and underscore). A repeated
-# line with no letter carries no readable word -- it is blank table markup, a rule,
-# or a row of identical numbers, all of which large forms produce legitimately.
-_LETTER = re.compile(r"[^\W\d_]", re.UNICODE)
-# Strip everything that is structure, not content, before looking for a letter:
-# complete tags, a backslash-escape (`\n`, `\t` -- the dots layout reply escapes
-# the table's newlines into a JSON string, and the `n` of every `\n` would
-# otherwise read as a word), and a tag fragment left dangling when a slice cuts
-# mid-tag (`...<td` at the end, `td>...` at the start).
-_STRUCTURE = re.compile(r"<[^>]*>|\\.|<[^<>]*$|^[^<>]*>")
-
-
-def _readable(s: str) -> str:
-    """`s` with markup, escapes and dangling tag fragments removed."""
-    return _STRUCTURE.sub("", s)
-
-
-def _low_information(s: str) -> bool:
-    """A repeated unit that is structure, not content.
-
-    Blank `<tr><td></td></tr>` rows, pipe rules, and rows of identical numbers or
-    dashes all carry no word. A stretch of them is what a blank or uniform region
-    of a big gridded form looks like, and from the tail alone it is identical to a
-    runaway empty-row loop -- so it is held to a much higher repeat count than a
-    line containing actual words, which never repeats legitimately. `_readable`
-    drops the markup first: a letter inside a `<td>`, or the `n` of an escaped
-    `\\n`, is structure, not content, so an empty cell reads as low information.
-    """
-    return not _LETTER.search(_readable(s))
-
-
-def _structural_runaway(text: str) -> bool:
-    """A long tail carrying no words -- a structural loop whatever its shape.
-
-    The per-line and block checks both key off newlines and a bounded repeat
-    count; the dots layout profile defeats them by escaping the whole table onto
-    one JSON line (see LOOP_DEAD_TAIL_CHARS). This is the shape-agnostic backstop:
-    once this many characters have gone by with almost no letter left after the
-    markup is removed, the model is emitting structure, not reading -- a bounded
-    blank grid is far shorter than this, so it is a runaway, not a real table.
-    """
-    tail = text[-LOOP_DEAD_TAIL_CHARS:]
-    if len(tail) < LOOP_DEAD_TAIL_CHARS:
-        return False
-    return len(_LETTER.findall(_readable(tail))) <= LOOP_DEAD_MAX_LETTERS
-
-
-def looks_repetitive(text: str, tail_chars: int = LOOP_TAIL_CHARS,
-                     min_repeats: int = LOOP_MIN_REPEATS) -> bool:
-    """True when the tail of the output is cycling on the same block.
-
-    A repeated unit that carries a *word* is a loop at `min_repeats` -- real
-    content never repeats verbatim. A **low-information** unit -- an empty table
-    row, a rule, a line of identical numbers -- is left to `_structural_runaway`
-    and never counted here, so a blank or uniform table region (common on the
-    uncapped `original` detail, and legitimate) is not called a loop however many
-    rows it runs to. Only a genuinely huge dead run -- far larger than any real
-    form's blank grid -- trips, and it trips on volume, not on a row count. See
-    `_low_information` and `_structural_runaway`.
-    """
-    if _counter_loop(text) or _structural_runaway(text):
-        return True
-
-    tail = text[-tail_chars:]
-
-    # Whole-line cycling: a consecutive run of identical *substantive* lines -- a
-    # loop often trails a stray closing tag. Runs on whatever is available, so a
-    # short prose loop is caught as it streams rather than only after 600 chars. A
-    # run of blank/structural rows is skipped: it is a table, not a loop.
-    lines = [l.strip() for l in tail.splitlines() if l.strip()]
-    run = 1
-    for prev, cur in zip(lines, lines[1:]):
-        if cur == prev and len(cur) > 3:
-            run += 1
-            if run >= min_repeats and not _low_information(cur):
-                return True
-        else:
-            run = 1
-
-    # Block cycling, which also catches loops with no newlines at all -- but it
-    # needs a full tail to be meaningful, since a short periodic string is not yet
-    # distinguishable from a value that will change on the next token. Anchored at
-    # the end, where a loop always is while streaming. Structural blocks are
-    # skipped for the same reason as the lines above.
-    if len(tail) < tail_chars:
-        return False
-    for unit in range(4, len(tail) // min_repeats + 1):
-        block = tail[-unit:]
-        if not block.strip() or _low_information(block):
-            continue
-        if tail.endswith(block * min_repeats):
-            return True
-    return False
-
-
-def page_looping(text: str, dry_ids=None, dry_xargs=None) -> bool:
-    """`looks_repetitive` for a page read, leaving DRY the first go at a repeat.
-
-    2026-11-02, at the user's request: the guard stays out until the running
-    repeat is DRY's allowed length + 1, so it cannot cut a read before DRY has
-    penalised it (a cycle of short lines used to be cut after ~4 lines, long before
-    DRY could fire). The counter and runaway checks are not held back: a counter
-    never repeats verbatim, so DRY cannot see it. With no DRY or no token ids from
-    the server, there is nothing to compare against and the plain test applies.
-    """
-    if not looks_repetitive(text):
-        return False
-    if not dry_ids or _counter_loop(text) or _structural_runaway(text):
-        return True
-    allowed = int(dry_xargs.get("dry_allowed_length", 2))
-    return dryreplay.replay(dry_ids, dry_xargs)["running"] >= allowed + 1
-
-
-def image_data_uri(image: Image.Image) -> str:
-    # The stress test encodes each prepared page once, before its clock starts,
-    # and hangs the result on the image: a page sent a hundred times under load
-    # would otherwise pay a PNG encode on this machine a hundred times, and that
-    # CPU is not the server being measured. Every other caller sets nothing.
-    cached = getattr(image, "_data_uri", None)
-    if cached:
-        return cached
-    buf = io.BytesIO()
-    image.save(buf, format="PNG")
-    return "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode()
-
-
-# Qwen3-VL (typhoon-ocr1.5): 16-px patches merged 2x2, so one visual token per
-# 32x32 px. Measured on vLLM: a 1243x1608 page is 2272 prompt tokens, of which
-# ~1950 are the image. Used only to keep max_tokens inside a vLLM window.
-VLLM_PIXELS_PER_TOKEN = 1024
-VLLM_TEXT_MARGIN = 600  # the instruction and the chat template, with room to spare
-
-
-def tag_page(page: Image.Image, label: str, detail: str) -> None:
-    """Name the page for the vLLM DRY processor's log line, e.g. "sol003 p1/2 low".
-
-    The server logs one line per DRY request saying whether DRY fired on it
-    (../vllm/podman-ocr-server/dry_logits_processor.py); this tag, sent as
-    `vllm_xargs.dry_tag`, is how that line names the document and page.
-    """
-    page._dry_label = label
-    page._dry_tag = f"{label} {detail}"
-
-
-def vllm_page(image: Image.Image) -> Image.Image:
-    """The page as vLLM should get it: enlarged to `VLLM_MIN_PIXELS` if smaller.
-
-    vLLM never enlarges a small page, and the WHT certificates (0.6-1.6 MP) read
-    badly as they are -- sol019 looped. See settings.VLLM_MIN_PIXELS.
-    """
-    floor = settings.VLLM_MIN_PIXELS
-    pixels = image.width * image.height
-    if not floor or pixels >= floor:
-        return image
-    scale = (floor / pixels) ** 0.5
-    return image.resize((round(image.width * scale), round(image.height * scale)),
-                        Image.LANCZOS)
-
-
-def vllm_page_fields(image: Image.Image, status: dict) -> dict:
-    """Request fields that make vLLM read the page the app prepared.
-
-    `mm_processor_kwargs.max_pixels` lifts the server's own image cap to
-    `VLLM_MAX_PIXELS`, and `max_tokens` is kept inside the served window: vLLM
-    refuses a request whose prompt plus max_tokens exceeds --max-model-len, and a
-    4 MP page is ~4,100 prompt tokens against the local container's 8,192.
-    """
-    fields = {}
-    cap = settings.VLLM_MAX_PIXELS
-    if cap:
-        fields["mm_processor_kwargs"] = {"max_pixels": cap}
-    window = backends.model_window(status)
-    if window:
-        pixels = image.width * image.height
-        if cap:
-            pixels = min(pixels, cap)
-        room = window - -(-pixels // VLLM_PIXELS_PER_TOKEN) - VLLM_TEXT_MARGIN
-        fields["max_tokens"] = max(256, min(MAX_NEW_TOKENS, room))
-    return fields
-
-
-def stream_page(image: Image.Image, stats: dict = None,
-                profile: str = None, cancel=None):
-    """Stream tokens for one page from llama-server.
-
-    `profile` names the pass-1 shape (`prompts.OCR_PROFILES`); omitted, the one
-    the process is currently set to. Resolved once here and reported on `stats`,
-    so a page reads and logs under the profile it actually ran with even if the
-    setting is flipped mid-batch -- the same rule `extract_mode` follows.
-
-    `cancel` is a `Cancel` a random test hands down so its Stop can reach the
-    read. It is registered against the response rather than polled, because the
-    wait that matters is prefill -- a blocking `iter_lines` with no tokens yet
-    to check a flag between. Hanging up raises out of this generator, and the
-    caller that asked for the stop is the one that decides that is not an error.
-    """
-    status = llama_status()
-    if not status["available"]:
-        raise ValueError(status["reason"])
-    spec = profile_spec(profile)
-    # Resolved once, like the profile: a read is aborted, or is not, under one
-    # rule for the whole of it, whatever the switch does mid-stream.
-    guard = loop_guard()
-    if stats is not None:
-        stats["ocr_profile"] = profile or ocr_profile()
-        stats["loop_guard"] = guard
-
-    # Prompt BEFORE image on llama.cpp: it reuses the longest common KV prefix
-    # between requests, so with the image first every request differs from token 0
-    # and nothing is cacheable. Putting the static ~450-token instruction first
-    # lets it be prefilled once and reused for every subsequent page.
-    #
-    # Ollama gets the conventional image-first ordering instead. There the same
-    # trick makes the model ignore the image and recite its own built-in prompt
-    # -- see PROMPT_FIRST. Ollama caches prompt prefixes on its own anyway, so
-    # nothing is lost.
-    prompt_first = PROMPT_FIRST_OLLAMA if status["kind"] == "ollama" else PROMPT_FIRST
-    text_part = {"type": "text", "text": spec["prompt"]}
-    # The page goes to the server as a base64 PNG inside the JSON body. Its size
-    # is reported (`image_bytes`): uploading it, and the server decoding and
-    # resizing it, are in no server phase -- see servertime.py.
-    vllm = status["kind"] == "vllm"
-    dry_tag = getattr(image, "_dry_tag", None)  # vllm_page may return a new image
-    if vllm:
-        image = vllm_page(image)
-    image_uri = image_data_uri(image)
-    image_part = {"type": "image_url", "image_url": {"url": image_uri}}
-    content = [text_part, image_part] if prompt_first else [image_part, text_part]
-
-    payload = {
-        # Ollama gets an explicit system message here; llama.cpp gets none. See
-        # backends.system_prefix -- this reproduces what Ollama was injecting from
-        # the Modelfile by itself, rather than adding anything new.
-        # The profile can veto the system message outright: on dots.ocr an
-        # occupied system slot returns two tokens and nothing else, whatever the
-        # prompt says. See prompts.OCR_PROFILES.
-        "messages": backends.system_prefix(status, spec["system"])
-                    + [{"role": "user", "content": content}],
-        "max_tokens": MAX_NEW_TOKENS,
-        # Greedy by default (see settings.ocr_sampling); OCR_TEMPERATURE=0.1 +
-        # OCR_TOP_P=0.6 + OCR_TOP_K=0 is typhoon's recommended setting.
-        # min_p stays pinned off so llama-server's default 0.05 cannot apply.
-        **ocr_sampling(),
-        "min_p": 0.0,
-        **sampler_extras(backends.num_ctx()),
-        "stream": True,
-        # Ollama does not send llama.cpp's `timings`; asking for usage in the
-        # final chunk gives an authoritative token count on both servers.
-        "stream_options": {"include_usage": True},
-        **backends.request_extras(status),
-    }
-    if vllm:
-        payload.update(vllm_page_fields(image, status))
-
-    # The server's own clock, beside ours. Built BEFORE `started` so the vLLM
-    # before-snapshot of /metrics is not charged to this page's time. See
-    # servertime.py: its prefill, decode, queue and latency, as the server gave them.
-    clock = servertime.Clock(status)
-    started = time.perf_counter()
-    first_at = None
-    timings, usage, pieces = {}, {}, 0
-    collected, looped = [], False
-    # The cap this request was SENT with: on vLLM it is fitted to the window
-    # (vllm_page_fields) and can be far below MAX_NEW_TOKENS, so a page that ran
-    # to it would never reach MAX_NEW_TOKENS and never be flagged truncated.
-    cap = payload.get("max_tokens") or MAX_NEW_TOKENS
-    finish = None
-    # "Batch requests" on a stress run: this page is one conversation of a
-    # vLLM /batch request (vllmbatch.py). Nothing streams, so there is no first
-    # token to time and nothing for the loop guard to cut -- the finished text
-    # is tested below instead.
-    batcher = _batcher_for(chat_url(), status)
-    # Names the page in the server's DRY log line (see `tag_page`). Only beside the
-    # DRY settings, and only on a request of its own: a /batch body shares one
-    # vllm_xargs across its conversations, so a per-page value would stop pages
-    # grouping at all (vllmbatch.group_key).
-    if vllm and batcher is None and dry_tag and "vllm_xargs" in payload:
-        payload["vllm_xargs"] = {**payload["vllm_xargs"], "dry_tag": dry_tag}
-    # Where DRY was asked for, the reply's token ids, so whether it fired can be
-    # worked out here (dryreplay.py) -- the server can only say so in its own log.
-    dry_xargs = (payload.get("vllm_xargs") or {}) if vllm else {}
-    dry_ids = None
-    if dry_xargs.get("dry_multiplier"):
-        payload["return_token_ids"] = True
-        dry_ids = []
-    if batcher is not None:
-        body = _await_batched(batcher, chat_url(), payload, cancel)
-        usage = body.get("usage") or {}
-        finish = (body.get("choices") or [{}])[0].get("finish_reason")
-        returned = (body.get("choices") or [{}])[0].get("token_ids")
-        if dry_ids is not None and isinstance(returned, list):
-            dry_ids.extend(returned)
-        piece = (((body.get("choices") or [{}])[0].get("message") or {})
-                 .get("content") or "")
-        if piece:
-            pieces = 1
-            collected.append(piece)
-            yield piece
-    else:
-        with backends.http_post(
-            chat_url(), status,
-            json=payload,
-            stream=True,
-            # On a stream the read timeout measures silence, not the whole read:
-            # the wait for the first token, then each gap between tokens. A slow
-            # first token is normal, so the limit is long; without one a server
-            # that stopped answering would hold this page, its job and a Stop's
-            # drain forever.
-            timeout=GEN_TIMEOUT,
-        ) as res:
-            if cancel is not None:
-                cancel.attach(res)
-            if res.status_code != 200:
-                detail = res.text[:300].strip()
-                if res.status_code == 500 and status["kind"] == "llama.cpp":
-                    raise ValueError(
-                        "llama-server rejected the image (HTTP 500). This normally "
-                        "means vision is not enabled -- restart it with "
-                        f"--mmproj <mmproj-...gguf>. Server said: {detail}"
-                    )
-                if res.status_code in (400, 404) and status["kind"] == "ollama":
-                    raise ValueError(
-                        f"Ollama rejected the request for model '{status['model']}' "
-                        f"(HTTP {res.status_code}). Check the model is pulled on "
-                        f"{status['url']} and can read images. Server said: {detail}"
-                    )
-                raise ValueError(
-                    f"{status['kind'] or 'model server'} HTTP {res.status_code}: {detail}")
-
-            # Decode the SSE body as UTF-8 explicitly. requests' decode_unicode=True
-            # falls back to latin-1 for text/event-stream (no charset in the header),
-            # which turns every Thai character into mojibake.
-            for raw in res.iter_lines():
-                if not raw:
-                    continue
-                line = raw.decode("utf-8", errors="replace")
-                if not line.startswith("data:"):
-                    continue
-                chunk = line[5:].strip()
-                if chunk == "[DONE]":
-                    # Read on to the end of the stream rather than break: a
-                    # response closed with its last chunk unread closes its
-                    # socket, so the keep-alive pool could never reuse it.
-                    continue
-                try:
-                    obj = json.loads(chunk)
-                except json.JSONDecodeError:
-                    continue
-                if obj.get("timings"):
-                    timings = obj["timings"]
-                if obj.get("usage"):
-                    usage = obj["usage"]
-                # The usage-only final chunk carries no choices at all.
-                choices = obj.get("choices") or [{}]
-                finish = choices[0].get("finish_reason") or finish
-                if dry_ids is not None and isinstance(choices[0].get("token_ids"), list):
-                    dry_ids.extend(choices[0]["token_ids"])
-                piece = (choices[0].get("delta") or {}).get("content")
-                if piece:
-                    if first_at is None:
-                        first_at = time.perf_counter()
-                    pieces += 1
-                    collected.append(piece)
-                    yield piece
-                    # Check periodically, not per token -- the scan is O(tail^2).
-                    if (guard and pieces % LOOP_CHECK_EVERY == 0
-                            and page_looping("".join(collected), dry_ids, dry_xargs)):
-                        looped = True
-                        break
-
-    finished = time.perf_counter()
-    # With the guard down nothing interrupted the stream, so the tail is tested
-    # once, here, on what actually came back. The switch turns off the ABORT and
-    # not the detection: a read that cycled the whole way to the token cap is a
-    # looped read and has to say so, or it would log `ok` and be averaged as a
-    # transcript.
-    if ((not guard or batcher is not None)
-            and page_looping("".join(collected), dry_ids, dry_xargs)):
-        looped = True
-
-    clock.timings(timings)
-    clock.usage(usage)
-    served = clock.finish(finished - started)
-    if stats is not None:
-        total = finished - started
-        # llama.cpp reports authoritative prompt/predict splits; fall back to
-        # client-side timing when the build does not send them.
-        if timings:
-            prefill = timings.get("prompt_ms", 0) / 1000
-            decode = timings.get("predicted_ms", 0) / 1000
-            new_tokens = int(timings.get("predicted_n", pieces))
-        else:
-            # Ollama: no prompt/predict split, so time to first token stands in
-            # for prefill. Token count comes from usage when the server sent it,
-            # since one SSE chunk is not always one token.
-            prefill = (first_at - started) if first_at else total
-            decode = max(finished - first_at, 1e-9) if first_at else 0
-            new_tokens = int(usage.get("completion_tokens") or pieces)
-        stats.update(
-            # Client-side time to first token, on every backend. `prefill_seconds`
-            # is llama.cpp's own prompt_ms where it sends one, which EXCLUDES the
-            # time the request waited in the server's queue -- exactly the part a
-            # stress test with more requests than slots is measuring.
-            ttft_seconds=(None if batcher is not None
-                          else round((first_at or finished) - started, 3)),
-            new_tokens=new_tokens,
-            truncated=finish == "length" or new_tokens >= cap,
-            looped=looped,
-            resolution=f"{image.width}x{image.height}",
-            megapixels=round(image.width * image.height / 1e6, 2),
-            seconds=round(total, 2),
-            prefill_seconds=round(prefill, 2),
-            decode_seconds=round(decode, 2),
-            # Decode rate excludes prefill, so it compares cleanly across pages.
-            tokens_per_second=round(new_tokens / decode, 2) if decode and new_tokens else 0,
-            model=status["model"],
-            backend=status["kind"],
-            url=status["url"],
-            # What the SERVER says this page cost, phase by phase, as it came:
-            # latency, queue, prefill, decode. Nothing is derived from the app's
-            # clock. None where the server gave no figure (Ollama /v1) or one
-            # that cannot be attributed (a /metrics change spanning concurrent
-            # requests). See servertime.py.
-            **{name: served[name] for name in servertime.FIELDS},
-            server_timing=served["source"],
-            # What this page sent and got back, counted whether or not the
-            # server timed it (servertime.io_tokens). `out` falls back to the
-            # app's own count, which every backend has.
-            in_tokens=served.get("in_tokens"),
-            out_tokens=(served.get("out_tokens") if served.get("out_tokens") is not None
-                        else new_tokens),
-            image_bytes=len(image_uri),
-        )
-        if dry_ids is not None:
-            # `checked` False: DRY was on, but this server sent no token ids.
-            stats["dry"] = (dryreplay.replay(dry_ids, dry_xargs) if dry_ids
-                            else {"checked": False})
-
-
-_EXTRACTION_LIMITS = extractionlimit.ServerLimits()
-
-
-def _extraction_waiting():
-    # Waiting for the app's shared ceiling is not a stalled model request.
-    cb = getattr(_progress, 'cb', None)
-    if cb is not None:
-        cb('chunk', None, 'waiting for shared extraction capacity')
-
-
-def _timed_post(url: str, payload: dict, status: dict):
-    """`requests.post` for one non-streaming model request, timed by the server
-    as well. The record lands in this thread's `servertime` tally, if one is open
-    -- which is how an extraction's classify, step, agent and table requests are
-    summed without threading a clock through each of them. A request that fails
-    or answers non-200 is not timed: the server did no work worth measuring.
-
-    On vLLM the request is streamed instead, so a reply that starts looping can
-    be cut off (`_streamed_post`); the caller gets the same shape either way.
-    """
-    budget = getattr(_progress, "request_budget", None)
-    try:
-        with _EXTRACTION_LIMITS.request((status or {}).get('url') or url,
-                EXTRACT_REQUEST_CONCURRENCY, priority=priority.request_priority(),
-                cancel=budget.stopped if budget is not None else None, on_wait=_extraction_waiting):
-            with budget.request() if budget is not None else nullcontext():
-                res = _post_once(url, payload, status)
-                if res.status_code == 400 and _context_overflow(res.text, status):
-                    fitted = _fit_max_tokens(payload, status)
-                    if fitted is not None:
-                        res = _post_once(url, fitted, status)
-                return res
-    except extractionlimit.Cancelled as err:
-        raise SweepCancelled(str(err)) from err
-
-
-_agentic_chat_context = threading.local()
-
-
-def _chat_measurement(payload, status, response=None, error=None, seconds=None):
-    """One physical chat request. Counts come from its reply, never /metrics.
-
-    No prompts or replies are retained here. A missing usage count is unknown,
-    not zero, and a vLLM window is its served max_model_len, not our UI picker.
-    """
-    body = {}
-    if response is not None and response.status_code == 200:
-        try:
-            body = response.json()
-        except (ValueError, TypeError):
-            pass
-    body = body if isinstance(body, dict) else {}
-    usage = body.get("usage") if isinstance(body.get("usage"), dict) else {}
-    timings = body.get("timings") if isinstance(body.get("timings"), dict) else {}
-    def count(value):
-        return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else None
-    sent = count(usage.get("prompt_tokens", body.get("prompt_eval_count")))
-    output = count(usage.get("completion_tokens", body.get("eval_count")))
-    computed, cached = count(timings.get("prompt_n")), count(timings.get("cache_n"))
-    if sent is None and computed is not None and cached is not None:
-        sent = computed + cached
-    if output is None:
-        output = count(timings.get("predicted_n"))
-    # A loop-aborted stream may contain only a count of text chunks. Those are
-    # not tokenizer tokens, so do not present that fallback as measured usage.
-    if body.get("loop_aborted") and usage.get("prompt_tokens") is None:
-        output = None
-    options = payload.get("options") or {}
-    if status.get("kind") in ("vllm", "openai"):
-        window = backends.model_window(status)
-        if window is None:
-            known = backends.known(status.get("url")) or {}
-            window = backends.model_window({**known, "model": status.get("model")})
-        source = "server"
-    else:
-        window = options.get("num_ctx") or payload.get("n_ctx")
-        source = "requested"
-    window = count(window) or None
-    used = sent + output if sent is not None and output is not None else None
-    return {
-        "in_tokens": sent, "out_tokens": output, "used_tokens": used,
-        "reply_cap": count(payload.get("max_tokens", payload.get("max_completion_tokens",
-                                                                 options.get("num_predict")))),
-        "context_limit": window, "context_source": source if window else None,
-        "used_pct": round(100 * used / window, 2) if used is not None and window else None,
-        "seconds": round(seconds, 3) if seconds is not None else None,
-        "http_status": response.status_code if response is not None else None,
-        "schema": bool(payload.get("format") or
-                       (payload.get("response_format") or {}).get("type") == "json_schema"),
-        "error": str(error)[:200] if error else "",
-    }
-
-
-def _post_once(url: str, payload: dict, status: dict):
-    payload = _with_images(url, payload, status)
-    chats = getattr(_agentic_chat_context, "requests", None)
-    if chats is None:
-        return _post_dispatch(url, payload, status)
-    began, response, error = time.perf_counter(), None, None
-    try:
-        response = _post_dispatch(url, payload, status)
-        return response
-    except Exception as err:
-        error = err
-        raise
-    finally:
-        chats.append({"request": len(chats) + 1, **_chat_measurement(
-            payload, status, response, error, time.perf_counter() - began)})
-
-
-def _post_dispatch(url: str, payload: dict, status: dict):
-    with _watched() as progress:
-        batcher = _batcher_for(url, status)
-        if batcher is not None:
-            return _batched_post(batcher, url, payload, status)
-        if _guards_extraction(url, payload, status):
-            return _streamed_post(url, payload, status, progress)
-        return _plain_post(url, payload, status)
-
-
-def _plain_post(url: str, payload: dict, status: dict):
-    clock = servertime.Clock(status)
-    res = backends.http_post(url, status, json=payload, timeout=GEN_TIMEOUT)
-    # The whole reply is in, so the prefill certainly is: release anything
-    # waiting on this request's prefix being cached (see `_prefilled`).
-    _prefilled()
-    if res.status_code == 200:
-        try:
-            clock.body(res.json())
-        except ValueError:
-            pass
-        clock.finish()
-    return res
-
-
-# The stress test's batcher, while a run with "Batch requests" on holds the
-# sweep guard; None otherwise. Process-wide like the prompt-cache bypass, and for
-# the same reason: the guard means the stress run is the only thing sending.
-# See vllmbatch.py.
-_batcher = None
-
-
-def _batcher_for(url: str, status: dict):
-    """The batcher to send this request through, or None to send it alone.
-
-    vLLM only (`serves_metrics`, the server's own statement), and only the
-    chat endpoint, the one shape vLLM's /batch route takes.
-    """
-    if workspace.get('user_pipeline', False):
-        return None
-    batcher = _batcher
-    if (batcher is None or not backends.serves_metrics(status)
-            or not vllmbatch.batchable(url)):
-        return None
-    return batcher
-
-
 def _send_batch(url: str, body: dict) -> dict:
     """`send` for a `Batcher` -- one POST to vLLM's batch route, parsed. Only a
     vLLM server is ever batched, so the request goes on the pooled connection."""
-    res = backends.http_post(url, {"kind": "vllm"}, json=body, timeout=GEN_TIMEOUT)
+    res = backends.http_post(url, {"kind": "vllm"}, json=body, timeout=engine.GEN_TIMEOUT)
     if res.status_code == 404:
         raise vllmbatch.BatchError(
             f"{url} answered HTTP 404 -- this vLLM build has no batch route. "
@@ -1343,1808 +371,21 @@ def _send_batch(url: str, body: dict) -> dict:
         raise vllmbatch.BatchError("the batch reply was not JSON", 502)
 
 
-def _await_batched(batcher, url: str, payload: dict, cancel=None) -> dict:
-    """This request's own reply out of a batch. Raises `BatchError` on failure,
-    and on Stop -- `cancel` hangs the waiter up like a stream."""
-    ticket = batcher.submit(url, payload)
-    if cancel is not None:
-        cancel.attach(ticket)
-    return ticket.result()
-
-
-def _batched_post(batcher, url: str, payload: dict, status: dict):
-    """`_plain_post`, through the batch: the same reply shape, the same tally."""
-    clock = servertime.Clock(status)
-    try:
-        body = _await_batched(batcher, url, payload)
-    except vllmbatch.BatchError as err:
-        _prefilled()
-        return _Reply(err.status_code or 502, text=str(err))
-    _prefilled()
-    clock.body(body)
-    clock.finish()
-    return _Reply(200, body)
-
-
-_OVERFLOW = re.compile(r"maximum context length|max_tokens|max_completion_tokens"
-                       r"|context window", re.I)
-
-
-def _context_overflow(text: str, status: dict) -> bool:
-    """Is this vLLM 400 the prompt plus `max_tokens` not fitting the window?"""
-    return bool(VLLM_FIT_MAX_TOKENS and status and status.get("kind") == "vllm"
-                and _OVERFLOW.search(text or ""))
-
-
-def _fit_max_tokens(payload: dict, status: dict):
-    """The payload with `max_tokens` lowered to what the window has room for.
-
-    vLLM rejects a request whose prompt plus `max_tokens` is longer than
-    `--max-model-len` outright, so a long transcript with the usual 4096-token
-    cap fails before a token is generated. `/tokenize` counts the prompt with
-    the server's own template, and the request is asked once more with the room
-    that is left. The reply may then stop at the lower cap, which reads exactly
-    as any reply that ran to its cap. None where there is not room for
-    `VLLM_FIT_MIN_TOKENS`, or the server cannot count -- the 400 then stands.
-    """
-    count, window = backends.count_prompt(status, payload)
-    if count is None or window is None:
-        return None
-    room = window - count - 8          # a margin for the template's last tokens
-    asked = payload.get("max_tokens") or payload.get("max_completion_tokens") or 0
-    if room < VLLM_FIT_MIN_TOKENS or (asked and room >= asked):
-        return None
-    fitted = dict(payload, max_tokens=room)
-    if "max_completion_tokens" in fitted:
-        fitted["max_completion_tokens"] = room
-    config.say(f"[extract] prompt is {count} tokens of a {window}-token window; "
-               f"asking again with max_tokens {room} instead of {asked}")
-    return fitted
-
-
-# A callback the agentic fan-out hangs on its first step: called once, from the
-# worker thread asking that step, as soon as the server has prefilled the prompt.
-_prefill_hook = threading.local()
-
-
-def _prefilled():
-    hook = getattr(_prefill_hook, "cb", None)
-    if hook is not None:
-        _prefill_hook.cb = None
-        hook()
-
-
-# Who is told that a pass-2 request is still making progress: the stress test's
-# stall alert. Until 2026-10-19 that alert heard only when a job's whole
-# extraction returned, so a multi-document file -- classify, split, one
-# extraction per document, table agents -- read as "stalled" under load while
-# every one of its requests was moving. `cb(event, request, what)`, with `event`
-# "begin", "chunk" (a streamed line arrived) or "end"; `request` is an object
-# unique to one request and `what` names it ("step parties"), from `_asking`.
-# Thread-local like `_prefill_hook`; `_carry_progress` takes it into the agentic
-# step threads, which a thread-local alone would never reach.
-_progress = threading.local()
-
-
-class _DocumentRequests:
-    """Per-file cancellation and observed concurrency; admission is server-wide."""
-    def __init__(self):
-        self.stopped = threading.Event()
-        self.lock = threading.Lock()
-        self.active = self.peak = 0
-
-    @contextmanager
-    def request(self):
-        if self.stopped.is_set():
-            raise SweepCancelled('extraction closed')
-        with self.lock:
-            self.active += 1
-            self.peak = max(self.peak, self.active)
-        try:
-            yield
-        finally:
-            with self.lock:
-                self.active -= 1
-
-
 def _progress_swap(cb):
     """Install `cb` as this thread's progress hook. Returns the one it replaced."""
-    previous = getattr(_progress, "cb", None)
-    _progress.cb = cb
+    previous = getattr(engine._progress, "cb", None)
+    engine._progress.cb = cb
     return previous
 
 
-def _carry_progress(fn):
-    """`fn`, set to run with this thread's progress hook -- for handing to a thread.
-    The page images of an image-fed extraction (`_feeding_images`) go with it."""
-    state = {name: getattr(_progress, name, None)
-             for name in ("cb", "what", "images", "request_budget", "document")}
-    if all(value is None for value in state.values()):
-        return fn
-
-    def run(*args, **kwargs):
-        previous = {name: getattr(_progress, name, None) for name in state}
-        for name, value in state.items():
-            setattr(_progress, name, value)
-        try:
-            return fn(*args, **kwargs)
-        finally:
-            for name, value in previous.items():
-                setattr(_progress, name, value)
-    return run
-
-
-# An image-fed extraction (2026-10-27, the stress test's image mode): no page is
-# read, and every pass-2 request this thread makes -- classify, the single
-# request, each agentic step and its retries -- carries the page images at the
-# head of its user message (`_with_images`, in `_post_once`). The prompts are
-# the text ones unchanged; the transcript they wrap is `prompts.IMAGE_TRANSCRIPT`.
-# The checks that need a transcript to check against stand down while it is on:
-# grounding re-asks, the classifier's heading test, the item table, blame.
-
-
-@contextmanager
-def _feeding_images(uris):
-    """Send these page images (data URIs) with every pass-2 request in the block.
-
-    Never wrapped round a `yield`, for the reason `_asking` gives."""
-    previous = getattr(_progress, "images", None)
-    _progress.images = list(uris) or None
-    try:
-        yield
-    finally:
-        _progress.images = previous
-
-
-def _image_fed() -> bool:
-    """Whether this thread's extraction is reading page images, not a transcript."""
-    return bool(getattr(_progress, "images", None))
-
-
-def _with_images(url: str, payload: dict, status: dict) -> dict:
-    """`payload` with this thread's page images in its last user message, or as it is.
-
-    Images first, then the text: every request of one extraction then opens with
-    the same images and the same prefix, so a server's prefix cache still covers
-    what the agentic steps share. Ollama's native `/api/chat` (a schema retry)
-    takes base64 beside a string; everything else takes OpenAI content parts. On
-    vLLM the server's own image cap is lifted as a read lifts it
-    (`vllm_page_fields`), so the extractor sees the Detail the run chose.
-    """
-    images = getattr(_progress, "images", None)
-    if not images or not isinstance(payload.get("messages"), list):
-        return payload
-    messages = [dict(m) for m in payload["messages"]]
-    user = next((m for m in reversed(messages) if m.get("role") == "user"), None)
-    if user is None or not isinstance(user.get("content"), str):
-        return payload
-    if url.endswith("/api/chat"):
-        user["images"] = [uri.split(",", 1)[-1] for uri in images]
-    else:
-        user["content"] = ([{"type": "image_url", "image_url": {"url": uri}} for uri in images]
-                           + [{"type": "text", "text": user["content"]}])
-    out = {**payload, "messages": messages}
-    if (status or {}).get("kind") == "vllm" and settings.VLLM_MAX_PIXELS:
-        out.setdefault("mm_processor_kwargs", {"max_pixels": settings.VLLM_MAX_PIXELS})
-    return out
-
-
-@contextmanager
-def _asking(what: str):
-    """Name the requests made inside this block, for the stall alert.
-
-    Never wrapped round a `yield`: a generator can resume on another thread,
-    and the name would stay behind on this one.
-    """
-    previous = getattr(_progress, "what", None)
-    _progress.what = what
-    try:
-        yield
-    finally:
-        _progress.what = previous
-
-
-def _no_progress():
-    pass
-
-
-@contextmanager
-def _watched():
-    """One request, reported to the progress hook. Yields the call to make on
-    each streamed line; "end" is sent however the request finishes."""
-    cb = getattr(_progress, "cb", None)
-    if cb is None:
-        yield _no_progress
-        return
-    request, what = object(), getattr(_progress, "what", None)
-    document = getattr(_progress, "document", None)
-    if document:
-        what = ', '.join(part for part in (document, what) if part)
-    cb("begin", request, what)
-    try:
-        yield lambda: cb("chunk", request, what)
-    finally:
-        cb("end", request, what)
-
-
-# Pass-2 requests this process cut off for looping, since it started. Read by the
-# live monitor, which shows the server's own abort count beside it.
-_loop_aborts = {"count": 0, "tokens": 0, "last": None}
-_loop_aborts_lock = threading.Lock()
-
-
 def loop_aborts() -> dict:
-    with _loop_aborts_lock:
-        return dict(_loop_aborts)
-
-
-def _guards_extraction(url: str, payload: dict, status: dict) -> bool:
-    """Is this pass-2 request one to stream and cut off if it loops?
-
-    vLLM only, on the server's own statement (`serves_metrics`): a vLLM request
-    whose client hangs up is aborted server-side, which is what makes cutting it
-    worth anything, and no measurement in this project was taken there. Only the
-    OpenAI-compatible endpoint -- the one shape vLLM is sent.
-    """
-    return bool(EXTRACT_LOOP_ABORT and loop_guard()
-                and backends.serves_metrics(status)
-                and url.endswith("/v1/chat/completions")
-                and not payload.get("stream"))
-
-
-_ENTRY = re.compile(r'\{\s*"label"\s*:\s*"((?:[^"\\]|\\.)*)"\s*,'
-                    r'\s*"value"\s*:\s*"((?:[^"\\]|\\.)*)"\s*\}')
-
-
-def _entries_cycling(text: str, max_unit: int = 12) -> bool:
-    """True when the reply is ENDING in a repeated sequence of list entries.
-
-    The last k entries (1 <= k <= 12, label and value both) equal the k before
-    them, three times running, over at least `EXTRACT_CYCLE_MIN_CHARS`. Anchored
-    at the end because that is where a loop is while it streams.
-
-    Deliberately not `_repeated_list` ("one entry three times, anywhere"). That
-    is a fine diagnosis of a reply that has already failed and a bad reason to
-    cut a live one: the model writes table rows into `other_fields` under their
-    column heading, so a heading -- even a heading with the same value, three
-    charge rows sharing one billing period -- repeats once per row.
-    """
-    found = list(_ENTRY.finditer(text))
-    entries = [m.groups() for m in found]
-    n = len(entries)
-    for k in range(1, max_unit + 1):
-        if n < 3 * k:
-            break
-        unit = entries[n - k:]
-        reps = 1
-        while n >= (reps + 1) * k and entries[n - (reps + 1) * k:n - reps * k] == unit:
-            reps += 1
-        if reps >= 3 and found[-1].end() - found[n - reps * k].start() >= EXTRACT_CYCLE_MIN_CHARS:
-            return True
-    return False
-
-
-def extraction_looping(text: str) -> bool:
-    """The test a streamed pass-2 reply is cut off on.
-
-    Two halves: the wide extraction window of `looks_repetitive` -- the test
-    `_why_unparsable` already diagnoses a finished reply with -- and a sequence of
-    list entries cycling at the end (`_entries_cycling`), which catches the
-    `other_fields` loop the window cannot hold. Not tried before the reply is as
-    long as the window: a short reply cannot hold enough of either to be a loop.
-
-    A false cut is not free -- entries after it are lost -- so both halves are
-    the strict kind. Measured on 453 real replies, 13 of them long enough to be
-    tested: none is cut.
-    """
-    if len(text) < EXTRACT_LOOP_TAIL_CHARS:
-        return False
-    return (looks_repetitive(text, tail_chars=EXTRACT_LOOP_TAIL_CHARS,
-                             min_repeats=EXTRACT_LOOP_MIN_REPEATS)
-            or _entries_cycling(text))
-
-
-class _Reply:
-    """A finished reply assembled from a stream, in the non-streaming shape, so
-    every caller of `_timed_post` reads one shape whichever way it was fetched."""
-
-    def __init__(self, status_code: int, body: dict = None, text: str = ""):
-        self.status_code = status_code
-        self._body = body
-        self.text = text
-
-    def json(self):
-        if self._body is None:
-            raise ValueError("no JSON body")
-        return self._body
-
-
-def _streamed_post(url: str, payload: dict, status: dict, progress=_no_progress):
-    """One pass-2 request, streamed, and closed the moment it starts cycling.
-
-    Closing the connection is the whole of the termination: vLLM aborts a request
-    whose client has gone and frees its slot and KV cache. What arrived before the
-    cut is returned as a reply that stopped at its cap (`finish_reason: length`),
-    so the callers' salvage and diagnosis run exactly as on a loop that ran to the
-    cap -- `_why_unparsable` names it a loop -- and the body carries
-    `loop_aborted` for anything that wants to know it was cut rather than run out.
-    `progress` is called on every line that arrives (the stall alert's clock).
-    """
-    body = dict(payload, stream=True, stream_options={"include_usage": True})
-    clock = servertime.Clock(status)
-    collected, pieces, usage, finish, looped = [], 0, {}, None, False
-    with backends.http_post(url, status, json=body, stream=True,
-                            timeout=GEN_TIMEOUT) as res:
-        if res.status_code != 200:
-            _prefilled()
-            return _Reply(res.status_code, text=res.text)
-        for raw in res.iter_lines():
-            if not raw:
-                continue
-            # vLLM sends nothing until the first token exists, so the first line
-            # of the body means the prompt has been prefilled -- and cached.
-            _prefilled()
-            progress()
-            line = raw.decode("utf-8", errors="replace")
-            if not line.startswith("data:"):
-                continue
-            chunk = line[5:].strip()
-            if chunk == "[DONE]":
-                # Read on to the end of the stream rather than break: a
-                # response closed with its last chunk unread closes its
-                # socket, so the keep-alive pool could never reuse it.
-                continue
-            try:
-                obj = json.loads(chunk)
-            except json.JSONDecodeError:
-                continue
-            if obj.get("usage"):
-                usage = obj["usage"]
-            choice = (obj.get("choices") or [{}])[0]
-            if choice.get("finish_reason"):
-                finish = choice["finish_reason"]
-            piece = (choice.get("delta") or {}).get("content")
-            if piece:
-                collected.append(piece)
-                pieces += 1
-                if (pieces % LOOP_CHECK_EVERY == 0
-                        and extraction_looping("".join(collected))):
-                    looped = True
-                    break
-    # Leaving the `with` closed the connection; on a break that is the abort.
-    text = "".join(collected)
-    reply = {"choices": [{"message": {"content": text},
-                          "finish_reason": "length" if looped else finish}],
-             "usage": usage or {"completion_tokens": pieces}}
-    if looped:
-        reply["loop_aborted"] = True
-        with _loop_aborts_lock:
-            _loop_aborts["count"] += 1
-            _loop_aborts["tokens"] += pieces
-            _loop_aborts["last"] = time.time()
-        config.say(f"[extract] cut off a looping reply from {status.get('model')} after "
-            f"~{pieces} tokens; vLLM aborts it and frees the slot")
-    clock.usage(usage)
-    clock.finish()
-    return _Reply(200, reply, text)
-
-
-def _first_json_object(text: str):
-    """Pull the first balanced {...} out of a reply, ignoring braces in strings."""
-    start = text.find("{")
-    if start < 0:
-        return None
-    depth, in_str, escaped = 0, False, False
-    for i, ch in enumerate(text[start:], start):
-        if in_str:
-            if escaped:
-                escaped = False
-            elif ch == "\\":
-                escaped = True
-            elif ch == '"':
-                in_str = False
-            continue
-        if ch == '"':
-            in_str = True
-        elif ch == "{":
-            depth += 1
-        elif ch == "}":
-            depth -= 1
-            if depth == 0:
-                return text[start : i + 1]
-    return None
-
-
-def _why_unparsable(raw: str, err: Exception, truncated: bool, status: dict):
-    """(message, flags) for a reply that would not parse.
-
-    Split out so the same diagnosis serves both outcomes: it is the error when
-    nothing could be kept, and the warning printed above the fields when
-    `_salvage_json` rescued part of the reply. A parse error here is nearly
-    always a reply that was cut off rather than malformed syntax, and "invalid
-    JSON" sends you looking at the parser instead of at the model.
-    """
-    # Wider window than the OCR stream uses: an extraction loop repeats a whole
-    # clause inside one JSON string, so the repeating unit is long and a
-    # 600-character tail cannot hold enough repeats of it to be recognised.
-    if looks_repetitive(raw, tail_chars=EXTRACT_LOOP_TAIL_CHARS,
-                        min_repeats=EXTRACT_LOOP_MIN_REPEATS):
-        return ("The model repeated itself while extracting and never closed the "
-                "JSON.", {"looped": True})
-    if _is_ocr_envelope(raw):
-        return (f"'{status['model']}' ignored the extraction prompt and transcribed "
-                'the document instead, returning its OCR {"natural_text": ...} '
-                "envelope. The transcript is long enough to drown the instructions. "
-                "Re-extract; if it persists, extract one page at a time.",
-                {"envelope": True})
-    if _repeated_list(raw):
-        return ("The model cycled over the same rows until it hit the "
-                f"{EXTRACT_MAX_TOKENS}-token cap, so the JSON never closed. Raising "
-                "the cap will not help -- it buys more of the loop. Try Re-extract, "
-                "or extract one page at a time.", {"looped": True})
-    if truncated:
-        return (f"The JSON was cut off mid-value at the {EXTRACT_MAX_TOKENS}-token "
-                "cap. Raise EXTRACT_MAX_TOKENS if the document really has this many "
-                "line items.", {"truncated": True})
-    return (f"model did not return valid JSON ({err})", {})
-
-
-def _salvage_json(raw: str):
-    """Parse a reply that was cut off mid-value, keeping what completed.
-
-    A looping extraction is not a wasted request. sol005 fills twenty scalars
-    and the first rows of the table correctly and *then* cycles inside
-    `other_fields` until the token cap, and the whole reply is currently thrown
-    away for want of a closing brace. This rewinds to the last element that
-    finished, closes the containers still open there, and parses that.
-
-    What it deliberately does not do is guess: nothing is invented to fill the
-    tail, the caller marks the result partial, and the verbatim reply is kept so
-    the drop is visible. Same rule as grounding -- say less, never make it up.
-
-    Returns the parsed object, or None when there is nothing whole to keep.
-    """
-    start = raw.find("{")
-    if start < 0:
-        return None
-    stack, cut, cut_stack = [], None, None
-    in_str = escaped = False
-    for i, ch in enumerate(raw[start:], start):
-        if in_str:
-            if escaped:
-                escaped = False
-            elif ch == "\\":
-                escaped = True
-            elif ch == '"':
-                in_str = False
-            continue
-        if ch == '"':
-            in_str = True
-        elif ch in "{[":
-            stack.append("}" if ch == "{" else "]")
-        elif ch in "}]":
-            if not stack:
-                break
-            stack.pop()
-            # A container just closed, so everything up to here is whole. Cut
-            # AFTER it, keeping the element that finished.
-            cut, cut_stack = i + 1, list(stack)
-        elif ch == "," and stack:
-            # A comma separates two elements, so everything before it is whole.
-            # Cut BEFORE it: what follows is the fragment that never finished.
-            cut, cut_stack = i, list(stack)
-    if not stack or cut is None or not cut_stack:
-        return None
-    try:
-        parsed = json.loads(raw[start:cut] + "".join(reversed(cut_stack)))
-    except json.JSONDecodeError:
-        return None
-    return parsed if isinstance(parsed, dict) else None
-
-
-def _repeated_list(raw: str, threshold: int = EXTRACT_REPEAT_THRESHOLD) -> bool:
-    """True when the same list entry was emitted over and over.
-
-    `looks_repetitive` misses this: the model cycles over a *set* of entries
-    rather than one block, so no single repeating unit spans the tail. Comparing
-    the entries catches it, and a genuine document never lists one of them three
-    times over.
-
-    Both lists in the schema are checked, not just the table. sol005 cycles a
-    seven-entry block through `other_fields` -- with only "description" counted
-    nothing fired, and the reply was reported as "cut off at the token cap, raise
-    EXTRACT_MAX_TOKENS", which is advice that buys more loop.
-    """
-    seen = {}
-    for text in re.findall(r'"(?:description|label)"\s*:\s*"([^"]{12,})"', raw):
-        seen[text] = seen.get(text, 0) + 1
-        if seen[text] >= threshold:
-            return True
-    return False
-
-
-def _is_ocr_envelope(raw: str) -> bool:
-    """True when a reply is an OCR model's built-in {"natural_text": ...} answer.
-
-    Checked on the raw text rather than on parsed fields, because the envelope is
-    just as recognisable when it was cut off before it could be parsed at all.
-    """
-    return raw.lstrip().lstrip("`json \n").startswith('{"natural_text"')
-
-
-# How many lines from the top of a transcript to look in for the heading. The
-# heading is not always near the head of the page -- sol002 prints it eighteen
-# lines down, under two letterheads and a logo block -- and this is the same
-# claim `prompts._EP_HEAD`'s doc-type rule makes, applied to the search.
-# How far apart two lines may be and still be one heading, and how much less of a
-# heading the second may be. Both deliberately tight: 1 means literally the next
-# printed line, and the slack lets a bilingual pair differ slightly in coverage
-# without letting a half-matched caption in.
-_TYPE_HEADING_GAP = 1
-_TYPE_HEADING_SLACK = 0.15
-
-_TYPE_SCAN_LINES = 40
-
-# A heading is a short line. A paragraph that happens to contain the words
-# "tax invoice" is body text, and classifying on it would pick a form off a
-# sentence in the small print.
-_TYPE_SCAN_MAX_CHARS = 80
-
-
-def classify_transcript(text: str):
-    """(codes, heading, confidence, detail) -- what the page calls itself.
-
-    The heading is returned with the codes because it is the EVIDENCE for them:
-    it is reported on the result, and it is what rule 4 below demands of the
-    model before it will believe an answer.
-
-    Deterministic and model-free -- it is `normalise.document_types`, a table of
-    needles, run line by line over the top of the page. **Nothing is asked of the
-    model to decide this**, which matters more here than usual: the answer
-    chooses the FORM the model is then asked to fill, so a classification the
-    model made would be a schema the model chose for itself.
-
-    A LIST, because a document is regularly more than one type at once -- a page
-    headed ใบเสร็จรับเงิน/ใบกำกับภาษี is a receipt and a tax invoice, and both
-    forms apply. Returning one and discarding the rest is the bug this signature
-    exists to prevent.
-
-    An empty list is a real answer. It gets the default field set, which is wider
-    than any typed one -- guessing a type to pick a narrower form would drop
-    Mandatory fields on a coin flip.
-
-    `confidence` is `normalise.heading_confidence` of the line the answer came
-    off, and it is what decides whether the model is asked at all: above
-    `CLASSIFY_MIN_CONFIDENCE` this answer stands on its own and no request is
-    made. `detail` is its working, so the number can be taken apart.
-    """
-    best = ([], "", 0.0, {})
-    scored = []                     # (line number, codes, line, confidence, detail)
-    lines = (text or "").splitlines()[:_TYPE_SCAN_LINES]
-    candidates = []
-    for number, raw in enumerate(lines, 1):
-        # A literal combined heading may wrap onto two adjacent lines, including
-        # a delivery title that has no standalone kind in the old vocabulary.
-        if number < len(lines) and raw.strip() and lines[number].strip():
-            pair = raw.strip() + " / " + lines[number].strip()
-            if (len(pair) <= _TYPE_SCAN_MAX_CHARS
-                    and set(normalise.document_types(pair)) & set(prompts.TYPE_COMPONENTS)):
-                candidates.append((number, pair))
-        candidates.append((number, raw))
-    for number, line in candidates:
-        line = line.strip()
-        if not line or len(line) > _TYPE_SCAN_MAX_CHARS:
-            continue
-        codes = normalise.document_types(line)
-        if not codes:
-            continue
-        confidence, detail = normalise.heading_confidence(line, number)
-        scored.append((number, codes, line, confidence, detail))
-        # **The BEST-scoring line wins, not the first** (2026-09-02). First-wins
-        # was the old rule and it existed to stop a credit note's body text --
-        # which regularly names the invoice it credits -- making the page an
-        # invoice as well. Scoring answers that better than order does: a line
-        # that IS a heading scores 1.00 and a sentence mentioning one scores
-        # 0.23-0.30, so the real heading wins even where the mention comes first.
-        # Ties keep the earlier line, which is the old behaviour where the score
-        # cannot separate two lines.
-        if confidence > best[2]:
-            best = (codes, line, confidence, detail)
-
-    # **A heading printed on two lines is ONE heading** (2026-09-04). sol001 heads
-    # itself `ใบแจ้งหนี้` and `STATEMENT OF ACCOUNT` on consecutive lines, each a
-    # complete heading scoring 1.00 and each naming a different type. Taking the
-    # better of the two is a coin toss between two right answers, and it threw
-    # away the half that mattered: the document resolved to
-    # STATEMENT_OF_ACCOUNT alone, which no requirement covers, so it was asked
-    # for the 30-key default form and NOTHING it returned could be scored. The
-    # manifest has both, and until now the manifest was the only thing that did.
-    #
-    # So an ADJACENT line that also classifies, and that is as much a heading as
-    # the winner, is unioned into it. Adjacency is the whole of the safety: a
-    # bilingual heading pair is printed together, while the body text naming
-    # another document -- the case best-scoring was introduced for -- is lines
-    # away and scores far lower anyway. Both tests have to pass.
-    if best[0]:
-        winner = next(e for e in scored if e[2] == best[1] and e[1] == best[0])
-        merged, lines = list(best[0]), [best[1]]
-        for number, codes, line, confidence, _detail in scored:
-            if line == winner[2]:
-                continue
-            if abs(number - winner[0]) > _TYPE_HEADING_GAP:
-                continue
-            # As much a heading as the winner is, not merely classifiable: a
-            # partial line beside a real heading is a caption or a reference,
-            # and this must not let one in through the back door.
-            if confidence < best[2] - _TYPE_HEADING_SLACK:
-                continue
-            new_codes = [c for c in codes if c not in merged]
-            if new_codes:
-                merged.extend(new_codes)
-                lines.append(line)
-        if len(merged) > len(best[0]):
-            # Reported in the type order the schema reads in, and with both lines
-            # as the evidence -- the heading is what the model's answer is checked
-            # against, and half of a two-line heading would fail a check the page
-            # actually passes.
-            merged = [c for c in TYPE_NAMES if c in merged]
-            merged = normalise.classification_types(merged, " / ".join(lines))
-            best = (merged, " / ".join(lines), best[2], best[3])
-    return best
-
-
-def _classify_with_model(text: str, status: dict):
-    """(codes, heading) from the model: which kind of document this transcript is.
-
-    **The classifier for a real document since 2026-09-02**, ahead of the printed
-    heading table rather than behind it. What that buys is the case the table
-    cannot cover: a page heading itself in wording nobody has written a needle
-    for, which used to take the DEFAULT field set -- every key of every
-    requirement at once, the widest form here and the most fill pressure a small
-    model is ever put under.
-
-    **It still does not choose the schema it is then asked to fill**, which is
-    the objection `normalise.py`'s header spends three paragraphs on, and the
-    difference is the guards below: the answer is a code from a closed list plus
-    a heading that has to be ON the page, so it is a reading of printed text that
-    Python then checks -- not a judgement taken on trust. An answer that fails
-    either test is discarded whole and the heading table answers instead.
-
-    Two guards, and the second is the one that makes this safe to run first:
-
-    * the codes are filtered to the vocabulary it was offered, so an invented
-      category cannot reach `DOC_TYPE_FIELDS`;
-    * **the heading it quotes must actually be printed on the page**, checked
-      with `grounding.squash` the same way every extracted value is checked. An
-      answer that cannot point at a heading is thrown away whole -- codes and
-      all -- because the codes were supposedly read off that heading.
-
-    Returns ([], "") on anything unusable, which sends `resolve_doc_types` on to
-    the heading table -- the pre-2026-09-02 answer, so a refusal costs the run
-    nothing but the request. Never raises, for the same reason.
-    """
-    if not CLASSIFY_WITH_MODEL or not (text or "").strip():
-        return [], ""
-    message = (CLASSIFY_PROMPT.format(vocabulary=classify_vocabulary())
-               + text[:CLASSIFY_MAX_CHARS])
-    try:
-        url, payload = backends.structured_request(
-            backends.system_prefix(status)
-            + [{"role": "user", "content": message}],
-            None, CLASSIFY_MAX_TOKENS, status)
-        with _asking("classify"):
-            res = _timed_post(url, payload, status)
-        if res.status_code != 200:
-            return [], ""
-        raw, _, _ = backends.structured_reply(res.json(), status)
-        answer = json.loads(_first_json_object(strip_fence(raw)) or raw)
-        if not isinstance(answer, dict):
-            return [], ""
-        # Exactly two keys are read, and everything else in the reply is
-        # dropped on the floor. **A number the model volunteered is never taken**
-        # -- not a confidence, not a score, not a probability. It would be a
-        # token sequence about a token sequence with nothing behind it, and it
-        # would sit on the page beside figures that were all computed from
-        # something re-derivable. The heading is checked against the page below;
-        # that check IS the confidence, and it is Python's.
-        heading = str(answer.get("heading") or "").strip()
-        codes = [c for c in (answer.get("types") or [])
-                 if isinstance(c, str) and c in TYPE_NAMES]
-    except Exception:
-        # Including a JSON error: this is one small request whose whole purpose
-        # is to narrow a form, and there is a correct answer to give without it.
-        return [], ""
-    if not codes or not heading:
-        return [], ""
-    squashed = grounding.squash(heading)
-    # Read off page images there is no printed text to hold the heading to; the
-    # codes are still held to the vocabulary above.
-    if not _image_fed() and (not squashed or squashed not in grounding.squash(text)):
-        # It named a heading the page does not print, so it read nothing -- the
-        # codes are a guess about a document it did not look at. The heading
-        # table gets the question instead.
-        return [], ""
-    # Deduped in the vocabulary's own order, so two spellings of one answer and
-    # two orderings of one pair of codes produce the same form.
-    return normalise.classification_types(codes, heading), heading
-
-
-def _needs_second_opinion(codes, confidence):
-    """Why the table's answer is not good enough on its own, or "".
-
-    Two reasons, and they are different failures of a needle match:
-
-    * **not enough of the line is the heading** -- the coverage gate, which
-      catches a document kind mentioned in passing in a sentence;
-    * **more than one type** -- which coverage CANNOT catch, because a second
-      type costs only a few characters on a line the first type already fills.
-      A page that merely cites another document (`ใบลดหนี้ อ้างอิงใบกำกับภาษี
-      123`) scores like a heading and comes back as two types, one of them
-      wrong -- and a wrong type widens the form, adds rules the document is not
-      held to, and frames both prompts with a lie about what it is reading.
-
-    The second rule escalates legitimate slash headings too, and knowingly:
-    `ใบเสร็จรับเงิน/ใบกำกับภาษี` really is both, and six of the ten fixtures are
-    multi-type. That is the price of the certainty, and on this corpus the model
-    returns the same types, so it buys the certainty for a request rather than
-    for an answer.
-    """
-    if not codes:
-        return ""
-    if confidence < CLASSIFY_MIN_CONFIDENCE:
-        return f"the heading scored {confidence:.0%}, under {CLASSIFY_MIN_CONFIDENCE:.0%}"
-    if CLASSIFY_ESCALATE_MULTI and len(codes) > 1:
-        return ("the heading names more than one type, and one of them may be a "
-                "reference to another document")
-    return ""
-
-
-def resolve_doc_types(text: str, case_id: str = None, doc_type=None,
-                      status: dict = None, pages=None):
-    """(codes, how, heading) -- what this document is, and on whose authority.
-
-    In order of confidence, the same shape as `scoring.case_for_upload`'s rules
-    and for the same reason: `how` is reported, so a run never has to be trusted
-    about a choice it cannot show its working for.
-
-      1. the caller said so
-      2. **the Python heading table, where it is sure** -- above
-         `CLASSIFY_MIN_CONFIDENCE` AND naming one type, and then no request is
-         made at all
-      3. the model, where a status is given
-      4. the manifest, for a benchmark case
-      5. the Python table's answer below the bar, rather than nothing
-      6. nothing -- the default set
-
-    **Rules 2 and 3 are the user's own design** (2026-09-02): *use code to
-    classify but if its confidence is more than 90% ... if not, let llm do it*.
-    Cheap and certain first, the model where the page is not obvious. The whole
-    of what makes it work is that the certainty is MEASURED rather than assumed
-    -- `normalise.heading_confidence` scores how much of the matched line is
-    actually the heading, so `ใบเสร็จรับเงิน/ใบกำกับภาษี` on its own line scores
-    1.00 and a sentence mentioning a tax invoice scores 0.23.
-
-    **A heading the table cannot place scores nothing at all, so it goes to the
-    model** -- which is the case the model was promoted for on the same day, and
-    the one this ordering preserves. What changed is only that a page whose
-    heading is unmistakable no longer pays a request to be told so.
-
-    **The manifest and the low-confidence answer are both still under the model**
-    rather than in front of it: a fixture must exercise the path a real document
-    takes, which is why the manifest stopped answering first earlier today.
-
-    **The manifest is still checked, and a disagreement is REPORTED rather than
-    resolved** -- `_field_set` puts the manifest's own answer on the form as
-    `doc_type_expected` whenever the two differ. The manifest is a person's
-    reading and the model's is a machine's; when a measured number moves, that
-    field is what says which of the two the run was built on.
-
-    Rule 2 is the only one that costs a request -- one short one, on the first
-    `CLASSIFY_MAX_CHARS` of the transcript, and about half a second warm.
-    `_classify_with_model` has what it refuses to believe, and it refuses by
-    falling through rather than by failing: a classification that cannot be
-    trusted leaves the run exactly where it would have been without it.
-
-    **The manifest outranks the page**, which is the point of having it: a
-    heading can name a type a person disagrees with, and the manifest is where
-    that correction lives. sol001 is the standing example -- it prints ใบแจ้งหนี้
-    in Thai and STATEMENT OF ACCOUNT in English, so the classifier reports both,
-    and the manifest is what settles which reading this project uses.
-
-    `doc_type` accepts a string or a list; a string is wrapped, so a caller with
-    one type in hand does not have to know about the plural.
-
-    `heading` is the line the answer was read off, where one was: it is what the
-    page says about itself, and a classification nobody can check against the
-    page is exactly what the model's rule refuses to accept.
-
-    The fourth return value is that heading's confidence, or **None** where the
-    answer came from a person and there is no page evidence to score -- the
-    caller and the manifest. None, never 0.0: "nobody measured this" and "this
-    measured zero" are different claims, and only the second is a bad heading.
-    """
-    if doc_type:
-        codes = [doc_type] if isinstance(doc_type, str) else list(doc_type)
-        return codes, "caller", "", None, ""
-    read, heading, confidence, _ = classify_transcript(text)
-    why = _needs_second_opinion(read, confidence)
-    if read and not why:
-        return read, "transcript", heading, confidence, ""
-    if status:
-        codes, quoted = _classify_with_model(text, status)
-        if codes:
-            # **The model may ADD a requirement, never take the last one away**
-            # (2026-09-04). Both answers are readings of the same printed
-            # heading and both have been checked against the page, so where the
-            # model's names only types no requirement covers and the table's
-            # names one that does, the two are unioned rather than the table's
-            # being dropped.
-            #
-            # It is one-directional on purpose, and the asymmetry is the whole
-            # of why it is safe: a type with no requirement contributes no key
-            # and no Mandatory field, so adding the table's answer can only ever
-            # narrow the form and give the document something to be scored on.
-            # Losing it does the opposite, silently -- sol001 resolved to
-            # STATEMENT_OF_ACCOUNT alone, was asked for the 30-key default form,
-            # and NOTHING it returned could be scored, which is indistinguishable
-            # on the page from an extraction that found nothing.
-            if read and not mandatory_for_types(codes) and mandatory_for_types(read):
-                codes = list(codes) + [c for c in read if c not in codes]
-                quoted = " / ".join(x for x in (quoted, heading) if x)
-            return (codes, "model", quoted,
-                    normalise.heading_confidence(quoted)[0], why)
-    if case_id:
-        # The manifest's answer for THIS document, where the case holds more
-        # than one -- see `case_doc_types`. A pack's entry for the pages in
-        # hand, or the file's own list where it holds one document.
-        named = case_doc_types(case_id, pages)
-        if named:
-            return named, "case", "", None, why
-    if read:
-        # Under the bar and used anyway, because the alternative is the default
-        # form -- the union of every requirement, the widest here and the most
-        # fill pressure a small model is ever put under. A weak reading of the
-        # page beats no reading; the confidence rides on the result and says so.
-        return read, "transcript", heading, confidence, why
-    return [], "unclassified", "", None, why
-
-
-def case_doc_types(case_id: str, pages=None) -> list:
-    """What a person says this case is -- for the whole file, or for one document.
-
-    **A benchmark case is not always one document** (2026-09-08). sol015 is
-    seven, of five different kinds, and one `doc_types` for the file would be
-    seven wrong answers or one right one and six wrong. A case that holds more
-    than one carries `documents` in the manifest -- pages and types per document
-    -- and this reads the entry the given pages fall in.
-
-    `pages` empty asks about the FILE, which is what a caller with no segment in
-    hand means, and it gets the top-level list: document 1's types on a pack,
-    because that is the document the truth file describes.
-
-    An entry that covers none of the given pages returns [] rather than falling
-    back to the file's answer. A pack whose manifest was edited to cover four of
-    its five documents is a manifest that has nothing to say about the fifth,
-    and saying so lets the classifier answer instead of putting document 1's
-    types on it.
-    """
-    case = scoring.cases_index().get(case_id) or {}
-    documents = case.get("documents") or []
-    if pages and documents:
-        for entry in documents:
-            if pages[0] in (entry.get("pages") or []):
-                return list(entry.get("doc_types") or [])
-        return []
-    return list(case.get("doc_types") or [])
-
-
-def manifest_types(case_id: str, pages=None) -> list:
-    """What a person says this benchmark case is, or []. Never the classifier.
-
-    Read separately from `resolve_doc_types` so the manifest can be a CHECK on an
-    answer it no longer gets to give: since the model classifies first, the only
-    thing that can say a fixture was built on a different form from the one its
-    truth file was written against is the manifest, held beside the answer rather
-    than in front of it.
-
-    `pages` names the document being classified, on a case that holds more than
-    one -- without it the check would hold document 1's types against every
-    document of a pack and report six disagreements that are not.
-    """
-    return case_doc_types(case_id, pages)
-
-
-# --------------------------------------------------------------------------
-# stage 0a: how many DOCUMENTS are in the file (2026-09-08)
-# --------------------------------------------------------------------------
-#
-# Ahead of the type classifier, because it decides what that classifier is
-# given: a three-page file holding three documents is three classifications and
-# three forms, and asking one form of all three pages puts three issue dates and
-# three totals in front of eleven keys. `segment.py` holds the rules and the
-# reasoning; what is here is the model escalation and the reporting, which is
-# the same shape `resolve_doc_types` already has one stage down.
-
-
-def _page_digest(pages) -> str:
-    """The head of each page, numbered, for the boundary question.
-
-    The top of a page is what answers it -- the letterhead, the heading, the
-    document number, a `Page 2 of 2`. Sending whole pages would put a multi-page
-    document's every table row into a request that reads none of them, and the
-    cap is small for the same reason `CLASSIFY_MAX_CHARS` is.
-    """
-    return "\n\n".join(
-        "--- page %d ---\n%s" % (number, (page or "").strip()[:SEGMENT_MAX_CHARS])
-        for number, page in enumerate(pages, 1))
-
-
-def _segment_with_model(pages, status: dict):
-    """The page groups the model reads in this file, or None.
-
-    **Asked only where Python could not tell** -- two pages of the same kind,
-    each with its own heading, neither numbered. Every other boundary in
-    `segment.py` is a reading of what the page prints, and a request that could
-    only ever disagree with printed text can only make the answer worse.
-
-    The answer is checked before it is believed, by `segment.valid_groups`, and
-    the check is the whole of why this is safe to run at all: every page appears
-    exactly once, every group is consecutive, nothing is out of range. A
-    grouping that loses a page would drop it from the run silently, and one that
-    repeats a page would extract it twice under two documents' names.
-
-    Nothing else in the reply is read -- no type, no confidence, no reason. The
-    types are resolved per document afterwards by the classifier that already
-    exists, and a number the model volunteered is never taken here any more than
-    it is there.
-
-    Returns None on anything unusable, which leaves Python's own answer standing
-    -- so a refusal costs the run the request and nothing else. Never raises.
-    """
-    if not SEGMENT_WITH_MODEL or len(pages) < 2:
-        return None
-    message = prompts.SEGMENT_PROMPT.format(count=len(pages)) + _page_digest(pages)
-    try:
-        url, payload = backends.structured_request(
-            backends.system_prefix(status)
-            + [{"role": "user", "content": message}],
-            None, SEGMENT_MAX_TOKENS, status)
-        with _asking("split"):
-            res = _timed_post(url, payload, status)
-        if res.status_code != 200:
-            return None
-        raw, _, _ = backends.structured_reply(res.json(), status)
-        answer = json.loads(_first_json_object(strip_fence(raw)) or raw)
-        if not isinstance(answer, dict):
-            return None
-        return segment.valid_groups(answer.get("documents"), len(pages))
-    except Exception:
-        return None
-
-
-class _SegmentChat:
-    """The rolling boundary walk: one short question per unsettled boundary.
-
-    **Why this exists when the one-shot above does not answer it.**
-    `_segment_with_model` puts a digest of every page in one request, so its
-    prompt grows with the FILE -- which is what `SEGMENT_MAX_PAGES` is, and why
-    a longer file used to be read as one document instead. Here the question is
-    turned round: the pages arrive one at a time and the document so far is the
-    conversation, so the prompt is bounded by the length of a DOCUMENT and a
-    file of any length is a walk of short requests.
-
-    **The reset is the design, not an economy.** What is being asked is whether
-    this page continues THIS document; the pages of the one before it are not
-    context for that, they are contamination -- and without the reset document 7
-    would be judged partly against document 1's parties and totals. So `opened`
-    throws the memory away and starts again from the page that opened the
-    document.
-
-    **A conversation is not memory the server holds.** Both backends are
-    stateless: every turn is resent, so what this class calls memory is a list
-    rebuilt into each request. That is what `SEGMENT_CHAT_WINDOW` is for -- an
-    unbounded one grows with the document until it overruns `num_ctx` on exactly
-    the long files this was built for. The opening page is always kept and the
-    middle drops out, because what identifies a document is its first page and
-    its most recent one.
-
-    **Python's decisions go in as USER turns, never as assistant ones.** A page
-    `segment.py` settled still has to be in the memory, or the next question is
-    asked against a document with holes in it -- but writing Python's reading as
-    something the model said would make the conversation a record of a thing
-    that did not happen, and the next answer would be conditioned on it.
-
-    Three guards, the same three the classifier has and for the same reasons:
-
-    * the reply is read for exactly two keys and nothing else -- **no number is
-      taken**, here as anywhere;
-    * **the evidence it quotes must be printed on the page it was asked about**,
-      checked with `grounding.squash` like every extracted value. An answer that
-      cannot point at the page is discarded whole and Python's reading stands;
-    * a refusal costs the walk that one boundary and nothing else -- it never
-      raises and never stops the walk.
-    """
-
-    def __init__(self, status: dict, questions=None, reserve=None, budget_deferred=None, wait_budget=None):
-        self.status = status
-        self.questions, self.reserve = questions, reserve
-        self.budget_deferred = budget_deferred
-        self.wait_budget = wait_budget
-        # The current document's conversation. Thrown away by `opened`.
-        self._first = None
-        self._turns = []
-        # Reported: a walk that asked nothing and a walk that was refused
-        # everything reach the same answer by different roads.
-        self.asked = 0
-        self.answered = 0
-        self.refused = 0
-        self.capped = False
-
-    # -- the memory ------------------------------------------------------
-
-    def _digest(self, page: str) -> str:
-        return (page or "").strip()[:SEGMENT_MAX_CHARS]
-
-    def opened(self, number: int, page: str):
-        self._first = {
-            "role": "user",
-            "content": prompts.SEGMENT_CHAT_PROMPT.format(
-                number=number, digest=self._digest(page))}
-        self._turns = []
-
-    def kept(self, number: int, page: str, why: str):
-        self._turns.append({
-            "role": "user",
-            "content": prompts.SEGMENT_CHAT_KEPT.format(
-                number=number, why=why, digest=self._digest(page))})
-
-    def _messages(self, number: int, page: str):
-        """The opening page, the tail of the document, and the question.
-
-        The opening turn is never dropped: it is what the document IS, and a
-        window that let it fall off would leave the model comparing a page
-        against the middle of a table it can no longer identify.
-        """
-        window = max(SEGMENT_CHAT_WINDOW - 1, 1)
-        return (backends.system_prefix(self.status)
-                + [self._first]
-                + self._turns[-window:]
-                + [{"role": "user",
-                    "content": prompts.SEGMENT_CHAT_ASK.format(
-                        number=number, digest=self._digest(page))}])
-
-    # -- the question ----------------------------------------------------
-
-    def decide(self, seg, number: int, page: str, guess: bool, why: str):
-        """(new, why) from one question, or None to leave Python's reading."""
-        if self._first is None:
-            return None
-        if self.asked >= SEGMENT_CHAT_MAX_ASKS:
-            self.capped = True
-            return None
-        self.asked += 1
-        if self.questions is None:
-            answer = self._ask(number, page)
-        else:
-            key = (number, page, json.dumps(self._messages(number, page), ensure_ascii=False))
-            while True:
-                reserve = self.reserve() if self.reserve else 0
-                allowed, answer = self.questions.call(key, lambda: self._ask(number, page), reserve)
-                if (not allowed and reserve and self.questions.has_capacity() and self.wait_budget
-                        and self.wait_budget()):
-                    continue
-                break
-            if not allowed:
-                if reserve and self.budget_deferred:
-                    self.budget_deferred()
-                self.asked -= 1
-                self.capped = True
-                return None
-        if answer is None:
-            self.refused += 1
-            return None
-        same, evidence = answer
-        self.answered += 1
-        # The reply goes back into the memory unedited: this turn is the one
-        # thing in the conversation the model actually said, and rewriting it
-        # would condition the next answer on words it did not use.
-        self._turns.append({
-            "role": "assistant",
-            "content": json.dumps({"same": same, "evidence": evidence},
-                                  ensure_ascii=False)})
-        return (not same,
-                "the model reads page %d as %s, quoting %s"
-                % (number, "the same document" if same else "a new document",
-                   json.dumps(evidence, ensure_ascii=False)))
-
-    def _ask(self, number: int, page: str):
-        """(same, evidence) from one request, or None. Never raises."""
-        try:
-            url, payload = backends.structured_request(
-                self._messages(number, page), None, SEGMENT_MAX_TOKENS,
-                self.status)
-            with _asking(f"split, page {number}"):
-                res = _timed_post(url, payload, self.status)
-            if res.status_code != 200:
-                return None
-            raw, _, _ = backends.structured_reply(res.json(), self.status)
-            reply = json.loads(_first_json_object(strip_fence(raw)) or raw)
-            if not isinstance(reply, dict):
-                return None
-            if not isinstance(reply.get("same"), bool):
-                return None
-            evidence = str(reply.get("evidence") or "").strip()
-            # **The quote has to be on the page it was asked about.** This is
-            # the guard that makes a sequential walk safe to act on: an answer
-            # that can point at the page is a reading of printed text, and one
-            # that cannot is a guess wearing a citation. Checked against the
-            # whole page rather than the digest the model was shown -- the
-            # digest is a window on the page, and a correct quote from just past
-            # its edge is still a correct quote.
-            if not evidence:
-                return None
-            if grounding.squash(evidence) not in grounding.squash(page or ""):
-                return None
-            return bool(reply["same"]), evidence
-        except Exception:
-            return None
-
-    def note(self) -> str:
-        """What the walk cost, for the reason the split reports anything."""
-        if not self.asked:
-            return "every boundary was read off the pages"
-        parts = ["%d boundary question(s), %d answered"
-                 % (self.asked, self.answered)]
-        if self.refused:
-            parts.append("%d refused" % self.refused)
-        if self.capped:
-            parts.append("stopped at SEGMENT_CHAT_MAX_ASKS=%d"
-                         % SEGMENT_CHAT_MAX_ASKS)
-        return ", ".join(parts)
+    with engine._loop_aborts_lock:
+        return dict(engine._loop_aborts)
 
 
 def resolve_segments(text: str, pages=None, status: dict = None):
     """`(segments, how)`, without the page-by-page progress. See `_segment_stream`."""
-    return _drain(_segment_stream(text, pages, status))
-
-
-def _segment_stream(text: str, pages=None, status: dict = None):
-    """`(segments, how)` -- the documents in this file, and on whose authority.
-
-    `how` is reported for the reason `doc_type_from` is: a run that came back as
-    three documents has to be able to say what split it, and a split nobody can
-    check is one nobody should take on trust.
-
-      * `rules` -- `segment.py` read it off the pages, and was sure
-      * `model` -- a boundary was a guess and the model was asked, about the
-        whole file in one request
-      * `chat` -- the file was too long for that, so it was WALKED: one question
-        per unsettled boundary, carrying the document so far
-      * `guess` -- a boundary was a guess, the model was not asked or would not
-        answer, and Python's own reading stands
-      * `whole` -- not split at all: one page, the setting off, or too many pages
-
-    `pages` is the read's own page list where the caller still has it. Falling
-    back to `segment.split_pages` is not a lesser path -- it is the only one a
-    truth-fed run has -- but the list is exact and the parse is a re-derivation,
-    so the list wins where there is one.
-
-    **A one-page file returns one segment and never asks anything**, which is
-    eleven of the thirteen fixtures and very nearly every real upload.
-    """
-    pages = [p for p in (list(pages) if pages is not None
-                         else segment.split_pages(text))]
-    if len(pages) < 2:
-        return segment.one(pages or [text], classify_transcript, text,
-                           "the file is one page"), "whole"
-    if not SEGMENT_DOCUMENTS:
-        return segment.one(pages, classify_transcript, text,
-                           "splitting is off (SEGMENT_DOCUMENTS=0)"), "whole"
-    walking = len(pages) > SEGMENT_MAX_PAGES
-    if walking and not (SEGMENT_CHAT and status):
-        # No model server, or the walk is off. Read as one rather than split
-        # badly, and it says so -- remembering that one document is one form,
-        # asked once, filled from however many pages this file has.
-        return segment.one(pages, classify_transcript, text,
-                           "the file has %d pages, over SEGMENT_MAX_PAGES=%d"
-                           % (len(pages), SEGMENT_MAX_PAGES)), "whole"
-    if (walking and len(pages) >= SEGMENT_PARALLEL_MIN_PAGES and SEGMENT_PARALLEL_MAX > 1
-            and backends.parallel_ok(status) and not _image_fed()):
-        return (yield from _segment_parallel_stream(text, pages, status))
-    # Too long for the one-shot question, whose prompt carries a digest of every
-    # page, is **walked instead** (2026-09-16): one short question per unsettled
-    # boundary, the document so far as the conversation, and the memory reset at
-    # every cut -- so the prompt is bounded by the length of a document rather
-    # than of the file.
-    chat = _SegmentChat(status) if walking else None
-    # Every multi-page file reports its grouping page by page, walked or not
-    # (2026-09-16, at the user's request: *see how many pages remain, what the
-    # current session is at, and view the grouped pages*). On a short file the
-    # steps arrive in a burst and cost nothing; on a long one they are the only
-    # thing that says the run is moving between the last page read and the first
-    # field extracted.
-    yield {"event": "segmenting", "pages": len(pages), "walk": walking}
-    # The type-change gate is the classifier's own bar, CLASSIFY_MIN_CONFIDENCE:
-    # a change of type the table is not sure of is a guess, and a guess is what
-    # gets asked about. See `segment._boundary`.
-    #
-    # **The walk only.** Measured on qwen3.5:9b: gated on a SHORT file, one
-    # unsure type change sends the whole file to the one-shot question, which
-    # regroups every page and overruled correct splits -- sol015 and sol022 both
-    # came back wrong where the rules alone are right. The walk asks about the
-    # one boundary in doubt and nothing else, so the gate is safe there.
-    steps = segment.walk(pages, classify_transcript, whole=text, ask=chat,
-                         min_confidence=(CLASSIFY_MIN_CONFIDENCE
-                                         if walking and SEGMENT_TYPE_GATE else 0.0))
-    while True:
-        try:
-            step = next(steps)
-        except StopIteration as done:
-            segments = done.value
-            break
-        # The head of the page, which is what the walk itself was shown -- a
-        # reader verifying a group sees the text the decision was taken on. The
-        # whole page is already on screen as the transcript; this is bounded at
-        # SEGMENT_MAX_CHARS so a hundred-page walk stays a few tens of KB.
-        yield {"event": "segment_page", **step,
-               "remaining": step["pages"] - step["page"],
-               "head": (pages[step["page"] - 1] or "").strip()[:SEGMENT_MAX_CHARS],
-               **({"asked_total": chat.asked, "answered_total": chat.answered,
-                   "refused_total": chat.refused} if chat else {})}
-    if walking:
-        # `chat` only where a question actually settled something. A walk
-        # nobody answered IS Python's own reading and must not claim otherwise
-        # -- the same rule `doc_type_from` follows, and the reason a refusal
-        # here is reported rather than swallowed.
-        return segments, ("chat" if chat.answered else "guess")
-    if not segment.uncertain(segments):
-        return segments, "rules"
-    if status:
-        groups = _segment_with_model(pages, status)
-        if groups:
-            return segment.apply_groups(pages, groups, classify_transcript), "model"
-    return segments, "guess"
-
-
-
-def _segment_parallel_stream(text, pages, status):
-    workers = min(SEGMENT_PARALLEL_MAX, len(pages), EXTRACT_REQUEST_CONCURRENCY)
-    questions = segmentparallel.Questions(SEGMENT_CHAT_MAX_ASKS)
-    messages = queue.Queue()
-    control = segmentparallel.Coordinator(pages, workers, SEGMENT_PARALLEL_OVERLAP,
-        classify_transcript, lambda index: _SegmentChat(status, questions, lambda: control.reserve(index),
-                 lambda: control.budget_deferred(index), lambda: control.wait_budget(index)),
-        CLASSIFY_MIN_CONFIDENCE if SEGMENT_TYPE_GATE else 0.0,
-        progress=lambda values: messages.put(('progress', values)))
-    budget, batch = _DocumentRequests(), servertime.Batch(status)
-    pool = ThreadPoolExecutor(max_workers=len(control.starts), thread_name_prefix='segment-seek')
-    results, fallback = {}, ''
-    def work(index):
-        previous = getattr(_progress, 'request_budget', None)
-        _progress.request_budget = budget
-        try:
-            return control.worker(index)
-        finally:
-            _progress.request_budget = previous
-    try:
-        yield {'event':'segmenting', 'pages':len(pages), 'walk':True,
-               'parallel':len(control.starts), 'worker_starts':[n + 1 for n in control.starts]}
-        for index in range(len(control.starts)):
-            future = pool.submit(_carry_progress(workspace.bind(batch.run)), work, index)
-            future.add_done_callback(lambda done, i=index: messages.put(('done', (i, done))))
-        last = None
-        while len(results) < len(control.starts):
-            kind, value = messages.get()
-            if kind == 'done':
-                index, future = value
-                try:
-                    results[index] = future.result()
-                except segmentparallel.Conflict as err:
-                    fallback = control.conflict_reason or str(err)
-                    budget.stopped.set(); control.cancel.set()
-                    results[index] = {'owned':None, 'groups':[], 'events':[], 'decisions':{}}
-            elif value != last:
-                last = value
-                yield {'event':'segment_progress', 'pages':len(pages),
-                       'parallel':len(control.starts), **value}
-        if not fallback:
-            try:
-                grouped, events = control.assemble(results, text)
-            except segmentparallel.Conflict as err:
-                fallback = str(err)
-    finally:
-        control.cancel.set(); budget.stopped.set()
-        pool.shutdown(wait=True, cancel_futures=True)
-        batch.close()
-    metadata = {'workers':len(control.starts), 'worker_starts':[n + 1 for n in control.starts],
-                'candidate_starts':sorted(control.anchors), 'fallback':fallback,
-                'worker_ownership':[{'worker':i + 1, 'seed_page':control.starts[i] + 1,
-                                     'starts_at':results[i]['owned'],
-                                     'applied':not fallback and i in control.used_owners}
-                                    for i in range(len(control.starts))]}
-    if fallback:
-        # A conflicting handoff never becomes a silent cut. Reuse only exact
-        # conversations and the remaining file-level question budget.
-        yield {'event':'segmenting', 'pages':len(pages), 'walk':True,
-               'parallel':1, 'fallback':fallback}
-        chat = _SegmentChat(status, questions)
-        stream = segment.walk(pages, classify_transcript, whole=text, ask=chat,
-                              min_confidence=CLASSIFY_MIN_CONFIDENCE if SEGMENT_TYPE_GATE else 0.0)
-        events = []
-        with closing(stream):
-            grouped = _drain(stream, events.append)
-    stats = questions.stats()
-    metadata.update(confirmed_starts=[g['pages'][0] for g in grouped if g.get('certain')],
-                    final_document_starts=[g['pages'][0] for g in grouped],
-                    ownership_applied=not bool(fallback))
-    for step in events:
-        yield {'event':'segment_page', **step, 'remaining':len(pages) - step['page'],
-               'head':(pages[step['page'] - 1] or '').strip()[:SEGMENT_MAX_CHARS],
-               'asked_total':stats['questions_sent'], 'answered_total':stats['questions_answered'],
-               'refused_total':stats['questions_refused']}
-    grouped[0]['_parallel_execution'] = {**metadata, **stats}
-    return grouped, ('chat' if stats['questions_answered'] else 'guess')
-
-
-def _segment_record(seg: dict, index: int, total: int) -> dict:
-    """One document's place in the file, in the shape the page draws it.
-
-    Without the page texts: this travels to the browser on an event and rides on
-    the result, and the transcript is already there once. The same rule that
-    keeps the transcript out of the run log.
-    """
-    return {"document": index, "documents": total,
-            "pages": list(seg["pages"]),
-            "page_range": segment.page_range(seg),
-            "doc_types": list(seg["codes"]),
-            "heading": seg.get("heading") or "",
-            "start_reason": seg.get("start_reason") or "",
-            # Whether the boundary that opened this document is a reading of the
-            # page or a guess. A guess that the model was then asked about is
-            # not one any more -- `apply_groups` opens its segments certain --
-            # so this reads false only where nobody could settle it.
-            "certain": bool(seg.get("certain", True)),
-            "joins": list(seg.get("joins") or [])}
-
-
-def _field_set(text: str, case_id: str = None, doc_type=None, status=None,
-               pages=None, extras=None):
-    """Everything downstream needs about one document's form, in one dict.
-
-    **Resolved once per extraction and handed to everything**: the prompt's
-    shape, the prompt's TEXT, the JSON grammar, the step table, what grounding
-    calls missing, what `validate` checks and what `fieldscore` scores all come
-    off this dict, so no two of them can disagree about which document this is.
-
-    `keys` and `mandatory` are the UNION over every type the document names -- a
-    page that is both a credit note and a tax invoice must answer for both, and
-    an intersection would let each type excuse the other's obligations.
-    `doc_type` is the primary one, for a label and nothing else.
-
-    `extras` is whether `other_fields` is asked for; None takes the switch.
-    """
-    codes, how, heading, confidence, escalated = resolve_doc_types(
-        text, case_id, doc_type, status, pages)
-    # What the manifest says, where it says anything and the answer above came
-    # from somewhere else. Present ONLY on a disagreement, so the field is a
-    # finding rather than a row of metadata: a fixture whose form was chosen by
-    # the model against a person's reading is the one case where a moved field
-    # score has an explanation that is not the extractor's.
-    expected = manifest_types(case_id, pages) if case_id and how != "case" else []
-    if sorted(expected) == sorted(codes):
-        expected = []
-    return {"doc_types": codes,
-            "doc_type": normalise.primary_type(codes),
-            "doc_type_from": how,
-            "doc_type_heading": heading,
-            "doc_type_expected": expected,
-            # How much of the line the answer was read off is actually a heading,
-            # 0-1, or None where the answer came from a person (the caller, the
-            # manifest) and there is no page evidence to score. **None, never 0**
-            # -- the standing rule: "nobody measured this" and "this measured
-            # zero" are different claims.
-            "doc_type_confidence": confidence,
-            # Why the table's own answer was not taken on its own, where it was
-            # not: the coverage gate, or more than one type. Empty where it was
-            # taken, so the field is a reason rather than a status -- and it is
-            # what makes a `model` answer legible, since "the model classified
-            # this" does not say what the cheap path thought first.
-            "doc_type_escalated": escalated,
-            "keys": list(fields_for_types(codes)),
-            "mandatory": list(mandatory_for_types(codes)),
-            # No requirement covers any type in play, so nothing below is
-            # Mandatory and the form is the base field set -- the union of every
-            # requirement, which is what `fields_for_types` falls back to. It is
-            # a flag rather than a thing every reader infers from an empty
-            # `mandatory`, because three of them word themselves differently for
-            # it: the Classify box says so, `fieldscore` scores the base set and
-            # marks the rate `unknown_type`, and the round table stops calling
-            # its denominator "required".
-            #
-            # **It changes what is SCORED and nothing about compliance.**
-            # `mandatory` stays empty, so `validate` demands nothing and no key
-            # is marked REQUIRED on the page -- demanding a key of a document no
-            # table covers is a claim this project has no authority to make.
-            "unknown_type": not mandatory_for_types(codes),
-            # The row shape of a TABLE this form asks for, or []. Only the
-            # withholding certificate asks for one, and it is here rather than
-            # folded into `keys` because a row is not a key: the prompt, the
-            # grammar, the step table, grounding and `validate` each need it as
-            # its own thing, and it is exactly the sort of second answer that
-            # drifts from the first if two callers work it out separately.
-            "items": list(items_for_types(codes)),
-            # Of that table, the cells the requirement marks Mandatory. Its own
-            # entry rather than folded into `mandatory` for the reason `items` is
-            # its own entry: a row's obligation is not a key's, and `validate`
-            # reports it against a path no key list could match.
-            "mandatory_items": list(mandatory_items_for_types(codes)),
-            # Whether `other_fields` is asked for: the single prompt and grammar
-            # and the agentic `other` step all read it off here.
-            "extras": extract_extras() if extras is None else bool(extras)}
-
-
-def _classified(form: dict, mode: str) -> dict:
-    """What stage 0 decided, in the shape the page draws it.
-
-    The run's middle stage made visible: the type, the authority behind it, the
-    line it was read off, and -- the half that actually matters to a reader --
-    **what the answer then bought**, which is the form, the steps and the
-    validation rules that follow from it. A type on its own is trivia; a type
-    that explains why there are eleven rows below it and not sixteen is the
-    reason the stage exists.
-
-    Sent as an event AND attached to the result. Both, because they answer at
-    different times: the event is what the page has while the extraction is
-    still running, and the result is what a re-render an hour later has. One
-    function so the two cannot drift.
-    """
-    codes = form["doc_types"]
-    return {
-        "doc_types": list(codes),
-        "doc_type": form["doc_type"],
-        "doc_type_from": form["doc_type_from"],
-        "doc_type_heading": form.get("doc_type_heading") or "",
-        # The manifest's own answer, on a benchmark case where it differs from
-        # the one this run used. Empty on every other run, and empty on
-        # agreement -- it is a disagreement, not a field.
-        "doc_type_expected": list(form.get("doc_type_expected") or []),
-        # How much of the line this was read off is a heading, or None where a
-        # person gave the answer and there is nothing on the page to score.
-        "doc_type_confidence": form.get("doc_type_confidence"),
-        # Why the model was asked, where it was.
-        "doc_type_escalated": form.get("doc_type_escalated") or "",
-        "type_phrase": type_phrase(codes),
-        "fields": list(form["keys"]),
-        "mandatory": list(form["mandatory"]),
-        # Whether any requirement covers this document at all. The page says so
-        # beside the field count, because "30 fields" with no required clause
-        # otherwise reads as a form nobody can pass rather than as one nobody
-        # has written a requirement for yet.
-        "unknown_type": bool(form.get("unknown_type")),
-        # The cells of the table this form asks for, or []. On the strip beside
-        # the field count, because "eleven fields" and "fourteen fields and a
-        # table" are different amounts of work and the difference is invisible
-        # in a count of scalars.
-        "items": list(form["items"]),
-        # Which of those cells the requirement demands, so the page can mark a
-        # column heading rather than work the requirement out in JavaScript.
-        "mandatory_items": list(form["mandatory_items"]),
-        # Named only for the shape that walks them. Single mode asks one
-        # question, and reporting the steps it did not take would describe a run
-        # that did not happen.
-        "steps": ([s["id"] for s in steps_for_types(codes, form.get("extras", True), mode=mode)]
-                  if mode in ("agentic", "hybrid") else []),
-        "extras": form.get("extras", True),
-        "rules": list(rules_for_types(codes)),
-        # Whether the answer reached the PROMPT or only the field list. It is
-        # per mode and a setting can turn it off, so a reader comparing two runs
-        # has to be able to see which of them was told.
-        "framed": bool(_framing(form, mode)),
-    }
-
-
-def _extract_single(text: str, status: dict, form: dict) -> dict:
-    """The whole schema in one request: all 29 scalars and both lists at once.
-
-    The cheaper of the two shapes, and the one a fresh process starts in.
-    `_extract_agentic` below asks for the same schema a few fields at a time;
-    `extract_fields` picks between them.
-
-    Asked twice at most, and the second time is a different question rather than
-    the same one repeated: the retry constrains decoding to `EXTRACT_JSON_SCHEMA`
-    instead of to "any valid JSON", which makes the model's own transcript
-    envelope unreachable rather than merely discouraged.
-
-    **The retry only runs when the first attempt yielded nothing at all**, and
-    that restraint is measured, not caution. Constraining every request costs
-    accuracy where the plain one already worked: on sol002 it took grounded
-    values from 28 to 19 and invented a table row; on sol003 it filled five rows
-    of unit prices the page never printed. Every baseline in CLAUDE.md was taken
-    on the unconstrained request, and it stays the first thing asked.
-    """
-    result = _extract_once(text, status, None, form)
-    if "fields" in result or not EXTRACT_SCHEMA:
-        return result
-    # Constrained to THIS document's form, not to the union of every form: a
-    # grammar listing a key the prompt never asked for is an invitation to fill
-    # it, which is the note `prompts.extract_schema` carries.
-    retry = _extract_once(text, status,
-                          extract_schema(form["keys"], form["items"],
-                                         form.get("extras", True)), form)
-    retry["seconds"] = round(result.get("seconds", 0) + retry.get("seconds", 0), 2)
-    if "fields" not in retry:
-        # Both failed. The first reply is the one to report -- it is the one the
-        # baselines were measured on -- but say the constrained retry failed too,
-        # so the next person does not spend an hour re-inventing it.
-        result["error"] += (" A retry constrained to the field schema failed as "
-                            f"well: {retry['error']}")
-        result["seconds"] = retry["seconds"]
-        return result
-    retry["schema_retry"] = True
-    # Both replies are kept, labelled the way the agentic steps label theirs. The
-    # first one is why the second was asked -- usually the OCR envelope, or a
-    # string that never closed -- and returning only the reply that worked throws
-    # away the one worth reading, which is the same defect `_ask_step`'s `collect`
-    # list was built to fix.
-    retry["raw"] = ("--- " + _reply_label("single", 0, 0, failed=True) + " ---\n"
-                    + (result.get("raw") or "") + "\n\n"
-                    + "--- " + _reply_label("single", 0, 1) + " ---\n"
-                    + (retry.get("raw") or ""))
-    return retry
-
-
-def _framing(form: dict, mode: str):
-    """The codes this mode's prompt is framed with -- the form's, or none.
-
-    () is the pre-2026-09-01 prompt exactly, with the form untouched, which is
-    what makes an A/B here mean anything.
-
-    **It takes the mode because the two modes measured opposite**, and the
-    default is on for single and off for agentic. That is not a hedge: the rules
-    this framing carries are about telling one key from another, and agentic
-    already asks two or three keys at a time, so it has far less of the confusion
-    they fix and pays the tokens anyway. CLAUDE.md has the 210 runs.
-    """
-    on = TYPE_FRAMING_SINGLE if mode == "single" else TYPE_FRAMING_AGENTIC
-    return form["doc_types"] if on else ()
-
-
-def _extract_once(text: str, status: dict, schema, form: dict) -> dict:
-    """One extraction request, parsed, salvaged if it was cut off, and grounded.
-
-    `schema` constrains decoding to those keys where the server supports it and
-    is None for the plain "return some JSON object" request. Everything else --
-    the prompt, the sampler, the diagnosis of an unusable reply -- is the same
-    either way, which is what makes the two attempts comparable.
-    """
-    # Named rather than inlined so the reply can be shown beside the exact
-    # message that produced it. Instructions, transcript, instructions again --
-    # the closing repeat is what stops an OCR fine-tune answering with its own
-    # transcript envelope, and seeing that on screen is half of why it is there.
-    # "single" because this function IS single mode's one request -- agentic
-    # never reaches here, it goes through `_step_question`.
-    message = (extract_prompt(form["keys"], _framing(form, "single"),
-                              TYPE_FRAMING_BULLETS, form["items"], form.get("extras", True))
-               + text + EXTRACT_REMINDER)
-    url, payload = backends.structured_request(
-        backends.system_prefix(status)
-        + [{"role": "user", "content": message}],
-        schema, EXTRACT_MAX_TOKENS, status)
-
-    started = time.perf_counter()
-    try:
-        with _asking("extraction"):
-            res = _timed_post(url, payload, status)
-        if res.status_code != 200:
-            return {"error": f"{status['kind'] or 'model server'} HTTP "
-                             f"{res.status_code}: {res.text[:200]}"}
-        body = res.json()
-        raw, truncated, _ = backends.structured_reply(body, status)
-    except Exception as err:
-        return {"error": f"extraction request failed: {err}"}
-
-    elapsed = round(time.perf_counter() - started, 2)
-    candidate = _first_json_object(strip_fence(raw)) or raw
-    partial = None
-    try:
-        fields = json.loads(candidate)
-    except json.JSONDecodeError as err:
-        why, flags = _why_unparsable(raw, err, truncated, status)
-        # A cut-off reply is not a wasted request. The model usually fills the
-        # scalars correctly and only *then* starts cycling inside a list, and
-        # returning nothing throws away twenty right answers to punish the tail.
-        # Not attempted for the OCR envelope: what completed there is a
-        # transcript, and salvaging it would put a page of prose into a field.
-        salvaged = None if flags.get("envelope") else _salvage_json(raw)
-        if not salvaged or all(grounding.is_blank(v) for v in salvaged.values()):
-            return {"error": why, **flags, "raw": raw[:2000], "prompt": message,
-                    "seconds": elapsed}
-        fields = salvaged
-        partial = (why + " The fields below are what the reply had finished "
-                         "before it stopped; the rest are empty because it never "
-                         "got to them, not because the page is silent.")
-    if not isinstance(fields, dict):
-        return {"error": "model returned JSON that is not an object",
-                "raw": raw[:2000], "prompt": message, "seconds": elapsed}
-    # Valid JSON, wrong JSON: a short document's envelope closes inside the cap and
-    # would otherwise be stored and scored as if it were the extracted fields.
-    if _is_ocr_envelope(raw):
-        return {"error": f"'{status['model']}' returned a transcript in its OCR "
-                         '{"natural_text": ...} envelope, not the requested fields. '
-                         "Re-extract; if it persists, extract one page at a time.",
-                "envelope": True, "raw": raw[:2000], "prompt": message,
-                "seconds": elapsed}
-    if not form.get("extras", True):
-        # Not asked for, so not kept if the model wrote some anyway: the list
-        # is empty, as it is on an agentic run without the `other` step.
-        fields["other_fields"] = []
-
-    _, _, tokens = backends.structured_reply(body, status)
-    return {
-        "fields": fields,
-        # Set when the reply was rescued from a cut-off body rather than parsed
-        # whole. Carried as its own key, not folded into the fields: every count
-        # on the page -- missing, tiers, grounded ratio -- is computed over keys
-        # the model never reached, and reading those as "the document does not
-        # state this" is exactly the mistake this string exists to prevent.
-        "partial": partial,
-        # The reply exactly as it arrived, kept on the success path too and not
-        # only on the error paths below. A field can be missing because the model
-        # never wrote it or because the fence-stripping and first-object salvage
-        # above cut it off, and only the verbatim text tells those apart.
-        "raw": raw,
-        # And the message that produced it. A reply is only readable against the
-        # question, and every prompt in this project is a measurement -- the one
-        # actually sent is worth being able to check against `prompts.py` without
-        # a server log.
-        "prompt": message,
-        # Every value traced back to the transcript it came from. The prompt asks
-        # the model not to invent; this is the part that checks, because a
-        # plausible invented value is indistinguishable from a read one on screen.
-        "grounding": grounding.check(fields, text, form["keys"],
-                                     form["mandatory"], form["items"]),
-        # Coverage by delivery tier, the same counts the run log records. Sent so
-        # the page can say it in one line instead of leaving you to count filled
-        # rows; it is deliberately NOT part of the grounding dict, because how
-        # many fields came back is a different question from whether they are real.
-        "tiers": grounding.tier_counts(fields, form["keys"]),
-        # Which of these figures already carry tax, decided in Python from the
-        # figures just extracted. It rides on the extraction result because the
-        # Fields tab labels the totals from it: "Amount ex VAT" is a plain lie on
-        # a VAT-inclusive page, and a reader taking `subtotal` for a pre-tax
-        # figure would be out by the VAT.
-        "vat_basis": verify.vat_basis(fields, text),
-        # The normalisations the field requirement asks for -- a standard document
-        # type, branch codes, tax IDs reduced to digits, the period split, and the
-        # references as a list. Worked out in Python from the values just copied,
-        # and kept OUT of `fields` on purpose: `grounding.check` walks that dict
-        # and would report every one of these as an invention, which is the one
-        # thing they provably are not.
-        "derived": normalise.derive(fields, text),
-        "seconds": elapsed,
-        "tokens": tokens,
-        "model": status["model"],
-        "backend": status["kind"],
-        # Which server answered. Pass 2 may have an endpoint of its own
-        # (`backends.select_extract_url`), and a run is attributed to the server
-        # that ran it, never to the one selected afterwards.
-        "url": status.get("url") or "",
-        # Which shape produced this. On screen and in the run log, because the two
-        # cost very different amounts of wall clock and fill the schema in
-        # different ways -- a row without it cannot be compared with one beside it.
-        "mode": "single",
-    }
-
-
-# --------------------------------------------------------------------------
-# pass 2, agentic: the same schema, one to three fields per request
-# --------------------------------------------------------------------------
-#
-# One request for 31 keys asks a 2B model to hold the whole page and the whole
-# form in mind at once, and what it does under that load is fill a key from
-# whatever is nearest rather than from the label that names it -- sol005's
-# Location Code arriving as buyer_name. A step names two or three labels and asks
-# for two or three keys, so there is much less for a value to land in by mistake.
-#
-# Three things fall out of doing it this way, and they are the reason it exists
-# rather than side effects:
-#
-# * The transcript leads every step's message and only the question at the end
-#   changes, so llama.cpp prefills the document once and reuses it. The steps
-#   after the first cost their question and their answer.
-# * A step that comes back with a value which is not in the transcript can be
-#   asked again with that value quoted back at it, for the price of a short
-#   question -- see EXTRACT_STEP_RETRY. Grounding stops being a report at the end
-#   and becomes something the extraction can act on while it is running.
-# * A step that fails to parse costs that step's fields. In single mode the same
-#   failure costs the whole extraction.
-#
-# It is not free: ~15 requests instead of 1, and the schema-wide instructions
-# ("never write one value into two of these fields") can only be enforced within a
-# step, not across them. Which is why the mode is a switch rather than the default.
-
-
-def steps_for_types(codes, extras=True, mode="agentic"):
-    table = _builtin_steps_for_types(codes, extras, mode=mode)
-    if mode == 'hybrid' and workspace.get('user_pipeline', False):
-        snapshot = workspace.get('user_prompt_sets', {})
-        if snapshot:
-            return userpromptsets.runtime(table, codes, snapshot, extras)
-        return userprompts.compile_steps(table, codes, workspace.get('user_prompt_profiles', {}))
-    return table
-
-
-def _step_schema(step: dict) -> dict:
-    """The JSON schema for one step: its own keys and nothing else.
-
-    Derived from the step's `keys` rather than written out beside its skeleton,
-    because a schema that disagreed with the skeleton would be a silent bug and
-    there is no way to keep twenty hand-written pairs honest. The step's
-    skeleton stays the readable statement of what is asked for; this is the same
-    thing in the form the sampler can be held to.
-    """
-    if step.get('custom_schema'):
-        return {'type': 'object', 'properties': step['custom_schema'],
-                'required': list(step['keys']), 'additionalProperties': False}
-    return {
-        "type": "object",
-        "properties": {
-            step.get("request_aliases", {}).get(key, key): (LINE_ITEM_SCHEMA if key == "line_items"
-                  else income_items_schema(prompts.INCOME_ITEM_KEYS)
-                  if key == INCOME_ITEMS_KEY
-                  else OTHER_FIELDS_SCHEMA if key == "other_fields"
-                  else {"type": "string"})
-            for key in step["keys"]
-        },
-        "required": [step.get("request_aliases", {}).get(key, key) for key in step["keys"]],
-    }
-
-
-def _chat(content: str, max_tokens: int, status: dict, schema: dict = None):
-    """One non-streaming text request. Returns (raw reply, truncated, tokens).
-
-    Sampling is set exactly as the single-shot pass sets it -- greedy, the reply
-    constrained to `schema`, no DRY -- so the two modes differ in the shape of
-    the prompt and in nothing else, which is what makes a comparison between them
-    mean anything. Raises on transport failure and on a non-200, so a step can
-    record why it produced nothing instead of silently contributing empty fields.
-    """
-    url, payload = backends.structured_request(
-        backends.system_prefix(status) + [{"role": "user", "content": content}],
-        schema, max_tokens, status)
-    res = _timed_post(url, payload, status)
-    if res.status_code != 200:
-        raise ValueError(f"{status['kind'] or 'model server'} HTTP "
-                         f"{res.status_code}: {res.text[:200]}")
-    return backends.structured_reply(res.json(), status)
-
-
-def _step_prefix(text: str) -> str:
-    """The part of every step's message that is the same for all of them.
-
-    Split out so it can be *shown* once rather than fifteen times, and so nothing
-    can drift: `_step_message` is these two functions joined, which is what the
-    model is actually sent.
-    """
-    return EXTRACT_STEP_PREFIX + text
-
-
-def _step_question(step: dict, codes=(), mode="agentic") -> str:
-    """The part that differs: this step's title, skeleton and rules.
-
-    `codes` names the document's type in the task line and adds the type's rules
-    for the keys THIS step owns -- never for the others, which is what keeps a
-    rule aimed at one step out of the fourteen answers it was not aimed at. It
-    goes in the question rather than in the shared prefix for the same reason
-    `EXTRACT_REMINDER` closes the single-shot message: what is said after the
-    transcript is what the model is still holding when it answers.
-    """
-    task = HYBRID_STEP_TASK if mode == "hybrid" else EXTRACT_STEP_TASK
-    return task.format(title=step["title"],
-                                    context=type_line(codes),
-                                    skeleton=step["skeleton"],
-                                    rules=step_rules(step, codes,
-                                                     TYPE_FRAMING_BULLETS))
+    return engine._drain(engine._segment_stream(text, pages, status))
 
 
 def _step_message(text: str, step: dict, codes=(), mode="agentic") -> str:
@@ -3155,207 +396,7 @@ def _step_message(text: str, step: dict, codes=(), mode="agentic") -> str:
     is what keeps an OCR fine-tune from answering with its own transcript envelope,
     which is the same thing EXTRACT_REMINDER buys the single-shot prompt.
     """
-    return _step_prefix(text) + _step_question(step, codes, mode)
-
-
-def _extras_only(step: dict) -> bool:
-    """True where a step owns `other_fields` and nothing else.
-
-    The one thing that decides whether a broken reply from this step is an
-    ERROR or merely a short answer, so it is a test on the keys rather than a
-    step id: `other_fields` is the overflow valve for everything the fourteen
-    priority-1 keys do not cover, and a page has as many extra fields as the
-    model decides it has. Nothing downstream rules on them -- `fieldscore`
-    keeps them out of the headline because their labels are the model's own
-    wording -- so an entry lost off the end of that list costs no measurement.
-
-    Deliberately NOT "every key this step owns is a list". A step owning
-    `line_items` would be a claim about the charges table, which the truth
-    files do rule on; this is about the one key nobody scores.
-    """
-    return bool(step["keys"]) and set(step["keys"]) == {"other_fields"}
-
-
-def _salvage_step(step: dict, raw: str):
-    """The entries this step had finished before its reply stopped, or None.
-
-    Ten entries and an eleventh cut off at the token cap is ten entries, not a
-    failure: `_salvage_json` rewinds to the last element that closed, and here
-    that is exactly the boundary between what the model finished saying and
-    what it did not. Nothing is invented to fill the tail -- same rule as the
-    single-shot salvage, and as grounding.
-
-    None where nothing whole survived, so the caller still pays for the
-    schema-constrained attempt and still raises if that fails too. An empty
-    list is None as well: a step that returned no entry at all has not been
-    rescued, it has merely been parsed.
-
-    **The half-written entry is dropped, and dropping it is the point.**
-    `_salvage_json` rewinds to the last element that closed, and inside a
-    truncated `{"label": "...", "value": "half of a v` that is the COMMA after
-    the label -- so it hands back an entry carrying a label and no value.
-    `OTHER_FIELDS_SCHEMA` requires both, and a label with the value missing is
-    not a fact the page states; it is the shape of a sentence the model was
-    still writing. Keeping it would put an empty-valued field on screen among
-    real ones, which is the same mistake as reading a key the reply never
-    reached as "the document does not state this".
-    """
-    try:
-        values = _step_values(step, raw, salvage=True)
-    except Exception:
-        return None
-    whole = {key: ([e for e in value if "label" in e and "value" in e]
-                   if key == "other_fields" and isinstance(value, list) else value)
-             for key, value in values.items()}
-    return whole if any(whole.get(key) for key in step["keys"]) else None
-
-
-def _step_values(step: dict, raw: str, salvage: bool = False):
-    """The keys this step owns, pulled out of its reply. Raises on unusable JSON.
-
-    Only the step's own keys are taken. A step that answers with keys belonging to
-    another step has guessed at fields it was not shown the rules for, and taking
-    those would put back exactly the cross-contamination the split is here to stop.
-
-    `salvage` accepts a reply that never closed, keeping the elements that did.
-    It is passed only for an extras-only step (`_extras_only`): everywhere else
-    a reply that stopped mid-value is a failure worth reporting as one, because
-    the keys it dropped are keys something scores.
-    """
-    try:
-        parsed = json.loads(_first_json_object(strip_fence(raw)) or raw)
-    except json.JSONDecodeError:
-        parsed = _salvage_json(raw) if salvage else None
-        if parsed is None:
-            raise
-    if not isinstance(parsed, dict):
-        raise ValueError("reply was JSON but not an object")
-    values = {}
-    for key in step["keys"]:
-        requested = step.get("request_aliases", {}).get(key, key)
-        if requested not in parsed:
-            if requested != key:
-                # A reply using the canonical storage key did not answer the
-                # actual question. Let the normal schema retry request it again.
-                raise ValueError(f"reply is missing requested field: {requested}")
-            continue
-        value = parsed[requested]
-        if key in step.get('custom_targets', {}) and isinstance(value, list):
-            values[key] = value
-        elif key in ("line_items", INCOME_ITEMS_KEY, "other_fields"):
-            values[key] = [v for v in value if isinstance(v, dict)] \
-                if isinstance(value, list) else []
-        elif isinstance(value, (str, int, float)):
-            values[key] = value
-    return values
-
-
-def _ask_step(content: str, step: dict, status: dict, collect: list = None):
-    """Ask one step and parse its reply.
-
-    Returns (values, replies, truncated, tokens, salvaged).
-
-    By default asked plain first, exactly as the baselines were measured. A reply that will
-    not parse is asked once more with decoding constrained to this step's own
-    keys, which is a different question rather than a repeat -- under greedy
-    decoding, asking again in the same words returns the same answer.
-
-    That second attempt is aimed at one measured failure: on Ollama, steps die by
-    transcribing the page into their own first key, and the reply then runs to the
-    step's cap. Instructions-last does not prevent it and a bigger cap buys more
-    page rather than more answer; a grammar that does not contain the page does.
-    Raises the second failure if both attempts fail.
-
-    `collect` is where the raw replies are recorded, and it is a parameter rather
-    than a return value because this function raises on total failure. Returning
-    them only on the success path is what used to throw away the reply of every
-    step that died -- exactly the replies worth reading, since a step that
-    answered is already visible in its values. A dead step now leaves its text in
-    `raw` beside the others.
-
-    `salvaged` says the values came out of a reply that never closed. Only an
-    extras-only step can be salvaged (`_extras_only`), and it is tried BEFORE
-    the schema-constrained attempt: a list cut off at the token cap is not the
-    failure that attempt was built for -- a grammar does not shorten an answer,
-    so the second request would run to the same cap -- and the entries that
-    finished are already in hand. Everywhere else the parse failure stands and
-    the schema attempt runs exactly as it did.
-    """
-    # Schema-first runs also use the schema on grounding re-asks. A malformed
-    # constrained reply is surfaced rather than repeated with an identical schema.
-    replies, tokens = [], 0
-    collect = replies if collect is None else collect
-    extras = _extras_only(step)
-
-    def keep(text):
-        replies.append(text)
-        if collect is not replies:
-            collect.append(text)
-
-    schema_first = bool(step.get("schema_first"))
-    if schema_first:
-        raw, truncated, used = _chat(content, step["max_tokens"], status, _step_schema(step))
-    else:
-        raw, truncated, used = _chat(content, step["max_tokens"], status)
-    keep(raw)
-    tokens += used
-    try:
-        return _step_values(step, raw), replies, truncated, tokens, False
-    except Exception:
-        kept = _salvage_step(step, raw) if extras else None
-        if kept:
-            return kept, replies, truncated, tokens, True
-        if schema_first or not EXTRACT_SCHEMA:
-            raise
-    raw, truncated, used = _chat(content, step["max_tokens"], status,
-                                 _step_schema(step))
-    keep(raw)
-    tokens += used
-    try:
-        return _step_values(step, raw), replies, truncated, tokens, False
-    except Exception:
-        kept = _salvage_step(step, raw) if extras else None
-        if kept:
-            return kept, replies, truncated, tokens, True
-        raise
-
-
-def _ungrounded_in(values: dict, source) -> list:
-    """The step's scalar answers that are not in the transcript, as label = value.
-
-    Blank and nil answers are skipped for the same reason `grounding.check` skips
-    them: neither is a claim about the page. Line items are skipped too -- a table
-    row is checked cell by cell at the end, and quoting a whole row back at the
-    model is a worse question than not asking one.
-
-    Nothing, where the step read page images (`_image_fed`): there is no
-    transcript, and every value would be quoted back as invented.
-    """
-    bad = []
-    if _image_fed():
-        return bad
-    for key, value in values.items():
-        if isinstance(value, list):
-            continue
-        if grounding.is_blank(value) or grounding.is_nil(value):
-            continue
-        if not source.holds(value):
-            bad.append(f"- {key} = {str(value)[:120]}")
-    return bad
-
-
-def _reply_label(step_id: str, attempt: int, n: int, failed: bool = False) -> str:
-    """Which request produced one reply: the step, and what was different about it.
-
-    A step can send up to four requests -- plain, schema-constrained, and either
-    of those again as a re-ask -- and the four are not interchangeable when
-    something has gone wrong: the schema attempt only runs because the plain one
-    would not parse, and the re-ask only because the first answer was not on the
-    page. A reply with no label attached is a wall of JSON that cannot be tied
-    back to the question that produced it.
-    """
-    return (step_id + (" (retry)" if attempt else "") + (" (schema)" if n else "")
-            + (" (failed)" if failed else ""))
+    return engine._step_prefix(text) + engine._step_question(step, codes, mode)
 
 
 def _step_count_label(mode="agentic"):
@@ -3371,546 +412,22 @@ def _step_count_label(mode="agentic"):
     codes = list(prompts.DOC_TYPE_FIELDS)
     combos = [[]] + [[c] for c in codes] + [[a, b] for a in codes for b in codes
                                             if a != b]
-    counts = {len(steps_for_types(c, mode=mode)) for c in combos}
+    counts = {len(engine.steps_for_types(c, mode=mode)) for c in combos}
     return (str(min(counts)) if len(counts) == 1
             else f"{min(counts)}-{max(counts)}")
 
 
-def _steps_for(wanted, doc_types=(), extras=True, mode="agentic"):
-    """The step table, or the named subset of it, in the table's own order.
-
-    A measurement tool and nothing else: it is what lets one step's prompt be
-    swept over five documents and four models without paying for the six steps
-    the change did not touch. Unknown ids are refused rather than skipped -- a
-    sweep that quietly asked for no steps would report a schema-wide failure.
-
-    The order is the document's final step table, never the caller's. A historical
-    component id such as total_incl now selects its complete related group.
-    """
-    table = steps_for_types(doc_types, extras, mode=mode)
-    if not wanted:
-        return table
-    ids = [s.strip() for s in wanted if str(s).strip()]
-    # Checked against THIS document's table, so asking a receipt for the
-    # `original_invoice` step is refused by name rather than silently running
-    # nothing. The message names the steps this type actually has.
-    known = {name for s in table for name in (s["id"], *s.get("includes_steps", ()))}
-    unknown = [i for i in ids if i not in known]
-    if unknown:
-        raise ValueError(f"unknown extraction step(s): {', '.join(unknown)} -- "
-                         f"{' + '.join(doc_types) or 'an unclassified document'}"
-                         f" has {', '.join(sorted(known))}")
-    if not ids:
-        raise ValueError("no extraction steps named")
-    selected = set(ids)
-    return tuple(s for s in table
-                 if selected.intersection((s["id"], *s.get("includes_steps", ()))))
-
-
-def _agentic_parallelism(status: dict, steps: int) -> int:
-    """How many agentic steps go to the server at once: 1 means one at a time.
-
-    More than one only on a server that batches concurrent requests
-    (`backends.parallel_ok`, vLLM) and with `AGENTIC_PARALLEL` on. Capped by
-    `AGENTIC_PARALLEL_MAX` where it is set, and never above the step count.
-    """
-    if not (AGENTIC_PARALLEL and steps > 1 and backends.parallel_ok(status)):
-        return 1
-    cap = AGENTIC_PARALLEL_MAX or steps
-    return max(1, min(cap, steps))
-
-
-def _warm_step(warmed, *args):
-    """`_run_step` for the step that warms the prefix cache: `warmed` is set as
-    soon as its first request is prefilled, and in any case once it is over, so a
-    step that fails cannot keep the others waiting."""
-    _prefill_hook.cb = warmed.set
-    try:
-        return _run_step(*args)
-    finally:
-        _prefill_hook.cb = None
-        warmed.set()
-
-
-def _run_step(step: dict, prefix: str, question: str, status: dict, source):
-    """`_run_step_asked`, its requests named after the step for the stall alert."""
-    previous = getattr(_agentic_chat_context, "requests", None)
-    chats = _agentic_chat_context.requests = []
-    try:
-        with _asking(f"step {step['id']}"):
-            outcome = _run_step_asked(step, prefix, question, status, source)
-        if chats:
-            outcome[0]["chats"] = chats
-        return outcome
-    finally:
-        _agentic_chat_context.requests = previous
-
-
-def _run_step_asked(step: dict, prefix: str, question: str, status: dict, source):
-    """Ask one agentic step, with its grounding re-ask, and record what happened.
-
-    Returns (record, values, replies, tokens). Self-contained by design: it reads
-    the shared prefix and its own question and nothing another step produced,
-    which is what lets `_extract_agentic` send the steps at once on vLLM. The
-    labelled replies come back rather than being appended to a shared list, so
-    a concurrent run can merge them in table order.
-    """
-    step_replies, total_tokens = [], 0
-    # `raw` holds this step's own replies, verbatim, in the order they were
-    # asked for. They are also concatenated into the result's single `raw`
-    # for the whole-reply pane, and kept per step as well because that pane
-    # cannot say which of fifteen questions a given block of JSON answers --
-    # and a step that failed is exactly the one whose text is worth reading.
-    record = {"id": step["id"], "title": step["title"],
-              "keys": list(step["keys"]), "attempts": 0, "retried": False,
-              "raw": [],
-              # This step's own question, without the shared prefix. Set
-              # before anything is asked, so a step whose request never came
-              # back can still show what it was asked -- which is the state
-              # where "what did we send it?" is the actual question.
-              "prompt": question}
-    if step.get("request_aliases"):
-        record["request_aliases"] = dict(step["request_aliases"])
-    values, elapsed = {}, 0.0
-    best_bad = None
-
-    for attempt in range(AGENTIC_RETRIES + 1):
-        # A re-ask is a different question -- the rejected values quoted back
-        # -- so it is kept beside the reply it produced rather than folded
-        # into the step's base question.
-        asked = question + (EXTRACT_STEP_RETRY.format(
-            rejected="\n".join(best_bad)) if attempt else "")
-        content = prefix + asked
-        record["attempts"] = attempt + 1
-        at = time.perf_counter()
-        truncated = False
-        # Filled by `_ask_step` as each reply arrives, so a step that raises
-        # still leaves its text behind. Labelled here afterwards on the
-        # success path, and in the handler on the failure path.
-        raws = []
-        try:
-            attempt_values, raws, truncated, tokens, salvaged = _ask_step(
-                content, step, status, raws)
-            if salvaged:
-                # The reply stopped mid-entry and what had finished was
-                # kept. Recorded rather than passed over: the step answered
-                # with less of the page than it found, and a count of
-                # entries with nothing beside it reads as the whole of what
-                # the document labels.
-                record["salvaged"] = True
-            for n, raw in enumerate(raws):
-                label = _reply_label(step["id"], attempt, n)
-                step_replies.append(f"--- {label} ---\n" + raw)
-                record["raw"].append({"label": label, "text": raw,
-                                      "prompt": asked})
-            record["schema_retry"] = len(raws) > 1
-            total_tokens += tokens
-        except Exception as err:
-            for n, raw in enumerate(raws):
-                label = _reply_label(step["id"], attempt, n, failed=True)
-                step_replies.append(f"--- {label} ---\n" + raw)
-                record["raw"].append({"label": label, "text": raw,
-                                      "prompt": asked})
-            elapsed += time.perf_counter() - at
-            # Recorded against the step and then dropped: the remaining steps
-            # do not depend on this one, and the rest of the form is a better
-            # answer than none of it. A cut-off reply is named as one, because
-            # that step wants a bigger cap rather than another attempt.
-            why = (f"the reply hit this step's {step['max_tokens']}-token cap "
-                   "and the JSON never closed" if truncated else str(err))
-            # A retry that fails leaves the answer it was meant to correct
-            # standing, so the step has fields and is not a failed step. Saying
-            # it failed would send someone looking for keys that are there.
-            where = "error" if best_bad is None else "retry_error"
-            # An extras-only step that dies costs no key anything rules on,
-            # so it is reported and NOT counted as a failed step: it does
-            # not reach `steps_failed`, the page's failed-step banner or the
-            # run log's failure rate. A priority-1 step that dies still
-            # does, because its keys are the form. See `_extras_only`.
-            if where == "error" and _extras_only(step):
-                where = "extras_error"
-            record[where] = why
-            break
-        elapsed += time.perf_counter() - at
-
-        # Retry wording names the keys the model was actually asked for, while
-        # results, grounding and scoring keep the canonical application fields.
-        requested_values = {step.get("request_aliases", {}).get(k, k): v
-                            for k, v in attempt_values.items()}
-        if step.get('custom_targets'):
-            requested_values = userprompts.leaf_values(requested_values)
-        bad = _ungrounded_in(requested_values, source)
-        # Keep whichever attempt invents least. A retry that comes back worse
-        # than the answer it was meant to correct is not an improvement, and
-        # under greedy decoding that happens whenever the model has nothing
-        # better to offer than what it already said.
-        if best_bad is None or len(bad) < len(best_bad):
-            values, best_bad = attempt_values, bad
-        if not bad or attempt >= AGENTIC_RETRIES:
-            break
-        record["retried"] = True
-
-    record["seconds"] = round(elapsed, 2)
-    record["values"] = {k: v for k, v in values.items() if not isinstance(v, list)}
-    record["items"] = sum(len(v) for v in values.values() if isinstance(v, list))
-    record["ungrounded"] = len(best_bad or [])
-    return record, values, step_replies, total_tokens
-
-
-def _extract_agentic(text: str, status: dict, form: dict, only=None, mode="agentic"):
-    """Walk the step table, yielding progress, and return the merged result.
-
-    A generator so that both the browser and the run stream can show which step is
-    running without a callback that cannot yield: iterate it for the events, and
-    take the finished result from StopIteration.value (`_drain` does this).
-
-    `only` restricts the walk to the named steps. The result then says so in
-    `steps_only`, and everything downstream that would otherwise report the keys
-    nobody asked for as missing -- the field score, the run-log row -- stands
-    down on that key. See `_steps_for`.
-    """
-    # The steps this document's TYPE asks for, before any restriction the
-    # caller applied. `steps_only` is measured against this rather than against
-    # the whole step table: an invoice legitimately runs six of the eight steps
-    # and is a complete run of its own form, not a partial run of someone else's.
-    full_table = steps_for_types(form["doc_types"], form.get("extras", True), mode=mode)
-    table = _steps_for(only, form["doc_types"], form.get("extras", True), mode=mode)
-    if form.get("schema_first"):
-        # Copy shared definitions so concurrent JSON-first runs stay unchanged.
-        table = [{**step, "schema_first": True} for step in table]
-    source = grounding.Source(text)
-    started = time.perf_counter()
-    fields, steps, replies = {}, [], []
-    total_tokens = 0
-
-    # Sent once because it IS once: every step's message opens with this same
-    # block and the same transcript, and only the question at the end differs.
-    # That is the whole reason the steps are cheap on llama.cpp, and showing it
-    # per step would say the opposite of what the design does.
-    prefix = _step_prefix(text)
-
-    # Concurrency, decided once per run. vLLM batches concurrent requests, and
-    # no step reads another's answer (see `AGENTIC_PARALLEL`), so on that
-    # server the steps are asked at once. Everywhere else, one after another,
-    # exactly as every measurement in CLAUDE.md was taken.
-    parallel = _agentic_parallelism(status, len(table))
-    framing = _framing(form, mode)
-
-    yield {"event": "extract_steps", "total": len(table),
-           "steps": [{"id": s["id"], "title": s["title"], "keys": list(s["keys"])}
-                     for s in table],
-           "prompt_prefix": prefix, "parallel": parallel}
-
-    # Each step's outcome, by its position in the table. Merged in TABLE order
-    # whichever finished first, so a concurrent run produces the same `fields`,
-    # `steps` and `raw` order as a sequential one -- the page, the run log and a
-    # diff between two runs then cannot tell the two apart by layout.
-    outcomes = [None] * len(table)
-
-    def running(index, step):
-        return {"event": "extract_step", "step": index, "total": len(table),
-                "id": step["id"], "title": step["title"], "status": "running"}
-
-    def done(index, step, record):
-        return {"event": "extract_step", "step": index, "total": len(table),
-                "id": step["id"], "title": step["title"], "status": "done", **record}
-
-    if parallel > 1:
-        for index, step in enumerate(table, 1):
-            yield running(index, step)
-        # One server-timing span for the lot: a /metrics difference around any
-        # single concurrent request covers its neighbours. See servertime.Batch.
-        parent_batch = servertime.current_batch()
-        batch = parent_batch or servertime.Batch(status)
-        with ThreadPoolExecutor(max_workers=parallel,
-                                thread_name_prefix="agentic-step") as pool:
-            def submit(index):
-                step = table[index]
-                return pool.submit(_carry_progress(workspace.bind(batch.run)), _run_step, step,
-                                   prefix, _step_question(step, framing, mode), status,
-                                   source)
-
-            # The warm-up only exists to fill the prefix cache; with the cache
-            # bypassed it would just delay the other steps for nothing.
-            if VLLM_PREFIX_WARMUP and not backends.prefix_cache_bypassed():
-                # Step 1 alone first; the rest once its prefill is done, so they
-                # find the shared prefix in vLLM's cache rather than each
-                # prefilling it again in the same scheduler step.
-                warmed = threading.Event()
-                futures = {pool.submit(_carry_progress(workspace.bind(batch.run)), _warm_step,
-                                       warmed, table[0],
-                                       prefix, _step_question(table[0], framing, mode),
-                                       status, source): 0}
-                warmed.wait(VLLM_PREFIX_WARMUP_WAIT)
-                futures.update({submit(index): index
-                                for index in range(1, len(table))})
-            else:
-                futures = {submit(index): index for index in range(len(table))}
-            pending = set(futures)
-            while pending:
-                finished, pending = wait(pending, return_when=FIRST_COMPLETED)
-                for future in finished:
-                    index = futures[future]
-                    outcomes[index] = future.result()
-                    yield done(index + 1, table[index], outcomes[index][0])
-        if parent_batch is None:
-            batch.close()
-    else:
-        for index, step in enumerate(table):
-            yield running(index + 1, step)
-            outcomes[index] = _run_step(step, prefix, _step_question(step, framing, mode),
-                                        status, source)
-            yield done(index + 1, step, outcomes[index][0])
-
-    custom_fields, custom_targets = {}, {}
-    for step, (record, values, step_replies, tokens) in zip(table, outcomes):
-        if step.get('custom_targets'):
-            custom_fields.update(values)
-            custom_targets.update(step['custom_targets'])
-        else:
-            fields.update(values)
-        replies.extend(step_replies)
-        total_tokens += tokens
-        steps.append(record)
-
-    elapsed = round(time.perf_counter() - started, 2)
-    failed = [s for s in steps if s.get("error")]
-    # Every step that returned nothing, whether or not that counts as a failure.
-    # The bail-out below is about there being no answer at all, which an
-    # extras-only step is as capable of producing as any other -- it just does
-    # not make the run a failure on its own.
-    dead = [s for s in steps if s.get("error") or s.get("extras_error")]
-    if dead and len(dead) == len(steps):
-        return {"error": "Every extraction step failed. First: "
-                         + (dead[0].get("error") or dead[0]["extras_error"]),
-                "mode": mode, "steps": steps, "seconds": elapsed,
-                **({"parallel": parallel} if parallel > 1 else {}),
-                "prompt_prefix": prefix,
-                **({"steps_only": [s["id"] for s in table]}
-                   if len(table) < len(full_table) else {}),
-                "raw": "\n\n".join(replies)[:4000]}
-
-    # Ordered the way the schema lists the keys rather than the way the steps
-    # filled them, so the JSON on screen and the JSON a script copies are the same
-    # shape in both modes.
-    ordered = {k: fields[k] for k in grounding.SCALAR_FIELDS if k in fields}
-    for key in ("line_items", "other_fields"):
-        ordered[key] = fields.get(key) or []
-    if custom_fields:
-        ordered['other_fields'] = list(ordered['other_fields']) + [
-            {'label': key, 'value': value} for key, value in userprompts.leaf_values(custom_fields).items()]
-    # Only where this form asked for the table. Unlike the two above, which have
-    # been on every result since before the schema was per type, an empty
-    # `income_items` on an invoice would be a claim that a table was asked for
-    # and came back empty -- and `grounding.check` would then have to be told to
-    # ignore the very key it was told to audit.
-    if form["items"]:
-        ordered[INCOME_ITEMS_KEY] = fields.get(INCOME_ITEMS_KEY) or []
-
-    return {
-        "fields": ordered,
-        **({'custom_fields': custom_fields, 'user_prompt_mappings': custom_targets,
-            'user_prompt_revisions': {code: profile['revision'] for code, profile in
-                workspace.get('user_prompt_profiles', {}).items() if code in form['doc_types']}}
-           if custom_targets else {}),
-        "raw": "\n\n".join(replies),
-        # On the result as well as on the event that announced the steps: a
-        # result read back from a sweep, or from the blocking endpoint, never
-        # saw the event, and a step's question is unreadable without what led it.
-        "prompt_prefix": prefix,
-        "grounding": grounding.check(ordered, text, form["keys"],
-                                     form["mandatory"], form["items"]),
-        "tiers": grounding.tier_counts(ordered, form["keys"]),
-        "vat_basis": verify.vat_basis(ordered, text),
-        # Same derivation as single mode, from the merged answer rather than from
-        # any one step -- the references list in particular spans several of them.
-        "derived": normalise.derive(ordered, text),
-        "seconds": elapsed,
-        "tokens": total_tokens,
-        "model": status["model"],
-        "backend": status["kind"],
-        # Which server answered. Pass 2 may have an endpoint of its own
-        # (`backends.select_extract_url`), and a run is attributed to the server
-        # that ran it, never to the one selected afterwards.
-        "url": status.get("url") or "",
-        "mode": mode,
-        # How many steps were in flight at once, where it was more than one
-        # (vLLM). Absent on a sequential run, which is every run on llama.cpp
-        # and Ollama: the wall clock of the two shapes is not comparable.
-        **({"parallel": parallel} if parallel > 1 else {}),
-        "steps": steps,
-        # Present only when this run was restricted to part of the step table, so
-        # nothing downstream reads its keys as the whole form. Absent on an
-        # ordinary run rather than holding every id, for the same reason.
-        **({"steps_only": [s["id"] for s in table]} if len(table) < len(full_table)
-           else {}),
-        # Named separately from the per-step errors because a partial answer is
-        # the normal outcome here rather than a failure: the page says which parts
-        # of the form were not filled instead of showing them as simply empty.
-        "steps_failed": [{"id": s["id"], "title": s["title"], "error": s["error"]}
-                         for s in failed],
-        # Reported separately and never folded into `steps_failed`: a broken
-        # reply from an extras-only step costs entries nothing scores, so it is
-        # a note about how much of the page came back rather than a failure of
-        # the extraction. Absent when there is none, like `steps_only`.
-        **({"steps_extras": [{"id": s["id"], "title": s["title"],
-                              "error": s["extras_error"]}
-                             for s in steps if s.get("extras_error")]}
-           if any(s.get("extras_error") for s in steps) else {}),
-    }
-
-
-# --------------------------------------------------------------------------
-# pass 2: which shape runs
-# --------------------------------------------------------------------------
-
-# Switched from the page rather than read from the environment per run, because it
-# is a thing you flip while looking at a document that came out wrong. Held for the
-# process, not per request: a sweep running now and a Re-extract clicked during it
-# both extract the same way, and every result carries the mode it actually ran in
-# so a log row is still attributable when it is switched mid-batch.
-_extract_mode = "agentic" if AGENTIC_EXTRACT else "single"
-_mode_lock = threading.Lock()
-
-# The pass-1 shape, held for the process for the same reasons as the mode above,
-# and switched from the page for the same reason: it is a thing you flip while
-# looking at a document that came back empty.
-#
-# Clamped here rather than in `settings`, which imports nothing but `config` and
-# so cannot see the profile table. An unknown name warns and falls back instead of
-# killing startup -- a typo in a service file should cost one setting, not the app.
-_ocr_profile = OCR_PROFILE if OCR_PROFILE in OCR_PROFILES else DEFAULT_OCR_PROFILE
-if _ocr_profile != OCR_PROFILE:
-    config.say(f"OCR_PROFILE={OCR_PROFILE!r} is not a known profile "
-               f"({', '.join(OCR_PROFILES)}); using {_ocr_profile}.", sys.stderr)
-_profile_lock = threading.Lock()
-
-# These five are the page's switches, so each browser tab has its own copy --
-# see `workspace`. The globals are the default workspace's.
-workspace.field("extract_mode", lambda: _extract_mode)
-workspace.field("ocr_profile", lambda: _ocr_profile)
-
-# Whether pass 2 asks for `other_fields` at all. Held and switched like the mode
-# above, and stamped on every result as `extras` so a row says which it ran under.
-# See `settings.EXTRACT_OTHER_FIELDS`.
-_extract_extras = bool(EXTRACT_OTHER_FIELDS)
-workspace.field("extract_extras", lambda: _extract_extras)
-
-
-def ocr_profile() -> str:
-    with _profile_lock:
-        return workspace.get("ocr_profile", _ocr_profile)
-
-
-def set_ocr_profile(name: str) -> str:
-    if name not in OCR_PROFILES:
-        raise ValueError(f"profile must be one of: {', '.join(OCR_PROFILES)}.")
-    global _ocr_profile
-    with _profile_lock:
-        if not workspace.put("ocr_profile", name):
-            _ocr_profile = name
-    return name
-
-
-def profile_spec(name: str = None) -> dict:
-    """The profile a request should be built from, resolved once per read.
-
-    Taken by name and returned whole so a run cannot be assembled half from one
-    profile and half from another -- the prompt, the system-message veto and the
-    way the reply is read have to be the same profile's, or the request is not a
-    measurement of either.
-    """
-    return OCR_PROFILES[name or ocr_profile()]
-
-
-# Whether a cycling read is ABORTED. Held for the process and switched from the
-# page for the same reason the two above are: it is a thing you flip while looking
-# at a read that was cut short, and the next read should honour it without a
-# restart.
-#
-# It does not turn detection off, only the abort -- see `settings.LOOP_GUARD`. A
-# read that loops with the guard down still comes back flagged `looped`, so it
-# still reads as a failure and still stays out of every mean; what changes is that
-# the transcript is the whole of what the model produced rather than the part
-# before the backstop fired.
-_loop_guard = LOOP_GUARD
-_loop_guard_lock = threading.Lock()
-workspace.field("loop_guard", lambda: _loop_guard)
-
-
-def loop_guard() -> bool:
-    with _loop_guard_lock:
-        return workspace.get("loop_guard", _loop_guard)
-
-
-def set_loop_guard(on: bool) -> bool:
-    global _loop_guard
-    with _loop_guard_lock:
-        if not workspace.put("loop_guard", bool(on)):
-            _loop_guard = bool(on)
-    return loop_guard()
-
-
-# The two table agents, switchable from the page (2026-10-01). Process state like
-# the loop guard, and stored IN the module globals `TABLE_FIX_AGENT` /
-# `TABLE_IDENTIFY_AGENT` rather than beside them, so there is one value the code
-# reads and the tests patch -- two copies of one switch would disagree after the
-# first flip. Each document reads both once, at the start of its table.
-#
-# Per workspace like the rest: a tab that has flipped one holds its own three,
-# and the default workspace reads the globals the tests patch.
-_table_agents_lock = threading.Lock()
-
-
-def _agents_default() -> dict:
-    return {"concat": bool(TABLE_CONCAT_AGENT), "fix": bool(TABLE_FIX_AGENT),
-            "identify": bool(TABLE_IDENTIFY_AGENT)}
-
-
-workspace.field("table_agents", _agents_default)
-
-
-def table_agents() -> dict:
-    with _table_agents_lock:
-        return {**workspace.get("table_agents", _agents_default()),
-                "table": bool(TABLE_EXTRACT)}
-
-
 def set_table_agents(fix=None, identify=None, concat=None) -> dict:
     global TABLE_FIX_AGENT, TABLE_IDENTIFY_AGENT, TABLE_CONCAT_AGENT
-    with _table_agents_lock:
-        mine = dict(workspace.get("table_agents", _agents_default()))
+    with engine._table_agents_lock:
+        mine = dict(workspace.get("table_agents", engine._agents_default()))
         for key, value in (("fix", fix), ("identify", identify), ("concat", concat)):
             if value is not None:
                 mine[key] = bool(value)
         if not workspace.put("table_agents", mine):
             TABLE_FIX_AGENT, TABLE_IDENTIFY_AGENT = mine["fix"], mine["identify"]
             TABLE_CONCAT_AGENT = mine["concat"]
-    return table_agents()
-
-
-# The transcript score a read has to reach before the extraction taken from it is
-# worth a field score. Held for the process and switched from the page for the
-# same reason the three above are: it is a thing you flip while looking at a run
-# whose fields came back unscored, and the next run should honour it without a
-# restart.
-#
-# **There are two floors and they are not the same knob.** This one decides
-# whether a correctness figure is WRITTEN, at the moment a run happens, and
-# nothing can undo it afterwards -- a score never taken is not in the file.
-# `runlog.read_floor` decides whether a figure already in the file is AVERAGED,
-# and moves freely because it re-derives trust from the row's own
-# `char_accuracy` every time a table is compiled. So the summary's floor is the
-# reversible one and stays where it was; this is the one to leave low.
-_read_floor = MIN_READ_FOR_FIELDS
-_read_floor_lock = threading.Lock()
-workspace.field("read_floor", lambda: _read_floor)
-
-
-def read_floor() -> float:
-    """The run-time floor as a FRACTION. See `runlog.read_floor` for the other."""
-    with _read_floor_lock:
-        return workspace.get("read_floor", _read_floor)
+    return engine.table_agents()
 
 
 def set_read_floor(fraction: float) -> float:
@@ -3919,1445 +436,33 @@ def set_read_floor(fraction: float) -> float:
     0 scores every extraction whatever the read did, which is the shape for
     filling the log and letting the summary's own floor decide what to average.
     """
-    global _read_floor
+    pass  # this state lives in engine.py
     try:
         value = max(0.0, min(float(fraction), 1.0))
     except (TypeError, ValueError):
         raise ValueError("min_read_pct must be a number between 0 and 100.")
-    with _read_floor_lock:
+    with engine._read_floor_lock:
         if not workspace.put("read_floor", value):
-            _read_floor = value
+            engine._read_floor = value
     return value
-
-
-def _unscorable_read(payload: dict, floor: float = None) -> str:
-    """Why this read's fields must not be scored, or "" where they may be.
-
-    **Pass 2 can only map values pass 1 produced.** A field score taken over a
-    broken transcript is a measurement of the read wearing the extractor's name:
-    it marks down whatever extracted and lets whatever read get away with it.
-    That gap is measured -- dots.mocr agentic scored 32.7% over its own reads
-    against 46.8% over the ground truth -- and it is why every pass-2 baseline in
-    CLAUDE.md was taken from truth.
-
-    Four ways a read disqualifies its own extraction, and the last is the one the
-    page can move:
-
-    - it looped, or was cut off at the token cap -- the transcript is a fragment
-      whatever it scored;
-    - it returned nothing at 0.0%;
-    - it scored under the floor in force.
-
-    **None of these makes the run a failure.** A read that finished and scored
-    badly is a run, and it is counted and averaged as one -- `runlog._incomplete`
-    calls a loop or a crash a failure and nothing else. What is dropped here is
-    only the pass-2 figure taken over that transcript.
-
-    **A document with no transcript truth is never suppressed.** Nothing here can
-    tell a bad read from an unmeasured one, and refusing to score on a guess
-    would silently blank the figure for every document that has no `.md`.
-    """
-    floor = read_floor() if floor is None else floor
-    if payload.get("looped"):
-        return "the read looped"
-    if payload.get("truncated"):
-        return "the read hit the token cap"
-    scored = (payload.get("truth") or {}).get("char_accuracy")
-    if scored is None:
-        return ""
-    if scored <= 0:
-        return "the read returned nothing"
-    if scored < floor:
-        return (f"the read scored {scored * 100:.1f}%, under "
-                f"{floor * 100:.0f}%")
-    return ""
-
-
-def apply_read_floor(payload: dict, floor: float = None) -> str:
-    """Mark this run's extraction unscorable where its read disqualifies it.
-
-    **The one place the rule is applied, so no path can be left out of it.** It
-    used to live in `_read_case` alone -- the random test's full rounds -- and a
-    document read through the page or `/api/ocr` wrote a field score
-    however badly it had been read. Two kinds of row in one file, with nothing in
-    the CSV to say which rule each was written under. Called from `log_run`,
-    which every read path goes through on its way to the log, and once more in
-    the streaming route so the browser is told at the same time the log is.
-
-    **It flags, it does not delete.** The score stays on the result and the
-    Fields tab still marks every value against it -- those marks are what explain
-    a bad read, and blanking them removes the evidence along with the number.
-    What the flag costs is the headline rate on both tabs and the correctness
-    columns in the run log (`runlog._extract_cells`), which are the places the
-    figure would otherwise be read as the extractor's.
-
-    Idempotent: the second call re-derives the same reason and overwrites it.
-    """
-    extracted = payload.get("extracted")
-    if not isinstance(extracted, dict):
-        return ""
-    why = _unscorable_read(payload, floor)
-    # Set on the file AND on every document in it. A split file's score is one
-    # document's (see `_extract_documents`), and the page marks each document's
-    # values from that document's own result -- so a flag that stopped at the
-    # top level would leave the rate off the file and on the document, which is
-    # the same figure said two ways and one of them wrong.
-    for target in [extracted] + [d for d in (extracted.get("documents") or [])
-                                 if isinstance(d, dict)]:
-        if why:
-            target["fields_unscored"] = why
-        else:
-            target.pop("fields_unscored", None)
-    return why
-
-
-def extract_mode() -> str:
-    with _mode_lock:
-        return workspace.get("extract_mode", _extract_mode)
 
 
 def set_extract_mode(mode: str) -> str:
     if mode not in ("single", "agentic", "hybrid"):
         raise ValueError("mode must be 'single', 'agentic' or 'hybrid'.")
-    global _extract_mode
-    with _mode_lock:
+    pass  # this state lives in engine.py
+    with engine._mode_lock:
         if not workspace.put("extract_mode", mode):
-            _extract_mode = mode
+            engine._extract_mode = mode
     return mode
 
 
-def extract_extras() -> bool:
-    with _mode_lock:
-        return bool(workspace.get("extract_extras", _extract_extras))
-
-
 def set_extract_extras(on: bool) -> bool:
-    global _extract_extras
-    with _mode_lock:
+    pass  # this state lives in engine.py
+    with engine._mode_lock:
         if not workspace.put("extract_extras", bool(on)):
-            _extract_extras = bool(on)
-    return extract_extras()
-
-
-def _recut_message(table: dict) -> str:
-    """The one request the item table can cost: which column is each cell under.
-
-    It carries the TABLE and not the document -- the headings, the rows that fit
-    (as the pattern to follow) and the rows that do not, one cell to a line.
-    Which two cells of six are one value is a question about that row; the rest
-    of the page is context for a different question and would be prefill spent
-    on nothing.
-    """
-    columns = table["columns"]
-    bad = list(table["misaligned"])
-    good = [i for i in range(len(table["rows"])) if i not in set(bad)][:4]
-    examples = "\n".join(
-        "%d. %s" % (n, " | ".join("%d: %s" % (c, cell or "(empty)")
-                                  for c, cell in enumerate(table["rows"][i], 1)))
-        for n, i in enumerate(good, 1))
-    cells = [tables.filled_cells(table["rows"][i]) for i in bad]
-    rows = "\n".join(
-        "Row %d -- %d cells:\n%s" % (
-            n, len(row),
-            "\n".join("  c%d: %s" % (c, cell) for c, cell in enumerate(row, 1)))
-        for n, row in enumerate(cells, 1))
-    # Every cell named, so the reply cannot be the right shape without placing
-    # each one. `0` is a placeholder and not a column.
-    skeleton = "{ \"rows\": [\n%s\n] }" % ",\n".join(
-        "  { %s }" % ", ".join('"c%d": 0' % c for c in range(1, len(row) + 1))
-        for row in cells)
-    return prompts.TABLE_RECUT_PROMPT.format(
-        count=len(columns),
-        headings="\n".join("%d. %s" % (n, heading or "(no heading printed)")
-                           for n, heading in enumerate(columns, 1)),
-        examples=(prompts.TABLE_RECUT_EXAMPLES.format(rows=examples)
-                  if good else ""),
-        rows=rows, skeleton=skeleton)
-
-
-def _recut_answers(answer, table: dict) -> list:
-    """The reply as one list of column numbers per misaligned row.
-
-    The reply names each cell; this puts them back in cell order. A row the
-    reply left a cell out of comes back as None, which `tables.recut` refuses --
-    a missing answer is not an answer of "no column".
-    """
-    rows = answer.get("rows") if isinstance(answer, dict) else None
-    if not isinstance(rows, list):
-        return []
-    out = []
-    for position, index in enumerate(table["misaligned"]):
-        entry = rows[position] if position < len(rows) else None
-        count = len(tables.filled_cells(table["rows"][index]))
-        if isinstance(entry, dict):
-            picked = [entry.get("c%d" % c) for c in range(1, count + 1)]
-            out.append(picked if len(entry) == count else None)
-        elif isinstance(entry, list):
-            out.append(entry)
-        else:
-            out.append(None)
-    return out
-
-
-def _recut_with_model(table: dict, status: dict, check: bool = False) -> dict:
-    """Ask the extraction model which column each cell of a misfit row is under.
-
-    Asked ONLY where `tables.py` found rows that do not fit their headings, and
-    what comes back is column NUMBERS: `tables.recut` does the cutting. No
-    character of the reply reaches the table, so this can move a cell boundary
-    and can do nothing else -- it cannot correct, drop or invent a value -- and
-    an answer that is the wrong shape costs that row its repair and nothing
-    more.
-
-    Never raises. The table is a measurement beside the extraction, and a failed
-    repair leaves it exactly as Python read it, flagged.
-    """
-    bad = list(table.get("misaligned") or [])
-    if not bad or not TABLE_RECUT_WITH_MODEL:
-        return table
-    if table.get("headings_lost"):
-        # Nothing to cut the rows TO: the read kept no headings.
-        table["recut"] = {"asked": 0, "taken": 0, "refused": 0,
-                          "skipped": "the table has no headings to fit rows to"}
-        return table
-    if len(bad) > TABLE_RECUT_MAX_ROWS:
-        table["recut"] = {"asked": 0, "taken": 0, "refused": 0,
-                          "skipped": "%d rows do not fit, over the %d one request "
-                                     "carries" % (len(bad), TABLE_RECUT_MAX_ROWS)}
-        return table
-    message = _recut_message(table)
-    cells = sum(len(tables.filled_cells(table["rows"][i])) for i in bad)
-    started = time.time()
-    try:
-        # A few tokens per cell: the reply is numbers, not the rows again.
-        raw, _, tokens = _chat(message,
-                               min(TABLE_RECUT_MAX_TOKENS, 120 + 10 * cells),
-                               status)
-        answer = json.loads(_first_json_object(strip_fence(raw)) or raw)
-    except Exception as err:
-        table["recut"] = {"asked": len(bad), "taken": 0, "refused": len(bad),
-                          "error": str(err)[:200]}
-        return table
-    # `check` -- the fix agent's path -- lets the code refuse a cut the cells
-    # contradict: on sol007 at 2 MP both gemma4:e4b and qwen3.5:9b answered with
-    # the shifted layout as read, words under Amount.
-    table = tables.recut(table, _recut_answers(answer, table), check=check)
-    table["recut"].update(seconds=round(time.time() - started, 2),
-                          tokens=tokens or 0, model=status.get("model") or "",
-                          prompt=message, raw=raw)
-    return table
-
-
-def _table_headings(columns) -> str:
-    return "\n".join("%d. %s" % (n, heading or "(no heading printed)")
-                     for n, heading in enumerate(columns, 1))
-
-
-def _table_rows_text(table: dict, indexes) -> str:
-    """Rows as `Row N: 1: cell | 2: cell`, numbered by their place in the table,
-    so a reply naming Row 4 names the same row the code means by index 3."""
-    return "\n".join(
-        "Row %d: %s" % (i + 1, " | ".join(
-            "%d: %s" % (c, (cell or "").strip() or "(empty)")
-            for c, cell in enumerate(table["rows"][i], 1)))
-        for i in indexes)
-
-
-def _as_bool(value):
-    """True/False, or None. `"true"` and `"false"` count: gemma4:e4b answers the
-    identify question with the JSON literal on one call and the same word in
-    quotes on the next, and the word is not in doubt. Anything else is not an
-    answer -- "yes", 1, null."""
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, str) and value.strip().lower() in ("true", "false"):
-        return value.strip().lower() == "true"
-    return None
-
-
-def _as_int(value):
-    """A whole number, or None. `"3"` counts, for the reason `_as_bool` gives;
-    a bool does not, though Python calls it an int."""
-    if isinstance(value, bool):
-        return None
-    if isinstance(value, int):
-        return value
-    if isinstance(value, str) and value.strip().isdigit():
-        return int(value.strip())
-    return None
-
-
-def _table_cells_text(table: dict) -> str:
-    """Every filled cell on a line of its own, named by row and column.
-
-    For the fix agent, which QUOTES cells. On the compact `1: cell | 2: cell`
-    line gemma4:e4b quoted the column prefixes themselves -- `1:`, `2:` -- on
-    six of 32 real tables, and once a paragraph of the prompt (2026-10-01).
-    A line per cell leaves nothing on it to quote but the cell.
-    """
-    columns = table["columns"]
-    out = []
-    for i, row in enumerate(table["rows"], 1):
-        out.append("Row %d" % i)
-        for c, cell in enumerate(row, 1):
-            if (cell or "").strip():
-                heading = columns[c - 1] if c - 1 < len(columns) else ""
-                out.append("  row %d, column %d (%s): %s"
-                           % (i, c, heading or "no heading", cell.strip()))
-    return chr(10).join(out)
-
-
-def _agent_reply(raw: str):
-    """A reply's JSON object, or a ValueError naming what came back instead."""
-    answer = json.loads(_first_json_object(strip_fence(raw)) or raw)
-    if not isinstance(answer, dict):
-        raise ValueError("the reply was not a JSON object")
-    return answer
-
-
-def _frame_note(table: dict) -> str:
-    """What the code knows about where the table's frame ends, for the fix agent.
-
-    `TABLE_FRAME_NOTE` where it found the totals line after some other line --
-    something was read inside the frame; `TABLE_AFTER_FRAME_NOTE` where the
-    table was read with its totals already in it and none follows; else ""."""
-    tail = table.get("tail") or []
-    at = tables.totals_line(tail)
-    if at is None and tail and any(d.get("why") == "totals row"
-                                   for d in table.get("dropped") or []):
-        return prompts.TABLE_AFTER_FRAME_NOTE
-    if not at:
-        return ""
-    return prompts.TABLE_FRAME_NOTE.format(
-        totals=at + 1, inside="L1" if at == 1 else "L1 to L%d" % at,
-        were="was" if at == 1 else "were")
-
-
-def _table_fix_agent(table: dict, status: dict, snap=None) -> dict:
-    """Agent 1: take what does not belong in the table out of it, then fix the cuts.
-
-    One request carrying the TABLE and the part of its page around it -- every
-    row, cell by cell under its numbered headings, and `TABLE_CONTEXT_SHARE` of
-    the page's lines before it and after it (`TABLE_CLEAN_PROMPT`). The reply QUOTES
-    text in a cell that is not part of the table's data: a rubber stamp's or a
-    seal's words, a QR code's or a logo's description, a handwritten note, stray
-    text from elsewhere on the page.
-
-    **The code does the removing, and the code can refuse.** `tables.remove_text`
-    looks for the quote in THAT cell and cuts the cell's own characters out, so
-    a quote the model reworded is simply not found; `tables.removal_refused`
-    keeps an amount under a money heading and a whole cell that is the kind of
-    value its heading asks for. What is removed is not dropped -- it is kept as
-    plain text, under `outside_text`.
-
-    Then the cell boundaries, exactly as with the agent off: `realign` by what
-    each cell is, and the column question (`_recut_with_model`, with
-    `check_cut`) for a row that leaves unsettled. Taking a stamp's word out of a
-    row is very often what lets the row fit its headings again, which is why
-    the cleaning comes first.
-
-    Never raises: a failed request leaves the table to the code, and says so.
-    """
-    record = {"asked": False, "removed": [], "refusals": [], "rows_emptied": [],
-              "model": status.get("model") or "", "prompt": "", "raw": "",
-              "seconds": 0.0, "tokens": 0}
-    table["fix_agent"] = record
-
-    def then_cuts(table):
-        table = tables.reclassify(tables.realign(table))
-        if snap:
-            snap("realign", "code", table)
-        table = _recut_with_model(table, status, check=True)
-        if snap:
-            snap("recut", "model", table)
-        return table
-
-    columns = table["columns"]
-    if table.get("headings_lost") or len(columns) < 2 or not table["rows"]:
-        record["skipped"] = ("the table has no headings to judge a cell by"
-                             if table["rows"] else "the table has no rows")
-        return then_cuts(table)
-    if len(table["rows"]) > TABLE_FIX_MAX_ROWS:
-        record["skipped"] = ("%d rows, over the %d one request carries"
-                             % (len(table["rows"]), TABLE_FIX_MAX_ROWS))
-        return then_cuts(table)
-    message = prompts.TABLE_CLEAN_PROMPT.format(
-        count=len(columns), headings=_table_headings(columns),
-        rows=_table_cells_text(table),
-        before=chr(10).join("B%d %s" % (n, line) for n, line
-                            in enumerate(table.get("context_before") or [], 1))
-        or "(none)",
-        lines=chr(10).join("L%d %s" % (n, line)
-                           for n, line in enumerate(table.get("tail") or [], 1))
-        or "(none)",
-        frame=_frame_note(table))
-    record.update(asked=True, prompt=message)
-    started = time.time()
-    try:
-        cells = sum(len(tables.filled_cells(r)) for r in table["rows"])
-        raw, _, tokens = _chat(message, min(TABLE_RECUT_MAX_TOKENS,
-                                            160 + 12 * cells), status)
-        record.update(raw=raw, tokens=tokens or 0)
-        answer = _agent_reply(raw)
-        entries = answer.get("remove")
-        if entries is None:
-            entries = []
-        if not isinstance(entries, list):
-            raise ValueError("the reply's remove was not a list")
-    except Exception as err:
-        record["error"] = str(err)[:200]
-        record["seconds"] = round(time.time() - started, 2)
-        return then_cuts(table)
-    # A placeholder entry copied from the instructions -- row 0, or empty text --
-    # is not an answer and is not reported as a refusal either.
-    entries = [e for e in entries
-               if not (isinstance(e, dict) and not str(e.get("text") or "").strip())]
-    # The lines after the table first: they are numbered against the tail as
-    # it was sent, and nothing below changes it.
-    table = tables.sort_tail(table, answer.get("stray_lines"),
-                             answer.get("table_lines"))
-    record["lines"] = table.pop("tail_sorted", {})
-    table = tables.remove_text(table, entries)
-    done = table.pop("removal", {})
-    record.update(removed=done.get("removed", []), refusals=done.get("refusals", []),
-                  rows_emptied=done.get("rows_emptied", []),
-                  seconds=round(time.time() - started, 2))
-    if snap:
-        snap("clean", "agent", table, removed_rows=list(done.get("rows_emptied", [])))
-    return then_cuts(table)
-
-
-def _table_concat_agent(table: dict, status: dict, snap=None) -> dict:
-    """Agent 0: which of the read's other tables are pieces of this one.
-
-    Shown the item table's headings and last rows, and every other table the
-    read made of the document after it (`tables.concat_parts`). The reply is
-    table NUMBERS; `tables.concat` does the joining, placing each cell by what it
-    is and filing a totals line as a totals line. A number that names no table
-    is ignored, and a table whose rows cannot be placed is refused and named.
-    Never raises: a failed request leaves the table as the read cut it.
-    """
-    parts = tables.concat_parts(table)
-    record = {"asked": False, "offered": len(parts), "joined": [], "refusals": [],
-              "by_sum": [], "model": status.get("model") or "", "prompt": "",
-              "raw": "", "seconds": 0.0, "tokens": 0}
-    table["concat"] = record
-    if not parts:
-        record["skipped"] = "the read made no other table after this one"
-        return table
-    # The code first: a piece holding one of the table's column totals is its
-    # totals block, by arithmetic. Joined without asking; the model is asked
-    # only about what that leaves.
-    by_sum = tables.sum_parts(table)
-    if by_sum:
-        table = tables.concat(table, by_sum, totals=by_sum)
-        done = table.pop("concat_done", {})
-        record.update(by_sum=done.get("joined", []), joined=list(done.get("joined", [])),
-                      refusals=list(done.get("refusals", [])),
-                      rows_added=done.get("rows_added", 0),
-                      dropped_added=done.get("dropped_added", 0))
-        parts = [p for p in parts if p["number"] not in by_sum]
-        if not parts:
-            record["skipped"] = "every other table holds a column total -- joined by the code"
-            if snap:
-                snap("concat", "code", table)
-            return table
-    shown = lambda cells: " | ".join(c for c in cells if c) or "(blank)"
-    others = "\n".join(
-        "T%d (page %s)\n%s" % (p["number"], p.get("page"),
-                               "\n".join("  " + shown(r)
-                                         for r in p["rows"][:tables.CONCAT_SHOW_ROWS]))
-        for p in parts)
-    message = prompts.TABLE_CONCAT_PROMPT.format(
-        count=len(table["columns"]), headings=_table_headings(table["columns"]),
-        last_rows="\n".join(shown(r) for r in table["rows"][-3:]) or "(no rows)",
-        others=others)
-    record.update(asked=True, prompt=message)
-    started = time.time()
-    try:
-        raw, _, tokens = _chat(message, 120, status)
-        record.update(raw=raw, tokens=tokens or 0)
-        answer = _agent_reply(raw)
-        picks = answer.get("same_table")
-        if picks is None:
-            picks = []
-        if not isinstance(picks, list):
-            raise ValueError("the reply's same_table was not a list")
-    except Exception as err:
-        record["error"] = str(err)[:200]
-        record["seconds"] = round(time.time() - started, 2)
-        return table
-    numbers = []
-    for n in picks:
-        if isinstance(n, str) and n.strip().upper().lstrip("T").isdigit():
-            n = int(n.strip().upper().lstrip("T"))
-        if isinstance(n, int) and not isinstance(n, bool):
-            numbers.append(n)
-    offered = {p["number"] for p in parts}
-    table = tables.concat(table, [n for n in numbers if n in offered])
-    done = table.pop("concat_done", {})
-    record.update(joined=record["joined"] + done.get("joined", []),
-                  refusals=record["refusals"] + done.get("refusals", []),
-                  rows_added=record.get("rows_added", 0) + done.get("rows_added", 0),
-                  dropped_added=record.get("dropped_added", 0) + done.get("dropped_added", 0),
-                  seconds=round(time.time() - started, 2))
-    if snap:
-        snap("concat", "agent", table)
-    return table
-
-
-def _identify_fields(fields) -> str:
-    """The few extracted values the identify agent is shown, one per line."""
-    if not isinstance(fields, dict):
-        return ""
-    lines = ["  %s: %s" % (label, str(fields[key]).strip())
-             for key, label in prompts.TABLE_IDENTIFY_FIELDS
-             if isinstance(fields.get(key), (str, int, float))
-             and str(fields[key]).strip() not in ("", "-")]
-    return ("Values read from this document:\n%s\n" % "\n".join(lines)
-            if lines else "")
-
-
-def _table_identify_agent(table: dict, form: dict, fields, status: dict) -> dict:
-    """Agent 2: master table or item list, from the table and nothing else.
-
-    Sent the table (its headings and up to `TABLE_IDENTIFY_MAX_ROWS` rows), the
-    document's type and a few values the extraction read -- never the page.
-    The reply is `is_master_table` and the NUMBER of the column holding the
-    other documents' numbers, and code checks the claim:
-
-      * a `true` is taken only where `tables.reference_column_ok` passes the
-        column it names -- a heading that does not say it is something else, and
-        cells filled on most rows. A master table without a filled reference
-        column is not one, and a model saying so is not evidence that it is.
-      * a `false` is taken as given: there is nothing printed for it to point at.
-
-    The Python rule's answer is kept beside it as `master_rules`, and answers
-    instead wherever the agent is off, fails, or is refused -- `master_from`
-    says which. Never raises.
-    """
-    table["master_rules"] = table.get("is_master_table")
-    table["master_rules_why"] = table.get("master_why")
-    table["master_from"] = "rules"
-    if not table_agents()["identify"] or not table.get("rows"):
-        return table
-    columns = table["columns"]
-    bad = set(table.get("misaligned") or [])
-    shown = [i for i in range(len(table["rows"])) if i not in bad] \
-        or list(range(len(table["rows"])))
-    shown = shown[:TABLE_IDENTIFY_MAX_ROWS]
-    codes = form.get("doc_types") or []
-    message = prompts.TABLE_IDENTIFY_PROMPT.format(
-        doc_type=prompts.type_phrase(codes) or "not known",
-        fields=_identify_fields(fields), count=len(columns),
-        headings=_table_headings(columns), shown=len(shown),
-        total=len(table["rows"]), rows=_table_rows_text(table, shown))
-    record = {"answer": None, "column": None, "taken": False,
-              "model": status.get("model") or "", "prompt": message, "raw": "",
-              "seconds": 0.0, "tokens": 0}
-    table["identify_agent"] = record
-    started = time.time()
-    try:
-        raw, _, tokens = _chat(message, 120, status)
-        record.update(raw=raw, tokens=tokens or 0)
-        answer = _agent_reply(raw)
-    except Exception as err:
-        record["error"] = str(err)[:200]
-        record["seconds"] = round(time.time() - started, 2)
-        return table
-    record["seconds"] = round(time.time() - started, 2)
-    verdict = _as_bool(answer.get("is_master_table"))
-    column = _as_int(answer.get("reference_column"))
-    record.update(answer=verdict if isinstance(verdict, bool) else None,
-                  column=column)
-    if not isinstance(verdict, bool):
-        record["refused"] = "the reply did not say true or false"
-        return table
-    named = (columns[column - 1] or "column %d" % column) \
-        if column and 1 <= column <= len(columns) else ""
-    if verdict:
-        why = tables.reference_column_ok(table, column - 1 if column else -1)
-        if why:
-            record["refused"] = ("it said master table, naming column %s, and %s"
-                                 % (column if column is not None else "none", why))
-            return table
-        table["reference_columns"] = [named]
-        table["master_why"] = (
-            "the model read each row as another document, identified under %s; "
-            "the code checked that column is filled on most rows" % named)
-    else:
-        table["master_why"] = (
-            "the model read the rows as goods or services, not as other documents"
-            + (" (it named %s as the column citing a document)" % named
-               if named else ""))
-    table["is_master_table"] = verdict
-    table["master_from"] = "model"
-    record["taken"] = True
-    return table
-
-
-def _item_table(text: str, form: dict, status: dict, pages=None,
-                fields=None):
-    """`_item_table_stream` for a caller with nowhere to show progress."""
-    return _drain(_item_table_stream(text, form, status, pages, fields))
-
-
-def _agent_brief(record) -> dict:
-    """What one table agent did, small enough for a progress event.
-
-    The page draws a stage box and a progress line from this while the run is
-    still going; the full record -- the prompt, the reply, every refusal --
-    rides on the finished table, and copying it into every event would put the
-    prompt on the wire twice.
-    """
-    if not isinstance(record, dict):
-        return {}
-    brief = {"model": record.get("model") or "",
-             "seconds": record.get("seconds") or 0.0}
-    for key in ("skipped", "error", "refused"):
-        if record.get(key):
-            brief[key] = str(record[key])[:160]
-    if "removed" in record:
-        lines = record.get("lines") or {}
-        brief.update(asked=bool(record.get("asked")),
-                     removed=len(record.get("removed") or []),
-                     refused_n=len(record.get("refusals") or [])
-                     + len(lines.get("refusals") or []),
-                     stray_lines=len(lines.get("stray") or [])
-                     + len(lines.get("stray_before") or []),
-                     table_lines=len(lines.get("own") or [])
-                     + len(lines.get("own_before") or []))
-    if "answer" in record:
-        brief.update(answer=record.get("answer"), column=record.get("column"),
-                     taken=bool(record.get("taken")))
-    if "offered" in record:
-        brief.update(asked=bool(record.get("asked")), offered=record.get("offered", 0),
-                     joined=len(record.get("joined") or []),
-                     rows_added=record.get("rows_added", 0),
-                     dropped_added=record.get("dropped_added", 0))
-    return brief
-
-
-def _item_table_stream(text: str, form: dict, status: dict, pages=None,
-                       fields=None, document=None):
-    """The document's item table and whether it lists items or other documents.
-
-    Read out of the transcript in Python -- see `tables.py`, whose docstring is
-    where the reasoning lives. No pass-2 prompt is involved and no field is
-    touched, so this can be on for every run without moving a field score.
-
-    A generator since 2026-10-01, so the page can say which table agent is
-    running: `table_agent` events, one `running` and one `done` (or `off`) per
-    agent, plus a `read` event for the table itself. `_item_table` drains it for
-    a caller with nowhere to show progress, and returns exactly what this does.
-
-    Returns the table, None where the document rules none, or `...` -- the
-    sentinel for "not looked for", which is a different statement from "looked
-    and found none" and must not read as it:
-
-      * `TABLE_EXTRACT` is off, or
-      * the document's type rules a table of its own. A withholding certificate
-        has `income_items`, asked for by its requirement in its own four
-        cells; the same rows a second time under another name would be two
-        answers to one question.
-
-    `pages` is where this document sits in its FILE. One page of a pack arrives
-    here as bare text with no page marker in it, so the table would call it
-    page 1 whichever page of the file it was; a document of several pages
-    carries its own markers and needs no help.
-    """
-    if not TABLE_EXTRACT or form.get("items") or _image_fed():
-        return ...      # an image-fed extraction has no transcript to cut it from
-    tag = {"document": document} if document else {}
-
-    def event(agent, state, **extra):
-        return {"event": "table_agent", "agent": agent, "status": state,
-                **tag, **extra}
-
-    # Read once: a switch flipped from the page mid-run takes effect on the next
-    # document, not between the two halves of this one.
-    agents = table_agents()
-    fix_on, identify_on = agents["fix"], agents["identify"]
-    concat_on = agents["concat"]
-    # The table after every step, so the Table tab can say what each one
-    # changed and who made the change: the read, the fix agent's cleaning, the
-    # code's re-cut, the model's re-cut. Copies -- every step edits in place.
-    stages = []
-
-    def snap(stage, by, t, **extra):
-        stages.append({"stage": stage, "by": by,
-                       "columns": list(t.get("columns") or []),
-                       "rows": [list(r) for r in t.get("rows") or []],
-                       "misaligned": list(t.get("misaligned") or []),
-                       **({"asked": bool((t.get("recut") or {}).get("asked"))}
-                          if stage == "recut" else {}),
-                       **extra})
-
-    try:
-        # The rows as the read cut them, structural repairs only. With the fix
-        # agent off, `realign` then runs exactly as `item_table(text)` would
-        # have run it -- `reclassify(realign(...))`, the same two calls.
-        table = tables.item_table(text, align=False,
-                                  context_share=TABLE_CONTEXT_SHARE)
-        if table is None:
-            yield event("read", "none")
-            return None
-        snap("read", "read", table)
-        yield event("read", "done", rows=len(table["rows"]),
-                    columns=len(table["columns"]))
-        # Agent 0 first: the fix agent should see the whole table, and the page
-        # after the whole table.
-        if concat_on and table.get("_others"):
-            yield event("concat", "running", offered=len(table["_others"]),
-                        model=status.get("model") or "")
-            with _asking("table concat agent"):
-                table = _table_concat_agent(table, status, snap)
-            yield event("concat", "done", **_agent_brief(table.get("concat")))
-        else:
-            yield event("concat", "off" if not concat_on else "skipped")
-        if fix_on:
-            yield event("fix", "running", rows=len(table["rows"]),
-                        model=status.get("model") or "")
-            with _asking("table fix agent"):
-                table = _table_fix_agent(table, status, snap)
-            yield event("fix", "done", **_agent_brief(table.get("fix_agent")))
-        else:
-            yield event("fix", "off")
-            table = tables.reclassify(tables.realign(table))
-            snap("realign", "code", table)
-            with _asking("table recut"):
-                table = _recut_with_model(table, status)
-            snap("recut", "model", table)
-        # Agent 2 last, on the table as it now stands.
-        asking = identify_on and bool(table.get("rows"))
-        if asking:
-            yield event("identify", "running", model=status.get("model") or "")
-        with _asking("table identify agent"):
-            table = _table_identify_agent(table, form, fields, status)
-        yield event("identify", "done" if asking else "off",
-                    is_master_table=table.get("is_master_table"),
-                    master_from=table.get("master_from"),
-                    **_agent_brief(table.get("identify_agent")))
-        table["stages"] = stages
-        table = tables.public(table)
-        if pages and len(pages) == 1:
-            page = pages[0]
-            table["pages"] = [page]
-            table["row_pages"] = [page] * len(table["rows"])
-            for entry in table.get("dropped") or []:
-                entry["page"] = page
-        return table
-    except Exception as err:  # pragma: no cover - never worth an extraction
-        yield event("read", "error", error=str(err)[:200])
-        return {"error": f"table extraction failed: {err}"}
-
-
-def _score_item_table(result: dict, case_id: str, pages=None, text: str = "") -> dict:
-    """Attach the table's own score, where the case has ground truth for it.
-
-    Beside `field_score` and never inside it: no requirement makes a row of this
-    table Mandatory, so it has no place in a headline that is the requirement's
-    Mandatory set, and it measures the read rather than the extraction.
-    """
-    if not (case_id and isinstance(result, dict) and "item_table" in result):
-        return result
-    try:
-        actual = result["item_table"]
-        if isinstance(actual, dict) and actual.get("error"):
-            actual = None
-        score = fieldscore.evaluate_table(case_id, actual, pages)
-        if score:
-            result["table_score"] = score
-    except Exception as err:  # pragma: no cover - a score is never worth a 500
-        result["table_score"] = {"error": f"table scoring failed: {err}"}
-    # The fix agent's own score, against `solution/tables/<id>.md` -- a key of
-    # its own and never folded into `table_score` or `field_score`: it says
-    # whether the agent's decisions were right, which neither of those can.
-    try:
-        actual = result.get("item_table")
-        fixed = fixscore.score(case_id, actual, text) if isinstance(actual, dict) else None
-        if fixed:
-            result["fix_score"] = fixed
-    except Exception as err:  # pragma: no cover - a score is never worth a 500
-        result["fix_score"] = {"error": f"fix-agent scoring failed: {err}"}
-    return result
-
-
-def extract_fields_stream(text: str, mode: str = None, case_id: str = None,
-                          steps=None, doc_type: str = None, pages=None,
-                          truth_fed: bool = False, extras: bool = None,
-                          schema_first: bool = False):
-    """Turn a finished transcript into structured JSON, yielding progress.
-
-    A separate text-only pass rather than part of the OCR prompt: mixing
-    transcription and interpretation in one request measurably degrades the
-    transcript, and this way extraction can be re-run without re-reading the page.
-
-    **A file is not a document** (2026-09-08). The transcript is split into one
-    document per document first, and each is extracted on its own text with its
-    own form, its own grounding and its own validation -- so three documents in
-    one file answer three forms rather than one form three times over. `pages` is
-    the read's own page list where the caller has it; without it the split is
-    read back out of the `--- page N ---` markers, which is the only thing a
-    truth-fed run has.
-
-    **One document is the path it always was, byte for byte.** `segment.segment`
-    over a file it reads as one hands back the transcript it was given rather
-    than a rebuild of it, and `_extract_document` below is the whole of the old
-    body -- so eleven of the thirteen fixtures, and every single-page upload,
-    take exactly the requests they took before. Only the shape of the RESULT
-    grows, and only additively: `segments`, `documents_found` and `split_from`.
-
-    Single mode has no progress to report beyond the two stage events and yields
-    nothing else. Both shapes return the same result dict, plus `mode` saying
-    which one ran.
-
-    `case_id` is a benchmark document this transcript came from, and it is scored
-    here rather than at each of the four call sites: the two modes build their
-    result dicts separately, and a score attached in only some of the places a
-    result is produced is a score that quietly disappears depending on which
-    button was pressed.
-    """
-    mode = mode or extract_mode()
-    schema_first = bool(schema_first and mode in ("agentic", "hybrid"))
-    if not text.strip():
-        return {"error": "Nothing to extract from.", "schema_first": schema_first}
-    # The EXTRACTION model's status, which is the reading model's unless one has
-    # been chosen separately. Handing this dict to the request builders is the
-    # whole of what makes a second model work: they all read `info["model"]`.
-    status = backends.extract_status()
-    # `text_available`, not `available`: pass 2 sends the transcript as text and
-    # gets JSON back, so a model with no vision can still be measured on the
-    # form -- and measuring exactly that is what the Fields pane is for. This
-    # read `available` until 2026-08-20, which refused every text-only model
-    # with a complaint about images.
-    if not status["text_available"]:
-        return {"error": status["text_reason"], "schema_first": schema_first}
-    # Whether `other_fields` is asked for, decided once for every document of
-    # the file so a switch flipped mid-file cannot split it.
-    extras = extract_extras() if extras is None else bool(extras)
-    # Every model request this extraction makes -- the segment and classify
-    # questions, the steps or the single request, the table agents -- is timed
-    # by the server too, and summed here into `server_time`. Closed in `finally`
-    # so a run that raises does not leave the tally open on this thread.
-    previous = servertime.open_tally()
-    try:
-        result = yield from _extract_file(text, mode, case_id, steps, doc_type,
-                                          pages, truth_fed, status, extras, schema_first)
-    finally:
-        served = servertime.close_tally(previous)
-    if isinstance(result, dict) and served:
-        result["server_time"] = served
-    if isinstance(result, dict):
-        result["schema_first"] = schema_first
-        result['extraction_request_limit'] = EXTRACT_REQUEST_CONCURRENCY
-        result['extraction_request_scope'] = 'server'
-        if _image_fed():
-            _ungrounded_result(result)
-    return result
-
-
-def _ungrounded_result(result: dict) -> None:
-    """An image-fed result's grounding, said to be unchecked rather than ~0%.
-
-    `grounding.check` holds each value to the transcript, and an image-fed
-    extraction has none -- every value would read as invented, and a grounded
-    ratio of zero would be a claim about the model that nothing measured. The
-    keys left blank (`missing`) are a fact about the form, and are kept.
-    """
-    for doc in [result, *[d for d in result.get("documents") or [] if isinstance(d, dict)]]:
-        found = doc.get("grounding")
-        if isinstance(found, dict):
-            doc["grounding"] = {"skipped": "no transcript: the extractor read the page images",
-                                "missing": list(found.get("missing") or []),
-                                "statuses": {}, "flagged": [], "counts": {}, "checked": 0,
-                                "grounded_ratio": None}
-    result["image_fed"] = True
-
-
-def _extract_file(text, mode, case_id, steps, doc_type, pages, truth_fed, status,
-                  extras=True, schema_first=False):
-    """The body of `extract_fields_stream`, split out so the server-time tally
-    can be wrapped round all of it."""
-    segments, split_from = yield from _segment_stream(text, pages, status)
-    grouping_execution = segments[0].pop('_parallel_execution', None)
-    records = [_segment_record(seg, index, len(segments))
-               for index, seg in enumerate(segments, 1)]
-    # Emitted on every run, one document or several. A page that only heard
-    # about the split when there was one would have nothing to say for the
-    # ordinary case, and "one document" is a finding about a two-page file quite
-    # as much as "two documents" is.
-    yield {"event": "segmented", "documents": len(segments),
-           "split_from": split_from, "segments": records}
-    if len(segments) > 1:
-        result = yield from _extract_documents(segments, records, mode, case_id,
-                                               steps, doc_type, status,
-                                               truth_fed, extras, schema_first)
-    else:
-        result = yield from _extract_document(segments[0]["text"], mode, case_id,
-                                              steps, doc_type, status,
-                                              truth_fed=truth_fed, extras=extras,
-                                              schema_first=schema_first)
-    if isinstance(result, dict):
-        # On every result, however many documents: what the file was read as is
-        # a fact about the run, and a reader looking at one document's fields
-        # needs to know whether that was the whole file.
-        result["segments"] = records
-        if grouping_execution:
-            result['grouping_execution'] = grouping_execution
-        result.setdefault("documents_found", 1)
-        result["split_from"] = split_from
-        # Whether `other_fields` was asked for. An empty list means "none
-        # found" only where it was; the run log reads this to leave it blank.
-        result["extras"] = extras
-    return result
-
-
-def _extract_document(text: str, mode: str, case_id: str, steps, doc_type,
-                      status: dict, record: dict = None,
-                      truth_fed: bool = False, extras: bool = True,
-                      schema_first: bool = False):
-    """One document: classify it, ask for its form, ground it, validate it, score it.
-
-    The whole of what `extract_fields_stream` used to be, lifted out unchanged so
-    that a file holding one document takes the same requests it always took, and
-    so that a file holding three takes that same path three times rather than a
-    second implementation of it.
-
-    `record` is this document's place in the file, where there is more than one.
-    It rides on the `classified` event only: without it a page receiving seven
-    step events and three classifications cannot tell which document any of them
-    belongs to.
-    """
-    # Which form to ask for. Resolved ONCE, here, and handed to whichever shape
-    # runs -- the prompt, the JSON grammar, the step table, what grounding calls
-    # missing, what validate checks and what fieldscore scores all come off this
-    # one dict, so the two modes cannot disagree about which document this is.
-    form = _field_set(text, case_id, doc_type, status,
-                      (record or {}).get("pages"), extras)
-    if mode == "hybrid":
-        # Hybrid does not ask a classified non-certificate page the WHT certificate's
-        # keys (prompts.hybrid_fields_for_types), so they are not "asked" either:
-        # not scored as absent, not left for grounding or validation to look for.
-        form["keys"] = list(prompts.hybrid_fields_for_types(form["doc_types"]))
-    form["schema_first"] = bool(schema_first and mode in ("agentic", "hybrid"))
-    if mode == 'hybrid' and workspace.get('user_pipeline', False):
-        selected = userpromptsets.select(workspace.get('user_prompt_sets', {}), form['doc_types'])
-        if selected:
-            user_table = steps_for_types(form['doc_types'], form['extras'], mode='hybrid')
-            active = {k for s in user_table
-                      if not s.get('custom_targets') for k in s['keys']}
-            form['keys'] = [k for k in prompts._SCALAR_KEYS if k in active]
-            builtin, required = list(form['mandatory']), set()
-            if prompts.INCOME_ITEMS_KEY in active:
-                form['items'] = list(prompts.INCOME_ITEM_KEYS)
-            else:
-                form['items'], form['mandatory_items'] = [], []
-            asked = {k for s in user_table for k in s['keys']}
-            form['user_prompt_sets'], disabled = [], []
-            for code, r in selected:
-                supplied = [key for step in user_table if step.get('user_prompt_set_id') == r['id'] for key in step['keys']]
-                enabled = [key for step in r['steps'] for key in step['keys']]
-                # skipped_keys: enabled here, but an earlier set already asks the
-                # field or fills its User JSON destination.
-                form['user_prompt_sets'].append({'doc_type':code, 'set_id':r['id'], 'name':r['name'], 'revision':r['revision'],
-                                                 'keys':supplied, 'skipped_keys':[k for k in enabled if k not in supplied]})
-                # Required set in the User field matrix, else the type's built-in list.
-                # It drives the missing-field retry, image recheck and validation.
-                required |= userpromptsets.required_keys(r, supplied, builtin)
-                every = ([k for s in r['base_steps'] for k in s['keys']]
-                         + [f['key'] for g in r['value'].get('extra_groups', []) for f in g['fields']])
-                disabled += [k for k in every if k not in enabled and k not in asked and k not in disabled]
-            # Only what the User switched off. A field the set never had (the
-            # broad form's WHT fields on a T04 bound to Invoice) is not listed.
-            form['user_disabled_fields'] = disabled
-            form['mandatory'] = [k for k in prompts._SCALAR_KEYS if k in required and k in active]
-    # Stage 0, announced before either shape starts. It is the one part of a
-    # pass-2 run that is finished before the first request goes out, so a page
-    # that shows it immediately is showing something true rather than a
-    # placeholder -- and in single mode it is the ONLY progress event there is.
-    yield {"event": "classified", "mode": mode, **_classified(form, mode),
-           **({"document": record["document"], "documents": record["documents"],
-               "pages": list(record["pages"]),
-               "page_range": record["page_range"]} if record else {})}
-    if mode in ("agentic", "hybrid"):
-        result = yield from _extract_agentic(text, status, form, steps, mode=mode)
-    else:
-        # Refused rather than ignored: single mode is one request for the whole
-        # schema, so there is no honest way to ask it for part of one, and a
-        # sweep that thought it was measuring one step would be measuring
-        # fourteen keys instead.
-        if steps:
-            return {"error": "steps only apply to agentic or hybrid extraction."}
-        result = _extract_single(text, status, form)
-    result = _validate_fields(result, form, text, mode)
-    if isinstance(result, dict):
-        result["schema_first"] = form["schema_first"]
-    # The item table, read out of the same transcript. Attached whether or not
-    # the extraction itself produced fields -- the table does not depend on it --
-    # and skipped for a run restricted to some steps, which asked a narrower
-    # question than "what does this document say".
-    if isinstance(result, dict) and not steps:
-        table = yield from _item_table_stream(
-            text, form, status, (record or {}).get("pages"), result.get("fields"),
-            (record or {}).get("document"))
-        if table is not ...:
-            result["item_table"] = table
-            result = _score_item_table(result, case_id,
-                                       (record or {}).get("pages"), text)
-    return _score_fields(result, case_id, form,
-                         (record or {}).get("pages"), text, truth_fed)
-
-
-def _extract_documents(segments, records, mode: str, case_id: str, steps,
-                       doc_type, status: dict, truth_fed: bool = False,
-                       extras: bool = True, schema_first: bool = False):
-    """Independent documents, merged in file order even when run concurrently.
-
-    **The fields are independent and are kept that way.** Each document is
-    extracted from its own pages only, so a value on page 3 cannot fill a key of
-    the document on page 1 -- which is the whole of what splitting buys, and is
-    exactly the failure that made a three-document file worth splitting: one
-    form asked of three documents' text fills each key from whichever page the
-    model saw first, and every check downstream then endorses it, because the
-    value really is on the page.
-
-    **Only document 1 is scored against a benchmark case's truth file**, and it
-    says so on the others rather than leaving them looking unscored for some
-    other reason. `solution/<id>.fields.json` is a person's record of ONE
-    document; scoring the second document of a split file against it would mark
-    a correct extraction wrong for not being the first document.
-    """
-    parallel = min(len(segments), EXTRACT_DOCUMENT_PARALLEL_MAX, EXTRACT_REQUEST_CONCURRENCY)
-    if (len(segments) > 1 and EXTRACT_DOCUMENT_PARALLEL_MAX > 1
-            and backends.parallel_ok(status) and not _image_fed()):
-        return (yield from _extract_documents_parallel(
-            segments, records, mode, case_id, steps, doc_type, status,
-            truth_fed, extras, schema_first, parallel))
-    documents, failed = [], 0
-    for seg, record in zip(segments, records):
-        yield {"event": "document", "document": record["document"],
-               "documents": len(records), "pages": list(record["pages"]),
-               "page_range": record["page_range"]}
-        result = yield from _extract_document(seg["text"], mode, case_id,
-                                              steps, doc_type, status, record,
-                                              truth_fed, extras, schema_first)
-        if not isinstance(result, dict):
-            result = {"error": "extraction returned nothing"}
-        result["document"] = record["document"]
-        result["pages"] = list(record["pages"])
-        result["page_range"] = record["page_range"]
-        if case_id and not result.get("field_score"):
-            # Scored where the truth file has a block for these pages, and
-            # silent about it where it has none. **Not an error**: a pack's
-            # truth file is filled in a document at a time, and a document
-            # nobody has written answers for yet is unscored rather than wrong.
-            result["field_truth_scope"] = (
-                "the ground truth for %s states nothing for page%s %s"
-                % (case_id, "" if len(record["pages"]) == 1 else "s",
-                   record["page_range"]))
-        if result.get("error"):
-            failed += 1
-        documents.append(result)
-        yield {"event": "document_done", "document": record["document"],
-               "documents": len(records),
-               "filled": len(result.get("fields") or {}),
-               "error": result.get("error") or ""}
-    return _merge_documents(documents, records, mode, failed)
-
-
-def _extract_documents_parallel(segments, records, mode, case_id, steps, doc_type,
-                                status, truth_fed, extras, schema_first, parallel):
-    """A rolling window of documents, with one shared budget for all their steps.
-
-    Only the owning thread emits stream events or merges results. Worker events
-    identify their document so interleaving cannot attach fields to a neighbour.
-    One server timing batch covers all workers, including nested Hybrid steps.
-    """
-    started = time.perf_counter()
-    budget = _DocumentRequests()
-    messages = queue.Queue()
-    documents = [None] * len(records)
-    batch = servertime.Batch(status)
-    pool = ThreadPoolExecutor(max_workers=parallel, thread_name_prefix='extract-document')
-    futures = []
-
-    def work(index):
-        seg, record = segments[index], records[index]
-        context = {key: record[key] for key in ('document', 'documents', 'pages', 'page_range')}
-        previous_budget = getattr(_progress, 'request_budget', None)
-        previous_document = getattr(_progress, 'document', None)
-        _progress.request_budget = budget
-        _progress.document = f"document {record['document']} of {len(records)}"
-        def emit(event):
-            if budget.stopped.is_set():
-                raise SweepCancelled('extraction closed')
-            messages.put(('event', index, {**event, **context}))
-        try:
-            emit({'event': 'document'})
-            with closing(_extract_document(seg['text'], mode, case_id, steps, doc_type,
-                                          status, record, truth_fed, extras, schema_first)) as stream:
-                result = _drain(stream, emit)
-            if not isinstance(result, dict):
-                result = {'error': 'extraction returned nothing'}
-        except Exception as err:
-            result = {'error': str(err)}
-        finally:
-            _progress.request_budget = previous_budget
-            _progress.document = previous_document
-        messages.put(('done', index, result))
-
-    def submit(index):
-        # Capture workspace, User prompt revisions, stall hook and image mode.
-        futures.append(pool.submit(_carry_progress(workspace.bind(batch.run)), work, index))
-
-    try:
-        yield {'event': 'documents_parallel', 'documents': len(records),
-               'document_parallel': parallel, 'extraction_request_limit': EXTRACT_REQUEST_CONCURRENCY,
-               'extraction_request_scope': 'server'}
-        for index in range(parallel):
-            submit(index)
-        completed, following = 0, parallel
-        while completed < len(records):
-            kind, index, value = messages.get()
-            if kind == 'event':
-                yield value
-                continue
-            record = records[index]
-            value.update(document=record['document'], pages=list(record['pages']),
-                         page_range=record['page_range'])
-            if case_id and not value.get('field_score'):
-                value['field_truth_scope'] = (
-                    'the ground truth for %s states nothing for page%s %s'
-                    % (case_id, '' if len(record['pages']) == 1 else 's', record['page_range']))
-            documents[index] = value
-            completed += 1
-            yield {'event': 'document_done', 'document': record['document'],
-                   'documents': len(records), 'pages': list(record['pages']),
-                   'page_range': record['page_range'], 'completed_documents': completed,
-                   'filled': len(value.get('fields') or {}), 'error': value.get('error') or ''}
-            if following < len(records):
-                submit(following)
-                following += 1
-    finally:
-        # Closing the stream must not start the rest of a 150-document PDF.
-        budget.stopped.set()
-        pool.shutdown(wait=True, cancel_futures=True)
-        batch.close()
-    result = _merge_documents(documents, records, mode,
-                              sum(bool(doc.get('error')) for doc in documents))
-    result.update(document_parallel=parallel, extraction_request_limit=EXTRACT_REQUEST_CONCURRENCY,
-                  extraction_request_scope='server',
-                  document_requests_peak=budget.peak, document_seconds_sum=result['seconds'],
-                  seconds=round(time.perf_counter() - started, 2))
-    return result
-
-
-def _merge_documents(documents, records, mode: str, failed: int) -> dict:
-    """One result for a file holding several documents.
-
-    **`fields` is deliberately absent.** Two documents both state a
-    `document_number`, and a merged dict would have to drop one of them or
-    rename both -- either way producing a form nobody asked for and nobody can
-    check. The documents are the answer and they are in `documents`; anything
-    reading a multi-document result reads that list.
-
-    What IS merged is the run-wide arithmetic, because those really are
-    file-level facts: the clock, the tokens, the grounding ratio over every value
-    the file produced. `grounding` carries document-prefixed paths so a flagged
-    value can still be traced to the document it came from -- a bare
-    `buyer_name` would name three different fields in a three-document file.
-
-    `field_score` is not merged and is not summed: at most one document is
-    scored (see `_extract_documents`), so the file's score is that document's
-    and the scope says which. Summing the others in as zeroes would report a
-    file as badly extracted for holding documents nobody has written an answer
-    sheet for.
-    """
-    codes, asked, items = [], [], []
-    for result in documents:
-        for code in result.get("doc_types") or []:
-            if code not in codes:
-                codes.append(code)
-        for key in result.get("fields_asked") or []:
-            if key not in asked:
-                asked.append(key)
-        for key in result.get("items_asked") or []:
-            if key not in items:
-                items.append(key)
-    scored = [result for result in documents if result.get("field_score")]
-    merged = {
-        "mode": mode,
-        # The answer. Every reader of a multi-document result reads this.
-        "documents": documents,
-        "documents_found": len(documents),
-        # How many of them came back with nothing. Counted rather than folded
-        # into an error, because a file whose second document failed still
-        # extracted its first and that is a result, not a failed run.
-        "documents_failed": failed,
-        "segments": records,
-        "doc_types": codes,
-        "doc_type": normalise.primary_type(codes),
-        "doc_type_from": (documents[0].get("doc_type_from") or "") if documents else "",
-        "fields_asked": asked,
-        "items_asked": items,
-        "seconds": round(sum(result.get("seconds") or 0 for result in documents), 2),
-        "tokens": sum(result.get("tokens") or 0 for result in documents),
-        "model": next((result.get("model") for result in documents
-                       if result.get("model")), ""),
-        "url": next((result.get("url") for result in documents
-                     if result.get("url")), ""),
-        "partial": any(result.get("partial") for result in documents),
-        **({"parallel": max(result.get("parallel") or 0 for result in documents)}
-           if any(result.get("parallel") for result in documents) else {}),
-        "grounding": _merge_grounding(documents),
-        # Every document's attribution as one for the file, paths prefixed with
-        # the document they belong to exactly as grounding's are. The counts sum
-        # because the score's counts pool the same way, which is what keeps the
-        # run-log invariant true of a pack as well as of a page.
-        "blame": blame.merge([(result.get("document") or index, result.get("blame"))
-                              for index, result in enumerate(documents, 1)]),
-        # Stage 0 of the FIRST document, so a page rendering the strip has
-        # something true to draw before the reader picks a document. The
-        # per-document classification is on each entry of `documents`.
-        "classified": documents[0].get("classified") if documents else None,
-    }
-    if scored:
-        merged["field_score"] = _merge_field_scores(scored, len(documents))
-    # The item tables stay on their documents, like the fields: seven documents
-    # rule seven tables and one merged table would be a table nobody printed.
-    # What IS a file-level fact is the score over all of them.
-    tabled = fieldscore.pool_tables([result.get("table_score")
-                                     for result in documents])
-    if tabled:
-        merged["table_score"] = tabled
-    fixed = fixscore.pool([result.get("fix_score") for result in documents])
-    if fixed:
-        merged["fix_score"] = fixed
-    if failed and failed == len(documents):
-        # Every document failed, so the run failed. Reported as an error rather
-        # than as a result with nothing in it, which is the same rule the
-        # all-steps-failed bail-out follows one level down.
-        merged["error"] = documents[0].get("error") or "every document failed"
-    return merged
-
-
-def _merge_field_scores(scored, documents: int) -> dict:
-    """Every scored document of one file, as ONE score for the file.
-
-    **At the user's request** (2026-09-08): *if the doc got more we still score
-    them as 1 doc but we do more of an average way.* A pack used to be scored on
-    its first document alone, which reported a seven-document file on a seventh
-    of itself and made a pack look like a small easy case.
-
-    The arithmetic is `fieldscore.pool`, shared with `compare.py` -- pooled
-    counts for the headline, with the unweighted mean of the documents' own
-    rates beside it as `accuracy_macro`. Its docstring is where the reasoning
-    lives; what is added here is only the file's own shape.
-    """
-    merged = fieldscore.pool([one["field_score"] for one in scored])
-    merged["documents"] = documents
-    # Which document each rate belongs to. `fieldscore.pool` knows the pages a
-    # score was taken over and not the position of that document in the file,
-    # which is what the page's strip is keyed on.
-    for entry, one in zip(merged.get("per_document") or [], scored):
-        entry["document"] = one.get("document")
-    return merged
-
-
-def _merge_grounding(documents) -> dict:
-    """Every document's grounding, as one file-level audit.
-
-    Paths are prefixed with the document they belong to, because `buyer_name`
-    names a different field in each of them and a flagged value nobody can trace
-    back to a document is a finding nobody can act on. The ratio is recomputed
-    from the summed counts rather than averaged over the documents -- a
-    one-field document and a thirty-field one are not two equal opinions about
-    how much of this file was invented.
-    """
-    statuses, missing, flagged, counts, checked = {}, [], [], {}, 0
-    for result in documents:
-        found = result.get("grounding") or {}
-        prefix = "doc%d." % (result.get("document") or 1)
-        for path, status in (found.get("statuses") or {}).items():
-            statuses[prefix + path] = status
-        missing.extend(prefix + path for path in (found.get("missing") or []))
-        for entry in found.get("flagged") or []:
-            entry = dict(entry)
-            if entry.get("field"):
-                entry["field"] = prefix + entry["field"]
-            flagged.append(entry)
-        for name, count in (found.get("counts") or {}).items():
-            counts[name] = counts.get(name, 0) + count
-        checked += found.get("checked") or 0
-    return {"statuses": statuses, "missing": missing, "flagged": flagged,
-            "counts": counts, "checked": checked,
-            "grounded_ratio": (round(counts.get("grounded", 0) / checked, 4)
-                               if checked else None)}
-
-
-def _validate_fields(result: dict, form: dict, text: str, mode: str) -> dict:
-    """Attach the requirement's validation rules, and say which form they are for.
-
-    Outside `fields`, like `derived` and for the same reason: `grounding.check`
-    walks that dict and would report a computed verdict as an invention.
-
-    Never allowed to break an extraction. The fields are the product and this is
-    a measurement of them -- and the corpus is the standing reminder that a
-    validator must not gate, since seventeen of twenty tax IDs in `solution/`
-    fail the checksum for being anonymised mocks.
-    """
-    if not isinstance(result, dict):
-        return result
-    # Recorded even where nothing was extracted: which form was asked for is a
-    # fact about the run, and a reader looking at an empty result needs it most.
-    # Both: `doc_types` is what the page names and what the form was built
-    # from, `doc_type` is the primary one to file it under. A single code alone
-    # would repeat the bug fixed on 2026-08-31 -- it drops every type after the
-    # first, and with them every field only the dropped type required.
-    result["doc_types"] = list(form["doc_types"])
-    result["doc_type"] = form["doc_type"]
-    result["doc_type_from"] = form["doc_type_from"]
-    # The line the type was read off, where one was. Reported for the same
-    # reason `doc_type_from` is: the form below was chosen by this, and a choice
-    # nobody can check is one nobody should have to take on trust.
-    result["doc_type_heading"] = form.get("doc_type_heading") or ""
-    # A disagreement with the manifest, where there is one. On the result as well
-    # as on `classified`, because a result read back later is all a reader has.
-    result["doc_type_expected"] = list(form.get("doc_type_expected") or [])
-    result["doc_type_confidence"] = form.get("doc_type_confidence")
-    result["doc_type_escalated"] = form.get("doc_type_escalated") or ""
-    # The form itself, so the page renders the questions that were ASKED rather
-    # than every key it knows how to draw. A key the form omits is not an empty
-    # answer -- it is a question nobody put -- and an empty row for it would read
-    # as a document that states nothing about it.
-    result["fields_asked"] = list(form["keys"])
-    for key in ('user_prompt_sets', 'user_disabled_fields'):
-        if key in form:
-            result[key] = copy.deepcopy(form[key])
-    # The table's cells, or []. Named apart from `fields_asked` for the reason
-    # `_field_set` gives: the page draws them as a table and the scalars as rows.
-    result["items_asked"] = list(form["items"])
-    # The whole of stage 0, for a result being rendered after the fact -- a
-    # re-extraction loaded from the Fields pane, or a blocking POST that had no
-    # stream to carry the event.
-    # The mode is passed in rather than read off the result: a run that failed
-    # before either shape reported one still has to say whether ITS prompt was
-    # framed, and defaulting that to single would describe the wrong run.
-    result["classified"] = _classified(form, mode)
-    if not result.get("fields"):
-        return result
-    result["normalized"] = normalise.normalize_fields(result["fields"])
-    result["normalization_version"] = normalise.NORMALIZATION_VERSION
-    try:
-        result["validation"] = validate.validate(
-            result["fields"], keys=form["keys"], doc_types=form["doc_types"],
-            mandatory=form["mandatory"], transcript=text,
-            items=form["items"])
-    except Exception as err:  # pragma: no cover - never worth a 500
-        result["validation"] = {"error": f"validation failed: {err}"}
-    return result
-
-
-def _score_fields(result: dict, case_id: str, form: dict = None,
-                  pages=None, transcript: str = "",
-                  truth_fed: bool = False) -> dict:
-    """Attach the field score, when this document has field ground truth.
-
-    Absent rather than an error when there is none: most documents are not
-    benchmark cases, and a `field_score` holding only a complaint on every real
-    upload would have to be filtered out by everything that reads a result.
-
-    Scoring must never break an extraction that worked -- the fields are the
-    product, the score is a measurement of it.
-    """
-    if not (case_id and isinstance(result, dict) and result.get("fields")):
-        return result
-    # A run restricted to some of the steps did not ask for the rest of the
-    # schema, and scoring it would report every key nobody asked for as missed --
-    # a headline accuracy of 3 values out of 43 for a run that got all three
-    # right. The caller that restricted the steps knows which keys it wanted and
-    # scores those itself.
-    if result.get("steps_only"):
-        return result
-    try:
-        if fieldscore.has_truth(case_id):
-            # Scored over the form that RAN. A truth file states more than any
-            # one form asks for -- it is the human's record of the page, not of
-            # the schema -- so scoring every key in it would mark an invoice
-            # wrong for not returning a currency nobody requested.
-            # The headline is taken over what the requirement DEMANDS of this
-            # document's types; an Optional field is still judged and reported,
-            # under `optional`, and simply does not decide the rate.
-            #
-            # `mandatory` is EMPTY where no requirement covers the type, and
-            # `fieldscore` reads that as its own state: score the base field
-            # set and mark the rate `unknown_type`. Passing None instead would
-            # score the same keys and lose the distinction, which is the half a
-            # reader needs -- a rate over a requirement and a rate over
-            # everything the ground truth states are different claims.
-            result["field_score"] = fieldscore.evaluate(
-                case_id, result["fields"],
-                keys=(form or {}).get("keys"),
-                doc_types=(form or {}).get("doc_types") or [],
-                mandatory=(form or {}).get("mandatory"),
-                items_mandatory=(form or {}).get("mandatory_items"),
-                # Which document of the file this is. A pack's truth file holds
-                # one block per document, so without this every document would
-                # be marked against the first one's answers.
-                pages=pages)
-            # Which pass lost each value the score just charged for. Attached
-            # here rather than anywhere else for the same reason the score is:
-            # this is the one place a result has its fields, its truth and the
-            # transcript they were read from all in hand at once.
-            result["blame"] = _attribute_blame(result["field_score"], case_id,
-                                               transcript, truth_fed)
-    except Exception as err:  # pragma: no cover - a score is never worth a 500
-        result["field_score"] = {"error": f"field scoring failed: {err}"}
-    return result
-
-
-def _page_text(case_id: str) -> str:
-    """A case's own ground-truth transcript, or "" where there is none.
-
-    Read whole rather than cut to this document's pages, and that is the
-    conservative direction on both of the questions `blame` asks it: a value
-    found anywhere in the file's truth is a value the page really prints, so the
-    only attributions this can move are the two that would otherwise have
-    accused somebody -- never the other way about.
-    """
-    try:
-        case = scoring.cases_index().get(case_id)
-        return case["ground_truth"].read_text("utf-8") if case else ""
-    except Exception:  # pragma: no cover - a missing page is not a failure
-        return ""
-
-
-def _attribute_blame(score, case_id: str, transcript: str,
-                     truth_fed: bool) -> dict:
-    """`blame.check`, guarded, because an attribution is never worth a run.
-
-    It moves no score and no verdict -- see `blame.py`, which is emphatic about
-    that -- so a failure here costs a note and must not cost the fields.
-    """
-    if _image_fed():
-        return {"skipped": "no transcript: the extractor read the page images"}
-    try:
-        return blame.check(score, transcript, _page_text(case_id), truth_fed)
-    except Exception as err:  # pragma: no cover
-        return {"skipped": f"attribution failed: {err}"}
-
-
-def _drain(generator, each=None):
-    """Run a generator that returns a value, discarding what it yields -- or
-    handing each event to `each`."""
-    while True:
-        try:
-            event = next(generator)
-        except StopIteration as stop:
-            return stop.value
-        if each is not None:
-            each(event)
+            engine._extract_extras = bool(on)
+    return engine.extract_extras()
 
 
 def extract_fields(text: str, mode: str = None, case_id: str = None,
@@ -5367,316 +472,8 @@ def extract_fields(text: str, mode: str = None, case_id: str = None,
     """`extract_fields_stream` for callers with nowhere to show progress.
     `each`, where given, sees every event (the stress test reads which document
     is being extracted off them)."""
-    return _drain(extract_fields_stream(text, mode, case_id, steps, doc_type,
+    return engine._drain(engine.extract_fields_stream(text, mode, case_id, steps, doc_type,
                                         pages, truth_fed, extras, schema_first), each)
-
-
-def strip_fence(text: str) -> str:
-    """Unwrap a whole-output ```markdown fence.
-
-    A stock Qwen3-VL often wraps the entire page in a fence, which would then
-    render as a code block instead of as the table/headings it describes.
-    """
-    stripped = text.strip()
-    if not stripped.startswith("```"):
-        return stripped
-    first, sep, rest = stripped.partition("\n")
-    if not sep or not rest.rstrip().endswith("```"):
-        return stripped
-    # Only unwrap when the opening fence has no content of its own (```markdown).
-    if first[3:].strip().lower() not in ("", "markdown", "md", "html"):
-        return stripped
-    return rest.rstrip()[:-3].rstrip()
-
-
-_PAGE_NO = re.compile(r"<page_number>\s*(.*?)\s*</page_number>", re.I | re.S)
-_FIGURE = re.compile(r"</?figure>\s*", re.I)
-_HEADING = re.compile(r"^\s{0,3}#{1,6}\s+", re.M)
-
-
-def normalise_output(text: str) -> str:
-    """Strip structural markup the model emits despite being told not to.
-
-    typhoon-ocr is finetuned to wrap page numbers in <page_number> and to open with
-    a Markdown '# ' heading; prompting does not suppress either. The page number is
-    real page content so it is kept, just unwrapped -- the tag is not.
-    """
-    text = _PAGE_NO.sub(r"\1", text)
-    text = _FIGURE.sub("", text)
-    text = _HEADING.sub("", text)
-    # The model HTML-escapes ampersands even in plain prose ("RESORT &amp; VILLAS").
-    # Deliberately not unescaping &lt;/&gt;, which would invent tags.
-    for entity, char in (("&amp;", "&"), ("&nbsp;", " "), ("&quot;", '"'),
-                         ("&#39;", "'"), ("&apos;", "'")):
-        text = text.replace(entity, char)
-    return text.strip()
-
-
-def layout_text(raw: str) -> str:
-    """Flatten a dots.ocr layout reply into a transcript, in reading order.
-
-    The profile asks for a JSON array of blocks -- `bbox`, `category`, `text` --
-    already sorted the way a person would read the page, so the transcript is
-    those texts joined. Everything downstream (scoring, pass 2, the run log) then
-    sees the same kind of string it sees from any other profile, which is the
-    whole point of doing this here rather than teaching five other modules about
-    layout blocks.
-
-    A reply that never closed is salvaged the same way `_salvage_json` salvages
-    pass 2: keep the blocks that finished, drop the one it died inside. This is
-    the common case rather than an edge -- the model runs to the token cap inside
-    a single block on both fixtures it was measured on -- and a partial page is
-    worth more than nothing, with `looks_repetitive` and the truncation flag
-    already saying the read did not finish.
-
-    `Picture` blocks carry no text by the prompt's own rule, so they contribute
-    nothing rather than an empty line.
-    """
-    return "\n".join(b["text"] for b in layout_blocks(raw) if b["text"])
-
-
-def layout_blocks(raw: str) -> list:
-    """The blocks of a layout reply, kept whole: bbox, category and text.
-
-    `layout_text` throws the geometry away because a transcript has no room for
-    it. The page's Layout view is the one thing that wants it, so the parsing
-    lives here and both callers share it -- two parsers for one reply would
-    disagree about the salvage and put the boxes out of step with the text
-    beside them.
-
-    Coordinates are the model's own, in the pixel space of the image it was
-    sent, and are passed through unchecked beyond being four numbers: a box in
-    the wrong place is a finding, not something to quietly correct. A block
-    whose bbox is missing or malformed keeps its text and gets `None`, so it
-    still appears in the list the transcript was built from.
-    """
-    raw = (raw or "").strip()
-    if not raw:
-        return []
-    try:
-        blocks = json.loads(raw)
-    except ValueError:
-        cut = raw.rfind("},")
-        if cut < 0:
-            return []
-        try:
-            blocks = json.loads(raw[:cut + 1] + "]")
-        except ValueError:
-            return []
-    if isinstance(blocks, dict):
-        # The prompt says "a single JSON object", and a model that takes that
-        # literally wraps the array in one. Take the first list it holds.
-        blocks = next((v for v in blocks.values() if isinstance(v, list)), [])
-    if not isinstance(blocks, list):
-        return []
-    out = []
-    for block in blocks:
-        if not isinstance(block, dict):
-            continue
-        box = block.get("bbox")
-        if not (isinstance(box, list) and len(box) == 4
-                and all(isinstance(n, (int, float)) and not isinstance(n, bool)
-                        for n in box)):
-            box = None
-        out.append({
-            "bbox": box,
-            "category": str(block.get("category") or "")[:40],
-            "text": (block.get("text") or "").strip(),
-        })
-    return out
-
-
-def finish_page(raw: str, stats: dict = None, profile: str = None) -> str:
-    """One page's raw reply -> its transcript, with the boxes kept on `stats`.
-
-    Called wherever a page finishes -- the streaming endpoint, the blocking one
-    and the random test -- so all three produce the same thing from the same
-    bytes. `layout` rides on the page stats, which already travel to the browser
-    in `page_done` and in `summarise`'s `page_stats`, so nothing new had to be
-    plumbed for it; `runlog.record` names the columns it writes, so the log is
-    unaffected.
-
-    Only a layout profile sets the key at all. On a Markdown profile it is
-    absent rather than empty, which is what lets the page tell "this run had no
-    geometry to show" from "this page found nothing".
-    """
-    profile = profile or (stats or {}).get("ocr_profile")
-    spec = profile_spec(profile)
-    text = read_reply(raw, profile)
-    if stats is not None:
-        # The reply exactly as it arrived, before the fence, the layout flatten
-        # and normalise_output have had it. Kept because every one of those steps
-        # throws something away on purpose, and the only way to check what was
-        # thrown away is to see what came in -- the coordinates of a layout reply
-        # most of all, which the transcript cannot carry.
-        stats["raw"] = raw
-        if spec["reply"] == "layout_json":
-            stats["layout"] = layout_blocks(strip_fence(raw))
-    return text
-
-
-def read_reply(raw: str, profile: str = None) -> str:
-    """One profile's raw answer, turned into the transcript everything else uses."""
-    spec = profile_spec(profile)
-    if spec["reply"] == "layout_json":
-        return normalise_output(layout_text(strip_fence(raw)))
-    return normalise_output(strip_fence(raw))
-
-
-def loop_retry_page(page, stats: dict):
-    """The page to read again after a looped read, one Detail up -- or None.
-
-    Only a page `prepare_input` tagged can climb: the tag holds the trimmed page
-    before it was scaled, so the retry is rescaled from that rather than enlarged
-    from the smaller image. None when LOOP_RETRY is off, the read did not loop,
-    the page is already at `original`, or the next budget would give back the
-    same image (a page small enough to fit the lower one already).
-    """
-    origin = getattr(page, "_loop_retry", None)
-    if not (LOOP_RETRY and origin and stats.get("looped")):
-        return None
-    higher = next_detail(origin["detail"])
-    if higher is None:
-        return None
-    bigger = fit_pixels(origin["source"], DETAIL_PRESETS[higher])
-    if bigger.size == page.size:
-        return None
-    bigger._loop_retry = dict(origin, detail=higher)
-    if hasattr(page, "_dry_label"):
-        tag_page(bigger, page._dry_label, higher)
-    replace_job_page(origin["job"], origin["index"], bigger)
-    return bigger
-
-
-def record_retry(stats: dict, was, now) -> None:
-    """Set the looped attempt aside on `stats`, so the retry fills it afresh.
-
-    The page's figures end up describing the read that was kept; what each
-    looped attempt cost is on `loop_retries`, and `detail` says where it ended.
-    """
-    attempts = stats.get("loop_retries", []) + [{
-        "detail": was._loop_retry["detail"],
-        **{key: stats.get(key) for key in ("resolution", "new_tokens", "seconds")}}]
-    stats.clear()
-    stats.update(loop_retries=attempts, detail=now._loop_retry["detail"])
-
-
-def read_page(image: Image.Image, stats: dict = None,
-              profile: str = None, cancel=None) -> str:
-    """Blocking full-page read.
-
-    Deliberately drains the streaming generator rather than issuing its own
-    request, so both endpoints report timings measured exactly the same way.
-
-    `cancel` is a `Cancel` that stops the drain between tokens, and hangs up the
-    request underneath for a stream that has stalled with no token to check
-    between. It is how a random test's Stop reaches the page in flight; the
-    caller is expected to throw the partial away, because half a page is not a
-    measurement. A page still in prefill finishes its prefill first -- see
-    `Cancel`. Without one this drains to the end exactly as it always has.
-
-    A read that loops is read again one Detail up -- see `loop_retry_page`.
-    """
-    stats = {} if stats is None else stats
-    while True:
-        parts = []
-        for chunk in stream_page(image, stats, profile, cancel):
-            parts.append(chunk)
-            if cancel is not None and cancel.is_set():
-                break
-        if cancel is not None and cancel.is_set():
-            break
-        retry = loop_retry_page(image, stats)
-        if retry is None:
-            break
-        record_retry(stats, image, retry)
-        image = retry
-    return finish_page("".join(parts), stats, profile)
-
-
-def _page_parallelism(pages: int) -> int:
-    """How many pages of one read go to the server at once: 1 means one at a time.
-
-    More than one only for a document of `OCR_PARALLEL_MIN_PAGES` or more, on a
-    server that batches concurrent requests (`backends.parallel_ok`, vLLM), with
-    `OCR_PARALLEL` on. Capped by `OCR_PARALLEL_MAX` where it is set. The server
-    is only asked about once the page count says it could matter, so a short
-    read costs no status lookup it did not already make.
-    """
-    if not (OCR_PARALLEL and pages >= OCR_PARALLEL_MIN_PAGES):
-        return 1
-    if not backends.parallel_ok(llama_status()):
-        return 1
-    return max(1, min(OCR_PARALLEL_MAX or pages, pages))
-
-
-class _Hangup:
-    """Something a one-slot `Cancel` can hang up that stops MANY requests.
-
-    A random test hands its read one `Cancel`, which holds one live request; a
-    read whose pages are in flight together has several. The read attaches this
-    to the round's `Cancel` and gives the pages a `MultiCancel` of their own, so
-    the round's Stop reaches every page.
-    """
-
-    def __init__(self, cancel):
-        self.cancel = cancel
-
-    def close(self):
-        self.cancel.set()
-
-
-def read_pages_at_once(pages, parallel: int, cancel=None, run: dict = None):
-    """Read `pages` `parallel` at a time; yield `(number, text, stats)` in PAGE order.
-
-    The split-and-join that lets a 13-page file take about as long as its
-    slowest page rather than all thirteen (see `OCR_PARALLEL`). Every page goes
-    through `read_page`, exactly as a sequential read sends it, and the results
-    are handed back by page number -- page 3 is yielded only once pages 1 and 2
-    have been -- so the caller joins them in document order whatever order the
-    server finished them in, and the transcript is the one a sequential read
-    gives.
-
-    A page that fails stops the rest: the others are hung up and the error is
-    raised as soon as it is known, rather than after every page before it in
-    the document has finished. So does closing this generator -- the browser's
-    Stop on the streaming route.
-
-    `run`, where given, gets `parallel` and `server`: the server's own timing
-    of the read as one span (`servertime.Batch`), because a /metrics difference
-    around any one page covers its neighbours and the pages themselves carry
-    none.
-    """
-    inner = MultiCancel()
-    if cancel is not None:
-        cancel.attach(_Hangup(inner))
-    batch = servertime.Batch(llama_status())
-
-    def one(page):
-        stats = {}
-        return read_page(page, stats, cancel=inner), stats
-
-    pool = ThreadPoolExecutor(max_workers=parallel, thread_name_prefix="ocr-page")
-    futures = [pool.submit(workspace.bind(batch.run), one, page) for page in pages]
-    complete = False
-    try:
-        pending, ready = set(futures), 0
-        while pending:
-            finished, pending = wait(pending, return_when=FIRST_COMPLETED)
-            for future in finished:
-                future.result()             # a failed page raises here, at once
-            while ready < len(futures) and futures[ready].done():
-                text, stats = futures[ready].result()
-                ready += 1
-                yield ready, text, stats
-        complete = True
-    finally:
-        if not complete:
-            inner.set()
-        pool.shutdown(wait=True, cancel_futures=True)
-        server = batch.close()
-        if run is not None:
-            run.update(parallel=parallel, server=server)
 
 
 def read_all_pages(pages, page_texts: list, all_stats: list, cancel=None,
@@ -5687,11 +484,11 @@ def read_all_pages(pages, page_texts: list, all_stats: list, cancel=None,
     Stop are still there to summarise. Sequential exactly as before where
     `_page_parallelism` says 1, stopping between pages on `cancel`.
     """
-    parallel = _page_parallelism(len(pages))
+    parallel = engine._page_parallelism(len(pages))
     if parallel > 1:
         if stop_requested(cancel):
             return
-        with closing(read_pages_at_once(pages, parallel, cancel, run)) as reads:
+        with closing(engine.read_pages_at_once(pages, parallel, cancel, run)) as reads:
             for _, text, stats in reads:
                 page_texts.append(text)
                 all_stats.append(stats)
@@ -5700,223 +497,8 @@ def read_all_pages(pages, page_texts: list, all_stats: list, cancel=None,
         if stop_requested(cancel):
             break
         stats = {}
-        page_texts.append(read_page(page, stats, cancel=cancel))
+        page_texts.append(engine.read_page(page, stats, cancel=cancel))
         all_stats.append(stats)
-
-
-# --------------------------------------------------------------------------
-# file loading
-# --------------------------------------------------------------------------
-
-def _looks_like_pdf(data: bytes) -> bool:
-    return data[:1024].lstrip()[:5] == b"%PDF-"
-
-
-def _capped(items, limit: int):
-    """`items`, at most `limit` of them -- and ALL of them when `limit` is 0.
-
-    `zip(items, range(limit))` was the old spelling and it reads as harmless
-    until the limit is zero, where it yields nothing rather than everything.
-    """
-    for index, item in enumerate(items):
-        if limit and index >= limit:
-            return
-        yield item
-
-
-def load_pages(data: bytes):
-    """Decode an upload into `(pages, total)` -- the pages READ and the pages IT HAS.
-
-    **The two differ, silently, and that is why this returns both** (2026-09-16).
-    `MAX_PAGES` caps what is rasterised, and until now the cap was applied with
-    `min()` and nothing else: a hundred-page file came back as ten pages, the run
-    reported `status=ok` and `pages=10`, and a benchmark document was then scored
-    against the ground truth of all of it. That is the silent-drop-at-HTTP-200
-    class this project is organised around, in the one place that had no symptom
-    at all -- and it is live on `sol023`, which has 13 pages against a default cap
-    of 10.
-
-    `total` is what the file holds. Every caller is expected to carry it: the
-    preview reports it before a run is paid for, and `prepare_input` puts it on
-    the job so the result and the run log can say the read was partial.
-    """
-    if _looks_like_pdf(data):
-        if not PDF_OK:
-            raise ValueError("PDF support needs PyMuPDF: pip install pymupdf")
-        pages = []
-        zoom = PDF_DPI / 72.0
-        with _PDF_LOCK, fitz.open(stream=data, filetype="pdf") as doc:
-            if doc.needs_pass:
-                raise ValueError("That PDF is password-protected.")
-            total = doc.page_count
-            # MAX_PAGES 0 is no cap. A bare `min(total, MAX_PAGES)` reads
-            # NOTHING there rather than everything -- the same trap as the
-            # `zip(..., range(limit))` in the frame branch, and both are why
-            # `_capped` exists instead of either spelling.
-            for page in doc.pages(0, min(total, MAX_PAGES) if MAX_PAGES else total):
-                pix = page.get_pixmap(matrix=fitz.Matrix(zoom, zoom))
-                pages.append(Image.frombytes("RGB", (pix.width, pix.height), pix.samples))
-        if not pages:
-            raise ValueError("That PDF has no pages.")
-        return pages, total
-
-    try:
-        image = Image.open(io.BytesIO(data))
-        # Multi-frame formats (TIFF scans, GIF) carry a page per frame.
-        # A multi-frame image is capped the same way, so its total is counted
-        # the same way -- `n_frames` where the format reports one, else the
-        # frames actually decoded (a single-frame image has exactly one).
-        frames = [
-            ImageOps.exif_transpose(frame).convert("RGB")
-            for frame in _capped(ImageSequence.Iterator(image), MAX_PAGES)
-        ]
-        total = int(getattr(image, "n_frames", len(frames)) or len(frames))
-        # A frame can itself hold several pages (`split_stacked_pages`). Every
-        # piece is a page from here on: the cap counts pieces, and so does the
-        # total -- each frame left undecoded still counted as one.
-        if SPLIT_STACKED_PAGES:
-            pieces = [piece for frame in frames for piece in split_stacked_pages(frame)]
-            total += len(pieces) - len(frames)
-            frames = list(_capped(pieces, MAX_PAGES))
-    except UnidentifiedImageError:
-        hint = "" if HEIF_OK else " (HEIC/HEIF needs: pip install pillow-heif)"
-        raise ValueError(f"Unsupported or corrupt file format.{hint}") from None
-    except Exception:
-        raise ValueError("Could not read that file.") from None
-
-    if not frames:
-        raise ValueError("That file contains no image data.")
-    return frames, total
-
-
-# A4's height over its width, and the share of a piece either side of an expected
-# boundary that the cut may move into to find the gap between two pages.
-_PAGE_RATIO = 2 ** 0.5
-_SPLIT_WINDOW = 0.15
-
-
-def split_stacked_pages(image: Image.Image, ratio: float = None) -> list:
-    """Cut a frame that holds several pages into one image per page.
-
-    A scanner that stitches a batch into a single TIFF frame produces an image
-    two or three A4 pages tall, and it looks like one page in a viewer. Read
-    whole, every page of it lands in one request: the reply is two or three
-    pages long and runs into `MAX_NEW_TOKENS`, and the pages are downscaled to
-    one page's pixel budget on the way, so the text is half the size it should
-    be.
-
-    Only a frame longer than `ratio` times its width (default
-    `SPLIT_PAGE_RATIO`) is cut, into as many A4-shaped pieces as its length
-    holds, and the same across for one wider than `ratio` times its height.
-    Each cut is moved to the middle of the longest blank band within
-    `_SPLIT_WINDOW` of where an A4 boundary would be, so it lands in the
-    margin between two pages -- or, on a long receipt, between two lines --
-    rather than through a line of text. Anything else comes back as `[image]`.
-    """
-    ratio = ratio or SPLIT_PAGE_RATIO
-    w, h = image.size
-    if h >= w * ratio:
-        tall, length, across = True, h, w
-    elif w >= h * ratio:
-        tall, length, across = False, w, h
-    else:
-        return [image]
-    count = max(2, round(length / across / _PAGE_RATIO))
-    # Ink per row (or column), 0-255, from a 1-pixel-wide box average of the
-    # thresholded page. A row at the bottom of its window is one no text crosses.
-    ink = image.convert("L").point(lambda p: 255 if p < 160 else 0)
-    profile = list(ink.resize((1, h) if tall else (w, 1), Image.BOX).getdata())
-    step = length / count
-    reach = int(step * _SPLIT_WINDOW)
-    cuts = [0]
-    for k in range(1, count):
-        target = int(step * k)
-        lo, hi = max(cuts[-1] + 1, target - reach), min(length - 1, target + reach)
-        floor = min(profile[lo:hi + 1])
-        best, run_start = None, None
-        for at in range(lo, hi + 2):
-            blank = at <= hi and profile[at] <= floor + 2
-            if blank and run_start is None:
-                run_start = at
-            elif not blank and run_start is not None:
-                middle = (run_start + at - 1) // 2
-                key = (at - run_start, -abs(middle - target))
-                if best is None or key > best[0]:
-                    best = (key, middle)
-                run_start = None
-        cuts.append(best[1])
-    cuts.append(length)
-    return [image.crop((0, a, w, b) if tall else (a, 0, b, h))
-            for a, b in zip(cuts, cuts[1:])]
-
-
-def trim_margins(image: Image.Image, tolerance: int = TRIM_TOLERANCE,
-                 pad: int = TRIM_PAD) -> Image.Image:
-    """Crop uniform blank borders.
-
-    Measured on real 300 DPI invoices this removes 0-18% of the page. Note what that
-    does and does not buy:
-
-    * At a capped Detail (the default) it saves NO time -- both the trimmed and
-      untrimmed page are scaled to the same pixel budget, so the model sees the same
-      token count either way. What it buys is quality: the budget is spent on content
-      instead of margin, rendering text ~1.10x larger at the same cost.
-    * At Detail `original` (uncapped) it is a genuine ~13% pixel, and therefore prefill,
-      saving.
-
-    Conservative by design: it only trims a genuinely uniform border, never more
-    than 45% of either axis, and leaves a small pad so nothing is clipped.
-    """
-    gray = image.convert("L")
-    # Background colour taken from the corners; a scan border is whatever the
-    # corners agree on.
-    w, h = gray.size
-    corners = [
-        gray.getpixel((0, 0)),
-        gray.getpixel((w - 1, 0)),
-        gray.getpixel((0, h - 1)),
-        gray.getpixel((w - 1, h - 1)),
-    ]
-    background = max(set(corners), key=corners.count)
-    if corners.count(background) < 3:
-        return image  # not a uniform border, leave it alone
-
-    flat = Image.new("L", gray.size, background)
-    diff = ImageChops.difference(gray, flat).point(
-        lambda p: 255 if p > tolerance else 0
-    )
-    box = diff.getbbox()
-    if box is None:
-        return image  # blank page
-
-    left, top, right, bottom = box
-    left = max(0, left - pad)
-    top = max(0, top - pad)
-    right = min(w, right + pad)
-    bottom = min(h, bottom + pad)
-
-    if right - left < w * 0.55 or bottom - top < h * 0.55:
-        return image  # suspiciously aggressive, keep the original
-    if (right - left) * (bottom - top) >= w * h * 0.98:
-        return image  # nothing meaningful to gain
-    return image.crop((left, top, right, bottom))
-
-
-def fit_pixels(image: Image.Image, max_pixels: int) -> Image.Image:
-    """Scale down so width*height stays under the budget. 0 means no cap."""
-    total = image.width * image.height
-    if max_pixels <= 0 or total <= max_pixels:
-        return image
-    scale = (max_pixels / total) ** 0.5
-    size = (max(1, int(image.width * scale)), max(1, int(image.height * scale)))
-    return image.resize(size, Image.LANCZOS)
-
-
-def join_page_texts(page_texts) -> str:
-    if len(page_texts) > 1:
-        return "\n\n".join(f"--- page {i} ---\n{text}"
-                           for i, text in enumerate(page_texts, 1) if text)
-    return page_texts[0] if page_texts else ""
 
 
 def _page_coverage(job_id, counted):
@@ -5927,7 +509,7 @@ def _page_coverage(job_id, counted):
     job id. **Empty where the total is unknown** -- a re-extraction has no job,
     and a blank is not a claim that nothing was dropped.
     """
-    total = (job_context(job_id) or {}).get("pages_total") if job_id else None
+    total = (engine.job_context(job_id) or {}).get("pages_total") if job_id else None
     if not isinstance(total, int) or total <= 0:
         return {}
     return {"pages_total": total, "pages_truncated": max(0, total - counted)}
@@ -5966,7 +548,7 @@ def summarise(all_stats, detail, started, job_id=None, run: dict = None):
         # From the pages, like model and backend above: a profile switched during
         # a batch must not relabel the pages that were already read under the old
         # one.
-        "ocr_profile": profiles[0] if profiles else ocr_profile(),
+        "ocr_profile": profiles[0] if profiles else engine.ocr_profile(),
         "job": job_id,
         "model": models[0] if models else None,
         "url": urls[0] if urls else backends.active_url(),
@@ -6054,187 +636,6 @@ def case_bytes(case_id: str):
     return case["pdf_path"].read_bytes(), case
 
 
-def prepare_input(data: bytes, detail: str, case=None, source=None, *, cache=True, context_out=None):
-    """Decode, trim and resize. Returns (pages, detail, page_job_id, case).
-
-    `source` is carried into the job cache rather than only into the run log, so
-    a later re-extraction against this transcript can name the same document.
-    The user portal sets cache=False and receives metadata in context_out: it
-    keeps the original on disk and needs no encoded preview in the RAM cache.
-    """
-    # Through the alias table, so an old preset name from a saved setting or a
-    # script lands on the nearest preset that still exists rather than silently
-    # on the default. See `settings.resolve_detail`.
-    detail = resolve_detail(detail)
-    pages, total = load_pages(data)
-    budget = DETAIL_PRESETS[detail]
-    # Trim first, then fit: the pixel budget is spent on content, not margins.
-    trimmed = [trim_margins(page) if TRIM_MARGINS else page for page in pages]
-    prepared = [fit_pixels(page, budget) for page in trimmed]
-    context = {"source": source or {}, "detail": detail, "pages": len(prepared),
-               # What the FILE holds, against what was read. Carried on the job
-               # rather than threaded through a wider return, because `summarise`
-               # already has the job id and `job_context` already exists -- and a
-               # fifth element on this tuple would have to be unpicked at every
-               # caller, which is how one of them ends up dropping it.
-               "pages_total": total,
-               "case": case["id"] if case else ""}
-    if context_out is not None:
-        context_out.update(context)
-    job_id = register_job(prepared, context) if cache else None
-    label = context["case"] or (source or {}).get("name") or "upload"
-    for index, page in enumerate(prepared):
-        tag_page(page, f"{label} p{index + 1}/{len(prepared)}", detail)
-    # Where a looped read climbs from (`loop_retry_page`). Untagged at the top
-    # Detail, which has nowhere to go, so only a lower one holds the trimmed page.
-    if LOOP_RETRY and next_detail(detail):
-        for index, (page, trim) in enumerate(zip(prepared, trimmed)):
-            page._loop_retry = {"source": trim, "detail": detail,
-                                "job": job_id, "index": index}
-    return prepared, detail, job_id, case
-
-
-def _stamp_model_meta(summary) -> None:
-    """Put the quantisation and engine version on a summary and its extraction.
-
-    Here, in the one funnel every logged run goes through, for the read floor's
-    reason: stamped at each call site, it would be stamped at most of them. Each
-    pass is described by ITS OWN model and server -- pass 2 may run on a second
-    server (`extract_url`) and a second model -- and an existing value is kept,
-    so a caller that already knows is never overruled. Never raises.
-    """
-    if not isinstance(summary, dict):
-        return
-    try:
-        if summary.get("model") and not summary.get("engine"):
-            meta = backends.model_meta(summary.get("url"), summary.get("model"))
-            summary.setdefault("quant", meta["quant"])
-            summary["engine"] = meta["engine"]
-        extracted = summary.get("extracted")
-        if (isinstance(extracted, dict) and extracted.get("model")
-                and not extracted.get("engine")):
-            meta = backends.model_meta(extracted.get("url") or summary.get("url"),
-                                       extracted.get("model"))
-            extracted.setdefault("quant", meta["quant"])
-            extracted["engine"] = meta["engine"]
-    except Exception:
-        pass
-
-
-def log_run(summary: dict, source: dict, status: str = None, error=None,
-            run_type: str = "ocr"):
-    """Append one line to the run log. Never raises.
-
-    Measurements only -- no transcript, no fields, no images. See `runlog.py`.
-
-    The row a read writes is remembered against its page job, so a later
-    re-extraction of the same transcript can find it again and put better figures
-    on it. Timestamp and file name are the whole key -- nothing about the row is
-    held open, and losing it costs the update, not the run.
-
-    **The read floor is applied here**, before the row is built, because this is
-    the one funnel every read path goes through -- the page, the random test, the
-    blocking route and the random test. Applying it at each of those instead is
-    how it came to be applied at exactly one of them. See `apply_read_floor`.
-    """
-    try:
-        apply_read_floor(summary if isinstance(summary, dict) else {})
-    except Exception:
-        pass
-    _stamp_model_meta(summary)
-    try:
-        row = runlog.record(summary, source,
-                            {"status": status, "error": str(error) if error else "",
-                             "run_type": run_type})
-        job_id = summary.get("job") if isinstance(summary, dict) else None
-        if row and job_id and run_type == "ocr":
-            with _jobs_lock:
-                if job_id in _job_meta:
-                    _job_meta[job_id]["log"] = {"timestamp": row["timestamp"],
-                                                "file": row["file"]}
-    except Exception:
-        pass
-
-
-def log_extract(result: dict, job_id: str = None, context: dict = None,
-                extra: dict = None):
-    """Append a row for a pass-2-only run -- the Re-extract button, or a script.
-
-    Extraction can be re-run any number of times against one transcript, and each
-    run has its own mode, its own grounded ratio and its own field counts. Before
-    this, none of that reached the log: the row written when the page was read
-    kept whichever extraction happened to run with it, and every later one was
-    invisible.
-
-    It is a new row rather than an edit to that one. The file is append-only by
-    construction (`runlog._migrate` only ever adds columns), a row records what
-    one request did at one time, and the first extraction is a measurement in its
-    own right -- overwriting it would destroy the before/after that re-extracting
-    exists to produce.
-
-    The pass-1 columns stay blank: nothing re-read the page. `job_id` recovers
-    which document this was, from the same cache the compare view reads its
-    images out of.
-
-    `context` supplied outright is for the extraction that never had a page job:
-    a fields-only run reads its transcript out of `solution/<id>.md`, so the
-    document is known while nothing in this process ever read a page of it. It
-    carries no `log` key, so `update_extract` below finds no read row to improve
-    -- correctly: those figures belong to a transcript this run did not use.
-    """
-    result = result or {}
-    context = job_context(job_id) if context is None else context
-    error = result.get("error") or ""
-    summary = {
-        # Pass 1 did not run, so page_count/seconds/tokens are left out entirely
-        # rather than passed as zero -- see the blank-is-not-zero rule in runlog.
-        "detail": context.get("detail", ""),
-        # Falls back to the model pass 2 was ABOUT to run on. An extraction that
-        # failed before it began -- a refused model, an unreachable server --
-        # carries no model of its own, and a failure attributed to nobody cannot
-        # be counted against the setting that produced it. That is how ten
-        # straight refusals sat in this file invisible to every failure rate in
-        # it.
-        "model": result.get("model") or backends.extract_status()["model"] or "",
-        "backend": result.get("backend") or "",
-        # No page was read, so the row's server is the one that EXTRACTED --
-        # which is a different box from the reader's where pass 2 has its own.
-        "url": result.get("url") or backends.extract_url(),
-        "extracted": result,
-        # Enough for the `case` column to name the document; the accuracy scores
-        # belong to the read that produced the transcript, not to this row.
-        "truth": {"case": context.get("case", "")},
-        # Cells the caller knows and this function does not -- a stress job's
-        # run id and concurrency.
-        **(extra or {}),
-    }
-    status = ("error" if error
-              else "partial" if result.get("partial")
-              else "ok")
-    log_run(summary, context.get("source") or {}, status=status, error=error,
-            run_type="extract")
-
-    # And, when this extraction beat the one logged with the read, put its
-    # figures on that row too: the read row is what a per-document view of the
-    # log reports, and leaving the worse extraction there means the better one is
-    # only ever seen by someone who reads to the bottom of the file. The appended
-    # row above keeps the history either way, and a worse re-extraction changes
-    # nothing.
-    outcome = None
-    try:
-        outcome = runlog.update_extract(context.get("log"), summary)
-    except Exception:
-        pass
-    if outcome and outcome.get("updated"):
-        # stderr, where the request log already goes: `say`'s print to stdout is
-        # buffered when stdout is a pipe, and a notice about a row that changed
-        # under a fixed timestamp is worth nothing if it surfaces minutes later.
-        config.say(f"[ocr] re-extract improved {context.get('case') or 'the read'} "
-                   f"{outcome['before']} -> {outcome['after']}; run-log row updated",
-                   stream=sys.stderr)
-    return outcome
-
-
 def describe_source(name: str, data: bytes, origin: str) -> dict:
     """What the run log needs to identify the input: name, size and where from.
 
@@ -6286,7 +687,7 @@ def prepare(request_files, form):
     Returns (pages, detail, page_job_id, case, source).
     """
     data, case, source = request_input(request_files, form)
-    return (*prepare_input(data, form.get("detail", DEFAULT_DETAIL), case, source),
+    return (*engine.prepare_input(data, form.get("detail", DEFAULT_DETAIL), case, source),
             source)
 
 
@@ -6340,8 +741,8 @@ def benchmark_asset_file(version, name):
 def index():
     response = app.make_response(render_template(
         "index.html",
-        server=llama_status(),
-        details=list(DETAIL_PRESETS),
+        server=engine.llama_status(),
+        details=list(engine.DETAIL_PRESETS),
         default_detail=DEFAULT_DETAIL,
         # `field_truth` says whether pass 2 can be *scored* on this document, as
         # opposed to merely run against it: the transcript truth and the field
@@ -6361,8 +762,8 @@ def index():
         extract=backends.overview()["extract"],
         ctx_choices=backends.NUM_CTX_CHOICES,
         num_ctx=backends.num_ctx(),
-        extract_mode=extract_mode(),
-        extract_extras=extract_extras(),
+        extract_mode=engine.extract_mode(),
+        extract_extras=engine.extract_extras(),
         # A RANGE, not a count: the step table is per document type now, so an
         # invoice runs six of the eight steps and a credit note all eight. The
         # picker is drawn before any document is chosen, so the only honest
@@ -6370,27 +771,27 @@ def index():
         # as a run that lost two.
         extract_steps=_step_count_label(),
         hybrid_steps=_step_count_label("hybrid"),
-        ocr_profile=ocr_profile(),
-        ocr_profiles=[{"id": pid, **spec} for pid, spec in OCR_PROFILES.items()],
+        ocr_profile=engine.ocr_profile(),
+        ocr_profiles=[{"id": pid, **spec} for pid, spec in engine.OCR_PROFILES.items()],
         # Whether a cycling read is cut short, and what it would cost if it were
         # not: the page prints the cap rather than repeating a number, for the
         # same reason the read floor below is sent instead of hardcoded.
-        loop_guard=loop_guard(),
+        loop_guard=engine.loop_guard(),
         ocr_sampling=ocr_sampling_state(),
-        table_agents=table_agents(),
-        max_new_tokens=MAX_NEW_TOKENS,
+        table_agents=engine.table_agents(),
+        max_new_tokens=engine.MAX_NEW_TOKENS,
         # When a field score is worth writing, for every path that reads a page.
         # Sent rather than hardcoded in the template: it is a setting, it moves
         # from two panes now, and a page that says 50% while the process runs at
         # 0 is describing a build nobody has. `read_floor()` rather than the
         # constant, so a reload shows what is in force and not what started.
-        min_read_for_fields=read_floor(),
-        min_read_default=MIN_READ_FOR_FIELDS,
+        min_read_for_fields=engine.read_floor(),
+        min_read_default=engine.MIN_READ_FOR_FIELDS,
         # The bar the Python classifier has to clear before the model is
         # not asked. Sent rather than repeated in the template: a page
         # quoting a threshold the process is not running describes a build
         # nobody has -- the same rule `min_read_for_fields` follows.
-        min_classify_confidence=CLASSIFY_MIN_CONFIDENCE,
+        min_classify_confidence=engine.CLASSIFY_MIN_CONFIDENCE,
         # Below this many characters of a script on a page, no rate is reported
         # for it -- three Latin characters score 0% or 100% and nothing between.
         # Sent for the same reason as the two above: the page explains a blank
@@ -6413,7 +814,7 @@ def index():
 
 @app.get("/api/health")
 def health():
-    return jsonify(server=llama_status(), pdf=PDF_OK, heif=HEIF_OK, status="ok")
+    return jsonify(server=engine.llama_status(), pdf=PDF_OK, heif=HEIF_OK, status="ok")
 
 
 @app.post("/api/context")
@@ -6431,7 +832,7 @@ def context_set():
     except ValueError as err:
         return jsonify(error=str(err)), 400
     say(f"[ocr] context window set to {value} tokens")
-    return jsonify(num_ctx=value, server=llama_status())
+    return jsonify(num_ctx=value, server=engine.llama_status())
 
 
 @app.get("/api/servers")
@@ -6445,8 +846,8 @@ def servers_list():
     current = overview["server"]
     if (force and current.get("available") and current.get("model")
             and current["model"] != previous_model):
-        set_ocr_profile(backends.profile_for_model(current["model"]))
-    response = jsonify(**overview, ocr_profile=ocr_profile())
+        engine.set_ocr_profile(backends.profile_for_model(current["model"]))
+    response = jsonify(**overview, ocr_profile=engine.ocr_profile())
     response.headers["Cache-Control"] = "no-store"
     return response
 
@@ -6515,7 +916,7 @@ def servers_select():
         # The comparison is still askable -- POST /api/ocr/profile still sets
         # whatever you ask for, and it stands until the next model switch.
         if url or model:
-            set_ocr_profile(backends.profile_for_model(backends.status()["model"]))
+            engine.set_ocr_profile(backends.profile_for_model(backends.status()["model"]))
     except ValueError as err:
         return jsonify(error=str(err)), 400
 
@@ -6532,7 +933,7 @@ def servers_select():
                     # Which pass-1 shape the new model brought with it, so the
                     # Page reading picker repaints instead of showing the one
                     # that was selected before the switch.
-                    "ocr_profile": ocr_profile()})
+                    "ocr_profile": engine.ocr_profile()})
 
 
 @app.post("/api/servers/kind")
@@ -6621,75 +1022,6 @@ def cases():
                       for c in scoring.cases_index().values()])
 
 
-@app.get("/api/schema")
-def schema():
-    """Every document type this app knows, and the form each one asks for.
-
-    Reference data, not a run: no model server is touched, nothing is logged, and
-    the answer is the same on every call. It is what the **Doc types** tab draws.
-
-    **It is assembled here rather than in the template, and that is the whole
-    point of it being a route.** Which keys a requirement asks for, which of them
-    it makes Mandatory, and which validation rules a type adds are facts stated
-    once -- in `prompts.DOC_TYPE_FIELDS`, `prompts.MANDATORY_FIELDS`,
-    `prompts.TYPE_RULES` and `validate.RULE_NOTES` -- and a second copy in
-    JavaScript is exactly how fifteen keys silently vanished from the Fields tab
-    on 2026-08-19. The page owns the wording of a label and nothing else.
-
-    Three groups, and the split IS the answer to "what do we know":
-
-    * a type with a requirement -- four of them -- carries its own field list.
-    * a type the classifier recognises but no requirement covers contributes NO
-      key (`fields` is empty), which is `DOC_TYPE_FIELDS`' standing rule. It is
-      still listed, because being classifiable and being scoreable are different
-      things and a reader looking for TAX_INVOICE should find it rather than
-      conclude the page is broken.
-    * `unknown` is what a document reduces to when no type in play has a
-      requirement -- the base field set, `prompts.DEFAULT_FIELDS`, which is the
-      union of every requirement and is Mandatory in none of it.
-    """
-    def form(code):
-        own = tuple(prompts.DOC_TYPE_FIELDS.get(code, ()))
-        return {
-            "code": code,
-            # The article form, as a prompt says it -- "an invoice", "a
-            # withholding tax certificate (50 thawi)". The page trims the article.
-            "name": TYPE_NAMES[code],
-            # The printed wordings that classify a page as this. Raw, not the
-            # squashed needles that do the matching -- see normalise.TYPE_HEADINGS.
-            "headings": list(normalise.TYPE_HEADINGS.get(code, ())),
-            # This type's OWN contribution to a form, which is empty for a type
-            # no requirement covers. Not `fields_for_types([code])`: that falls
-            # back to the base set for such a type, which is a true answer to a
-            # different question and would read here as a requirement.
-            "fields": list(own),
-            "mandatory": list(prompts.MANDATORY_FIELDS.get(code, ())),
-            "items": list(prompts.DOC_TYPE_ITEMS.get(code, ())),
-            "mandatory_items": list(prompts.MANDATORY_ITEMS.get(code, ())),
-            "rules": list(prompts.TYPE_RULES.get(code, ())),
-            "has_requirement": bool(own),
-        }
-
-    return jsonify(
-        # Most specific first, the order everything else ranks these in.
-        types=[form(code) for code in prompts.TYPE_SPECIFICITY],
-        # What is asked when no type in play has a requirement. `mandatory` is
-        # empty on purpose and is not an oversight: nothing is demanded of a
-        # document no table covers, and `fieldscore` scores the whole base set
-        # instead, marking the rate `unknown_type`.
-        unknown={"fields": list(prompts.DEFAULT_FIELDS), "mandatory": [],
-                 "items": [], "rules": []},
-        # One line per validation rule, and whether it can run here at all --
-        # four of the nine need data this process has not got.
-        rule_notes=validate.RULE_NOTES,
-        # Every key in the schema, in the order the prompt lists them, so the
-        # page can draw a matrix in reading order without sorting it itself.
-        keys=list(prompts._SCALAR_KEYS),
-        item_keys=list(prompts.INCOME_ITEM_KEYS),
-        items_key=INCOME_ITEMS_KEY,
-        user_mapping=doctype_mapping.comparison())
-
-
 @app.get("/api/truth/<case_id>")
 def truth_text(case_id):
     """The hand-written ground truth for one case, as Markdown.
@@ -6736,7 +1068,7 @@ def _extract_input(body):
     """
     text = body.get("text", "")
     case_id = (body.get("case") or "").strip()
-    context = job_context(body.get("job"))
+    context = engine.job_context(body.get("job"))
 
     if case_id:
         case = scoring.cases_index().get(case_id)
@@ -6841,14 +1173,14 @@ def classify_endpoint():
     # without one, and `_classify_with_model` is given None rather than a status
     # it cannot use.
     status = backends.extract_status()
-    form = _field_set(text, case_id, body.get("doc_types") or body.get("doc_type"),
+    form = engine._field_set(text, case_id, body.get("doc_types") or body.get("doc_type"),
                       status if status.get("text_available") else None)
     return jsonify({
         **form,
         # What the answer buys, which is the whole reason to ask: the steps an
         # agentic run would walk, the rules `validate` would then apply, and the
         # framing both prompts would carry.
-        "steps": [s["id"] for s in steps_for_types(form["doc_types"],
+        "steps": [s["id"] for s in engine.steps_for_types(form["doc_types"],
                                                    form.get("extras", True))],
         "rules": list(rules_for_types(form["doc_types"])),
         "type_phrase": type_phrase(form["doc_types"]),
@@ -6891,7 +1223,7 @@ def extract_endpoint():
                             doc_type=body.get("doc_types")
                             or body.get("doc_type"),
                             truth_fed=_is_truth_fed(context), schema_first=schema_first)
-    log_extract(result, body.get("job"), context)
+    engine.log_extract(result, body.get("job"), context)
     return jsonify(result)
 
 
@@ -6920,7 +1252,7 @@ def extract_stream_endpoint():
 
     def generate():
         try:
-            stream = extract_fields_stream(text, mode, case_id, steps,
+            stream = engine.extract_fields_stream(text, mode, case_id, steps,
                                            doc_type=body.get("doc_types")
                                            or body.get("doc_type"),
                                            truth_fed=_is_truth_fed(context),
@@ -6931,12 +1263,12 @@ def extract_stream_endpoint():
                 except StopIteration as stop:
                     # Logged before the last event, so a page that refreshes the
                     # run log when the stream ends finds the row already there.
-                    log_extract(stop.value, job_id, context)
+                    engine.log_extract(stop.value, job_id, context)
                     yield json.dumps({"event": "fields", **stop.value}) + "\n"
                     return
         except Exception as err:  # surface failures inside the stream body
-            log_extract({"error": str(err), "mode": mode or extract_mode(),
-                         "schema_first": schema_first and (mode or extract_mode()) in ("agentic", "hybrid")},
+            engine.log_extract({"error": str(err), "mode": mode or engine.extract_mode(),
+                         "schema_first": schema_first and (mode or engine.extract_mode()) in ("agentic", "hybrid")},
                         job_id, context)
             yield json.dumps({"event": "error", "error": str(err)}) + "\n"
 
@@ -6945,9 +1277,9 @@ def extract_stream_endpoint():
 
 @app.get("/api/extract/mode")
 def extract_mode_get():
-    mode = extract_mode()
+    mode = engine.extract_mode()
     return jsonify(mode=mode, steps=(1 if mode == "single" else
-                                    len(steps_for_types([], mode=mode))))
+                                    len(engine.steps_for_types([], mode=mode))))
 
 
 @app.post("/api/extract/mode")
@@ -6966,12 +1298,12 @@ def extract_mode_set():
     except ValueError as err:
         return jsonify(error=str(err)), 400
     return jsonify(mode=mode, steps=(1 if mode == "single" else
-                                    len(steps_for_types([], mode=mode))))
+                                    len(engine.steps_for_types([], mode=mode))))
 
 
 @app.get("/api/extract/extras")
 def extract_extras_get():
-    return jsonify(extras=extract_extras())
+    return jsonify(extras=engine.extract_extras())
 
 
 @app.post("/api/extract/extras")
@@ -6991,10 +1323,10 @@ def extract_extras_set():
 @app.get("/api/ocr/profile")
 def ocr_profile_get():
     """The pass-1 shape in force, and every shape on offer."""
-    return jsonify(profile=ocr_profile(), profiles=[
+    return jsonify(profile=engine.ocr_profile(), profiles=[
         {"id": pid, "label": spec["label"], "note": spec["note"],
          "system": spec["system"], "reply": spec["reply"]}
-        for pid, spec in OCR_PROFILES.items()
+        for pid, spec in engine.OCR_PROFILES.items()
     ])
 
 
@@ -7009,7 +1341,7 @@ def ocr_profile_set():
     """
     body = request.get_json(silent=True) or {}
     try:
-        name = set_ocr_profile((body.get("profile") or "").strip().lower())
+        name = engine.set_ocr_profile((body.get("profile") or "").strip().lower())
     except ValueError as err:
         return jsonify(error=str(err)), 400
     return jsonify(profile=name)
@@ -7018,7 +1350,7 @@ def ocr_profile_set():
 @app.get("/api/ocr/loop-guard")
 def loop_guard_get():
     """Whether a cycling read is cut short, and what turning that off costs."""
-    return jsonify(loop_guard=loop_guard(), max_tokens=MAX_NEW_TOKENS)
+    return jsonify(loop_guard=engine.loop_guard(), max_tokens=engine.MAX_NEW_TOKENS)
 
 
 @app.post("/api/ocr/loop-guard")
@@ -7034,7 +1366,7 @@ def loop_guard_set():
     on = body.get("loop_guard")
     if not isinstance(on, bool):
         return jsonify(error="loop_guard must be true or false."), 400
-    return jsonify(loop_guard=set_loop_guard(on), max_tokens=MAX_NEW_TOKENS)
+    return jsonify(loop_guard=engine.set_loop_guard(on), max_tokens=engine.MAX_NEW_TOKENS)
 
 
 @app.get("/api/ocr/sampling")
@@ -7066,7 +1398,7 @@ def ocr_sampling_set():
 @app.get("/api/table-agents")
 def table_agents_get():
     """Whether the two table agents run on the next extraction."""
-    return jsonify(**table_agents())
+    return jsonify(**engine.table_agents())
 
 
 @app.post("/api/table-agents")
@@ -7090,8 +1422,8 @@ def table_agents_set():
 @app.get("/api/ocr/read-floor")
 def read_floor_get():
     """The transcript score a read must reach for its fields to be scored."""
-    return jsonify(min_read_pct=round(read_floor() * 100, 1),
-                   default_pct=round(MIN_READ_FOR_FIELDS * 100, 1))
+    return jsonify(min_read_pct=round(engine.read_floor() * 100, 1),
+                   default_pct=round(engine.MIN_READ_FOR_FIELDS * 100, 1))
 
 
 @app.post("/api/ocr/read-floor")
@@ -7119,7 +1451,7 @@ def read_floor_set():
     except ValueError as err:
         return jsonify(error=str(err)), 400
     return jsonify(min_read_pct=round(floor * 100, 1),
-                   default_pct=round(MIN_READ_FOR_FIELDS * 100, 1))
+                   default_pct=round(engine.MIN_READ_FOR_FIELDS * 100, 1))
 
 
 MOCK_DIR = scoring.MOCK
@@ -7249,8 +1581,8 @@ def match_case():
 @app.get("/api/page/<job_id>/<int:index>")
 def page_image(job_id: str, index: int):
     """The prepared page image, for the side-by-side comparison view."""
-    with _jobs_lock:
-        pages = _jobs.get(job_id)
+    with engine._jobs_lock:
+        pages = engine._jobs.get(job_id)
     if pages is None:
         return jsonify(error="That upload is no longer cached."), 404
     if not 0 <= index < len(pages):
@@ -7290,7 +1622,7 @@ def preview_prepared():
     """
     try:
         data, _case, _source = request_input(request.files, request.form, match=False)
-        pages, page_total = load_pages(data)
+        pages, page_total = engine.load_pages(data)
     except ValueError as err:
         return jsonify(error=str(err)), 400
     detail = resolve_detail(request.form.get("detail", DEFAULT_DETAIL))
@@ -7305,8 +1637,8 @@ def preview_prepared():
     # Measured before the trim, so the caption can report the whole reduction --
     # for a PDF this is what PDF_DPI rasterised, not anything on disk.
     was = page.size
-    prepared = fit_pixels(trim_margins(page) if TRIM_MARGINS else page,
-                          DETAIL_PRESETS[detail])
+    prepared = engine.fit_pixels(engine.trim_margins(page) if engine.TRIM_MARGINS else page,
+                          engine.DETAIL_PRESETS[detail])
     buf = io.BytesIO()
     prepared.save(buf, format="PNG")
     return Response(buf.getvalue(), mimetype="image/png", headers={
@@ -7318,7 +1650,7 @@ def preview_prepared():
         # read. The preview is the one place this can be said before an hour of
         # OCR is paid for, and it costs a header.
         "X-Preview-Pages-Total": str(page_total),
-        "X-Preview-Max-Pages": str(MAX_PAGES),
+        "X-Preview-Max-Pages": str(engine.MAX_PAGES),
         "X-Preview-Page": str(index),
         # The RESOLVED name: an unknown preset falls back to the default rather
         # than raising, so the caption has to say what actually ran.
@@ -7339,7 +1671,7 @@ def _random_pools():
     """
     cases = [c["id"] for c in scoring.cases_index().values()
              if fieldscore.has_truth(c["id"])]
-    models = llama_status()["models"]
+    models = engine.llama_status()["models"]
     # Where pass 2 has a server of its own, the extractors are ITS models -- a
     # name drawn from the reading server would not be served where it is sent.
     extract_models = (backends.extract_status()["models"]
@@ -7388,7 +1720,7 @@ def _random_plan(body: dict) -> dict:
         # scope is implied by its subject, because a reader contest that also
         # extracted would be scored partly on the other pass.
         return randomtest.contest_plan(
-            standouts=runlog.standouts(), mode=extract_mode(),
+            standouts=runlog.standouts(), mode=engine.extract_mode(),
             subject=body.get("subject") or randomtest.DEFAULT_SUBJECT,
             documents=body.get("documents"),
             top=body.get("top", randomtest.CONTEST_TOP),
@@ -7396,7 +1728,7 @@ def _random_plan(body: dict) -> dict:
             seed=body.get("seed"), history=runlog.case_counts(), **pools)
     return randomtest.plan(
         rounds=body.get("rounds"), seed=body.get("seed"), scope=scope,
-        details=list(DETAIL_PRESETS), modes=["single", "agentic", "hybrid"],
+        details=list(engine.DETAIL_PRESETS), modes=["single", "agentic", "hybrid"],
         lock=body.get("lock"), strategy=body.get("strategy"),
         history=runlog.case_counts(), **pools)
 
@@ -7508,7 +1840,7 @@ def random_test_stream():
                     _run_round(round_, cancel))
                 finished.append(event["result"])
                 completed += 1
-            except SweepCancelled:
+            except engine.SweepCancelled:
                 # NOT a failed round, and the order of these two clauses is what
                 # keeps it from becoming one. A round nobody let finish says
                 # nothing about the settings it ran, and `failed` on the summary
@@ -7610,7 +1942,7 @@ def _run_round(round_: dict, cancel=None) -> dict:
 
     backends.select(None, round_["reader"], unload=True)
     backends.select_extract(round_["extractor"], unload=False)
-    set_ocr_profile(round_["profile"])
+    engine.set_ocr_profile(round_["profile"])
     if scope == "ocr":
         return _read_case(round_["case"], round_["detail"], extract=False,
                           cancel=cancel)
@@ -7634,7 +1966,7 @@ def _extract_case(case_id: str, mode: str) -> dict:
     """
     text, case, context = _extract_input({"case": case_id, "from_truth": True})
     result = extract_fields(text, mode, case, truth_fed=True)
-    log_extract(result, None, context)
+    engine.log_extract(result, None, context)
     return {"extracted": result,
             "status": "error" if result.get("error") else "ok"}
 
@@ -7661,7 +1993,7 @@ def _read_case(case_id: str, detail: str, extract: bool = True,
     """
     data, case = case_bytes(case_id)
     source = describe_source(case["pdf"], data, "case")
-    pages, detail, job_id, case = prepare_input(data, detail, case, source)
+    pages, detail, job_id, case = engine.prepare_input(data, detail, case, source)
 
     started = time.perf_counter()
     page_texts, all_stats, run = [], [], {}
@@ -7683,8 +2015,8 @@ def _read_case(case_id: str, detail: str, extract: bool = True,
         # scoring half a document against the whole ground truth would report a
         # stop as a bad read.
         partial = summarise(all_stats, detail, started, job_id, run)
-        log_run(partial, source, status="cancelled")
-        raise SweepCancelled(f"{case_id} was stopped part-way through")
+        engine.log_run(partial, source, status="cancelled")
+        raise engine.SweepCancelled(f"{case_id} was stopped part-way through")
 
     if len(page_texts) > 1:
         text = "\n\n".join(f"--- page {i} ---\n{t}"
@@ -7701,7 +2033,7 @@ def _read_case(case_id: str, detail: str, extract: bool = True,
     # this one -- see `apply_read_floor`. Nothing is done here beyond letting it
     # happen, and the flag it may set is on `payload["extracted"]` by the time
     # this returns.
-    log_run(payload, source)
+    engine.log_run(payload, source)
     # The same three-way status the run log derives, so a round that looped says
     # so on the page instead of reading as a clean run with a low score. Set
     # after `log_run`, which derives its own from the same two flags.
@@ -8068,7 +2400,7 @@ def _stress_config(body: dict) -> dict:
     mode = (body.get("mode") or stress.DEFAULT_MODE).strip().lower()
     if mode not in stress.MODES:
         raise ValueError(f"mode must be one of {', '.join(stress.MODES)}.")
-    shape = (body.get("extract_mode") or extract_mode()).strip().lower()
+    shape = (body.get("extract_mode") or engine.extract_mode()).strip().lower()
     if shape not in ("single", "agentic", "hybrid"):
         raise ValueError("extract_mode must be 'single', 'agentic' or 'hybrid'.")
     schema_first = (_requested_schema_first(body) and shape in ("agentic", "hybrid")
@@ -8123,7 +2455,7 @@ def _stress_config(body: dict) -> dict:
 
     used = []
     if mode in ("ocr", "full"):
-        info = llama_status()
+        info = engine.llama_status()
         if not info["available"]:
             raise ValueError(info["reason"])
         used.append(info)
@@ -8208,7 +2540,7 @@ def _stress_config(body: dict) -> dict:
         "schema_first": schema_first,
         # Whether `other_fields` is asked for, fixed for the run like the shape.
         "extras": (body["extras"] if isinstance(body.get("extras"), bool)
-                   else extract_extras()),
+                   else engine.extract_extras()),
         "strategy": strategy,
         "seed": body.get("seed"),
         "lock": lock,
@@ -8249,31 +2581,31 @@ def _stress_pages(case_id: str, detail: str, source: str = "benchmark") -> tuple
     else:
         data, case = case_bytes(case_id)
         name, origin = case["pdf"], "case"
-    pages, _ = load_pages(data)
-    budget = DETAIL_PRESETS[detail]
-    prepared = [fit_pixels(trim_margins(page) if TRIM_MARGINS else page, budget)
+    pages, _ = engine.load_pages(data)
+    budget = engine.DETAIL_PRESETS[detail]
+    prepared = [engine.fit_pixels(engine.trim_margins(page) if engine.TRIM_MARGINS else page, budget)
                 for page in pages]
     for index, page in enumerate(prepared):
-        page._data_uri = image_data_uri(page)
+        page._data_uri = engine.image_data_uri(page)
         # Where a looped read climbs from (`_stress_retry_page`). Only the
         # address is kept, not the trimmed page: holding every page of the run
         # at full resolution for the few that loop would multiply its memory.
         page._stress_origin = {"case": case_id, "source": source,
                                "index": index, "detail": detail}
-        tag_page(page, f"{case_id} p{index + 1}/{len(prepared)}", detail)
+        engine.tag_page(page, f"{case_id} p{index + 1}/{len(prepared)}", detail)
     return prepared, describe_source(name, data, origin)
 
 
 def _one_page(data: bytes, index: int):
     """Page `index` of a file, rasterised alone where it is a PDF."""
-    if _looks_like_pdf(data) and PDF_OK:
-        zoom = PDF_DPI / 72.0
-        with _PDF_LOCK, fitz.open(stream=data, filetype="pdf") as doc:
+    if engine._looks_like_pdf(data) and PDF_OK:
+        zoom = engine.PDF_DPI / 72.0
+        with engine._PDF_LOCK, fitz.open(stream=data, filetype="pdf") as doc:
             if index >= doc.page_count:
                 return None
             pix = doc[index].get_pixmap(matrix=fitz.Matrix(zoom, zoom))
             return Image.frombytes("RGB", (pix.width, pix.height), pix.samples)
-    pages, _ = load_pages(data)
+    pages, _ = engine.load_pages(data)
     return pages[index] if index < len(pages) else None
 
 
@@ -8287,7 +2619,7 @@ def _stress_retry_page(page):
     gives back the same image.
     """
     origin = getattr(page, "_stress_origin", None)
-    if not (LOOP_RETRY and origin):
+    if not (engine.LOOP_RETRY and origin):
         return None
     higher = next_detail(origin["detail"])
     if higher is None:
@@ -8297,15 +2629,15 @@ def _stress_retry_page(page):
     source = _one_page(data, origin["index"])
     if source is None:
         return None
-    if TRIM_MARGINS:
-        source = trim_margins(source)
-    bigger = fit_pixels(source, DETAIL_PRESETS[higher])
+    if engine.TRIM_MARGINS:
+        source = engine.trim_margins(source)
+    bigger = engine.fit_pixels(source, engine.DETAIL_PRESETS[higher])
     if bigger.size == page.size:
         return None
-    bigger._data_uri = image_data_uri(bigger)
+    bigger._data_uri = engine.image_data_uri(bigger)
     bigger._stress_origin = dict(origin, detail=higher)
     if hasattr(page, "_dry_label"):
-        tag_page(bigger, page._dry_label, higher)
+        engine.tag_page(bigger, page._dry_label, higher)
     return bigger
 
 
@@ -8337,7 +2669,7 @@ def _image_extract_once(pages, cfg: dict, case_id, live: _StressLive, job: int) 
     `case_id` still decides the form where the classifier cannot, and scores it.
     """
     text = prompts.IMAGE_TRANSCRIPT.format(pages=len(pages))
-    with _feeding_images([getattr(p, "_data_uri", None) or image_data_uri(p)
+    with engine._feeding_images([getattr(p, "_data_uri", None) or engine.image_data_uri(p)
                           for p in pages]):
         return extract_fields(text, cfg["extract_mode"], case_id, pages=[text],
                               extras=cfg.get("extras"),
@@ -8345,32 +2677,10 @@ def _image_extract_once(pages, cfg: dict, case_id, live: _StressLive, job: int) 
                               each=lambda event: live.extract_event(job, event))
 
 
-def _image_problem(result: dict) -> tuple:
-    """`(kind, what, fields)` of an image-fed form worth extracting again, or
-    `(None, "", [])`. An error other than a looped or capped reply is not one:
-    it is the server refusing the request, and asking again with bigger images
-    would only be refused again."""
-    if result.get("error"):
-        if result.get("looped"):
-            return "looped", "the reply looped", []
-        if result.get("truncated"):
-            return "truncated", "the reply hit the token cap", []
-        return None, "", []
-    missing = _missing_required(result)
-    if not missing:
-        return None, "", []
-    several = len(missing) > 1 or (result.get("documents_found") or 1) > 1
-    listed = "; ".join((f"doc {n}: " if several else "") + ", ".join(keys)
-                       for n, keys in missing)
-    count = sum(len(keys) for _, keys in missing)
-    return ("missing", f"{count} required field(s) came back empty: {listed}",
-            [f"doc{n}.{k}" if several else k for n, keys in missing for k in keys])
-
-
 def _image_cost(result: dict) -> tuple:
     """What makes one image-fed form worse than another: an error, then gaps."""
     return (bool(result.get("error")),
-            sum(len(keys) for _, keys in _missing_required(result)))
+            sum(len(keys) for _, keys in engine._missing_required(result)))
 
 
 def _stress_image_extract(pages, cfg: dict, case_id, rec: dict, live: _StressLive,
@@ -8388,30 +2698,30 @@ def _stress_image_extract(pages, cfg: dict, case_id, rec: dict, live: _StressLiv
     detail = cfg["detail"]
     result = _image_extract_once(pages, cfg, case_id, live, job)
     reads = _image_reads(pages, f"sent to the extractor at {detail}")
-    kind, what, fields = _image_problem(result)
+    kind, what, fields = engine._image_problem(result)
     if kind is None:
         return result, reads, None
     extra = {"fields": fields} if fields else {}
     began = time.perf_counter()
     bigger = ([_stress_retry_page(p) for p in pages]
-              if LOOP_RETRY and not cancel.is_set() else [])
+              if engine.LOOP_RETRY and not cancel.is_set() else [])
     rec["retry_prepare_s"] = round(time.perf_counter() - began, 3)
     higher = next((b._stress_origin["detail"] for b in bigger if b is not None), None)
     if higher is None:
         why = ("the run was stopped" if cancel.is_set() else "LOOP_RETRY is off"
-               if not LOOP_RETRY else "no higher Detail gives bigger pages")
+               if not engine.LOOP_RETRY else "no higher Detail gives bigger pages")
         alert = live.flag(kind, job, who, f"{what} at {detail} -- no retry: {why}",
                           stage="extract", state="no retry", evidence=True, **extra)
-        window(alert, result, _missing_required(result))
+        window(alert, result, engine._missing_required(result))
         return result, reads, alert
     alert = live.flag(kind, job, who, f"{what} at {detail} -- extracting again at {higher}",
                       stage="extract", state="retrying", evidence=True, **extra)
-    window(alert, result, _missing_required(result))
+    window(alert, result, engine._missing_required(result))
     rec["image_retries"] = 1
     live.touch(job)
     retried = [b if b is not None else p for b, p in zip(bigger, pages)]
     second = _image_extract_once(retried, cfg, case_id, live, job)
-    kind2, what2, _ = _image_problem(second)
+    kind2, what2, _ = engine._image_problem(second)
     if second.get("error") and kind2 is None:
         what2 = "the request failed: " + str(second["error"])[:160]
     reads = (_image_reads(pages, f"attempt 1 at {detail}: {what}")
@@ -8438,565 +2748,6 @@ def _stress_image_extract(pages, cfg: dict, case_id, rec: dict, live: _StressLiv
     return kept, reads, alert
 
 
-# --------------------------------------------------------------------------
-# Filling a missing field from the page (2026-10-27, at the user's request: *in
-# full pipeline stress test if the field is missing we will send the image
-# directly and ask for that specific field by using the hybrid prompt*). Where a
-# full run's form comes back with a Mandatory field empty, each document's page
-# images go to the extractor with only the Hybrid step(s) that own the empty
-# keys -- the transcript is not sent, the pages are what is read -- and what
-# comes back fills the blanks. Nothing already filled is overwritten. The form
-# is then validated and scored again, so the job's field score and its Missing
-# required count are of the form the pipeline ended with. One flag row says how
-# it went: `retrying` -> `resolved` or `retry failed`, as image mode's does.
-# --------------------------------------------------------------------------
-
-def _fill_steps(codes, keys) -> tuple:
-    """`(step ids, keys no step owns)`: the Hybrid steps that ask for `keys`.
-
-    A blank table cell (`income_items[0].amount_paid`) is asked for by the step
-    that owns the table. Off the same table the document was asked from, so a
-    grouped step (`totals`, `parties`) is asked whole and only its empty keys are
-    taken from the reply.
-    """
-    table = steps_for_types(codes, False, mode="hybrid")
-    ids, orphans = [], []
-    for key in keys:
-        base = key.split("[", 1)[0]
-        step = next((s for s in table if base in s["keys"]), None)
-        if step is None:
-            orphans.append(key)
-        elif step["id"] not in ids:
-            ids.append(step["id"])
-    return ids, orphans
-
-
-def _fill_form(doc: dict) -> dict:
-    """The form `doc` was extracted with, rebuilt off its `classified` record:
-    what a fill asks, validates and scores against."""
-    classified = doc.get("classified") or {}
-    return {"doc_types": list(classified.get("doc_types") or doc.get("doc_types") or []),
-            "keys": list(classified.get("fields") or doc.get("fields_asked") or []),
-            "mandatory": list(classified.get("mandatory") or []),
-            "items": list(classified.get("items") or doc.get("items_asked") or []),
-            "mandatory_items": list(classified.get("mandatory_items") or []),
-            "extras": False, "schema_first": False}
-
-
-def _fill_ask(pages, form: dict, ids) -> dict:
-    """The Hybrid steps `ids`, asked of `pages` as images and nothing else.
-
-    `_extract_agentic` directly rather than `extract_fields`: the document is
-    already split and classified, and a fill must not classify the placeholder
-    text again or segment it.
-    """
-    status = backends.extract_status()
-    if not status["text_available"]:
-        return {"error": status["text_reason"]}
-    text = prompts.IMAGE_TRANSCRIPT.format(pages=len(pages))
-    if form.get("validation_recheck"):
-        text += ("\nRe-read the requested fields directly from these images. Preserve the "
-                 "association of each printed label with its own row and cell. A blank "
-                 "cell must stay blank; never carry a value from a neighbouring row "
-                 "into it. Inspect totals together, but copy only printed values. "
-                 "Never calculate or change a value to make arithmetic or validation pass.")
-    with _feeding_images([getattr(p, "_data_uri", None) or image_data_uri(p)
-                          for p in pages]):
-        return _drain(_extract_agentic(text, status, form, only=list(ids), mode="hybrid"))
-
-
-def _gaps(doc: dict) -> int:
-    return sum(len(keys) for _, keys in _missing_required(doc))
-
-
-def _revalidate(doc: dict, form: dict, text: str) -> None:
-    """`_validate_fields`'s normalisation and validation of `doc`'s fields, again."""
-    fields = doc.get("fields") or {}
-    doc["normalized"] = normalise.normalize_fields(fields)
-    try:
-        doc["validation"] = validate.validate(
-            fields, keys=form["keys"], doc_types=form["doc_types"],
-            mandatory=form["mandatory"], transcript=text, items=form["items"])
-    except Exception as err:  # noqa: BLE001 - never worth the job
-        doc["validation"] = {"error": f"validation failed: {err}"}
-
-
-def _fill_document(doc: dict, keys, answer: dict, form: dict, text: str) -> list:
-    """Put `answer`'s values into `doc`'s empty `keys`; the keys it filled.
-
-    A scalar fills only a blank. The table is a whole list, so the new one is
-    taken only where it leaves fewer demanded cells empty than the old.
-    """
-    got = answer.get("fields") or {}
-    fields = dict(doc.get("fields") or {})
-    filled = []
-    for key in keys:
-        if "[" in key or key == prompts.INCOME_ITEMS_KEY:
-            continue
-        if validate._blank(fields.get(key)) and not validate._blank(got.get(key)):
-            fields[key] = got[key]
-            filled.append(key)
-    doc["fields"] = fields
-    _revalidate(doc, form, text)
-    table = [k for k in keys if k.split("[", 1)[0] == prompts.INCOME_ITEMS_KEY]
-    if table and got.get(prompts.INCOME_ITEMS_KEY):
-        trial = dict(doc, fields={**fields, prompts.INCOME_ITEMS_KEY: got[prompts.INCOME_ITEMS_KEY]})
-        _revalidate(trial, form, text)
-        if _gaps(trial) < _gaps(doc):
-            doc.update(fields=trial["fields"], normalized=trial["normalized"],
-                       validation=trial["validation"])
-            filled += [k for k in table if k not in
-                       {key for _, ks in _missing_required(doc) for key in ks}]
-    return filled
-
-
-def _stress_fill_missing(result: dict, images, texts, case_id, rec: dict,
-                         live: _StressLive, job: int, who: str, window, cancel,
-                         why: str = ""):
-    """A full run's Mandatory fields left empty, asked of the page images.
-
-    Returns the flag this raised and kept up to date, or None where nothing was
-    missing (or the extraction failed, which its own flag says). The caller
-    raises no second flag. `result` is filled in place, revalidated and
-    rescored; its tokens and server time grow by the fill's.
-    """
-    if result.get("error") or cancel.is_set():
-        return None
-    missing = _missing_required(result)
-    if not missing:
-        return None
-    _, what, flagged = _image_problem(result)
-    documents = [d for d in (result.get("documents") or []) if isinstance(d, dict)]
-    by_number = {(d.get("document") or 1): d for d in documents} if documents else {1: result}
-    several = len(by_number) > 1
-    plan = []
-    orphans = []
-    for number, keys in missing:
-        doc = by_number.get(number)
-        if doc is None:
-            continue
-        form = _fill_form(doc)
-        ids, lost = _fill_steps(form["doc_types"], keys)
-        orphans += [f"doc{number}.{k}" if several else k for k in lost]
-        if ids:
-            plan.append((number, doc, form, [k for k in keys if k not in lost], ids))
-    extra = {"fields": flagged} if flagged else {}
-    if not plan:
-        alert = live.flag("missing", job, who,
-                          f"{what}{why} -- no retry: no Hybrid step asks for "
-                          + ", ".join(orphans), stage="extract", state="no retry",
-                          evidence=True, **extra)
-        window(alert, result, missing)
-        return alert
-    asked = ", ".join(dict.fromkeys(i for *_, ids in plan for i in ids))
-    alert = live.flag("missing", job, who,
-                      f"{what}{why} -- asking the page images with the Hybrid "
-                      f"prompt ({asked})", stage="extract", state="retrying",
-                      evidence=True, **extra)
-    window(alert, result, missing)
-    rec["fill_jobs"] = 1
-    rec["fill_asked"] = sum(len(keys) for _, _, _, keys, _ in plan)
-    live.touch(job)
-    before = _gaps(result) if not documents else sum(_gaps(d) for d in documents)
-    filled, errors, tokens = [], [], 0
-    previous = servertime.open_tally()
-    try:
-        for number, doc, form, keys, ids in plan:
-            if cancel.is_set():
-                break
-            numbers = doc.get("pages") or ([] if documents else list(range(1, len(images) + 1)))
-            if (not numbers or any(isinstance(p, bool) or not isinstance(p, int)
-                                   or not 1 <= p <= len(images) for p in numbers)):
-                errors.append(f"doc{number}: page boundaries unavailable; no other document's images were used")
-                continue
-            numbers = list(dict.fromkeys(numbers))
-            # This document's own transcript, which validation checks against.
-            own = [texts[p - 1] for p in numbers if p <= len(texts)]
-            text = join_page_texts(own) if len(own) > 1 else "".join(own)
-            # What the page shows for this attempt: the keys asked, what the
-            # images answered for them and which of those were taken. Built the
-            # way the validation recheck's audit is, so both read alike.
-            audit = {"fields": list(keys), "steps": list(ids), "pages": numbers,
-                     "filled": [], "accepted": False}
-            doc.setdefault("image_fills", []).append(audit)
-            began = time.perf_counter()
-            try:
-                answer = _fill_ask([images[p - 1] for p in numbers], form, ids)
-            except Exception as err:            # noqa: BLE001
-                answer = {"error": f"{type(err).__name__}: {err}"}
-            tokens += answer.get("tokens") or 0
-            audit["tokens"] = answer.get("tokens") or 0
-            audit["seconds"] = round(time.perf_counter() - began, 3)
-            if answer.get("error"):
-                audit["error"] = str(answer["error"])[:300]
-                audit["still_empty"] = list(keys)
-                errors.append(str(answer["error"])[:160])
-                continue
-            audit["candidate"] = {k: _retry_value(answer.get("fields") or {}, k)[1]
-                                  for k in keys}
-            got = _fill_document(doc, keys, answer, form, text)
-            audit["filled"] = list(got)
-            audit["accepted"] = bool(got)
-            # A fill only ever ADDS: it writes a blank and never overwrites a value.
-            audit["added"] = {k: _retry_value(doc.get("fields") or {}, k)[1] for k in got}
-            audit["edited"] = {}
-            # What validation said once the filled values were in (the document is
-            # revalidated by `_fill_document`), for the fields that were asked.
-            audit["validated"] = _rule_states(doc, keys)
-            ran, ok, bad = _rule_tally(_rule_states(doc, got))
-            rec["fill_checks"] = rec.get("fill_checks", 0) + ran
-            rec["fill_checks_ok"] = rec.get("fill_checks_ok", 0) + ok
-            rec["fill_checks_bad"] = rec.get("fill_checks_bad", 0) + bad
-            gaps_now = {k for _, ks in _missing_required(doc) for k in ks}
-            audit["still_empty"] = [k for k in keys if k in gaps_now]
-            audit["after"] = {k: _retry_value(doc.get("fields") or {}, k)[1] for k in keys}
-            filled += [f"doc{number}.{k}" if several else k for k in got]
-            if got:
-                doc["image_filled"] = list(doc.get("image_filled") or []) + got
-                if case_id:
-                    _score_fields(doc, case_id, form, doc.get("pages") if several else None,
-                                  text)
-                live.touch(job)
-    finally:
-        served = servertime.close_tally(previous)
-    if documents and any(d.get("image_filled") for d in documents):
-        scored = [d for d in documents if d.get("field_score")]
-        if scored:
-            result["field_score"] = _merge_field_scores(scored, len(documents))
-    result["tokens"] = (result.get("tokens") or 0) + tokens
-    if served:
-        result["server_time"] = dict(result.get("server_time") or {})
-        for key in ("in_tokens", "out_tokens"):
-            values = [v for v in (result["server_time"].get(key), served.get(key))
-                      if v is not None]
-            result["server_time"][key] = sum(values) if values else None
-    after = _gaps(result) if not documents else sum(_gaps(d) for d in documents)
-    rec["fill_filled"] = before - after
-    note = (" · failed: " + "; ".join(errors)) if errors else ""
-    if orphans:
-        note += " · no Hybrid step asks for " + ", ".join(orphans)
-    if rec.get("fill_checks"):
-        note = (f" · validated {rec['fill_checks']} rule(s) on the added values: "
-                f"{rec.get('fill_checks_ok', 0)} pass, {rec.get('fill_checks_bad', 0)} fail or warn"
-                + note)
-    if not after:
-        live.update_flag(alert, f"{what}{why} -- resolved: the page images filled "
-                                + ", ".join(filled) + note, state="resolved")
-    else:
-        remaining = _missing_required(result)
-        listed = "; ".join((f"doc {n}: " if several else "") + ", ".join(keys)
-                           for n, keys in remaining)
-        live.update_flag(alert, f"{what}{why}; asked the page images, "
-                                f"{len(filled) or 'none'} filled"
-                                + (f" ({', '.join(filled)})" if filled else "")
-                                + f", still empty: {listed}{note}",
-                         state="retry failed")
-    return alert
-
-
-def _rule_states(doc, keys):
-    """Every validation rule run on `keys` (a table key covers its cells): what an
-    image recheck says it VALIDATED. All states, not only the bad ones -- a rule
-    that passed on a value the images supplied is the point of showing it."""
-    keys = set(keys)
-    bases = {k.split("[", 1)[0] for k in keys}
-    return [{k: row[k] for k in ("field", "rule", "state", "why", "detail") if row.get(k)}
-            for row in ((doc.get("validation") or {}).get("checks") or [])
-            if row.get("field") and (row["field"] in keys
-                                     or row["field"].split("[", 1)[0] in bases)]
-
-
-def _rule_tally(rows):
-    """`(rules run, rules that passed, rules failed or warned)` over `_rule_states` rows."""
-    ran = [r for r in rows if r.get("state") in (validate.OK, validate.FAILED, validate.WARNING)]
-    return (len(ran), sum(r["state"] == validate.OK for r in ran),
-            sum(r["state"] in (validate.FAILED, validate.WARNING) for r in ran))
-
-
-def _validation_bad(doc):
-    """Runtime validation findings only: never use benchmark truth to trigger a retry."""
-    return [row for row in ((doc.get("validation") or {}).get("checks") or [])
-            if row.get("state") in (validate.FAILED, validate.WARNING) and row.get("field")]
-
-
-def _validation_retry_keys(doc, form):
-    asked = set(form["keys"])
-    found = [row["field"] for row in _validation_bad(doc)
-             if row["field"].split("[", 1)[0] in asked]
-    # Arithmetic cannot say which operand was misplaced. Re-read the complete
-    # requested money group together, rather than silently retaining a wrong base.
-    totals = ("subtotal", "vat_total", "amount_incl_vat")
-    if any(key in totals for key in found):
-        found += [key for key in totals if key in asked]
-    balance = ("remaining_amount", "remaining_vat_amount")
-    if any(key in balance for key in found):
-        found += [key for key in balance if key in asked]
-    if any(key in ("total_amount_paid", "total_wht_amount") or key.startswith("income_items[") for key in found):
-        found += [key for key in ("total_amount_paid", "total_wht_amount", prompts.INCOME_ITEMS_KEY)
-                  if key in asked]
-    return list(dict.fromkeys(found))
-
-
-def _retry_value(fields, key):
-    """Scalar or a checked income-table cell, with presence distinct from blank."""
-    if key in fields:
-        return True, fields[key]
-    match = re.fullmatch(r"(\w+)\[(\d+)\]\.(\w+)", key)
-    if match:
-        table, index, cell = match[1], int(match[2]), match[3]
-        rows = fields.get(table)
-        if isinstance(rows, list) and index < len(rows) and isinstance(rows[index], dict) and cell in rows[index]:
-            return True, rows[index][cell]
-    return False, None
-
-
-def _validation_candidate(doc, keys, answer, form, text, audit=None):
-    """Atomic group replacement; reject incomplete or non-improving answers."""
-    got = answer.get("fields")
-    if answer.get("error") or not isinstance(got, dict):
-        return None, str(answer.get("error") or "No field object returned")
-    if any(not _retry_value(got, key)[0] for key in keys):
-        return None, "The image answer did not return every requested field"
-    trial = dict(doc, fields=copy.deepcopy(doc.get("fields") or {}))
-    for key in keys:
-        value = copy.deepcopy(_retry_value(got, key)[1])
-        if key != prompts.INCOME_ITEMS_KEY and (isinstance(value, (dict, list, bool))):
-            return None, "The image answer returned a non-scalar field value"
-        if value is None:
-            value = ""
-        if isinstance(value, (int, float)) and not isinstance(value, bool):
-            value = str(value)  # Scalar extraction fields use strings, including zero.
-        if key in got:
-            trial["fields"][key] = value
-        else:
-            match = re.fullmatch(r"(\w+)\[(\d+)\]\.(\w+)", key)
-            # A table-level recheck already copied this cell with its whole table.
-            if match[1] not in keys:
-                trial["fields"][match[1]][int(match[2])][match[3]] = value
-    _revalidate(trial, form, text)
-    if audit is not None:
-        audit["checks_candidate"] = copy.deepcopy(_validation_bad(trial))
-        audit["rules_candidate"] = _rule_states(trial, keys)
-    if (trial.get("validation") or {}).get("error"):
-        return None, "Could not validate the image answer"
-    before, after = _validation_bad(doc), _validation_bad(trial)
-    identity = lambda rows: {(r["field"], r.get("rule")) for r in rows}
-    gaps = lambda value: {key for _, keys in _missing_required(value) for key in keys}
-    if gaps(trial) - gaps(doc):
-        return None, "The image answer introduced missing required fields"
-    if identity(after) - identity(before):
-        return None, "The image answer introduced new validation findings"
-    rank = lambda rows: (sum(r["state"] == validate.FAILED for r in rows),
-                         sum(r["state"] == validate.WARNING for r in rows))
-    if rank(after) >= rank(before):
-        return None, "Validation did not improve; original values kept"
-    return trial, "Validation improved without introducing new findings"
-
-
-def _stress_recheck_validation(result, images, texts, case_id, rec, live, job, who, window, cancel):
-    """One bounded image recheck per suspicious document, using its Hybrid steps."""
-    if result.get("error") or cancel.is_set():
-        return None
-    documents = [d for d in (result.get("documents") or []) if isinstance(d, dict)]
-    plan = []
-    for doc in documents or [result]:
-        if doc.get("error"):
-            continue
-        form = _fill_form(doc)
-        form["keys"] = form["keys"] or list(doc.get("fields") or {})
-        if (form["items"] or form["mandatory_items"]) and prompts.INCOME_ITEMS_KEY not in form["keys"]:
-            form["keys"].append(prompts.INCOME_ITEMS_KEY)
-        keys = _validation_retry_keys(doc, form)
-        if keys:
-            plan.append((doc, form, keys))
-    if not plan:
-        return None
-    started = time.perf_counter()
-    rec["validation_retry_jobs"] = 1
-    for name in ("asked", "changed", "accepted", "resolved", "added", "edited",
-                 "checks", "fixed"):
-        rec["validation_retry_" + name] = 0
-    names = [f"doc{doc.get('document') or 1}.{key}" for doc, _, keys in plan for key in keys]
-    alert = live.flag("validation", job, who,
-                      "Validation findings: " + ", ".join(names) + " -- asking the page images (Hybrid)",
-                      stage="extract", state="retrying", evidence=True, fields=names)
-    window(alert, result, _missing_required(result))
-    tokens, errors = 0, []
-    previous = servertime.open_tally()
-    try:
-        for doc, form, keys in plan:
-            if cancel.is_set():
-                errors.append("stopped before the next image request")
-                break
-            before = copy.deepcopy(doc.get("fields") or {})
-            audit = {"fields": list(keys), "before": {k: _retry_value(before, k)[1] for k in keys},
-                     "checks_before": copy.deepcopy(_validation_bad(doc)), "accepted": False}
-            doc.setdefault("validation_image_rechecks", []).append(audit)
-            began = time.perf_counter()
-            try:
-                ids, lost = _fill_steps(form["doc_types"], keys)
-                audit["steps"] = ids
-                if lost:
-                    raise ValueError("No Hybrid step asks for " + ", ".join(lost))
-                numbers = doc.get("pages") or ([] if documents else list(range(1, len(images) + 1)))
-                if (not numbers or any(isinstance(p, bool) or not isinstance(p, int)
-                                       or not 1 <= p <= len(images) for p in numbers)):
-                    raise ValueError("This document's page boundaries are unavailable; no other document's images were used")
-                numbers = list(dict.fromkeys(numbers))
-                audit["pages"] = numbers
-                own = [texts[p - 1] for p in numbers if p <= len(texts)]
-                text = join_page_texts(own) if len(own) > 1 else "".join(own)
-                # Recompute checks from this document's current fields. It may
-                # have just had a blank filled by the independent missing toggle.
-                _revalidate(doc, form, text)
-                audit["checks_before"] = copy.deepcopy(_validation_bad(doc))
-                audit["rules_before"] = _rule_states(doc, keys)
-                form["validation_recheck"] = True
-                rec["validation_retry_asked"] += len(keys)
-                answer = _fill_ask([images[p - 1] for p in numbers], form, ids)
-                tokens += answer.get("tokens") or 0
-                audit["tokens"] = answer.get("tokens") or 0
-                audit["candidate"] = {k: _retry_value(answer.get("fields") or {}, k)[1] for k in keys}
-                audit["chats"] = list(_agentic_chats(answer))
-                trial, reason = _validation_candidate(doc, keys, answer, form, text, audit)
-                audit["reason"] = reason
-                if trial is not None:
-                    changed = [key for key in keys if _retry_value(before, key)[1] != _retry_value(trial["fields"], key)[1]]
-                    doc.update(fields=trial["fields"], normalized=trial["normalized"], validation=trial["validation"])
-                    audit.update(accepted=True, changed=changed)
-                    # A value that was blank is an addition; one that was there and
-                    # is now different is an edit.
-                    audit["added"] = {k: _retry_value(doc["fields"], k)[1] for k in changed
-                                      if validate._blank(_retry_value(before, k)[1])}
-                    audit["edited"] = {k: {"from": _retry_value(before, k)[1],
-                                           "to": _retry_value(doc["fields"], k)[1]}
-                                       for k in changed if k not in audit["added"]}
-                    rec["validation_retry_added"] += len(audit["added"])
-                    rec["validation_retry_edited"] += len(audit["edited"])
-                    rec["validation_retry_changed"] += len(changed)
-                    rec["validation_retry_accepted"] += 1
-                    if not _validation_bad(doc):
-                        rec["validation_retry_resolved"] += 1
-                    if case_id:
-                        _score_fields(doc, case_id, form, numbers if documents else None, text)
-                else:
-                    errors.append(reason)
-            except Exception as err:  # noqa: BLE001 - an optional recheck cannot fail the job
-                audit["error"] = f"{type(err).__name__}: {err}"
-                errors.append(audit["error"])
-            finally:
-                audit["after"] = {k: _retry_value(doc.get("fields") or {}, k)[1] for k in keys}
-                audit["checks_after"] = copy.deepcopy(_validation_bad(doc))
-                audit["rules_after"] = _rule_states(doc, keys)
-                audit.setdefault("added", {})
-                audit.setdefault("edited", {})
-                # Rules run on the rechecked fields, and the ones that went from
-                # failed or warned to passing.
-                before_rules = audit.get("rules_before") or []
-                rec["validation_retry_checks"] += _rule_tally(before_rules)[0]
-                was_bad = {(r["field"], r.get("rule")) for r in before_rules
-                           if r.get("state") in (validate.FAILED, validate.WARNING)}
-                rec["validation_retry_fixed"] += sum(
-                    1 for r in audit["rules_after"]
-                    if r.get("state") == validate.OK and (r["field"], r.get("rule")) in was_bad)
-                audit["seconds"] = round(time.perf_counter() - began, 3)
-                live.touch(job)
-    finally:
-        served = servertime.close_tally(previous)
-    if documents and rec["validation_retry_accepted"]:
-        scored = [d for d in documents if d.get("field_score")]
-        if scored:
-            result["field_score"] = _merge_field_scores(scored, len(documents))
-    result["tokens"] = (result.get("tokens") or 0) + tokens
-    if served:
-        result["server_time"] = dict(result.get("server_time") or {})
-        for key in ("in_tokens", "out_tokens"):
-            values = [v for v in (result["server_time"].get(key), served.get(key)) if v is not None]
-            result["server_time"][key] = sum(values) if values else None
-    rec["validation_retry_s"] = round(time.perf_counter() - started, 3)
-    rec["validation_retry_tokens"] = tokens
-    remaining = sum(len(_validation_bad(doc)) for doc, _, _ in plan)
-    note = (" -- " + "; ".join(errors)) if errors else ""
-    state = "resolved" if not remaining and not errors else "retry failed"
-    live.update_flag(alert, f"Validation image recheck: added {rec['validation_retry_added']}, "
-                     f"edited {rec['validation_retry_edited']}; validated "
-                     f"{rec['validation_retry_checks']} rule(s), {rec['validation_retry_fixed']} now passing; "
-                     f"{remaining} finding(s) remain{note}", state=state)
-    window(alert, result, _missing_required(result))
-    return alert
-
-
-def image_rechecks_needed(result, fill_missing=False, validation_retry=False):
-    """Decide before loading images; runtime findings only, with no truth lookup."""
-    if not isinstance(result, dict) or result.get("error"):
-        return False
-    return bool((fill_missing and _missing_required(result)) or
-                (validation_retry and any(_validation_bad(doc) for doc in
-                                          result.get("documents") or [result])))
-
-
-class _ImageRecheckProgress:
-    """Adapt the same retries used by Stress to a single-file progress callback."""
-    def __init__(self, each):
-        self.each, self.flags = each, []
-
-    def _emit(self, flag):
-        if self.each:
-            self.each({"event": "image_recheck", **flag})
-
-    def flag(self, kind, job, who, message, **extra):
-        flag = {"id": len(self.flags), "kind": kind, "message": message,
-                "state": extra.get("state", "retrying")}
-        self.flags.append(flag)
-        self._emit(flag)
-        return flag["id"]
-
-    def update_flag(self, alert_id, message=None, **changes):
-        flag = self.flags[alert_id]
-        if message is not None:
-            flag["message"] = message
-        flag.update(changes)
-        self._emit(flag)
-
-    def touch(self, job):
-        pass
-
-
-def recheck_fields_from_images(result, images, texts, *, fill_missing=False,
-                               validation_retry=False, case_id=None, each=None):
-    """Workspace and User pipeline reuse Stress's missing/validation policies.
-
-    Mutates only the fields accepted by those policies. No global toggle or
-    benchmark history is touched; the result carries the decisions and cost.
-    """
-    if not image_rechecks_needed(result, fill_missing, validation_retry):
-        # Said rather than left out: a toggle that was on and found nothing to do
-        # is otherwise indistinguishable on the page from a toggle that was off.
-        if isinstance(result, dict) and not result.get("error") and (fill_missing or validation_retry):
-            result["image_rechecks"] = {
-                "fill_missing": bool(fill_missing), "validation_retry": bool(validation_retry),
-                "metrics": {}, "flags": [], "seconds": 0,
-                "skipped": {"fill_missing": bool(fill_missing) and not _missing_required(result),
-                            "validation_retry": bool(validation_retry) and not any(
-                                _validation_bad(doc) for doc in result.get("documents") or [result])}}
-        return
-    started = time.perf_counter()
-    live, metrics, cancel = _ImageRecheckProgress(each), {}, MultiCancel()
-    window = lambda *_args: None
-    summary = {"fill_missing": bool(fill_missing), "validation_retry": bool(validation_retry),
-               "metrics": metrics, "flags": live.flags}
-    result["image_rechecks"] = summary
-    try:
-        if fill_missing:
-            _stress_fill_missing(result, images, texts, case_id, metrics, live, 1, "", window, cancel)
-        if validation_retry:
-            _stress_recheck_validation(result, images, texts, case_id, metrics, live, 1, "", window, cancel)
-    except Exception as err:  # optional rescue must retain the original extraction
-        summary["error"] = f"Image recheck failed: {err}"
-    summary["seconds"] = round(time.perf_counter() - started, 3)
-    result["seconds"] = round((result.get("seconds") or 0) + summary["seconds"], 3)
-
-
 def _recheck_events(result, images, texts, fill_missing, validation_retry, case_id):
     """`recheck_fields_from_images`, with each flag streamed as it is raised or updated.
 
@@ -9004,15 +2755,15 @@ def _recheck_events(result, images, texts, fill_missing, validation_retry, case_
     the images and how it ended, rather than one spinner for both. The callback
     only queues; the generator does the yielding.
     """
-    if not image_rechecks_needed(result, fill_missing, validation_retry):
-        recheck_fields_from_images(result, images, texts, fill_missing=fill_missing,
+    if not engine.image_rechecks_needed(result, fill_missing, validation_retry):
+        engine.recheck_fields_from_images(result, images, texts, fill_missing=fill_missing,
                                    validation_retry=validation_retry, case_id=case_id)
         return
     events, done = queue.Queue(), object()
 
     def work():
         try:
-            recheck_fields_from_images(result, images, texts, fill_missing=fill_missing,
+            engine.recheck_fields_from_images(result, images, texts, fill_missing=fill_missing,
                                        validation_retry=validation_retry, case_id=case_id,
                                        each=lambda e: events.put(copy.deepcopy(e)))
         finally:
@@ -9198,8 +2949,8 @@ def _stress_read(pages, cancel, rec: dict, live: _StressLive,
     lock = threading.Lock()
     tally = {"retries": 0, "recovered": 0, "prep": 0.0, "dry": 0, "dry_checked": 0,
              "dry_retries": 0, "dry_recovered": 0}
-    inner = MultiCancel()                   # a failed page hangs up its siblings
-    hangup = _Hangup(inner)                 # held here: `attach` keeps it weakly
+    inner = engine.MultiCancel()                   # a failed page hangs up its siblings
+    hangup = engine._Hangup(inner)                 # held here: `attach` keeps it weakly
     cancel.attach(hangup)
     cut = "the reading model repeated itself and the loop guard cut the page off"
 
@@ -9236,10 +2987,10 @@ def _stress_read(pages, cancel, rec: dict, live: _StressLive,
             was = (getattr(page, "_stress_origin", None) or {}).get("detail")
             live.reading(job, number, page)
             try:
-                text = read_page(page, stats, cancel=inner)
+                text = engine.read_page(page, stats, cancel=inner)
             except Exception as err:
                 if cancel.is_set() or inner.is_set():
-                    raise SweepCancelled("stopped")
+                    raise engine.SweepCancelled("stopped")
                 # Every read of the page, the one that failed last, for the
                 # error flag's window (`_stress_job`).
                 try:
@@ -9251,7 +3002,7 @@ def _stress_read(pages, cancel, rec: dict, live: _StressLive,
             finally:
                 live.reading(job, number)
             if cancel.is_set():
-                raise SweepCancelled("stopped")
+                raise engine.SweepCancelled("stopped")
             live.touch(job)
             page_tokens += stats.get("new_tokens") or 0
             dry = stats.get("dry") or {}
@@ -9366,7 +3117,7 @@ def _stress_read(pages, cancel, rec: dict, live: _StressLive,
     if slots is None or len(pages) < 2:
         for number, page in enumerate(pages, 1):
             if cancel.is_set():
-                raise SweepCancelled("stopped")
+                raise engine.SweepCancelled("stopped")
             stats = {}
             if stats_out is not None:
                 stats_out.append(stats)
@@ -9404,7 +3155,7 @@ def _stress_read(pages, cancel, rec: dict, live: _StressLive,
                 # A second at most, so a slot another job frees is noticed
                 # without one of these pages having to finish first.
                 finished, _ = wait(list(running), timeout=1.0,
-                                   return_when=FIRST_COMPLETED)
+                                   return_when=engine.FIRST_COMPLETED)
                 for future in finished:
                     slot, number, stats = running.pop(future)
                     if slot == "own":
@@ -9413,7 +3164,7 @@ def _stress_read(pages, cancel, rec: dict, live: _StressLive,
                         slots.release()
                     try:
                         results[number - 1] = (*future.result(), stats)
-                    except SweepCancelled:
+                    except engine.SweepCancelled:
                         pass                    # a Stop, or hung up by a sibling
                     except Exception as exc:    # noqa: BLE001
                         if error is None:
@@ -9428,7 +3179,7 @@ def _stress_read(pages, cancel, rec: dict, live: _StressLive,
         if error is not None:
             raise error
         if cancel.is_set():
-            raise SweepCancelled("stopped")
+            raise engine.SweepCancelled("stopped")
 
     texts, looped, truncated = [], False, False
     ttft, page_s, page_tps, tokens = [], [], [], 0
@@ -9485,11 +3236,11 @@ def _stress_classify_body(pack: dict, rec: dict, live: _StressLive, cancel,
     status = backends.extract_status()
     started = time.perf_counter()
     asked = refused = 0
-    steps = _segment_stream(pack["text"], pack["pages"], status)
+    steps = engine._segment_stream(pack["text"], pack["pages"], status)
     while True:
         if cancel.is_set():
             steps.close()
-            raise SweepCancelled("stopped")
+            raise engine.SweepCancelled("stopped")
         try:
             event = next(steps)
         except StopIteration as done:
@@ -9508,8 +3259,8 @@ def _stress_classify_body(pack: dict, rec: dict, live: _StressLive, cancel,
     exact = types = forms = by_model = 0
     for seg in segments:
         if cancel.is_set():
-            raise SweepCancelled("stopped")
-        codes, how = resolve_doc_types(seg.get("text") or "", status=status,
+            raise engine.SweepCancelled("stopped")
+        codes, how = engine.resolve_doc_types(seg.get("text") or "", status=status,
                                        pages=seg.get("page_texts"))[:2]
         live.touch(job)
         by_model += how == "model"
@@ -9525,57 +3276,6 @@ def _stress_classify_body(pack: dict, rec: dict, live: _StressLive, cancel,
                docs_expected=len(pack["expected"]), docs_found=len(segments),
                docs_exact=exact, types_exact=types, form_match=forms,
                model_classified=by_model, status="ok")
-
-
-def _agentic_chats(result):
-    """Numeric request records across every document, without prompt/raw text."""
-    for document in result.get("documents") or [result]:
-        for step in document.get("steps") or []:
-            for chat in step.get("chats") or []:
-                yield {**chat, "step": step["id"], "title": step.get("title", ""),
-                       "keys": step.get("keys") or [], "document": document.get("document", 1)}
-        for retry in document.get("validation_image_rechecks") or []:
-            for chat in retry.get("chats") or []:
-                yield {**chat, "step": "validation_image." + chat.get("step", ""),
-                       "title": "Validation image recheck · " + chat.get("title", ""),
-                       "document": document.get("document", 1)}
-
-
-def _missing_required(result: dict) -> list:
-    """Each document's Mandatory fields that came back empty: `[(document, [keys])]`.
-
-    **The extraction half of a stress run's flags** (2026-10-26, at the user's
-    request: *OCR stays the same, but the extraction will flag the missing
-    required field*). A looped read still goes on to classify and extract, and
-    what it costs shows up here, as the fields the form demanded and did not get,
-    rather than as a second loop flag.
-
-    The scalars are read off `fields` against the form's own `mandatory` list,
-    not off `validate`'s rows: three Mandatory keys (`amount_incl_vat`,
-    `vat_total`, `total_wht_amount`) have no rule, so no `absent` row either. The
-    table's cells come from `validate`, which already reports a demanded blank
-    cell per row, and a table that never came back as the table key itself. A
-    document of a type no requirement covers demands nothing and is never flagged.
-    """
-    out = []
-    documents = [d for d in (result.get("documents") or []) if isinstance(d, dict)]
-    for doc in documents or [result]:
-        classified = doc.get("classified") or {}
-        fields = doc.get("fields") if isinstance(doc.get("fields"), dict) else {}
-        missing = [key for key in classified.get("mandatory") or []
-                   if validate._blank(fields.get(key))]
-        if classified.get("mandatory_items"):
-            checks = (doc.get("validation") or {}).get("checks")
-            if checks is None:                  # nothing extracted, so no table
-                missing.append(prompts.INCOME_ITEMS_KEY)
-            else:
-                missing.extend(row["field"] for row in checks
-                               if row.get("mandatory") and row.get("state") == validate.ABSENT
-                               and row["field"].startswith(prompts.INCOME_ITEMS_KEY))
-        missing = list(dict.fromkeys(missing))
-        if missing:
-            out.append((doc.get("document") or 1, missing))
-    return out
 
 
 def _field_value(value) -> str:
@@ -9815,7 +3515,7 @@ def _stress_job_steps(spec: dict, cfg: dict, prepared: dict, cancel,
                 # Rebuilding a retried page is this machine's work, kept out of
                 # the job's latency like `prepare_s`.
                 began += rec.get("retry_prepare_s") or 0
-                text = join_page_texts(texts) if len(texts) > 1 else texts[0]
+                text = engine.join_page_texts(texts) if len(texts) > 1 else texts[0]
                 try:
                     truth = scoring.evaluate(case, text) if case else None
                 except Exception:                   # noqa: BLE001
@@ -9851,7 +3551,7 @@ def _stress_job_steps(spec: dict, cfg: dict, prepared: dict, cancel,
                     stage = "extract"
                     live.touch(job, stage)
                     if cancel.is_set():
-                        raise SweepCancelled()
+                        raise engine.SweepCancelled()
                 elif mode == "image":
                     # No read: the pages go to the extractor as they are, and a
                     # flag's window shows each page beside the form.
@@ -9903,12 +3603,12 @@ def _stress_job_steps(spec: dict, cfg: dict, prepared: dict, cancel,
                         why = (" -- the read looped, which may be why" if looped else
                                " -- the read hit the token cap, which may be why"
                                if truncated else "")
-                        retry_alert = _stress_fill_missing(
+                        retry_alert = engine._stress_fill_missing(
                             result, prepared["pages"][case_id], texts,
                             None if real else case_id, rec, live, job, who,
                             fields_window, cancel, why)
                     if mode == "full" and cfg.get("validation_retry"):
-                        _stress_recheck_validation(
+                        engine._stress_recheck_validation(
                             result, prepared["pages"][case_id], texts,
                             None if real else case_id, rec, live, job, who, fields_window, cancel)
                 rec["extract_s"] = round(time.perf_counter() - started, 3)
@@ -9926,20 +3626,20 @@ def _stress_job_steps(spec: dict, cfg: dict, prepared: dict, cancel,
                 served = result.get("server_time") or {}
                 rec["extract_in"] = served.get("in_tokens")
                 rec["extract_out"] = served.get("out_tokens")
-                chats = list(_agentic_chats(result))
+                chats = list(engine._agentic_chats(result))
                 if chats:
                     rec["agentic_chats"] = [{**chat, "job": job, "case": case_id} for chat in chats]
                 if log:
                     logged = True
                     if row is not None:
                         row["extracted"] = result
-                        log_run(row, prepared["sources"][case_id])
+                        engine.log_run(row, prepared["sources"][case_id])
                     else:
-                        log_extract(result, None, {
+                        engine.log_extract(result, None, {
                             "case": case_id,
                             "source": prepared["sources"][case_id]}, extra=tag)
                 live.touch(job)
-                missing = _missing_required(result)
+                missing = engine._missing_required(result)
                 if result.get("error"):
                     if retry_alert is not None:
                         # Image mode flagged it, retried it and marked the row
@@ -9980,7 +3680,7 @@ def _stress_job_steps(spec: dict, cfg: dict, prepared: dict, cancel,
                 payload = {"truth": truth, "looped": looped,
                            "truncated": truncated, "extracted": result}
                 if mode == "full":
-                    apply_read_floor(payload)
+                    engine.apply_read_floor(payload)
                 summary = randomtest.summarise_round(payload)
                 rec.update(field_rate=(summary["field"] / 100
                                        if summary["field"] is not None else None),
@@ -10008,10 +3708,10 @@ def _stress_job_steps(spec: dict, cfg: dict, prepared: dict, cancel,
                     fields_window(alert, result, missing)
             if row is not None and not logged:      # read only
                 logged = True
-                log_run(row, prepared["sources"][case_id])
+                engine.log_run(row, prepared["sources"][case_id])
             rec["status"] = ("looped" if looped else
                              "truncated" if truncated else "ok")
-    except SweepCancelled:
+    except engine.SweepCancelled:
         rec["status"] = "cancelled"
     except Exception as err:                        # noqa: BLE001
         if cancel.is_set():
@@ -10101,9 +3801,9 @@ def _stress_log_error(mode, spec, prepared, all_stats, read_began, cfg, tag,
         case_id = spec["case"]
         if mode in ("ocr", "full"):
             row = {**summarise(all_stats, cfg["detail"], read_began), **tag}
-            log_run(row, prepared["sources"][case_id], error=err)
+            engine.log_run(row, prepared["sources"][case_id], error=err)
         else:
-            log_extract({"error": f"{type(err).__name__}: {err}",
+            engine.log_extract({"error": f"{type(err).__name__}: {err}",
                          "mode": cfg.get("extract_mode"),
                          "schema_first": bool(cfg.get("schema_first"))}, None,
                         {"case": case_id, "source": prepared["sources"][case_id]},
@@ -10467,14 +4167,14 @@ def _stress_detail_identity(cfg):
                          "doc_types": index[case].get("doc_types") or []}
                   for case in cfg["cases"] if case in index}
     return extractionlog.provenance(prompts.__file__, __file__, {
-        "AGENTIC_RETRIES": AGENTIC_RETRIES, "EXTRACT_SCHEMA": EXTRACT_SCHEMA,
-        "AGENTIC_PARALLEL": AGENTIC_PARALLEL, "AGENTIC_PARALLEL_MAX": AGENTIC_PARALLEL_MAX,
-        "EXTRACT_DOCUMENT_PARALLEL_MAX": EXTRACT_DOCUMENT_PARALLEL_MAX,
-        "EXTRACT_REQUEST_CONCURRENCY": EXTRACT_REQUEST_CONCURRENCY,
-        "SEGMENT_PARALLEL_MAX": SEGMENT_PARALLEL_MAX,
-        "SEGMENT_PARALLEL_MIN_PAGES": SEGMENT_PARALLEL_MIN_PAGES,
-        "SEGMENT_PARALLEL_OVERLAP": SEGMENT_PARALLEL_OVERLAP,
-        "SEGMENT_MAX_PAGES": SEGMENT_MAX_PAGES,
+        "AGENTIC_RETRIES": engine.AGENTIC_RETRIES, "EXTRACT_SCHEMA": engine.EXTRACT_SCHEMA,
+        "AGENTIC_PARALLEL": engine.AGENTIC_PARALLEL, "AGENTIC_PARALLEL_MAX": engine.AGENTIC_PARALLEL_MAX,
+        "EXTRACT_DOCUMENT_PARALLEL_MAX": engine.EXTRACT_DOCUMENT_PARALLEL_MAX,
+        "EXTRACT_REQUEST_CONCURRENCY": engine.EXTRACT_REQUEST_CONCURRENCY,
+        "SEGMENT_PARALLEL_MAX": engine.SEGMENT_PARALLEL_MAX,
+        "SEGMENT_PARALLEL_MIN_PAGES": engine.SEGMENT_PARALLEL_MIN_PAGES,
+        "SEGMENT_PARALLEL_OVERLAP": engine.SEGMENT_PARALLEL_OVERLAP,
+        "SEGMENT_MAX_PAGES": engine.SEGMENT_MAX_PAGES,
         "NORMALIZATION_VERSION": normalise.NORMALIZATION_VERSION}, extra_files={
             "normalise": normalise.__file__, "fieldscore": fieldscore.__file__,
             "segment": segment.__file__, "segmentparallel": segmentparallel.__file__,
@@ -10490,12 +4190,12 @@ def _stress_run(cfg: dict, cancel):
     cfg["run_id"] = f"{time.strftime('%Y-%m-%dT%H:%M:%S')}-{seed}"
     total = cfg["warmup"] + cfg["jobs"]
     detail_identity = _stress_detail_identity(cfg) if cfg.get("save_details") else None
-    reader = llama_status() if mode in ("ocr", "full") else None
+    reader = engine.llama_status() if mode in ("ocr", "full") else None
     extractor = backends.extract_status() if mode != "ocr" else None
     info = reader or extractor
     # Both servers are watched whatever the mode (the user's request,
     # 2026-10-19): a run that loads one shows the other beside it.
-    targets = _stress_targets(reader or llama_status(),
+    targets = _stress_targets(reader or engine.llama_status(),
                               extractor or backends.extract_status())         if cfg["metrics"] else []
 
     specs = [{"index": i} for i in range(total)]
@@ -10623,7 +4323,7 @@ def _stress_run(cfg: dict, cancel):
         except Exception:                           # noqa: BLE001
             pass
     records, wall, timeline, last = [], 0.0, [], {}
-    batcher = _batcher if cfg.get("vllm_batch") else None
+    batcher = engine._batcher if cfg.get("vllm_batch") else None
     if batcher is not None:
         batcher.reset_counts()        # the warm-up's batches are not the run's
     sweep = None
@@ -10870,7 +4570,7 @@ def stress_attach():
 def _stress_background_run(job, cfg, started):
     """The thread of a background stress run: take the guard, run, keep each line."""
     try:
-        cancel = begin_sweep(MultiCancel())
+        cancel = begin_sweep(engine.MultiCancel())
     finally:
         started.set()
     with _stress_live_lock:
@@ -10897,20 +4597,20 @@ def _stress_generate(cfg, cancel):
     # "Bypass prompt cache": every request of the run and its drain is sent
     # uncacheable, so prefill is measured rather than a cache lookup.
     no_cache = bool(cfg.get("no_cache"))
-    global _batcher
+    pass  # this state lives in engine.py
     try:
         if no_cache:
             backends.bypass_prefix_cache()
         if cfg.get("vllm_batch"):
             # One batcher for every server the run uses; the group key
             # keeps each URL's requests apart.
-            _batcher = vllmbatch.Batcher(cfg["concurrency"], _send_batch)
-        configuration = {**cfg, "ocr_profile": ocr_profile(),
-                         "sampling": ocr_sampling_state(), "loop_guard": loop_guard(),
-                         "read_floor": read_floor(), "table_agents": table_agents(),
+            engine._batcher = vllmbatch.Batcher(cfg["concurrency"], _send_batch)
+        configuration = {**cfg, "ocr_profile": engine.ocr_profile(),
+                         "sampling": ocr_sampling_state(), "loop_guard": engine.loop_guard(),
+                         "read_floor": engine.read_floor(), "table_agents": engine.table_agents(),
                          "context": backends.num_ctx(),
                          "workspace": workspace.current_id(),
-                         "reader": llama_status() if cfg.get("mode") in ("ocr", "full") else None,
+                         "reader": engine.llama_status() if cfg.get("mode") in ("ocr", "full") else None,
                          "extractor": (backends.extract_status() if cfg.get("mode")
                                        in ("extract", "classify", "full", "image") else None)}
         yield from _history_stream(_stress_run(cfg, cancel), "stress", configuration)
@@ -10918,9 +4618,9 @@ def _stress_generate(cfg, cancel):
         yield json.dumps({"event": "error",
                           "error": f"{type(err).__name__}: {err}"[:300]}) + "\n"
     finally:
-        if _batcher is not None:
-            _batcher.close()
-            _batcher = None
+        if engine._batcher is not None:
+            engine._batcher.close()
+            engine._batcher = None
         if no_cache:
             backends.restore_prefix_cache()
         servertime.resume_metrics()
@@ -11329,7 +5029,7 @@ def _monitor_scrape(info, url, gpu_url):
                 fit=monitor.fit(snap, rates),
                 gpu=gpu, gpu_reason=gpu_why, gpu_url=gpu_url or "",
                 loop_aborts=loop_aborts(),
-                loop_abort_on=bool(EXTRACT_LOOP_ABORT and loop_guard())), 200
+                loop_abort_on=bool(engine.EXTRACT_LOOP_ABORT and engine.loop_guard())), 200
 
 
 
@@ -11346,24 +5046,24 @@ def ocr():
     try:
         read_all_pages(pages, page_texts, all_stats, run=run)
     except ValueError as err:
-        log_run(summarise(all_stats, detail, started, job_id, run), source, error=err)
+        engine.log_run(summarise(all_stats, detail, started, job_id, run), source, error=err)
         return jsonify(error=str(err)), 400
     except requests.RequestException as err:
-        log_run(summarise(all_stats, detail, started, job_id, run), source, error=err)
+        engine.log_run(summarise(all_stats, detail, started, job_id, run), source, error=err)
         return jsonify(error=f"model server connection failed: {err}"), 502
 
-    text = join_page_texts(page_texts)
+    text = engine.join_page_texts(page_texts)
 
     payload = summarise(all_stats, detail, started, job_id, run)
     payload["truth"] = evaluate_if_known(case, text)
     if EXTRACT and request.form.get("extract", "1") != "0" and text.strip():
         payload["extracted"] = extract_fields(
             text, case_id=case["id"] if case else None, pages=page_texts)
-        recheck_fields_from_images(payload["extracted"], pages, page_texts,
+        engine.recheck_fields_from_images(payload["extracted"], pages, page_texts,
                                   fill_missing=request.form.get("fill_missing") == "1",
                                   validation_retry=request.form.get("validation_retry") == "1",
                                   case_id=case["id"] if case else None)
-    log_run(payload, source)
+    engine.log_run(payload, source)
     return jsonify(text=text, pages=page_texts, **payload)
 
 
@@ -11433,7 +5133,7 @@ def ocr_stream():
         collected, all_stats, run = [], [], {}
         summary = {}
         try:
-            parallel = _page_parallelism(len(pages))
+            parallel = engine._page_parallelism(len(pages))
             if parallel > 1:
                 # Every page is in flight at once, so there is no one page whose
                 # tokens could stream: interleaved, they would splice pages into
@@ -11442,7 +5142,7 @@ def ocr_stream():
                 # read sends -- the page needs nothing new to assemble it.
                 yield json.dumps({"event": "pages_parallel", "total": len(pages),
                                   "parallel": parallel, "job": job_id}) + "\n"
-                with closing(read_pages_at_once(pages, parallel, run=run)) as reads:
+                with closing(engine.read_pages_at_once(pages, parallel, run=run)) as reads:
                     for index, page_text, stats in reads:
                         yield page_started(index, pages[index - 1])
                         yield json.dumps({"event": "token", "text": page_text,
@@ -11456,22 +5156,22 @@ def ocr_stream():
                     stats = {}
                     while True:
                         parts = []
-                        for batch in batch_tokens(stream_page(page, stats),
+                        for batch in batch_tokens(engine.stream_page(page, stats),
                                                   STREAM_FLUSH_MS / 1000):
                             parts.extend(batch)
                             yield json.dumps({"event": "token", "text": "".join(batch),
                                               "n": len(batch)}) + "\n"
                         # The same climb `read_page` makes, said out loud: the
                         # page drops the looped text and streams the retry in.
-                        retry = loop_retry_page(page, stats)
+                        retry = engine.loop_retry_page(page, stats)
                         if retry is None:
                             break
-                        record_retry(stats, page, retry)
+                        engine.record_retry(stats, page, retry)
                         page = retry
                         yield json.dumps({"event": "loop_retry", "page": index,
                                           "detail": stats["detail"],
                                           "resolution": f"{page.width}x{page.height}"}) + "\n"
-                    collected.append(finish_page("".join(parts), stats))
+                    collected.append(engine.finish_page("".join(parts), stats))
                     all_stats.append(stats)
                     yield from page_finished(index, stats)
 
@@ -11495,7 +5195,7 @@ def ocr_stream():
                 # Agentic mode yields a step at a time on the way through; single
                 # mode yields nothing and the loop runs once. Either way the
                 # result arrives as the same "fields" event.
-                stream = extract_fields_stream(
+                stream = engine.extract_fields_stream(
                     text, case_id=case["id"] if case else None, pages=collected)
                 while True:
                     try:
@@ -11512,20 +5212,20 @@ def ocr_stream():
                 # before the row is written, and a page that had already drawn
                 # the score would go on showing it. Same call, same rule --
                 # `apply_read_floor` is idempotent for exactly this.
-                apply_read_floor(summary)
+                engine.apply_read_floor(summary)
                 yield json.dumps({"event": "fields", **result}) + "\n"
 
             # Logged once everything has run, so the row carries the accuracy and
             # the extraction counts rather than just the OCR timings.
-            log_run(summary, source)
+            engine.log_run(summary, source)
             yield json.dumps({"event": "logged"}) + "\n"
         except GeneratorExit:
             # The browser hung up -- Stop, or a closed tab. Still worth a row.
-            log_run(summary or summarise(all_stats, detail, started, job_id, run),
+            engine.log_run(summary or summarise(all_stats, detail, started, job_id, run),
                     source, status="cancelled")
             raise
         except Exception as err:  # surface failures inside the stream body
-            log_run(summary or summarise(all_stats, detail, started, job_id, run),
+            engine.log_run(summary or summarise(all_stats, detail, started, job_id, run),
                     source, error=err)
             yield json.dumps({"event": "error", "error": str(err)}) + "\n"
 
@@ -11595,11 +5295,11 @@ def _environment(rows: list, runs: dict = None) -> dict:
         # disagree with the first after a clamp.
         "settings": {
             "detail": DEFAULT_DETAIL,
-            "ocr_profile": ocr_profile(),
-            "extract_mode": "agentic" if AGENTIC_EXTRACT else "single",
+            "ocr_profile": engine.ocr_profile(),
+            "extract_mode": "agentic" if engine.AGENTIC_EXTRACT else "single",
             "dry": DRY_MULTIPLIER,
-            "max_new_tokens": MAX_NEW_TOKENS,
-            "extract_max_tokens": EXTRACT_MAX_TOKENS,
+            "max_new_tokens": engine.MAX_NEW_TOKENS,
+            "extract_max_tokens": engine.EXTRACT_MAX_TOKENS,
         },
         # `runs` is passed in by a cached run-log payload, which holds the
         # log's half of this card and asks only for the live half again.
@@ -11740,7 +5440,7 @@ def _compile_runs(limit: int, window=None, min_read_pct=None,
         # What the process would have used, so the page can say which of its
         # controls is at the server's own default and which the reader moved.
         "defaults": {"window": SUMMARY_RUNS,
-                     "min_read_pct": round(MIN_READ_FOR_FIELDS * 100, 1)},
+                     "min_read_pct": round(engine.MIN_READ_FOR_FIELDS * 100, 1)},
         "filters": {"include": include or {}, "exclude": exclude or {}},
     }
 
@@ -11988,7 +5688,7 @@ def preflight():
             say(f"[ocr] {picked['reason']} Leaving the endpoint on "
                 f"{picked['selected']}; use the picker or set OCR_ENDPOINTS.")
 
-    status = llama_status()
+    status = engine.llama_status()
     say(f"[ocr] {status['kind'] or 'server'} {status['url']} "
         f"model={status['model']} available={status['available']}")
     # The models, selected once, here -- so the page opens on them and nobody
@@ -12090,9 +5790,9 @@ def choose_port() -> int:
 # Register against this module object even when launched as __main__: importing
 # app again here would create a second engine and a second set of globals.
 import userweb
-get_user_service = userweb.register(app, sys.modules[__name__])
+get_user_service = userweb.register(app, engine)
 # Preserve the User API's origin check before parsing or validating its body.
-app.before_request(_validate_api_json_object)
+app.before_request(webcommon.validate_api_json_object)
 
 
 if __name__ == "__main__":
@@ -12114,3 +5814,16 @@ if __name__ == "__main__":
         debug=False,
         threaded=True,
     )
+
+
+# The User page's Stress chip reports this app's live stress runs.
+engine.stress_runs_live = stress_runs_live
+
+
+def __getattr__(name):
+    """`app.X` for what moved to engine.py, for tools and tests that still read it.
+    Patching must target `engine` -- the engine reads its own module globals."""
+    try:
+        return getattr(engine, name)
+    except AttributeError:
+        raise AttributeError(f"module 'app' has no attribute {name!r}") from None

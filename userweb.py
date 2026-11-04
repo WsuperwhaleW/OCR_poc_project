@@ -13,6 +13,10 @@ from flask import abort, jsonify, render_template, request, send_file
 from PIL import Image, ImageOps
 
 import config
+import doctype_mapping
+import normalise
+import prompts
+import validate
 import userjson
 import userprompts
 import userpromptsets
@@ -62,6 +66,74 @@ def register(application, engine):
             code: re.sub(r'^(an|a|the) ', '', name)
             for code, name in engine.prompts.TYPE_NAMES.items()
             if engine.prompts.DOC_TYPE_FIELDS.get(code)}, user_prompt_catalog=userpromptsets.catalog())
+
+    @application.get('/api/schema')
+    def schema():
+        """Every document type this app knows, and the form each one asks for.
+
+        Reference data, not a run: no model server is touched, nothing is logged, and
+        the answer is the same on every call. It is what the **Doc types** tab draws.
+
+        **It is assembled here rather than in the template, and that is the whole
+        point of it being a route.** Which keys a requirement asks for, which of them
+        it makes Mandatory, and which validation rules a type adds are facts stated
+        once -- in `prompts.DOC_TYPE_FIELDS`, `prompts.MANDATORY_FIELDS`,
+        `prompts.TYPE_RULES` and `validate.RULE_NOTES` -- and a second copy in
+        JavaScript is exactly how fifteen keys silently vanished from the Fields tab
+        on 2026-08-19. The page owns the wording of a label and nothing else.
+
+        Three groups, and the split IS the answer to "what do we know":
+
+        * a type with a requirement -- four of them -- carries its own field list.
+        * a type the classifier recognises but no requirement covers contributes NO
+          key (`fields` is empty), which is `DOC_TYPE_FIELDS`' standing rule. It is
+          still listed, because being classifiable and being scoreable are different
+          things and a reader looking for TAX_INVOICE should find it rather than
+          conclude the page is broken.
+        * `unknown` is what a document reduces to when no type in play has a
+          requirement -- the base field set, `prompts.DEFAULT_FIELDS`, which is the
+          union of every requirement and is Mandatory in none of it.
+        """
+        def form(code):
+            own = tuple(prompts.DOC_TYPE_FIELDS.get(code, ()))
+            return {
+                "code": code,
+                # The article form, as a prompt says it -- "an invoice", "a
+                # withholding tax certificate (50 thawi)". The page trims the article.
+                "name": engine.TYPE_NAMES[code],
+                # The printed wordings that classify a page as this. Raw, not the
+                # squashed needles that do the matching -- see normalise.TYPE_HEADINGS.
+                "headings": list(normalise.TYPE_HEADINGS.get(code, ())),
+                # This type's OWN contribution to a form, which is empty for a type
+                # no requirement covers. Not `fields_for_types([code])`: that falls
+                # back to the base set for such a type, which is a true answer to a
+                # different question and would read here as a requirement.
+                "fields": list(own),
+                "mandatory": list(prompts.MANDATORY_FIELDS.get(code, ())),
+                "items": list(prompts.DOC_TYPE_ITEMS.get(code, ())),
+                "mandatory_items": list(prompts.MANDATORY_ITEMS.get(code, ())),
+                "rules": list(prompts.TYPE_RULES.get(code, ())),
+                "has_requirement": bool(own),
+            }
+
+        return jsonify(
+            # Most specific first, the order everything else ranks these in.
+            types=[form(code) for code in prompts.TYPE_SPECIFICITY],
+            # What is asked when no type in play has a requirement. `mandatory` is
+            # empty on purpose and is not an oversight: nothing is demanded of a
+            # document no table covers, and `fieldscore` scores the whole base set
+            # instead, marking the rate `unknown_type`.
+            unknown={"fields": list(prompts.DEFAULT_FIELDS), "mandatory": [],
+                     "items": [], "rules": []},
+            # One line per validation rule, and whether it can run here at all --
+            # four of the nine need data this process has not got.
+            rule_notes=validate.RULE_NOTES,
+            # Every key in the schema, in the order the prompt lists them, so the
+            # page can draw a matrix in reading order without sorting it itself.
+            keys=list(prompts._SCALAR_KEYS),
+            item_keys=list(prompts.INCOME_ITEM_KEYS),
+            items_key=engine.INCOME_ITEMS_KEY,
+            user_mapping=doctype_mapping.comparison())
 
     @application.get('/api/user/settings')
     def user_settings():

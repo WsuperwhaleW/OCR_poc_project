@@ -6,6 +6,7 @@ from concurrent.futures import ThreadPoolExecutor
 from unittest.mock import patch
 
 import app
+import engine
 import extractionlimit
 import workspace
 
@@ -13,7 +14,7 @@ import workspace
 class ExtractionLimitTests(unittest.TestCase):
     def setUp(self):
         self.limits = extractionlimit.ServerLimits()
-        guard = patch.object(app, '_EXTRACTION_LIMITS', self.limits)
+        guard = patch.object(engine, '_EXTRACTION_LIMITS', self.limits)
         guard.start(); self.addCleanup(guard.stop)
 
     def test_different_files_workspaces_and_models_share_the_same_server_cap(self):
@@ -31,8 +32,8 @@ class ExtractionLimitTests(unittest.TestCase):
             with workspace.use(workspace.Workspace('limit_file_%03d' % index)):
                 status = {'url':'http://GPU:8001/', 'kind':'vllm', 'model':str(index % 2)}
                 return app._timed_post('http://gpu:8001/v1/chat/completions', {}, status)
-        with patch.object(app, 'EXTRACT_REQUEST_CONCURRENCY', 3), \
-                patch.object(app, '_post_once', side_effect=post), ThreadPoolExecutor(max_workers=12) as pool:
+        with patch.object(engine, 'EXTRACT_REQUEST_CONCURRENCY', 3), \
+                patch.object(engine, '_post_once', side_effect=post), ThreadPoolExecutor(max_workers=12) as pool:
             results = list(pool.map(file, range(24)))
         self.assertEqual(len(results), 24)
         self.assertEqual(peak, 3)
@@ -103,10 +104,10 @@ class ExtractionLimitTests(unittest.TestCase):
         def post(*args):
             seen.append(gate.active)
             return app._Reply(400, text='maximum context length') if len(seen) == 1 else app._Reply(200, {})
-        with patch.object(app, 'EXTRACT_REQUEST_CONCURRENCY', 1), \
-                patch.object(app, '_post_once', side_effect=post), \
-                patch.object(app, '_context_overflow', return_value=True), \
-                patch.object(app, '_fit_max_tokens', return_value={'max_tokens':500}):
+        with patch.object(engine, 'EXTRACT_REQUEST_CONCURRENCY', 1), \
+                patch.object(engine, '_post_once', side_effect=post), \
+                patch.object(engine, '_context_overflow', return_value=True), \
+                patch.object(engine, '_fit_max_tokens', return_value={'max_tokens':500}):
             response = app._timed_post('http://gpu/chat', payload, {'url':'http://gpu'})
         self.assertEqual(response.status_code, 200)
         self.assertEqual(seen, [1,1])

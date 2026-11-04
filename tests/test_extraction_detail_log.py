@@ -8,6 +8,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import app
+import engine
 import config
 import extractionlog
 import runhistory
@@ -183,7 +184,7 @@ class StreamTests(unittest.TestCase):
             (app.scoring, "cases_index", {"return_value": {"a": {"id": "a", "ground_truth": truth,
                 "pdf": "a.pdf", "doc_types": ["INVOICE"]}}}),
             (app.fieldscore, "has_truth", {"return_value": True}),
-            (app, "llama_status", {"return_value": STATUS}),
+            (engine, "llama_status", {"return_value": STATUS}),
             (app.backends, "extract_status", {"return_value": STATUS}),
         ):
             patcher = patch.object(target, name, **kwargs)

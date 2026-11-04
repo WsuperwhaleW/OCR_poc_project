@@ -16,6 +16,7 @@ from unittest import mock
 import requests
 
 import app
+import engine
 import backends
 import prompts
 import servertime
@@ -100,7 +101,7 @@ class FitTests(unittest.TestCase):
                         "max_tokens": 4096,
                         "chat_template_kwargs": {"enable_thinking": False}}
         # Not streamed: the loop guard path is not what is under test here.
-        patcher = mock.patch.object(app, "_guards_extraction", return_value=False)
+        patcher = mock.patch.object(engine, "_guards_extraction", return_value=False)
         patcher.start()
         self.addCleanup(patcher.stop)
 
@@ -157,7 +158,7 @@ class FitTests(unittest.TestCase):
             app._timed_post("http://gpu:8000/v1/chat/completions", self.payload, VLLM)
         self.assertEqual(sent, ["http://gpu:8000/v1/chat/completions"])
         self.assertFalse(app._context_overflow(OVERFLOW, OLLAMA))
-        with mock.patch.object(app, "VLLM_FIT_MAX_TOKENS", False):
+        with mock.patch.object(engine, "VLLM_FIT_MAX_TOKENS", False):
             self.assertFalse(app._context_overflow(OVERFLOW, VLLM))
 
 
@@ -190,7 +191,7 @@ class WarmupTests(unittest.TestCase):
         return ask
 
     def _run(self, ask):
-        with mock.patch.object(app, "_ask_step", ask):
+        with mock.patch.object(engine, "_ask_step", ask):
             gen = app._extract_agentic(TEXT, VLLM, FORM)
             while True:
                 try:
@@ -217,7 +218,7 @@ class WarmupTests(unittest.TestCase):
         self.assertEqual(len(result["steps"]), len(self.table))
 
     def test_switch_off_sends_all_at_once(self):
-        with mock.patch.object(app, "VLLM_PREFIX_WARMUP", False):
+        with mock.patch.object(engine, "VLLM_PREFIX_WARMUP", False):
             self._run(self._ask())
         prefilled = next(t for kind, _, t in self.log if kind == "prefilled")
         others = [t for kind, sid, t in self.log

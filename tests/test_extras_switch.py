@@ -10,6 +10,7 @@ import unittest
 from unittest import mock
 
 import app
+import engine
 import prompts
 import runlog
 
@@ -59,7 +60,7 @@ class SingleTests(unittest.TestCase):
         def post(url, payload, status):
             sent["payload"] = payload
             return res
-        with mock.patch.object(app, "_timed_post", side_effect=post):
+        with mock.patch.object(engine, "_timed_post", side_effect=post):
             reply = app._extract_once("Tel 02", STATUS, None,
                                       {**FORM, "extras": extras})
         return reply, json.dumps(sent["payload"])

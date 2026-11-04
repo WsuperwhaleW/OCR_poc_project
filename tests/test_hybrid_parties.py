@@ -4,6 +4,7 @@ import unittest
 from unittest.mock import patch
 
 import app
+import engine
 import extractionlog
 import prompts
 
@@ -48,8 +49,8 @@ class HybridPartyTests(unittest.TestCase):
                         calls.append((message, cap, schema))
                         return json.dumps(answers), False, 75
 
-                    with patch.object(app, '_chat', side_effect=chat), \
-                         patch.object(app, 'AGENTIC_PARALLEL', False):
+                    with patch.object(engine, '_chat', side_effect=chat), \
+                         patch.object(engine, 'AGENTIC_PARALLEL', False):
                         result = app._drain(app._extract_agentic(
                             TEXT, STATUS, form, only=['seller', 'buyer'], mode='hybrid'))
                     self.assertNotIn('error', result)
@@ -88,7 +89,7 @@ class HybridPartyTests(unittest.TestCase):
     def test_schema_fallback_reasks_the_complete_party_group(self):
         step = app._steps_for(['buyer'], ['INVOICE'], False, mode='hybrid')[0]
         replies = [('not JSON', False, 3), (json.dumps(VALUES), False, 75)]
-        with patch.object(app, '_chat', side_effect=replies) as chat:
+        with patch.object(engine, '_chat', side_effect=replies) as chat:
             values, raw, _, _, _ = app._ask_step('shared transcript and question', step, STATUS)
         self.assertEqual(values, VALUES)
         self.assertEqual(len(raw), 2)

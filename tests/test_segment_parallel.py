@@ -7,6 +7,7 @@ import unittest
 from unittest.mock import patch
 
 import app
+import engine
 import segmentparallel
 import workspace
 
@@ -24,7 +25,7 @@ class ParallelGroupingTests(unittest.TestCase):
         for name, value in [('SEGMENT_PARALLEL_MAX',4), ('SEGMENT_PARALLEL_MIN_PAGES',32),
                             ('SEGMENT_PARALLEL_OVERLAP',3), ('SEGMENT_MAX_PAGES',5),
                             ('SEGMENT_CHAT_MAX_ASKS',200), ('EXTRACT_REQUEST_CONCURRENCY',128)]:
-            guard = patch.object(app,name,value); guard.start(); self.addCleanup(guard.stop)
+            guard = patch.object(engine,name,value); guard.start(); self.addCleanup(guard.stop)
         self.active = self.peak = self.calls = 0
         self.lock = threading.Lock()
         owner = self
@@ -73,7 +74,7 @@ class ParallelGroupingTests(unittest.TestCase):
         parallel,events=self.run_pages(pages)
         self.assertGreater(self.peak,1)
         self.assertFalse(parallel[0]['_parallel_execution']['fallback'])
-        with patch.object(app,'SEGMENT_PARALLEL_MAX',1):
+        with patch.object(engine,'SEGMENT_PARALLEL_MAX',1):
             forward,_=self.run_pages(pages)
         for actual, expected in zip(parallel,forward):
             for key in ('pages','text','codes','heading','confidence','certain','joins','start_reason'):
@@ -83,7 +84,7 @@ class ParallelGroupingTests(unittest.TestCase):
         self.assertTrue(any(e['event']=='segment_progress' for e in events))
 
     def test_one_long_document_is_not_cut_at_worker_seeds_and_leader_keeps_question_reserve(self):
-        with patch.object(app,'SEGMENT_CHAT_MAX_ASKS',110):
+        with patch.object(engine,'SEGMENT_CHAT_MAX_ASKS',110):
             groups,_=self.run_pages(pages_for([1]))
         self.assertEqual(len(groups),1)
         self.assertEqual(groups[0]['pages'],list(range(1,101)))
@@ -138,7 +139,7 @@ class ParallelGroupingTests(unittest.TestCase):
         self.assertGreater(groups[0]['_parallel_execution']['question_cache_hits'],0)
 
     def test_refused_or_unbudgeted_questions_do_not_create_a_worker_owner(self):
-        with patch.object(app._SegmentChat,'_ask',return_value=None), patch.object(app,'SEGMENT_CHAT_MAX_ASKS',4):
+        with patch.object(app._SegmentChat,'_ask',return_value=None), patch.object(engine,'SEGMENT_CHAT_MAX_ASKS',4):
             groups,_=self.run_pages(pages_for([1]))
         self.assert_coverage(groups,100)
         meta=groups[0]['_parallel_execution']
@@ -178,10 +179,10 @@ class ParallelGroupingTests(unittest.TestCase):
                 active-=1
             return app._Reply(200,{'choices':[{'message':{'content':json.dumps(
                 {'same':first==current,'evidence':current})}}]})
-        with patch.object(app,'_EXTRACTION_LIMITS',extractionlimit.ServerLimits()), \
-                patch.object(app,'EXTRACT_REQUEST_CONCURRENCY',3), \
+        with patch.object(engine,'_EXTRACTION_LIMITS',extractionlimit.ServerLimits()), \
+                patch.object(engine,'EXTRACT_REQUEST_CONCURRENCY',3), \
                 patch.object(app._SegmentChat,'_ask',self.real_ask), \
-                patch.object(app,'_post_once',side_effect=post), ThreadPoolExecutor(max_workers=2) as pool:
+                patch.object(engine,'_post_once',side_effect=post), ThreadPoolExecutor(max_workers=2) as pool:
             results=list(pool.map(lambda _: self.run_pages(pages_for(list(range(1,101,7)))),range(2)))
         self.assertEqual(peak,3)
         for grouped,_ in results:

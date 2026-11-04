@@ -7,6 +7,7 @@ from unittest import mock
 from PIL import Image
 
 import app
+import engine
 import settings
 
 
@@ -38,8 +39,8 @@ class LadderTests(unittest.TestCase):
 
 class ReadPageRetryTests(unittest.TestCase):
     def setUp(self):
-        self.patches = [mock.patch.object(app, "TRIM_MARGINS", False),
-                        mock.patch.object(app, "LOOP_RETRY", True)]
+        self.patches = [mock.patch.object(engine, "TRIM_MARGINS", False),
+                        mock.patch.object(engine, "LOOP_RETRY", True)]
         for p in self.patches:
             p.start()
 
@@ -51,7 +52,7 @@ class ReadPageRetryTests(unittest.TestCase):
         pages, _, job, _ = app.prepare_input(data or _upload(), detail)
         stream, sizes = _stream(loop_below)
         stats = {}
-        with mock.patch.object(app, "stream_page", stream):
+        with mock.patch.object(engine, "stream_page", stream):
             text = app.read_page(pages[0], stats)
         return text, stats, sizes, job
 
@@ -78,7 +79,7 @@ class ReadPageRetryTests(unittest.TestCase):
         def tagged(image, stats=None, profile=None, cancel=None):
             tags.append(image._dry_tag)
             yield from stream(image, stats, profile, cancel)
-        with mock.patch.object(app, "stream_page", tagged):
+        with mock.patch.object(engine, "stream_page", tagged):
             app.read_page(pages[0], {})
         self.assertEqual(tags, ["upload p1/1 low", "upload p1/1 medium"])
 
@@ -102,7 +103,7 @@ class ReadPageRetryTests(unittest.TestCase):
         self.assertNotIn("loop_retries", stats)
 
     def test_switched_off(self):
-        with mock.patch.object(app, "LOOP_RETRY", False):
+        with mock.patch.object(engine, "LOOP_RETRY", False):
             _, stats, sizes, _ = self.read("low", loop_below=10**9)
         self.assertEqual(len(sizes), 1)
         self.assertTrue(stats["looped"])
@@ -120,15 +121,15 @@ class ReadPageRetryTests(unittest.TestCase):
 
 class StreamRouteRetryTests(unittest.TestCase):
     def test_the_stream_says_so_and_keeps_only_the_retry(self):
-        with mock.patch.object(app, "TRIM_MARGINS", False), \
-                mock.patch.object(app, "LOOP_RETRY", True):
+        with mock.patch.object(engine, "TRIM_MARGINS", False), \
+                mock.patch.object(engine, "LOOP_RETRY", True):
             pages, detail, job, case = app.prepare_input(_upload(), "low")
         stream, sizes = _stream(3_000_000)
-        with mock.patch.object(app, "stream_page", stream), \
-                mock.patch.object(app, "_page_parallelism", return_value=1), \
+        with mock.patch.object(engine, "stream_page", stream), \
+                mock.patch.object(engine, "_page_parallelism", return_value=1), \
                 mock.patch.object(app, "prepare",
                                   return_value=(pages, detail, job, case, {})), \
-                mock.patch.object(app, "log_run"):
+                mock.patch.object(engine, "log_run"):
             res = app.app.test_client().post("/api/ocr/stream", data={"extract": "0"})
             events = [json.loads(line) for line in res.get_data(as_text=True).splitlines()
                       if line.strip()]

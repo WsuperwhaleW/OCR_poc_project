@@ -6,6 +6,7 @@ import unittest
 from unittest.mock import patch
 
 import app
+import engine
 import prompts
 import userjson
 import userprompts
@@ -107,8 +108,8 @@ class UserPromptTests(unittest.TestCase):
             return result, [json.dumps(result)], False, 1, False
         form = {'doc_types': ['INVOICE'], 'keys': list(prompts.fields_for_types(['INVOICE'])),
                 'mandatory': [], 'items': [], 'extras': False}
-        with EngineAdapter(app).context('prompt_execution', cfg), patch.object(app, '_ask_step', ask), \
-                patch.object(app, 'AGENTIC_RETRIES', 0):
+        with EngineAdapter(app).context('prompt_execution', cfg), patch.object(engine, '_ask_step', ask), \
+                patch.object(engine, 'AGENTIC_RETRIES', 0):
             table = app.steps_for_types(['INVOICE'], False, mode='hybrid')
             self.assertEqual(len(table), 5)
             self.assertEqual(app.steps_for_types(['INVOICE'], False, mode='agentic'),

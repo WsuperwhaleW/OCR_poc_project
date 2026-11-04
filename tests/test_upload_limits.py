@@ -5,8 +5,7 @@ from unittest.mock import patch
 
 from PIL import Image
 import app
-
-
+import engine
 class WorkspaceUploadLimitTests(unittest.TestCase):
     def setUp(self):
         self.client = app.app.test_client()
@@ -20,7 +19,7 @@ class WorkspaceUploadLimitTests(unittest.TestCase):
 
     def test_one_two_and_four_mib_uploads_reach_workspace_preview_without_ocr(self):
         page = Image.new('RGB', (8, 8), 'white')
-        with patch.object(app, 'load_pages', return_value=([page], 1)) as load, \
+        with patch.object(engine, 'load_pages', return_value=([page], 1)) as load, \
                 patch('requests.sessions.Session.request', side_effect=AssertionError('No OCR/network')):
             for prefix in ('', '/ocr'):
                 for size in (1, 2, 4):
@@ -35,7 +34,7 @@ class WorkspaceUploadLimitTests(unittest.TestCase):
         page = Image.new('RGB', (8, 8), 'white')
         with patch.object(app, 'MAX_UPLOAD_MB', 1), \
                 patch.dict(app.app.config, MAX_CONTENT_LENGTH=2 * 1024 * 1024), \
-                patch.object(app, 'load_pages', return_value=([page], 1)) as load:
+                patch.object(engine, 'load_pages', return_value=([page], 1)) as load:
             with self.preview(b'x' * (1024 * 1024)) as response:
                 self.assertEqual(response.status_code, 200)
             self.assertEqual(load.call_count, 1)

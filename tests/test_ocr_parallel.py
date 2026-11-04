@@ -16,7 +16,7 @@ from unittest import mock
 from PIL import Image
 
 import app
-
+import engine
 VLLM = {"kind": "vllm", "url": "http://gpu:8000", "reachable": True,
         "available": True, "model": "m"}
 OLLAMA = {"kind": "ollama", "url": "http://local:11434", "reachable": True,
@@ -57,7 +57,7 @@ def _fake_stream(barrier=None, fail_on=None, stall_on=None):
 
 class GateTests(unittest.TestCase):
     def parallelism(self, pages, status=VLLM):
-        with mock.patch.object(app, "llama_status", return_value=status):
+        with mock.patch.object(engine, "llama_status", return_value=status):
             return app._page_parallelism(pages)
 
     def test_three_pages_or_more_on_vllm_go_at_once(self):
@@ -73,16 +73,16 @@ class GateTests(unittest.TestCase):
         self.assertEqual(self.parallelism(13, {**VLLM, "reachable": False}), 1)
 
     def test_the_switch_and_the_caps(self):
-        with mock.patch.object(app, "OCR_PARALLEL", False):
+        with mock.patch.object(engine, "OCR_PARALLEL", False):
             self.assertEqual(self.parallelism(13), 1)
-        with mock.patch.object(app, "OCR_PARALLEL_MAX", 4):
+        with mock.patch.object(engine, "OCR_PARALLEL_MAX", 4):
             self.assertEqual(self.parallelism(13), 4)
-        with mock.patch.object(app, "OCR_PARALLEL_MIN_PAGES", 5):
+        with mock.patch.object(engine, "OCR_PARALLEL_MIN_PAGES", 5):
             self.assertEqual(self.parallelism(4), 1)
             self.assertEqual(self.parallelism(5), 5)
 
     def test_a_short_read_never_asks_the_server(self):
-        with mock.patch.object(app, "llama_status") as status:
+        with mock.patch.object(engine, "llama_status") as status:
             app._page_parallelism(2)
         status.assert_not_called()
 
@@ -90,8 +90,8 @@ class GateTests(unittest.TestCase):
 class ReadTests(unittest.TestCase):
     def read(self, n, stream, status=VLLM, cancel=None):
         texts, stats, run = [], [], {}
-        with mock.patch.object(app, "llama_status", return_value=status), \
-                mock.patch.object(app, "stream_page", stream):
+        with mock.patch.object(engine, "llama_status", return_value=status), \
+                mock.patch.object(engine, "stream_page", stream):
             app.read_all_pages(_pages(n), texts, stats, cancel, run)
         return texts, stats, run
 
@@ -152,11 +152,11 @@ class StreamTests(unittest.TestCase):
     def test_the_stream_sends_whole_pages_in_order(self):
         pages = _pages(4)
         client = app.app.test_client()
-        with mock.patch.object(app, "llama_status", return_value=VLLM), \
-                mock.patch.object(app, "stream_page", _fake_stream()), \
+        with mock.patch.object(engine, "llama_status", return_value=VLLM), \
+                mock.patch.object(engine, "stream_page", _fake_stream()), \
                 mock.patch.object(app, "prepare",
                                   return_value=(pages, "low", None, None, {})), \
-                mock.patch.object(app, "log_run"):
+                mock.patch.object(engine, "log_run"):
             res = client.post("/api/ocr/stream", data={"extract": "0"})
             events = [json.loads(line) for line in res.get_data(as_text=True).splitlines()
                       if line.strip()]
