@@ -1084,6 +1084,9 @@
   .st-alerts tr.st-alert-link { cursor: pointer; }
   .st-alerts tr.st-alert-link:hover td { background: rgba(110, 160, 255, .08); }
   .st-alerts tr.st-alert-link.on td { background: rgba(110, 160, 255, .16); }
+  .st-copy-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 6px;
+                 margin-top: 12px; font-size: .76rem; }
+  .st-copy-bar span { color: var(--muted); }
   .st-box table.queue { min-width: 0; margin-top: 8px; font-size: .76rem; }
   .st-box table.queue th, .st-box table.queue td { padding: 4px 6px; }
   .st-thin { color: var(--muted); font-size: .7rem; }

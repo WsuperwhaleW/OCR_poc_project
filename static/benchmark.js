@@ -11887,9 +11887,75 @@ const ST_ALERT_PARTS = [
   ['extract', 'Extraction', a => a.stage !== 'ocr'],
 ];
 
+/* The file names behind the flags, to copy (2026-11-05, at the user's request):
+   before a retry is every file a read problem was flagged on; after it, the ones
+   whose flag did not end `resolved`. A DRY flag with no retry is never resolved,
+   so it is in both. `alerts` holds each flag's latest state (one entry per id). */
+const ST_READ_PROBLEMS = ['error', 'looped', 'dry', 'truncated'];
+const ST_COPY_LISTS = [
+  ['errors', 'Errors', a => a.kind === 'error'],
+  ['loop-before', 'Loop · before retry', a => a.kind === 'looped'],
+  ['loop-after', 'Loop · after retry', a => a.kind === 'looped' && a.state !== 'resolved'],
+  ['dry-before', 'DRY · before retry', a => a.kind === 'dry'],
+  ['dry-after', 'DRY · after retry', a => a.kind === 'dry' && a.state !== 'resolved'],
+  ['all-before', 'All · before retry', a => ST_READ_PROBLEMS.includes(a.kind)],
+  ['all-after', 'All · after retry', a => a.kind === 'error'
+    || (ST_READ_PROBLEMS.includes(a.kind) && a.state !== 'resolved')],
+];
+
+// A flag names its case; a benchmark case's file is the manifest's name for it.
+function stFlagFileName(a) {
+  const c = typeof FX_CASES !== 'undefined' ? FX_CASES.find(x => x.id === a.case) : null;
+  return (c && c.pdf) || a.case || '';
+}
+
+// [key, label, names]: each file once, in the order it was first flagged.
+function stFlagFileLists(alerts, name = stFlagFileName) {
+  return ST_COPY_LISTS.map(([key, label, test]) => {
+    const names = [];
+    for (const a of alerts) {
+      const n = test(a) ? name(a) : '';
+      if (n && !names.includes(n)) names.push(n);
+    }
+    return [key, label, names];
+  });
+}
+
+function stCopyBarHtml(alerts) {
+  const lists = stFlagFileLists(alerts);
+  if (!lists.some(([, , names]) => names.length)) return '';
+  return '<div class="st-copy-bar"><span>Copy file names:</span>'
+    + lists.map(([key, label, names]) => '<button type="button" class="ghost-sm" data-st-copy-key="'
+      + key + '" data-st-copy="' + esc(names.join('\n')) + '"' + (names.length ? '' : ' disabled')
+      + ' title="' + esc(names.length ? names.join(', ') : 'none') + '">' + esc(label)
+      + ' (' + names.length + ')</button>').join('')
+    + '</div>';
+}
+
+// Plain http on a server has no navigator.clipboard: fall back to a selection.
+async function stCopyText(text) {
+  try {
+    if (navigator.clipboard && window.isSecureContext) {
+      await navigator.clipboard.writeText(text);
+      return true;
+    }
+  } catch (err) { /* fall through */ }
+  const ta = document.createElement('textarea');
+  ta.value = text;
+  ta.setAttribute('readonly', '');
+  ta.style.position = 'fixed';
+  ta.style.opacity = '0';
+  document.body.appendChild(ta);
+  ta.select();
+  let ok = false;
+  try { ok = document.execCommand('copy'); } catch (err) { ok = false; }
+  ta.remove();
+  return ok;
+}
+
 // `mode` is the run's (`plan.mode`): only a full run extracts what it read.
 function stAlertsHtml(alerts, mode) {
-  return ST_ALERT_PARTS.map(([part, title, test]) =>
+  return stCopyBarHtml(alerts) + ST_ALERT_PARTS.map(([part, title, test]) =>
     stAlertBox(alerts.filter(test), part, title, mode)).join('');
 }
 
@@ -12031,7 +12097,16 @@ function stOpenEvidenceCompare(alertId, scroll = true) {
   if (scroll) document.getElementById('compareCard').scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
 for (const host of [stOut, document.getElementById('historyDetail')]) {
-  host.addEventListener('click', e => {
+  host.addEventListener('click', async e => {
+    const copy = e.target.closest('button[data-st-copy-key]');
+    if (copy) {
+      const label = copy.textContent;
+      const n = copy.dataset.stCopy ? copy.dataset.stCopy.split('\n').length : 0;
+      const ok = await stCopyText(copy.dataset.stCopy || '');
+      copy.textContent = ok ? 'Copied ' + n + ' file name(s)' : 'Copy failed';
+      setTimeout(() => { if (copy.isConnected) copy.textContent = label; }, 1500);
+      return;
+    }
     const row = e.target.closest('tr.st-alert-link');
     if (row) stShowEvidence(row.dataset.alertId, row.dataset.alertKind, host,
                             row.dataset.alertJob);
