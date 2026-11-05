@@ -528,6 +528,165 @@ def looks_repetitive(text: str, tail_chars: int = LOOP_TAIL_CHARS,
     return False
 
 
+# ---------- where a read went wrong, for the Compare view ----------
+# 2026-11-05, at the user's request: a flagged stress page marks, in its
+# transcript, where DRY fired and where the loop is. Offsets are into the
+# transcript (`finish_page`'s text), end exclusive.
+
+def _dry_raw_spans(dry: dict, tok_char, raw_len: int) -> dict:
+    """DRY's fired token runs as character runs of the raw reply.
+
+    Exact where each token's chunk is known (a stream); estimated in proportion
+    to the reply's length where it came back in one piece (`raw_spans_approx`).
+    """
+    spans = dry.get("spans") or []
+    tokens = dry.get("tokens") or 0
+    if tok_char is not None and len(tok_char) == tokens:
+        def at(n):
+            return tok_char[n] if n < len(tok_char) else raw_len
+        return {"raw_spans": [[at(a), at(b)] for a, b in spans]}
+    if not tokens:
+        return {}
+    scale = raw_len / tokens
+    return {"raw_spans": [[int(a * scale), int(b * scale)] for a, b in spans],
+            "raw_spans_approx": True}
+
+
+def _align_offsets(raw: str, text: str) -> list:
+    """For each offset into `raw`, the offset into `text` it became.
+
+    `text` is `raw` after `read_reply`: a fence, a heading, page-number tags
+    and figures taken out and a few entities turned into characters -- so a
+    greedy walk that keeps each raw character the transcript also has is enough.
+    """
+    out, j = [0] * (len(raw) + 1), 0
+    for i, ch in enumerate(raw):
+        out[i] = j
+        if j < len(text) and ch == text[j]:
+            j += 1
+    out[len(raw)] = j
+    return out
+
+
+def _snap(text: str, start: int, end: int):
+    """`[start, end)` widened to whole tags, so a mark never cuts one in two."""
+    open_at = text.rfind("<", 0, start)
+    if open_at != -1 and text.rfind(">", open_at, start) == -1:
+        start = open_at
+    open_at = text.rfind("<", 0, end)
+    if open_at != -1 and text.rfind(">", open_at, end) == -1:
+        close = text.find(">", end)
+        end = len(text) if close == -1 else close + 1
+    return start, end
+
+
+def _line_spans(text: str):
+    return [(m.start(), m.end()) for m in re.finditer(r"[^\n]+", text)]
+
+
+def _line_cycle_span(text: str):
+    """The last run of identical lines that carry a word, from its second copy."""
+    lines = _line_spans(text)
+    best, run_from = None, 0
+    for k in range(1, len(lines) + 1):
+        same = (k < len(lines)
+                and text[slice(*lines[k])].strip() == text[slice(*lines[k - 1])].strip())
+        if same:
+            continue
+        line = text[slice(*lines[k - 1])].strip()
+        if (k - run_from >= LOOP_MIN_REPEATS and len(line) > 3
+                and not _low_information(line)):
+            best = (lines[run_from + 1][0], lines[k - 1][1])
+        run_from = k
+    return best
+
+
+def _block_cycle_span(text: str):
+    """A block repeating to the end of the text, from its second copy."""
+    t = text.rstrip()
+    for unit in range(4, min(len(t) // LOOP_MIN_REPEATS, 4000) + 1):
+        block = t[-unit:]
+        if not block.strip() or _low_information(block):
+            continue
+        copies = 1
+        while (copies + 1) * unit <= len(t) and t[-(copies + 1) * unit:-copies * unit] == block:
+            copies += 1
+        if copies >= LOOP_MIN_REPEATS:
+            return len(t) - (copies - 1) * unit, len(t)
+    return None
+
+
+def _counter_span(text: str):
+    """The long line an enumerating loop is in (`_counter_loop`)."""
+    begin = max(0, len(text) - LOOP_TAIL_CHARS * 2)
+    for a, b in _line_spans(text):
+        if b <= begin or b - a < LOOP_COUNTER_MIN_LINE:
+            continue
+        if _counter_loop(text[a:b]):
+            return a, b
+    return None
+
+
+def _dead_span(text: str):
+    """The tail with no word left in it (`_structural_runaway`)."""
+    tags = [(m.start(), m.end()) for m in _STRUCTURE.finditer(text)]
+    letters, k = [], 0
+    for m in _LETTER.finditer(text):
+        while k < len(tags) and tags[k][1] <= m.start():
+            k += 1
+        if k < len(tags) and tags[k][0] <= m.start() < tags[k][1]:
+            continue
+        letters.append(m.start())
+    start = letters[-(LOOP_DEAD_MAX_LETTERS + 1)] + 1 if len(letters) > LOOP_DEAD_MAX_LETTERS else 0
+    tag = text.find("<", start)
+    if tag != -1 and tag - start < 200:
+        start = tag
+    return (start, len(text)) if len(text) - start >= 50 else None
+
+
+def loop_spans(text: str) -> list:
+    """Where a looped read's repeat is, as `[start, end)` runs of `text`.
+
+    The same four shapes `looks_repetitive` catches; a whole-line or block cycle
+    is marked from its second copy, so the line the repeat started from is not.
+    Empty where none of them can be found in the finished text.
+    """
+    if not text:
+        return []
+    if _structural_runaway(text):
+        span = _dead_span(text)
+    elif _counter_loop(text):
+        span = _counter_span(text)
+    else:
+        span = _line_cycle_span(text) or _block_cycle_span(text)
+    return [list(_snap(text, *span))] if span else []
+
+
+def read_marks(text: str, stats: dict) -> list:
+    """Where DRY fired and where the loop is, in one read's transcript.
+
+    `[{kind: "dry"|"loop", start, end}]`, offsets into `text`. DRY's come from
+    the token ids (`_dry_raw_spans`, carried to the transcript through the raw
+    reply); a DRY mark carries `approx` where they were estimated.
+    """
+    marks = []
+    dry = (stats or {}).get("dry") or {}
+    raw = (stats or {}).get("raw")
+    if dry.get("fired") and dry.get("raw_spans") and raw is not None and text:
+        index = _align_offsets(raw, text)
+        for a, b in dry["raw_spans"]:
+            a, b = index[min(max(a, 0), len(raw))], index[min(max(b, 0), len(raw))]
+            if b > a:
+                a, b = _snap(text, a, b)
+                mark = {"kind": "dry", "start": a, "end": b}
+                if dry.get("raw_spans_approx"):
+                    mark["approx"] = True
+                marks.append(mark)
+    if (stats or {}).get("looped"):
+        marks += [{"kind": "loop", "start": a, "end": b} for a, b in loop_spans(text)]
+    return marks
+
+
 def page_looping(text: str, dry_ids=None, dry_xargs=None) -> bool:
     """`looks_repetitive` for a page read, leaving DRY the first go at a repeat.
 
@@ -695,6 +854,10 @@ def stream_page(image: Image.Image, stats: dict = None,
     first_at = None
     timings, usage, pieces = {}, {}, 0
     collected, looped = [], False
+    # Where each DRY-checked output token starts in the reply, from the chunk it
+    # came in, so the places DRY fired can be marked in the text. None on a
+    # /batch reply, which comes back in one piece.
+    tok_char, raw_len = [], 0
     # The cap this request was SENT with: on vLLM it is fitted to the window
     # (vllm_page_fields) and can be far below MAX_NEW_TOKENS, so a page that ran
     # to it would never reach MAX_NEW_TOKENS and never be flagged truncated.
@@ -725,6 +888,7 @@ def stream_page(image: Image.Image, stats: dict = None,
         returned = (body.get("choices") or [{}])[0].get("token_ids")
         if dry_ids is not None and isinstance(returned, list):
             dry_ids.extend(returned)
+        tok_char = None
         piece = (((body.get("choices") or [{}])[0].get("message") or {})
                  .get("content") or "")
         if piece:
@@ -790,8 +954,11 @@ def stream_page(image: Image.Image, stats: dict = None,
                 finish = choices[0].get("finish_reason") or finish
                 if dry_ids is not None and isinstance(choices[0].get("token_ids"), list):
                     dry_ids.extend(choices[0]["token_ids"])
+                    tok_char.extend(raw_len for t in choices[0]["token_ids"]
+                                    if t is not None and t >= 0)
                 piece = (choices[0].get("delta") or {}).get("content")
                 if piece:
+                    raw_len += len(piece)
                     if first_at is None:
                         first_at = time.perf_counter()
                     pieces += 1
@@ -870,6 +1037,9 @@ def stream_page(image: Image.Image, stats: dict = None,
             # `checked` False: DRY was on, but this server sent no token ids.
             stats["dry"] = (dryreplay.replay(dry_ids, dry_xargs) if dry_ids
                             else {"checked": False})
+            if stats["dry"].get("spans"):
+                stats["dry"].update(_dry_raw_spans(stats["dry"], tok_char,
+                                                   len("".join(collected))))
 
 
 _EXTRACTION_LIMITS = extractionlimit.ServerLimits()

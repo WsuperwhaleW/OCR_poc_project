@@ -111,8 +111,17 @@ class StreamPageTests(unittest.TestCase):
         chunks = [{"delta": {"content": "x"}, "token_ids": [t]} for t in ids]
         sent, stats = self.read(chunks)
         self.assertTrue(sent["return_token_ids"])
-        self.assertEqual(stats["dry"], dryreplay.replay(ids, XARGS))
+        self.assertEqual(stats["dry"], dict(dryreplay.replay(ids, XARGS), raw_spans=[[5, 6]]))
         self.assertEqual(stats["dry"]["fired"], 1)
+
+    def test_where_dry_fired_is_placed_in_the_reply_by_its_chunks(self):
+        ids = [5, 6, 7, 5, 6, 8]
+        pieces = ["ab", "c", "d", "ab", "c", "zz"]
+        chunks = [{"delta": {"content": p}, "token_ids": [t]} for t, p in zip(ids, pieces)]
+        _, stats = self.read(chunks)
+        # The penalised token is the sixth: it starts at character 7.
+        self.assertEqual(stats["dry"]["raw_spans"], [[7, 9]])
+        self.assertNotIn("raw_spans_approx", stats["dry"])
 
     def test_a_server_that_sends_no_token_ids_is_unchecked_not_clean(self):
         _, stats = self.read([{"delta": {"content": "x"}}])

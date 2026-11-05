@@ -3014,7 +3014,9 @@ def _stress_read(pages, cancel, rec: dict, live: _StressLive,
             seen.append({"detail": was, "text": text, "page": page,
                          "looped": looped,
                          "truncated": bool(stats.get("truncated")),
-                         "dry": dry if fired else None})
+                         "dry": dry if fired else None,
+                         # Where DRY fired and where the loop is, for the window.
+                         "marks": engine.read_marks(text, stats)})
             dry_checked = dry_checked or bool(dry.get("checked"))
             if fired:
                 dry_seen.append(f"at {was}: {dryreplay.describe(dry)}" if was
@@ -4853,6 +4855,7 @@ def stress_evidence(alert_id: str):
                               "looped": a["looped"], "truncated": a["truncated"],
                               "dry": a["dry"], "page": a.get("number"),
                               "note": a.get("note"),
+                              "marks": a.get("marks") or [],
                               "image": a.get("page") is not None}
                              for a in item["attempts"]])
     response.headers['Cache-Control'] = 'private, no-cache'

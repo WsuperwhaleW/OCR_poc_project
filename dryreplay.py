@@ -16,6 +16,9 @@ started with breakers fires less often than this says.
 """
 
 
+MAX_SPANS = 50
+
+
 def replay(token_ids, xargs: dict) -> dict:
     """What DRY did to one reply, given the `vllm_xargs` it was sent with.
 
@@ -25,13 +28,16 @@ def replay(token_ids, xargs: dict) -> dict:
       penalised one: the reply left the repeat while DRY was pushing it to.
       Under greedy decoding this is the most DRY can have changed;
     * `longest` -- the longest verbatim repeat in the reply, fired or not;
-    * `running` -- the verbatim repeat still going at the end of the reply.
+    * `running` -- the verbatim repeat still going at the end of the reply;
+    * `spans` -- the fired steps as `[start, end)` runs of output positions,
+      the first `MAX_SPANS`, so a reader can be shown where DRY fired.
     """
     allowed = int(xargs.get("dry_allowed_length", 2))
     last_n = int(xargs.get("dry_penalty_last_n", -1))
     tokens, positions, match = [], {}, {}
     fired = steered = longest = 0
     first = None
+    spans = []
     for token in token_ids:
         if token is None or token < 0:
             continue
@@ -43,6 +49,10 @@ def replay(token_ids, xargs: dict) -> dict:
             fired += 1
             if first is None:
                 first = n
+            if spans and spans[-1][1] == n:
+                spans[-1][1] = n + 1
+            elif len(spans) < MAX_SPANS:
+                spans.append([n, n + 1])
             if token not in hit:
                 steered += 1
         lo = 0 if last_n < 0 else max(0, n + 1 - last_n)
@@ -58,7 +68,7 @@ def replay(token_ids, xargs: dict) -> dict:
         tokens.append(token)
     return {"checked": True, "tokens": len(tokens), "allowed": allowed,
             "fired": fired, "first": first, "steered": steered, "longest": longest,
-            "running": max(match.values(), default=0)}
+            "running": max(match.values(), default=0), "spans": spans}
 
 
 def describe(result: dict) -> str:

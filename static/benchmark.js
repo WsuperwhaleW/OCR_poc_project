@@ -9126,6 +9126,130 @@ function truthCase() {
   if (truth && truth.case) return truth.case;
   return matchedCase || null;
 }
+/* Where a flagged read went wrong, marked in its transcript (2026-11-05, at the
+   user's request): where DRY fired and where the loop is, from the server's
+   `marks` (`engine.read_marks`), offsets into the text. The raw view wraps the
+   runs directly; the rendered view puts private-use characters into the text
+   before it is rendered and turns them into <mark> after, because a run can
+   cross table cells. Rows and cells a run covers are tagged `data-mk` instead,
+   which is what shows a loop of empty rows. A marker only goes on a character
+   the renderer keeps as text in place: not whitespace, not a pipe, not inside
+   a tag, not between table cells (the parser would move it out of the table). */
+const CMP_MARK_OPEN = { dry: '\uE000', loop: '\uE002' };
+const CMP_MARK_CLOSE = { dry: '\uE001', loop: '\uE003' };
+const CMP_MARK_CODE = { '\uE000': ['dry', true], '\uE001': ['dry', false],
+                        '\uE002': ['loop', true], '\uE003': ['loop', false] };
+function cmpMarkKinds(marks, i) {
+  const kinds = [];
+  for (const m of marks) if (m.start <= i && i < m.end && !kinds.includes(m.kind)) kinds.push(m.kind);
+  return kinds;
+}
+function cmpMarkRaw(text, marks) {
+  const cuts = new Set([0, text.length]);
+  for (const m of marks) {
+    cuts.add(Math.max(0, Math.min(text.length, m.start)));
+    cuts.add(Math.max(0, Math.min(text.length, m.end)));
+  }
+  const at = [...cuts].sort((a, b) => a - b);
+  let html = '';
+  for (let k = 0; k + 1 < at.length; k++) {
+    const seg = text.slice(at[k], at[k + 1]);
+    const kinds = cmpMarkKinds(marks, at[k]);
+    html += kinds.length ? '<mark class="cmp-mk ' + kinds.map(x => 'cmp-mk-' + x).join(' ')
+      + '">' + esc(seg) + '</mark>' : esc(seg);
+  }
+  return html;
+}
+function cmpMarkSource(text, marks) {
+  // Rule lines of a pipe table: a marker there stops the table being read as one.
+  const rule = new Uint8Array(text.length);
+  let from = 0;
+  for (const line of text.split('\n')) {
+    if (/^\s*\|[\s:|-]+\|\s*$/.test(line)) rule.fill(1, from, from + line.length);
+    from += line.length + 1;
+  }
+  let out = '', i = 0, table = 0, row = 0, cell = 0, lastSafe = 0;
+  const shown = [];
+  // A run is closed right after the last character it marked, not before the
+  // next one that can carry a marker -- that may be past a pipe or a newline.
+  const closeAt = kind => {
+    out = out.slice(0, lastSafe) + CMP_MARK_CLOSE[kind] + out.slice(lastSafe);
+    lastSafe += 1;
+  };
+  while (i < text.length) {
+    if (text[i] === '<') {
+      const close = text.indexOf('>', i);
+      let tag = close === -1 ? text.slice(i) : text.slice(i, close + 1);
+      const m = /^<(\/?)\s*([a-z0-9]+)/i.exec(tag);
+      const name = m ? m[2].toLowerCase() : '', closing = !!(m && m[1]);
+      const len = tag.length;
+      if (!closing && ['tr', 'td', 'th'].includes(name)) {
+        const kinds = cmpMarkKinds(marks, i);
+        if (kinds.length) tag = tag.replace(/^<\s*[a-z0-9]+/i, t => t + ' data-mk="' + kinds.join(' ') + '"');
+      }
+      const step = closing ? -1 : 1;
+      if (name === 'table') table = Math.max(0, table + step);
+      else if (name === 'tr') row = Math.max(0, row + step);
+      else if (name === 'td' || name === 'th') cell = Math.max(0, cell + step);
+      out += tag;
+      i += len;
+      continue;
+    }
+    const ch = text[i];
+    const safe = (cell > 0 || (!table && !row)) && !/\s/.test(ch) && ch !== '|' && !rule[i];
+    if (safe) {
+      const want = cmpMarkKinds(marks, i);
+      for (let k = shown.length - 1; k >= 0; k--) {
+        if (!want.includes(shown[k])) { closeAt(shown[k]); shown.splice(k, 1); }
+      }
+      for (const kind of want) if (!shown.includes(kind)) { out += CMP_MARK_OPEN[kind]; shown.push(kind); }
+    }
+    out += ch;
+    if (safe) lastSafe = out.length;
+    i++;
+  }
+  for (const kind of shown) closeAt(kind);
+  return out;
+}
+function cmpApplyMarks(root) {
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+  const nodes = [];
+  while (walker.nextNode()) nodes.push(walker.currentNode);
+  const on = [];
+  for (const node of nodes) {
+    const s = node.nodeValue;
+    if (!on.length && !/[\uE000-\uE003]/.test(s)) continue;
+    const frag = document.createDocumentFragment();
+    let buf = '';
+    const flush = () => {
+      if (!buf) return;
+      if (on.length && buf.trim()) {
+        const mk = document.createElement('mark');
+        mk.className = 'cmp-mk ' + on.map(k => 'cmp-mk-' + k).join(' ');
+        mk.textContent = buf;
+        frag.append(mk);
+      } else frag.append(buf);
+      buf = '';
+    };
+    for (const ch of s) {
+      const code = CMP_MARK_CODE[ch];
+      if (!code) { buf += ch; continue; }
+      flush();
+      if (code[1]) { if (!on.includes(code[0])) on.push(code[0]); }
+      else if (on.includes(code[0])) on.splice(on.indexOf(code[0]), 1);
+    }
+    flush();
+    node.replaceWith(frag);
+  }
+}
+// What the marks are, for the column's caption.
+function cmpMarkLegend(marks) {
+  const parts = [];
+  const dry = marks.filter(m => m.kind === 'dry'), loop = marks.filter(m => m.kind === 'loop');
+  if (dry.length) parts.push('DRY marked in blue' + (dry.some(m => m.approx) ? ' (place estimated)' : ''));
+  if (loop.length) parts.push('loop marked in amber');
+  return parts.join(' · ');
+}
 /* What one read of a flagged stress page came back as, for its caption. */
 function stReadOutcome(r) {
   const parts = [r.detail || ''];
@@ -9278,17 +9402,34 @@ function paintCompare() {
     cmpPrev.disabled = o.at === 0;
     cmpNext.disabled = o.at >= total - 1;
     window.StressLocalPreview?.show(o, r, !cmpColImg.hidden);
+    const pendingText = o.loading ? 'Loading OCR and extraction results from server…' : o.loadError;
+    const marks = !pendingText && r.text && Array.isArray(r.marks) ? r.marks : [];
+    const legend = cmpMarkLegend(marks);
     cmpModelCap.textContent = o.loading ? '· waiting for comparison results'
       : o.loadError ? '· comparison unavailable'
       : r.page === null && o.fields ? '· the transcript the extraction was fed'
-      : '· ' + stReadOutcome(r);
+      : '· ' + stReadOutcome(r) + (legend ? ' · ' + legend : '');
     const raw = cmpRawChk.checked;
     cmpRender.style.display = raw ? 'none' : 'block';
     cmpRawText.style.display = raw ? 'block' : 'none';
-    const pendingText = o.loading ? 'Loading OCR and extraction results from server…' : o.loadError;
-    if (raw) cmpRawText.textContent = pendingText || r.text || '';
-    else cmpRender.innerHTML = pendingText ? '<em>' + esc(pendingText) + '</em>'
+    if (raw && marks.length) cmpRawText.innerHTML = cmpMarkRaw(r.text, marks);
+    else if (raw) cmpRawText.textContent = pendingText || r.text || '';
+    else if (marks.length) {
+      cmpRender.innerHTML = sanitize(renderOutput(cmpMarkSource(r.text, marks)));
+      cmpApplyMarks(cmpRender);
+    } else cmpRender.innerHTML = pendingText ? '<em>' + esc(pendingText) + '</em>'
       : r.text ? sanitize(renderOutput(r.text)) : '<em>No text.</em>';
+    // Opened on a marked read, the pane scrolls to its first mark -- once per
+    // read and view, so a repaint does not pull the reader back.
+    const markKey = o.alert + '|' + o.at + '|' + raw;
+    if (marks.length && o.markScrolled !== markKey) {
+      o.markScrolled = markKey;
+      const pane = document.getElementById('cmpTextPane');
+      const first = (raw ? cmpRawText : cmpRender).querySelector('mark.cmp-mk, [data-mk]');
+      if (pane && first) {
+        pane.scrollTop += first.getBoundingClientRect().top - pane.getBoundingClientRect().top - 40;
+      }
+    }
     if (cols.includes(cmpColTruth)) paintTruthPane();
     return;
   }
