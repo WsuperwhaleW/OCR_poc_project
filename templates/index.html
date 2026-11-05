@@ -778,6 +778,9 @@ follows your desktop; Light is the one to pick for projecting or screenshotting.
         <label class="st-option" title="Send each request with DRY (the repeat penalty vLLM's DRY processor and llama.cpp run). Off sends this run without it, so nothing is flagged as DRY">
           <input id="stDry" type="checkbox" checked> Use DRY
         </label>
+        <label class="st-option" title="A page DRY fired on is read once more without DRY, so its flag's window shows the two side by side. That read is off the clock and counts in nothing; the read with DRY is the one kept">
+          <input id="stDryCompare" type="checkbox" checked> Compare DRY pages without DRY
+        </label>
         <label class="st-option" id="stSplitPagesField"
                title="Once every job has started, a file still reading its pages sends its next pages to the workers left idle, at most the concurrency in flight, and joins them in page order">
           <input id="stSplitPages" type="checkbox" checked> Spread a long file's pages on idle workers
@@ -1087,6 +1090,7 @@ follows your desktop; Light is the one to pick for projecting or screenshotting.
           <button data-view="model-truth">OCR › Truth</button>
           <button data-view="model-fields" hidden>OCR › Fields</button>
           <button data-view="source-fields" hidden>Source › Fields</button>
+          <button data-view="model-nodry" hidden title="The page read with DRY (the read that was kept) beside the same page read again without DRY">With DRY › Without DRY</button>
         </div>
         <button id="cmpPrev" class="ghost-sm">‹</button>
         <span id="cmpLabel">Page 1</span>
@@ -1133,6 +1137,13 @@ follows your desktop; Light is the one to pick for projecting or screenshotting.
           <div class="cmp-pane" id="cmpTruthPane">
             <div id="cmpTruthRender"></div>
             <pre id="cmpTruthText"></pre>
+          </div>
+        </div>
+        <div class="cmp-col" id="cmpColNodry" hidden>
+          <div class="cmp-cap">Without DRY <span id="cmpNodryCap"></span></div>
+          <div class="cmp-pane" id="cmpNodryPane">
+            <div id="cmpNodryRender"></div>
+            <pre id="cmpNodryText"></pre>
           </div>
         </div>
         <div class="cmp-col" id="cmpColFields" hidden>

@@ -1710,8 +1710,26 @@ def restore_dry():
     _add_dry_off(-1)
 
 
+# One thread's requests only, for the stress test's comparison read of a page
+# DRY fired on (2026-11-05): the rest of the run keeps DRY.
+_dry_local = threading.local()
+
+
+class dry_off_here:
+    """`with dry_off_here():` -- this thread's requests go without DRY."""
+
+    def __enter__(self):
+        _dry_local.n = getattr(_dry_local, "n", 0) + 1
+        return self
+
+    def __exit__(self, *exc):
+        _dry_local.n -= 1
+        return False
+
+
 def dry_suppressed() -> bool:
-    return workspace.get("dry_off", _dry_off) > 0
+    return (getattr(_dry_local, "n", 0) > 0
+            or workspace.get("dry_off", _dry_off) > 0)
 
 
 def cache_bypass_effect(kind: str) -> str:

@@ -238,6 +238,11 @@ const cmpTruthCap = document.getElementById('cmpTruthCap');
 const cmpColFields = document.getElementById('cmpColFields');
 const cmpFieldsPane = document.getElementById('cmpFieldsPane');
 const cmpFieldsCap = document.getElementById('cmpFieldsCap');
+const cmpColNodry = document.getElementById('cmpColNodry');
+const cmpNodryPane = document.getElementById('cmpNodryPane');
+const cmpNodryRender = document.getElementById('cmpNodryRender');
+const cmpNodryText = document.getElementById('cmpNodryText');
+const cmpNodryCap = document.getElementById('cmpNodryCap');
 const cmpImgCap = document.getElementById('cmpImgCap');
 const cmpModelCap = document.getElementById('cmpModelCap');
 let job = null, pageTexts = [], cmpPage = 0;
@@ -9108,6 +9113,8 @@ const CMP_VIEWS = {
   // Only for a missing-required stress flag: the form it came back with.
   'model-fields': [cmpColModel, cmpColFields],
   'source-fields': [cmpColImg, cmpColFields],
+  // Only for a DRY flag whose page was also read without DRY.
+  'model-nodry': [cmpColModel, cmpColNodry],
 };
 const CMP_FIELD_VIEWS = ['model-fields', 'source-fields'];
 function hasRun() { return !!(job && pageTexts.length); }
@@ -9251,8 +9258,18 @@ function cmpMarkLegend(marks) {
   return parts.join(' · ');
 }
 /* What one read of a flagged stress page came back as, for its caption. */
+/* A DRY flag's page read twice: with DRY (the read kept) and without it, for
+   comparison (`_stress_dry_compare`). Either read of the pair finds the pair. */
+function stDryPair(o, i) {
+  const x = o && o.reads[i];
+  if (!x) return null;
+  if (x.nodry) return o.reads[x.compare_of] ? { dry: x.compare_of, plain: i } : null;
+  const j = o.reads.findIndex(y => y.nodry && y.compare_of === i);
+  return j >= 0 ? { dry: i, plain: j } : null;
+}
 function stReadOutcome(r) {
   const parts = [r.detail || ''];
+  if (r.nodry) parts.push('without DRY, for comparison only (not kept)');
   // A read that failed or never came back (an error or stalled flag).
   if (r.note) parts.push(r.note);
   else if (r.looped) parts.push('looped — cut off by the loop guard');
@@ -9265,9 +9282,37 @@ function stReadOutcome(r) {
    out of the fixture and is there before one. So a pair is offered only when
    both of its halves exist -- and where no pair does, the one column that does
    exist is shown on its own rather than beside an empty box. */
+/* One read of a flagged stress page into one text column: its caption, the
+   rendered or raw text, and the DRY / loop marks with a scroll to the first --
+   once per read and view, so a repaint does not pull the reader back. */
+function cmpPaintRead(o, r, pendingText, raw, capEl, renderEl, rawEl, pane, capOverride) {
+  const marks = !pendingText && r.text && Array.isArray(r.marks) ? r.marks : [];
+  const legend = cmpMarkLegend(marks);
+  capEl.textContent = o.loading ? '· waiting for comparison results'
+    : o.loadError ? '· comparison unavailable'
+    : capOverride || ('· ' + stReadOutcome(r) + (legend ? ' · ' + legend : ''));
+  renderEl.style.display = raw ? 'none' : 'block';
+  rawEl.style.display = raw ? 'block' : 'none';
+  if (raw && marks.length) rawEl.innerHTML = cmpMarkRaw(r.text, marks);
+  else if (raw) rawEl.textContent = pendingText || r.text || '';
+  else if (marks.length) {
+    renderEl.innerHTML = sanitize(renderOutput(cmpMarkSource(r.text, marks)));
+    cmpApplyMarks(renderEl);
+  } else renderEl.innerHTML = pendingText ? '<em>' + esc(pendingText) + '</em>'
+    : r.text ? sanitize(renderOutput(r.text)) : '<em>No text.</em>';
+  const markKey = o.alert + '|' + o.reads.indexOf(r) + '|' + raw;
+  o.markScrolled = o.markScrolled || {};
+  if (marks.length && o.markScrolled[pane.id] !== markKey) {
+    o.markScrolled[pane.id] = markKey;
+    const first = (raw ? rawEl : renderEl).querySelector('mark.cmp-mk, [data-mk]');
+    if (first) pane.scrollTop += first.getBoundingClientRect().top - pane.getBoundingClientRect().top - 40;
+  }
+}
 function colAvailable(col) {
   if (col === cmpColTruth) return !!truthCase();
   if (col === cmpColFields) return cmpInStress() && !!cmpOverride.fields;
+  if (col === cmpColNodry) return cmpInStress() && !cmpOverride.loading
+    && !!stDryPair(cmpOverride, cmpOverride.at);
   // An extract-only job read no page, so its flag has text and no image.
   if (col === cmpColImg && cmpInStress()) return cmpOverride.reads.some(r => r.src)
     || !!window.StressLocalPreview?.hasCandidate(cmpOverride.filename);
@@ -9365,7 +9410,8 @@ function paintCompare() {
   const view = effectiveView();
   const cols = view ? CMP_VIEWS[view]
                     : [cmpColImg, cmpColModel, cmpColTruth].filter(colAvailable);
-  [cmpColImg, cmpColModel, cmpColTruth, cmpColFields].forEach(c => { c.hidden = !cols.includes(c); });
+  [cmpColImg, cmpColModel, cmpColTruth, cmpColFields, cmpColNodry]
+    .forEach(c => { c.hidden = !cols.includes(c); });
   cmpGrid.classList.toggle('one', cols.length < 2);
   const withFields = colAvailable(cmpColFields);
   [...cmpModes.querySelectorAll('button')].forEach(b => {
@@ -9373,6 +9419,8 @@ function paintCompare() {
     b.disabled = !viewFull(b.dataset.view);
     // The Fields pairs exist only for a missing-required flag's window.
     if (CMP_FIELD_VIEWS.includes(b.dataset.view)) b.hidden = !withFields;
+    // The DRY pair exists only on a DRY flag that was compared.
+    if (b.dataset.view === 'model-nodry') b.hidden = !colAvailable(cmpColNodry);
   });
   if (cols.includes(cmpColFields)) {
     const docs = cmpOverride.fields;
@@ -9391,7 +9439,7 @@ function paintCompare() {
     // One page of a stress run: the controls step through its reads instead.
     const o = cmpOverride;
     o.at = Math.max(0, Math.min(o.at, total - 1));
-    const r = o.reads[o.at];
+    let r = o.reads[o.at];
     // A loop or DRY flag steps through the reads of one page; a missing-required
     // flag through the pages of its document, each as the read that was kept.
     // A stalled flag's reads are the pages still out, one each.
@@ -9403,33 +9451,15 @@ function paintCompare() {
     cmpNext.disabled = o.at >= total - 1;
     window.StressLocalPreview?.show(o, r, !cmpColImg.hidden);
     const pendingText = o.loading ? 'Loading OCR and extraction results from server…' : o.loadError;
-    const marks = !pendingText && r.text && Array.isArray(r.marks) ? r.marks : [];
-    const legend = cmpMarkLegend(marks);
-    cmpModelCap.textContent = o.loading ? '· waiting for comparison results'
-      : o.loadError ? '· comparison unavailable'
-      : r.page === null && o.fields ? '· the transcript the extraction was fed'
-      : '· ' + stReadOutcome(r) + (legend ? ' · ' + legend : '');
     const raw = cmpRawChk.checked;
-    cmpRender.style.display = raw ? 'none' : 'block';
-    cmpRawText.style.display = raw ? 'block' : 'none';
-    if (raw && marks.length) cmpRawText.innerHTML = cmpMarkRaw(r.text, marks);
-    else if (raw) cmpRawText.textContent = pendingText || r.text || '';
-    else if (marks.length) {
-      cmpRender.innerHTML = sanitize(renderOutput(cmpMarkSource(r.text, marks)));
-      cmpApplyMarks(cmpRender);
-    } else cmpRender.innerHTML = pendingText ? '<em>' + esc(pendingText) + '</em>'
-      : r.text ? sanitize(renderOutput(r.text)) : '<em>No text.</em>';
-    // Opened on a marked read, the pane scrolls to its first mark -- once per
-    // read and view, so a repaint does not pull the reader back.
-    const markKey = o.alert + '|' + o.at + '|' + raw;
-    if (marks.length && o.markScrolled !== markKey) {
-      o.markScrolled = markKey;
-      const pane = document.getElementById('cmpTextPane');
-      const first = (raw ? cmpRawText : cmpRender).querySelector('mark.cmp-mk, [data-mk]');
-      if (pane && first) {
-        pane.scrollTop += first.getBoundingClientRect().top - pane.getBoundingClientRect().top - 40;
-      }
-    }
+    // With DRY beside without DRY: the read with DRY on the left, whichever read
+    // of the pair the controls are on.
+    const pair = cols.includes(cmpColNodry) ? stDryPair(o, o.at) : null;
+    if (pair) r = o.reads[pair.dry];
+    cmpPaintRead(o, r, pendingText, raw, cmpModelCap, cmpRender, cmpRawText, cmpTextPane,
+      r.page === null && o.fields ? '· the transcript the extraction was fed' : null);
+    if (pair) cmpPaintRead(o, o.reads[pair.plain], pendingText, raw, cmpNodryCap,
+      cmpNodryRender, cmpNodryText, cmpNodryPane, null);
     if (cols.includes(cmpColTruth)) paintTruthPane();
     return;
   }
@@ -9526,7 +9556,7 @@ function applySync(from, to) {
 // The pair being synced follows the view mode, so the link is resolved per
 // scroll event rather than wired once: a listener bound to a column that is
 // currently off would sync a pane nobody can see.
-const CMP_PANES = [cmpImgPane, cmpTextPane, cmpTruthPane];
+const CMP_PANES = [cmpImgPane, cmpTextPane, cmpTruthPane, cmpNodryPane];
 function otherVisiblePane(from) {
   return CMP_PANES.find(p => p !== from && !p.parentElement.hidden);
 }
@@ -11643,6 +11673,7 @@ function stBusy(on) {
   stRun.disabled = on;
   stEl('stNoCache').disabled = on;
   stEl('stDry').disabled = on;
+  stEl('stDryCompare').disabled = on || !stEl('stDry').checked;
   stEl('stSplitPages').disabled = on;
   stEl('stSchemaFirst').disabled = on || !ST_EXTRACT_MODES.includes(stMode.value)
     || !isStepMode(stEl('stShape').value);
@@ -11657,8 +11688,12 @@ function stBusy(on) {
   stPaintServer();
   stPaintFiles();
 }
+// Comparing without DRY only means something while the run uses DRY.
+stEl('stDry').addEventListener('change', () => {
+  stEl('stDryCompare').disabled = !stEl('stDry').checked;
+});
 
-const stNum = (v, d = 1) => (v === null || v === undefined) ? '—'
+const stNum =(v, d = 1) => (v === null || v === undefined) ? '—'
   : Number(v).toLocaleString(undefined, { maximumFractionDigits: d, minimumFractionDigits: 0 });
 const stSec = v => (v === null || v === undefined) ? '—'
   : (v >= 100 ? Math.round(v) + ' s' : Number(v).toFixed(v >= 10 ? 1 : 2) + ' s');
@@ -11969,6 +12004,8 @@ async function stShowEvidence(alertId, kind, host, job) {
   // `image` is false for a read with no page (an extract-only job's transcript).
   const reads = data.attempts.map((a, n) => Object.assign({}, a,
     { src: a.image === false ? null : fromBrowser ? browserSrc(n) : base + '/' + n + '.png' }));
+  // A read without DRY is the same page as its pair: show the pair's image.
+  for (const r of reads) if (r.nodry && !r.src) r.src = reads[r.compare_of]?.src || null;
   // An error opens on the read that failed, which is the last.
   const first = kind === 'dry' ? reads.findIndex(r => r.dry)
               : kind === 'error' ? reads.length - 1
@@ -11979,7 +12016,7 @@ async function stShowEvidence(alertId, kind, host, job) {
                   fields: data.fields || null, host, job };
   // An extraction flag opens on the page beside its form, so a missing field
   // can be looked for on the image; on the transcript where no page was read.
-  cmpView = !data.fields ? 'source-model'
+  cmpView = !data.fields ? (kind === 'dry' && reads.some(r => r.nodry) ? 'model-nodry' : 'source-model')
     : reads.some(r => r.src) || window.StressLocalPreview?.hasCandidate(cmpOverride.filename)
       ? 'source-fields' : 'model-fields';
   stOpenEvidenceCompare(alertId, !openedLocal);
@@ -12604,6 +12641,7 @@ function stBody() {
     metrics: false,
     no_cache: stEl('stNoCache').checked,
     dry: stEl('stDry').checked,
+    dry_compare: stEl('stDry').checked && stEl('stDryCompare').checked,
     split_pages: stEl('stSplitPages').checked,
     fill_missing: stFillOn && stMode.value === 'full',
     validation_retry: !!stEl('stValidationImages')?.checked && stMode.value === 'full',
@@ -13427,7 +13465,7 @@ function historyRender(item) {
     ['Sample /metrics', cfg.metrics], ['Monitor snapshots', cfg.history_monitor],
     ['Sampling interval (s)', cfg.metrics_every], ['GPU exporter', cfg.gpu_url || 'Default / local'],
     ['Extraction GPU exporter', cfg.gpu_extract_url || 'Default / local'],
-    ['Bypass prompt cache', cfg.no_cache], ['Use DRY', cfg.dry ?? true], ['Batch requests (vLLM /batch)', cfg.vllm_batch ?? false],
+    ['Bypass prompt cache', cfg.no_cache], ['Use DRY', cfg.dry ?? true], ['Compare DRY pages without DRY', (cfg.dry ?? true) && (cfg.dry_compare ?? true)], ['Batch requests (vLLM /batch)', cfg.vllm_batch ?? false],
     ['Fill missing from images (Hybrid)', cfg.mode === 'full' ? cfg.fill_missing ?? true : undefined],
     ['Recheck validation from images (Hybrid)', cfg.mode === 'full' ? cfg.validation_retry ?? false : undefined],
     ['Save per-job accuracy rows', cfg.save_log],

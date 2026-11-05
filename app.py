@@ -181,6 +181,7 @@ from settings import (
     LOOP_RETRY,
     LOOP_TAIL_CHARS,
     STRESS_DRY_RETRY,
+    STRESS_DRY_COMPARE,
     MAX_JOBS,
     MAX_NEW_TOKENS,
     MAX_PAGES,
@@ -2137,6 +2138,8 @@ class _StressLive:
         # The run's `_StressSlots` where a long file may borrow idle workers
         # for its pages (`split_pages`), else None.
         self.slots = None
+        # Read a page DRY fired on once more without DRY (`_stress_dry_compare`).
+        self.dry_compare = False
 
     def _new_id(self):
         self._next_id += 1
@@ -2519,6 +2522,9 @@ def _stress_config(body: dict) -> dict:
         # "Use DRY": on unless the request says otherwise; off sends every
         # request of the run without DRY (`backends.suppress_dry`).
         "dry": body.get("dry", True) is not False,
+        # A page DRY fired on is read once more without DRY, for its window.
+        "dry_compare": (STRESS_DRY_COMPARE if body.get("dry_compare") is None
+                        else body.get("dry_compare") is not False),
         # A long file reads its pages on workers left idle once the queue is
         # empty (`_StressSlots`). On unless the request says otherwise.
         "split_pages": body.get("split_pages", True) is not False,
@@ -2925,6 +2931,36 @@ def _at_details(details) -> str:
     return f" at {', '.join(named)}" if named else ""
 
 
+def _stress_dry_compare(page, detail, of: int, cancel) -> dict:
+    """The page read once more WITHOUT DRY, for a DRY flag's window.
+
+    2026-11-05, at the user's request: see the page before DRY and after it.
+    Only this thread's request goes without DRY (`backends.dry_off_here`); the
+    run keeps it. Nothing here is counted: the caller takes its time off the
+    clock, and its tokens, timings and loops raise no flag and reach no figure.
+    `of` is the index of the read with DRY it is compared with. `page` is None so
+    the browser does not copy the same image twice; the window shows the pair's.
+    A failure is noted on the entry rather than raised -- a comparison that
+    could not be made must not fail the job.
+    """
+    stats = {}
+    entry = {"detail": detail, "page": None, "dry": None, "nodry": True,
+             "compare_of": of, "looped": False, "truncated": False}
+    try:
+        with backends.dry_off_here():
+            text = engine.read_page(page, stats, cancel=cancel)
+    except Exception as err:                       # noqa: BLE001
+        if cancel.is_set():
+            raise engine.SweepCancelled("stopped")
+        entry.update(text="", note=f"the read without DRY failed: "
+                                    f"{type(err).__name__}: {err}")
+        return entry
+    entry.update(text=text, looped=bool(stats.get("looped")),
+                 truncated=bool(stats.get("truncated")),
+                 marks=engine.read_marks(text, stats))
+    return entry
+
+
 def _stress_read(pages, cancel, rec: dict, live: _StressLive,
                  stats_out: list = None, job: int = 0, case: str = "",
                  kept: list = None) -> tuple:
@@ -3022,6 +3058,13 @@ def _stress_read(pages, cancel, rec: dict, live: _StressLive,
                 dry_seen.append(f"at {was}: {dryreplay.describe(dry)}" if was
                                 else dryreplay.describe(dry))
                 dry_message = "DRY penalised a repeat " + "; ".join(dry_seen)
+                # Once per page, the first read DRY fired on: the same page read
+                # again without DRY, for the window's side-by-side view.
+                if dry_alert is None and getattr(live, "dry_compare", False):
+                    prep_began = time.perf_counter()
+                    seen.append(_stress_dry_compare(page, was, len(seen) - 1, inner))
+                    with lock:
+                        tally["prep"] += time.perf_counter() - prep_began
                 if dry_alert is None:
                     dry_alert = live.flag("dry", job, case, dry_message, stage="ocr",
                                           page=number, evidence=True)
@@ -3935,6 +3978,8 @@ def _stress_phase(specs: list, cfg: dict, prepared: dict, cancel, phase: str,
     live = _StressLive(len(specs), prefix=f"{phase}-{uuid.uuid4().hex[:6]}-")
     if cfg.get("split_pages") and cfg["mode"] in ("ocr", "full"):
         live.slots = _StressSlots(cfg["concurrency"])
+    live.dry_compare = (cfg.get("dry", True) is not False
+                        and cfg.get("dry_compare", STRESS_DRY_COMPARE))
     pool = ThreadPoolExecutor(max_workers=cfg["concurrency"],
                               thread_name_prefix="stress")
     second = (ThreadPoolExecutor(max_workers=cfg["concurrency"],
@@ -4267,6 +4312,8 @@ def _stress_run(cfg: dict, cancel):
         "run_id": cfg["run_id"] if cfg.get("save_log") else "",
         "no_cache": bool(cfg.get("no_cache")),
         "dry": cfg.get("dry", True) is not False,
+        "dry_compare": bool(cfg.get("dry", True) is not False
+                            and cfg.get("dry_compare", STRESS_DRY_COMPARE)),
         "split_pages": bool(cfg.get("split_pages")) and cfg["mode"] in ("ocr", "full"),
         "fill_missing": bool(cfg.get("fill_missing")) and cfg["mode"] == "full",
         "validation_retry": bool(cfg.get("validation_retry")) and cfg["mode"] == "full",
@@ -4856,6 +4903,8 @@ def stress_evidence(alert_id: str):
                               "dry": a["dry"], "page": a.get("number"),
                               "note": a.get("note"),
                               "marks": a.get("marks") or [],
+                              "nodry": bool(a.get("nodry")),
+                              "compare_of": a.get("compare_of"),
                               "image": a.get("page") is not None}
                              for a in item["attempts"]])
     response.headers['Cache-Control'] = 'private, no-cache'

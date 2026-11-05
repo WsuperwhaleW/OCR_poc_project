@@ -751,6 +751,11 @@ LOOP_RETRY = config.env_bool("LOOP_RETRY", True)
 # so it also needs LOOP_RETRY. OFF by default since 2026-11-05 (at the user's
 # request): DRY firing only FLAGS the page. STRESS_DRY_RETRY=1 brings the climb back.
 STRESS_DRY_RETRY = config.env_bool("STRESS_DRY_RETRY", False)
+# A stress page DRY fired on is read once more WITHOUT DRY, so its window can
+# show the two side by side (2026-11-05, at the user's request). That read is
+# off the clock and counted in nothing; the read with DRY is the one kept. The
+# stress pane's box turns it off for one run.
+STRESS_DRY_COMPARE = config.env_bool("STRESS_DRY_COMPARE", True)
 LOOP_TAIL_CHARS = 600
 LOOP_MIN_REPEATS = 4
 # A repeated line/block that carries no actual *word* -- blank table markup
