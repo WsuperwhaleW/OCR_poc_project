@@ -11501,6 +11501,7 @@ function stBusy(on) {
   stClear.disabled = on;
   stRun.disabled = on;
   stEl('stNoCache').disabled = on;
+  stEl('stDry').disabled = on;
   stEl('stSplitPages').disabled = on;
   stEl('stSchemaFirst').disabled = on || !ST_EXTRACT_MODES.includes(stMode.value)
     || !isStepMode(stEl('stShape').value);
@@ -11673,7 +11674,7 @@ function stLiveScore(sc) {
 // A looped page's one row, by where its retries got to (`_StressLive.update_flag`).
 const ST_LOOP_STATE = { retrying: 'loop retrying', resolved: 'loop resolved',
   'retry failed': 'loop retry failed', 'no retry': 'loop, no retry' };
-// A DRY page is read again one Detail up as well (STRESS_DRY_RETRY).
+// DRY only flags a page; with STRESS_DRY_RETRY on it is read again one Detail up.
 const ST_DRY_STATE = { retrying: 'DRY retrying', resolved: 'DRY resolved',
   'retry failed': 'DRY retry failed', 'no retry': 'DRY, no retry' };
 // Image mode extracts a form again one Detail up when a required field came
@@ -12218,6 +12219,7 @@ function stReportHtml(s, snapshot, host) {
       + (plan.no_cache ? ' · prompt cache bypassed ('
           + Object.entries(plan.no_cache_effect || {})
               .map(([k, v]) => esc(k) + ': ' + esc(v)).join('; ') + ')' : '')
+      + (plan.dry === false ? ' · <b>DRY off</b>' : '')
       + (plan.split_pages ? ' · long files spread on idle workers' : '')
       + (plan.mode === 'full' ? (plan.fill_missing
           ? ' · missing required fields asked of the page images (Hybrid)'
@@ -12460,6 +12462,7 @@ function stBody() {
       : stRealPick === 'choose' ? stRealSelected() : undefined,
     metrics: false,
     no_cache: stEl('stNoCache').checked,
+    dry: stEl('stDry').checked,
     split_pages: stEl('stSplitPages').checked,
     fill_missing: stFillOn && stMode.value === 'full',
     validation_retry: !!stEl('stValidationImages')?.checked && stMode.value === 'full',
@@ -13283,7 +13286,7 @@ function historyRender(item) {
     ['Sample /metrics', cfg.metrics], ['Monitor snapshots', cfg.history_monitor],
     ['Sampling interval (s)', cfg.metrics_every], ['GPU exporter', cfg.gpu_url || 'Default / local'],
     ['Extraction GPU exporter', cfg.gpu_extract_url || 'Default / local'],
-    ['Bypass prompt cache', cfg.no_cache], ['Batch requests (vLLM /batch)', cfg.vllm_batch ?? false],
+    ['Bypass prompt cache', cfg.no_cache], ['Use DRY', cfg.dry ?? true], ['Batch requests (vLLM /batch)', cfg.vllm_batch ?? false],
     ['Fill missing from images (Hybrid)', cfg.mode === 'full' ? cfg.fill_missing ?? true : undefined],
     ['Recheck validation from images (Hybrid)', cfg.mode === 'full' ? cfg.validation_retry ?? false : undefined],
     ['Save per-job accuracy rows', cfg.save_log],

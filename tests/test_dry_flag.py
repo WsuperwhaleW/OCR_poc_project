@@ -201,8 +201,9 @@ class StressFlagTests(unittest.TestCase):
         self.assertEqual((rec["dry_pages"], rec["dry_checked"]), (1, 1))
 
     def test_dry_across_retries_stays_one_row_and_grows(self):
-        # medium fired too, so it climbs again (STRESS_DRY_RETRY)
-        rec, alerts = self._read([(True, 3), (False, 2), (False, 0)])
+        # medium fired too, so it climbs again (STRESS_DRY_RETRY on)
+        with patch.object(app, "STRESS_DRY_RETRY", True):
+            rec, alerts = self._read([(True, 3), (False, 2), (False, 0)])
         dry = [a for a in alerts if a["kind"] == "dry"]
         self.assertEqual(len({a["id"] for a in dry}), 1)
         self.assertIn("at low:", dry[-1]["message"])

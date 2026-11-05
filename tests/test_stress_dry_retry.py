@@ -1,4 +1,4 @@
-"""A stress-test page DRY fired on is read again one Detail up, even unlooped."""
+"""DRY on a stress page: flag only by default; with STRESS_DRY_RETRY on, read again one Detail up."""
 import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -30,6 +30,7 @@ CLEAN = {"checked": True, "fired": 0, "longest": 20, "allowed": 256}
 
 
 class StressDryRetryTests(unittest.TestCase):
+    retry = True                # the climb, switched on (off by default)
 
     def _read(self, outcomes, start="low", retry=_up):
         """`outcomes` is `(looped, dry)` for each read, in order."""
@@ -43,6 +44,7 @@ class StressDryRetryTests(unittest.TestCase):
 
         live, rec = app._StressLive(1), {}
         with patch.object(engine, "read_page", side_effect=read), \
+                patch.object(app, "STRESS_DRY_RETRY", self.retry), \
                 patch.object(app, "_stress_retry_page", side_effect=retry):
             texts, looped, _ = app._stress_read([_page(start)], app.MultiCancel(),
                                                 rec, live, job=1, case="sol003")
@@ -86,9 +88,10 @@ class StressDryRetryTests(unittest.TestCase):
         self.assertEqual([a for a in alerts if a["kind"] == "dry"][-1]["state"],
                          "retry failed")
 
-    def test_switched_off_it_only_flags(self):
-        with patch.object(app, "STRESS_DRY_RETRY", False):
-            calls, texts, _, rec, alerts = self._read([(False, FIRED)])
+    def test_off_by_default_it_only_flags(self):
+        self.assertFalse(app.STRESS_DRY_RETRY)
+        self.retry = app.STRESS_DRY_RETRY
+        calls, texts, _, rec, alerts = self._read([(False, FIRED)])
         self.assertEqual(calls, ["low"])
         self.assertEqual(texts, ["text low"])
         self.assertEqual([a.get("state") for a in alerts], [None])

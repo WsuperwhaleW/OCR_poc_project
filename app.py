@@ -2516,6 +2516,9 @@ def _stress_config(body: dict) -> dict:
         "metrics_every": number("metrics_every", 5, 1, 600),
         "metrics": bool(body.get("metrics")) or bool(sweep),
         "no_cache": bool(body.get("no_cache")),
+        # "Use DRY": on unless the request says otherwise; off sends every
+        # request of the run without DRY (`backends.suppress_dry`).
+        "dry": body.get("dry", True) is not False,
         # A long file reads its pages on workers left idle once the queue is
         # empty (`_StressSlots`). On unless the request says otherwise.
         "split_pages": body.get("split_pages", True) is not False,
@@ -2962,8 +2965,9 @@ def _stress_read(pages, cancel, rec: dict, live: _StressLive,
         the read that settles it. DRY firing is one alert per page the same way,
         its message growing by a Detail each attempt it fired on.
 
-        **A page DRY fired on is read again one Detail up too** (2026-10-27, at
-        the user's request; `STRESS_DRY_RETRY`), even where it did not loop: a
+        **DRY firing only flags the page by default** (2026-11-05, at the user's
+        request). With `STRESS_DRY_RETRY` on, a page DRY fired on is read again
+        one Detail up too (2026-10-27), even where it did not loop: a
         repeat the server had to break is a sign the page was going wrong, and
         the text DRY steered out of may be damaged. The climb stops at the first
         read that neither looped nor needed DRY. Should a retry loop where an
@@ -4260,6 +4264,7 @@ def _stress_run(cfg: dict, cancel):
         "save_details": bool(cfg.get("save_details")),
         "run_id": cfg["run_id"] if cfg.get("save_log") else "",
         "no_cache": bool(cfg.get("no_cache")),
+        "dry": cfg.get("dry", True) is not False,
         "split_pages": bool(cfg.get("split_pages")) and cfg["mode"] in ("ocr", "full"),
         "fill_missing": bool(cfg.get("fill_missing")) and cfg["mode"] == "full",
         "validation_retry": bool(cfg.get("validation_retry")) and cfg["mode"] == "full",
@@ -4597,10 +4602,13 @@ def _stress_generate(cfg, cancel):
     # "Bypass prompt cache": every request of the run and its drain is sent
     # uncacheable, so prefill is measured rather than a cache lookup.
     no_cache = bool(cfg.get("no_cache"))
+    no_dry = cfg.get("dry", True) is False
     pass  # this state lives in engine.py
     try:
         if no_cache:
             backends.bypass_prefix_cache()
+        if no_dry:
+            backends.suppress_dry()
         if cfg.get("vllm_batch"):
             # One batcher for every server the run uses; the group key
             # keeps each URL's requests apart.
@@ -4623,6 +4631,8 @@ def _stress_generate(cfg, cancel):
             engine._batcher = None
         if no_cache:
             backends.restore_prefix_cache()
+        if no_dry:
+            backends.restore_dry()
         servertime.resume_metrics()
 
 

@@ -1683,6 +1683,37 @@ def prefix_cache_bypassed() -> bool:
     return workspace.get("bypassed", _bypassed) > 0
 
 
+# "Use DRY" off on the stress pane (2026-11-05, at the user's request): every
+# request of that run and its drain goes without DRY. A count, per workspace,
+# like the cache bypass. vLLM gets no `vllm_xargs` (so the DRY processor does not
+# run and nothing is flagged); llama.cpp gets `dry_multiplier: 0`, its own "off",
+# merged over sampler_extras. Ollama's /v1 drops DRY anyway.
+_dry_off_lock = threading.Lock()
+_dry_off = 0
+workspace.field("dry_off", lambda: 0, fresh=True)
+
+
+def _add_dry_off(step: int):
+    global _dry_off
+    with _dry_off_lock:
+        value = max(0, workspace.get("dry_off", _dry_off) + step)
+        if not workspace.put("dry_off", value):
+            _dry_off = value
+
+
+def suppress_dry():
+    """Send every request without DRY until `restore_dry`."""
+    _add_dry_off(1)
+
+
+def restore_dry():
+    _add_dry_off(-1)
+
+
+def dry_suppressed() -> bool:
+    return workspace.get("dry_off", _dry_off) > 0
+
+
 def cache_bypass_effect(kind: str) -> str:
     """What the bypass does on a server of this kind, for the stress plan."""
     if kind == "vllm":
@@ -1742,7 +1773,7 @@ def request_extras(info: dict = None) -> dict:
         # a generic OpenAI server is not assumed to take these fields.
         if info["kind"] == "vllm":
             extras.update(settings.vllm_sampler(info.get("model")))
-            xargs = settings.vllm_xargs()
+            xargs = {} if dry_suppressed() else settings.vllm_xargs()
             if xargs:
                 extras["vllm_xargs"] = xargs
             extras.update(_cache_bypass_fields("vllm"))
@@ -1756,6 +1787,8 @@ def request_extras(info: dict = None) -> dict:
     # unaffected. Same setting as Ollama's, so one knob turns thinking on for both.
     if settings.OLLAMA_REASONING_EFFORT == "none":
         extras["chat_template_kwargs"] = {"enable_thinking": False}
+    if info["kind"] == "llama.cpp" and dry_suppressed():
+        extras["dry_multiplier"] = 0
     extras.update(_cache_bypass_fields(info["kind"]))
     return extras
 

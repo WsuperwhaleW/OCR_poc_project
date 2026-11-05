@@ -748,8 +748,9 @@ LOOP_RETRY = config.env_bool("LOOP_RETRY", True)
 # as well, even where it did not loop (2026-10-27, at the user's request): a
 # repeat DRY had to break is a sign the read was going wrong, and the text it
 # steered out of may be damaged. Same ladder and same rebuild as a loop retry,
-# so it also needs LOOP_RETRY. STRESS_DRY_RETRY=0 only flags it.
-STRESS_DRY_RETRY = config.env_bool("STRESS_DRY_RETRY", True)
+# so it also needs LOOP_RETRY. OFF by default since 2026-11-05 (at the user's
+# request): DRY firing only FLAGS the page. STRESS_DRY_RETRY=1 brings the climb back.
+STRESS_DRY_RETRY = config.env_bool("STRESS_DRY_RETRY", False)
 LOOP_TAIL_CHARS = 600
 LOOP_MIN_REPEATS = 4
 # A repeated line/block that carries no actual *word* -- blank table markup

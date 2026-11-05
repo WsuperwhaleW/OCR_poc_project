@@ -775,6 +775,9 @@ follows your desktop; Light is the one to pick for projecting or screenshotting.
         <label class="st-option">
           <input id="stNoCache" type="checkbox"> Bypass cache
         </label>
+        <label class="st-option" title="Send each request with DRY (the repeat penalty vLLM's DRY processor and llama.cpp run). Off sends this run without it, so nothing is flagged as DRY">
+          <input id="stDry" type="checkbox" checked> Use DRY
+        </label>
         <label class="st-option" id="stSplitPagesField"
                title="Once every job has started, a file still reading its pages sends its next pages to the workers left idle, at most the concurrency in flight, and joins them in page order">
           <input id="stSplitPages" type="checkbox" checked> Spread a long file's pages on idle workers
